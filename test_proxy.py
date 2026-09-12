@@ -83,7 +83,35 @@ async def run_test():
             assert resp_q.status_code == 200
             assert resp_q.headers.get("x-proxy-cache") == "HIT"
 
-            print("\n[+] ALL 9 TESTS PASSED SUCCESSFULLY!")
+            # Test 10: Cache Integrity Verification (reject empty and HTML error pages for media)
+            from cache_manager import cache_manager
+            assert not cache_manager.save_cache("/assets/test/broken.png", {"content-type": "text/html"}, b"<html>Error</html>")
+            assert not cache_manager.save_cache("/assets/test/empty.png", {"content-type": "image/png"}, b"")
+            print("Test 10 - Cache Integrity (rejected HTML error page & empty payload): OK")
+
+            # Test 11: Immutable Header Logic (only versioned assets get immutable when enabled)
+            headers_test_ver = {}
+            cache_manager._apply_browser_cache_headers(headers_test_ver, "/assets/1772717316/foo.js")
+            # Default enable_browser_cache is False -> should NOT contain immutable
+            assert "immutable" not in headers_test_ver.get("Cache-Control", "")
+
+            # If temporarily enabled:
+            from config_manager import config_manager
+            config_manager.config["enable_browser_cache"] = True
+            headers_ver_on = {}
+            cache_manager._apply_browser_cache_headers(headers_ver_on, "/assets/1772717316/foo.js")
+            assert "immutable" in headers_ver_on.get("Cache-Control", "")
+
+            # Unversioned asset even when enabled should NEVER get immutable
+            headers_unver = {}
+            cache_manager._apply_browser_cache_headers(headers_unver, "/manifest.json")
+            assert "immutable" not in headers_unver.get("Cache-Control", "")
+
+            # Restore conservative default
+            config_manager.config["enable_browser_cache"] = False
+            print("Test 11 - Versioned Immutable Scoping: OK")
+
+            print("\n[+] ALL 11 TESTS PASSED SUCCESSFULLY!")
     finally:
         if started_here:
             gbf_proxy.stop_proxy_thread()

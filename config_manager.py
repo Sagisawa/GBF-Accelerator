@@ -24,7 +24,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "auto_system_proxy": True, # Automatically mount PAC in Windows Internet Settings
     "enable_ram_cache": True,  # In-memory LRU hot cache (fast RAM lookup)
     "ram_cache_max_mb": 256,   # Max RAM allocation for hot cache (in MB)
-    "enable_browser_cache": True, # Inject immutable headers for browser RAM/VRAM texture caching
+    "enable_browser_cache": False, # Conservative default: only inject immutable on versioned assets if enabled
     "enable_auto_repair": True, # Auto-detect and clean 0-byte or corrupted cache files
     "verify_upstream_tls": True, # Upstream TLS certificate verification for security
 }
@@ -198,7 +198,7 @@ class ConfigManager:
             print("   [+] 智能缓存检测：发现电脑中已存在的 ACGPower 缓存！")
             print(f"       检测到路径: {acgp_path}")
             print("   --------------------------------------------------------------")
-            print("   [1] 直接复用 ACGPower 缓存 (推荐！无需重新下载，立享 0ms)")
+            print("   [1] 直接复用 ACGPower 缓存 (推荐！无需重新下载，立享本地极速响应)")
             print(f"   [2] 在程序同级目录新建独立缓存 ({default_local})")
             print("   [3] 手动输入自定义缓存路径")
             print("=" * 65)

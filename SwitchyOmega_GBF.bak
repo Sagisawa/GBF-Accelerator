@@ -45,7 +45,14 @@
       {
         "condition": {
           "conditionType": "HostWildcardCondition",
-          "pattern": "gbf.akamaized.net"
+          "pattern": "*granbluefantasy.akamaized.net"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*gbf.akamaized.net"
         },
         "profileName": "GBF_Speed"
       },

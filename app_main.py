@@ -60,7 +60,8 @@ def get_pac_content(port: int = 8124) -> str:
         shExpMatch(host, "granbluefantasy.jp") ||
         shExpMatch(host, "*.granbluefantasy.com") ||
         shExpMatch(host, "granbluefantasy.com") ||
-        shExpMatch(host, "gbf.akamaized.net") ||
+        shExpMatch(host, "*granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "*gbf.akamaized.net") ||
         shExpMatch(host, "*.mbga.jp") ||
         shExpMatch(host, "mbga.jp") ||
         shExpMatch(host, "rcv.a-i-ad.com") ||
@@ -126,7 +127,7 @@ def check_ca_setup():
 
     print("\n" + "!" * 65)
     print("   [!] 检测到本机尚未安装加速根证书！")
-    print("       本加速器需信任根证书以解密并实现 Akamai 静态资源 0ms SSD 读取。")
+    print("       本加速器需信任根证书以解密并实现 Akamai 静态资源本地极速响应。")
     print("       正在自动调用系统证书管理器为你安装...")
     print("       >>> 稍后弹出的 Windows 安全警告窗口中，请点击【是 (Y)】<<<")
     print("!" * 65 + "\n")
@@ -140,8 +141,8 @@ def check_ca_setup():
 def main():
     base_dir = get_base_dir()
     print("=" * 65)
-    print("      GBF Speed Accelerator v1.0 - 碧蓝幻想极速加速器")
-    print("      基于 Clash + SSD 本地缓存的 0ms 闪电进本方案")
+    print("      GBF Accelerator - 碧蓝幻想本地缓存加速代理")
+    print("      基于 Clash + SSD 本地缓存的高速进本方案")
     print("=" * 65)
 
     # Export helper docs/configs
