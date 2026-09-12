@@ -9,7 +9,7 @@
 
 通过将游戏静态资源（立绘、音频、战斗动画、脚本）本地化缓存至 SSD / 内存中，大幅减少跨海 CDN 网络延迟与流量消耗；同时透明联动 Clash / v2rayN 等上游代理，保证核心游戏 API（抽卡、编队、结算、多人战等）零篡改、原样稳定传输。
 
-> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.2.0_GUI.zip`，解压即用，无需配置 Python 环境。
+> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.3.0_GUI.zip`，解压即用，无需配置 Python 环境。
 
 ---
 
@@ -34,7 +34,7 @@
 1. **准备上游代理**：确保你的代理客户端（如 Clash Verge、Clash、v2rayN 等）正常运行并连接至可用节点。
 2. **运行程序**：启动 `GBF_Accelerator`（或通过 Python 运行 `gui_main.py`）。
 3. **确认配置**：
-   - 检查【上游代理端口】是否与本机代理客户端一致（Clash Verge 常见为 `7897`，Clash 常见为 `7890`，v2rayN 常见为 `10809`）。
+   - 检查【上游代理端口】是否与本机代理客户端一致（Clash Verge 常见为 `7897`，Clash 常见为 `7890`，v2rayN 常见为 `10809`，岛风 GO 默认为 `8099`）。点击“自动探测”时，如果同时发现多个代理，会弹出列表供选择。
    - 检查【本地监听端口】（默认 `8124`，可按需在界面中自定义）。
    - 确认【缓存保存目录】（默认存放在程序同级 `cache` 目录，也可指定已有缓存目录）。
 4. **启动加速**：

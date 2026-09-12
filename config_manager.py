@@ -45,6 +45,7 @@ PROBE_PROXY_PORTS = [
     (7890, "Clash Default (HTTP)"),
     (10808, "v2rayN (HTTP)"),
     (10809, "v2rayN (SOCKS/HTTP)"),
+    (8099, "岛风 GO (HTTP)"),
 ]
 
 def is_port_open(host: str, port: int, timeout: float = 0.3) -> bool:
@@ -54,21 +55,32 @@ def is_port_open(host: str, port: int, timeout: float = 0.3) -> bool:
     except (socket.timeout, ConnectionRefusedError, OSError):
         return False
 
-def auto_detect_upstream_proxy() -> str:
-    """Probe common local proxy ports and return active proxy URL."""
+def detect_upstream_proxies() -> List[Tuple[str, str]]:
+    """Return every reachable local proxy candidate as (url, display name)."""
+    detected: List[Tuple[str, str]] = []
     for port, name in PROBE_PROXY_PORTS:
         if is_port_open("127.0.0.1", port):
             # Distinguish a pure SOCKS5 listener (common v2rayN 10809) from HTTP.
+            # 岛风 GO 8099 is intentionally treated as HTTP.
             scheme = "http"
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.4) as sock:
-                    sock.settimeout(0.4)
-                    sock.sendall(b"\x05\x01\x00")
-                    if sock.recv(2) == b"\x05\x00":
-                        scheme = "socks5"
-            except (socket.timeout, ConnectionResetError, OSError):
-                pass
-            return f"{scheme}://127.0.0.1:{port}"
+            if port != 8099:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.4) as sock:
+                        sock.settimeout(0.4)
+                        sock.sendall(b"\x05\x01\x00")
+                        if sock.recv(2) == b"\x05\x00":
+                            scheme = "socks5"
+                except (socket.timeout, ConnectionResetError, OSError):
+                    pass
+            detected.append((f"{scheme}://127.0.0.1:{port}", name))
+    return detected
+
+
+def auto_detect_upstream_proxy() -> str:
+    """Probe common local proxy ports and return the first active proxy URL."""
+    detected = detect_upstream_proxies()
+    if detected:
+        return detected[0][0]
     return "http://127.0.0.1:7897"  # Default fallback
 
 def auto_detect_acgpower_cache() -> Optional[Path]:
@@ -234,7 +246,7 @@ def check_upstream_connectivity(upstream_url: str) -> Tuple[bool, str]:
     try:
         parsed = urllib.parse.urlparse(upstream_url)
         host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or (7890 if "7890" in upstream_url else 7897)
+        port = parsed.port or (8099 if "8099" in upstream_url else (7890 if "7890" in upstream_url else 7897))
         with socket.create_connection((host, port), timeout=1.5):
             return True, f"成功连通上游代理 {host}:{port}"
     except (socket.timeout, ConnectionRefusedError):

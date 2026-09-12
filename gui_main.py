@@ -22,7 +22,7 @@ if sys.platform == "win32":
             pass
 
 # Ensure PIL and pystray
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 import pystray
 
 from config_manager import (
@@ -34,7 +34,7 @@ from config_manager import (
     check_legacy_leaked_ca_installed,
     clean_legacy_leaked_ca,
     auto_detect_acgpower_cache,
-    auto_detect_upstream_proxy,
+    detect_upstream_proxies,
     is_port_open,
     check_upstream_connectivity,
 )
@@ -68,6 +68,8 @@ def create_tray_icon_image(is_running: bool = True) -> Image.Image:
 class GBFAcceleratorGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
+        self.window_icon = ImageTk.PhotoImage(create_tray_icon_image(True))
+        self.root.iconphoto(True, self.window_icon)
         self.root.title("GBF 加速器")
         self.root.geometry("640x740")
         self.root.minsize(600, 700)
@@ -179,7 +181,7 @@ class GBFAcceleratorGUI:
         h_title_box = ttk.Frame(h_left, style="CardInner.TFrame")
         h_title_box.pack(anchor="w")
         ttk.Label(h_title_box, text="碧蓝幻想 GBF 加速器", style="Title.TLabel").pack(side="left")
-        lbl_ver = ttk.Label(h_title_box, text="v1.1.0", style="Gray.TLabel")
+        lbl_ver = ttk.Label(h_title_box, text="v1.3.0", style="Gray.TLabel")
         lbl_ver.pack(side="left", padx=(6, 0), pady=(3, 0))
 
         self.lbl_status = ttk.Label(h_left, textvariable=self.var_status_text, style="Subtitle.TLabel")
@@ -272,12 +274,15 @@ class GBFAcceleratorGUI:
         btn_acgp.pack(side="left")
 
         # Field 2: Upstream Proxy
-        ttk.Label(card_settings, text="上游网络代理（Clash Verge / Clash / v2rayN）：", style="Normal.TLabel").pack(anchor="w")
+        ttk.Label(card_settings, text="上游网络代理（Clash Verge / Clash / V2ray / 岛风GO 等）：", style="Normal.TLabel").pack(anchor="w")
         f_up = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_up.pack(fill="x", pady=(2, 6))
 
         self.entry_up = ttk.Entry(f_up, textvariable=self.var_upstream, font=("Consolas", 9))
         self.entry_up.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        self.btn_confirm_upstream = ttk.Button(f_up, text="确认", width=8, command=self.confirm_upstream)
+        self.btn_confirm_upstream.pack(side="left", padx=(0, 4))
 
         self.btn_probe = ttk.Button(f_up, text="自动探测", width=10, command=self.probe_upstream)
         self.btn_probe.pack(side="left")
@@ -500,7 +505,21 @@ class GBFAcceleratorGUI:
         if self.var_direct_mode.get():
             messagebox.showinfo("直连模式", "当前已启用直连模式，请先取消勾选后再探测上游代理。")
             return
-        active = auto_detect_upstream_proxy()
+        detected = detect_upstream_proxies()
+        if not detected:
+            messagebox.showwarning(
+                "探测结果",
+                "未检测到已运行的上游代理。\n\n支持的默认端口：Clash/v2rayN，以及岛风 GO 8099。",
+            )
+            return
+
+        if len(detected) == 1:
+            active = detected[0][0]
+        else:
+            active = self.choose_upstream(detected)
+            if not active:
+                return
+
         self.var_upstream.set(active)
         config_manager.config["upstream_proxy"] = active
         config_manager.save_config()
@@ -516,14 +535,107 @@ class GBFAcceleratorGUI:
         else:
             messagebox.showwarning("上游探测警告", f"检测到本地代理地址：\n{active}\n\n但连通测试失败：{msg}\n请确认 Clash 是否已启动并开启本地监听。")
 
+    def choose_upstream(self, detected):
+        """Show all detected upstreams and return the user's selected URL."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("选择上游代理")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        ttk.Label(dialog, text="检测到多个上游代理，请选择要使用的代理：").pack(anchor="w", padx=14, pady=(12, 6))
+
+        listbox = tk.Listbox(dialog, width=58, height=min(8, max(3, len(detected))), exportselection=False)
+        listbox.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        for url, name in detected:
+            listbox.insert(tk.END, f"{name}  —  {url}")
+        listbox.selection_set(0)
+        listbox.focus_set()
+
+        result = {"url": None}
+
+        def confirm():
+            selected = listbox.curselection()
+            if selected:
+                result["url"] = detected[selected[0]][0]
+            dialog.destroy()
+
+        def cancel():
+            dialog.destroy()
+
+        buttons = ttk.Frame(dialog)
+        buttons.pack(fill="x", padx=14, pady=(0, 12))
+        ttk.Button(buttons, text="确认", width=10, command=confirm).pack(side="right")
+        ttk.Button(buttons, text="取消", width=10, command=cancel).pack(side="right", padx=(0, 6))
+        dialog.bind("<Return>", lambda _event: confirm())
+        dialog.bind("<Escape>", lambda _event: cancel())
+
+        # Center the selection dialog over the main window instead of letting
+        # Tk place it at the screen's top-left corner.
+        dialog.update_idletasks()
+        parent_x = self.root.winfo_rootx()
+        parent_y = self.root.winfo_rooty()
+        parent_w = self.root.winfo_width()
+        parent_h = self.root.winfo_height()
+        dialog_w = dialog.winfo_width()
+        dialog_h = dialog.winfo_height()
+        x = parent_x + max(0, (parent_w - dialog_w) // 2)
+        y = parent_y + max(0, (parent_h - dialog_h) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        self.root.wait_window(dialog)
+        return result["url"]
+
     def update_upstream_controls(self):
         """Disable upstream controls while direct mode is active."""
         direct = self.var_direct_mode.get()
         self.entry_up.configure(state="disabled" if direct else "normal")
+        self.btn_confirm_upstream.configure(state="disabled" if direct else "normal")
         self.btn_probe.configure(state="disabled" if direct else "normal")
 
     def reset_port_default(self):
         self.var_listen_port.set("8124")
+
+    def confirm_upstream(self):
+        """Immediately switch the live connection pool to the entered upstream."""
+        if self.var_direct_mode.get():
+            return
+
+        upstream = self.var_upstream.get().strip()
+        try:
+            parsed = urllib.parse.urlparse(upstream)
+            if parsed.scheme.lower() not in ("http", "https", "socks5", "socks5h") or not parsed.hostname:
+                raise ValueError("支持 http、https、socks5 或 socks5h 上游代理地址")
+            if parsed.port is None or not (1 <= parsed.port <= 65535):
+                raise ValueError("上游代理端口无效")
+            if parsed.port == gbf_proxy.LISTEN_PORT:
+                raise ValueError("上游代理端口不能与本地监听端口相同")
+        except ValueError as exc:
+            messagebox.showerror("上游代理地址无效", str(exc))
+            return
+
+        ok, msg = check_upstream_connectivity(upstream)
+        if not ok and not messagebox.askyesno(
+            "上游代理连通警告",
+            f"当前地址测试失败：\n{msg}\n\n仍然立即切换到这个上游代理吗？",
+        ):
+            return
+
+        config_manager.config["upstream_proxy"] = upstream
+        config_manager.save_config()
+        gbf_proxy.UPSTREAM_PROXY = upstream
+
+        was_running = gbf_proxy.PROXY_STATS.get("is_running", False)
+        if was_running:
+            # stop_proxy_thread cancels active sessions and closes the old
+            # httpx pool before start_proxy creates a pool for the new proxy.
+            self.stop_proxy()
+            self.start_proxy()
+        else:
+            self.var_status_text.set("● 上游代理已确认（服务未启动）")
+
+        if ok:
+            messagebox.showinfo("上游代理已切换", f"已断开旧连接并切换到：\n{upstream}")
 
     def save_settings(self):
         up = self.var_upstream.get().strip()
