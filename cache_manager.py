@@ -61,9 +61,29 @@ class CacheManager:
         except Exception:
             return 256 * 1024 * 1024
 
-    def _get_local_path(self, url_path: str) -> Path:
-        clean_path = url_path.split("?")[0].lstrip("/")
-        return self.cache_base / clean_path
+    def _get_local_path(self, url_path: str) -> Optional[Path]:
+        """Safely compute the on-disk cache path for url_path, strictly preventing path traversal.
+        Rejects Windows drive letters (e.g. C:), NTFS streams, and directory traversal (..)
+        Ensures the resolved path is strictly inside self.cache_base.
+        """
+        clean = url_path.split("?")[0].lstrip("/\\")
+        # Reject drive letters, UNC roots, and stream separators
+        if ":" in clean or clean.startswith("\\"):
+            return None
+
+        import posixpath
+        clean_norm = posixpath.normpath(clean)
+        if clean_norm.startswith("..") or "/../" in clean_norm or clean_norm == ".":
+            return None
+
+        try:
+            target_path = (self.cache_base / clean_norm).resolve()
+            base_resolved = self.cache_base.resolve()
+            if not target_path.is_relative_to(base_resolved):
+                return None
+            return target_path
+        except Exception:
+            return None
 
     def _apply_browser_cache_headers(self, headers: Dict[str, str], url_path: str = ""):
         """Inject or omit immutable cache headers according to user config.
@@ -99,13 +119,13 @@ class CacheManager:
                     headers["X-Cache-Source"] = "RAM"
                     return headers, data
 
-        # 2. Read from disk
+        # 2. Read from disk with path validation
         file_path = self._get_local_path(url_path)
-        if not file_path.is_file():
+        if file_path is None or not file_path.is_file():
             # Intelligent fallback: if path does not start with assets/, check under assets/
             if not clean_key.startswith("assets/"):
-                fallback_path = self.cache_base / "assets" / clean_key
-                if fallback_path.is_file():
+                fallback_path = self._get_local_path("assets/" + clean_key)
+                if fallback_path is not None and fallback_path.is_file():
                     file_path = fallback_path
                 else:
                     return None
@@ -128,6 +148,7 @@ class CacheManager:
         ext_path = file_path.with_name(file_path.name + ".ext")
         content_type = ""
         content_encoding = ""
+        cached_etag = ""
 
         if ext_path.is_file():
             try:
@@ -135,6 +156,7 @@ class CacheManager:
                     meta = json.load(f)
                     content_type = meta.get("ct", "")
                     content_encoding = meta.get("ce", "")
+                    cached_etag = meta.get("ETag", "")
             except Exception:
                 pass
 
@@ -155,7 +177,8 @@ class CacheManager:
                 return None
 
             mtime = int(file_path.stat().st_mtime)
-            etag = f'"{mtime:x}-{len(data):x}"'
+            # Consistent ETag: prefer upstream ETag stored in .ext, fallback to mtime-size
+            etag = cached_etag or f'"{mtime:x}-{len(data):x}"'
             headers = {
                 "Content-Type": content_type,
                 "Content-Length": str(len(data)),
@@ -220,6 +243,8 @@ class CacheManager:
 
         try:
             file_path = self._get_local_path(url_path)
+            if file_path is None:
+                return False
             file_path.parent.mkdir(parents=True, exist_ok=True)
 
             ct = headers.get("content-type") or headers.get("Content-Type", "")
@@ -307,4 +332,31 @@ class CacheManager:
         except Exception:
             return False
 
+    def clear_all_cache(self) -> Tuple[int, int]:
+        """Clear all in-memory hot cache items and wipe disk cache directory.
+        Returns (deleted_files_count, freed_bytes).
+        """
+        self.clear_ram_cache()
+        deleted_count = 0
+        freed_bytes = 0
+        if self.cache_base.is_dir():
+            for root, dirs, files in os.walk(self.cache_base, topdown=False):
+                for name in files:
+                    fp = Path(root) / name
+                    try:
+                        sz = fp.stat().st_size
+                        fp.unlink(missing_ok=True)
+                        deleted_count += 1
+                        freed_bytes += sz
+                    except Exception:
+                        pass
+                for name in dirs:
+                    dp = Path(root) / name
+                    try:
+                        dp.rmdir()
+                    except Exception:
+                        pass
+        return deleted_count, freed_bytes
+
 cache_manager = CacheManager()
+

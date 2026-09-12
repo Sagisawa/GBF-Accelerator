@@ -70,15 +70,25 @@ def enable_pac_proxy(pac_url: str = "http://127.0.0.1:8124/proxy.pac") -> bool:
     except Exception as e:
         return False
 
-def disable_pac_proxy() -> bool:
-    """Restore or remove Windows system PAC proxy."""
+def disable_pac_proxy(force: bool = False) -> bool:
+    """Restore or remove Windows system PAC proxy.
+    Safeguard: only remove/restore if this app actually enabled it or if current PAC points to our proxy.
+    """
     global _original_pac_url, _is_managing_proxy
     if sys.platform != "win32":
         return False
     try:
+        current = get_current_pac_url()
+        is_our_pac = bool(current and ("/proxy.pac" in current and ("127.0.0.1" in current or "localhost" in current)))
+
+        # Never touch external system proxy settings if we didn't set them and it doesn't point to us
+        if not force and not _is_managing_proxy and not is_our_pac:
+            return True
+
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS_KEY, 0, winreg.KEY_SET_VALUE) as key:
             if _original_pac_url:
                 winreg.SetValueEx(key, "AutoConfigURL", 0, winreg.REG_SZ, _original_pac_url)
+                _original_pac_url = None
             else:
                 try:
                     winreg.DeleteValue(key, "AutoConfigURL")

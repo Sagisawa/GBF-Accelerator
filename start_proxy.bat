@@ -2,10 +2,7 @@
 title GBF Speed Accelerator (127.0.0.1:8124)
 cd /d "%~dp0"
 
-:: Automatically terminate any old process occupying port 8124
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8124" ^| findstr "LISTENING"') do (
-    taskkill /F /PID %%a >nul 2>&1
-)
+:: Safe port and zombie cleanup is handled internally by gbf_proxy via config_manager.kill_process_on_port
 
 "%~dp0.venv\Scripts\python.exe" "%~dp0gbf_proxy.py"
 pause
