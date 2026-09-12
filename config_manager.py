@@ -99,6 +99,9 @@ def kill_process_on_port(port: int):
     """Find and terminate any process listening on the given local port."""
     if sys.platform != "win32":
         return
+    # Guard against accidentally killing upstream proxies or standard system ports
+    if port in (7890, 7897, 10808, 10809, 80, 443):
+        return
     try:
         cmd = f'for /f "tokens=5" %a in (\'netstat -aon ^| findstr ":{port}" ^| findstr "LISTENING"\') do taskkill /F /PID %a'
         subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
@@ -127,6 +130,16 @@ class ConfigManager:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
         except Exception:
             pass
+
+    def get_listen_port(self) -> int:
+        val = self.config.get("listen_port") or self.config.get("local_port", 8124)
+        try:
+            port = int(val)
+            if 1 <= port <= 65535:
+                return port
+        except Exception:
+            pass
+        return 8124
 
     def get_effective_cache_dir(self, interactive: bool = True) -> Path:
         raw_val = self.config.get("cache_dir", "auto")

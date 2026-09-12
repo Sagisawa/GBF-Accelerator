@@ -1,4 +1,4 @@
-﻿"""
+"""
 GBF Accelerator - Windows System PAC Proxy Manager
 Enables and disables Windows system-wide PAC proxy using WinINet API and registry.
 Requires NO browser extensions - works out-of-the-box in Edge, Chrome, and Chromium browsers.
@@ -41,12 +41,14 @@ def get_current_pac_url() -> Optional[str]:
     except Exception:
         return None
 
-def is_pac_proxy_enabled() -> bool:
+def is_pac_proxy_enabled(port: Optional[int] = None) -> bool:
     """Check whether system proxy PAC is currently set to our local port."""
     url = get_current_pac_url()
     if not url:
         return False
-    return "127.0.0.1:8124" in url or "localhost:8124" in url
+    if port is not None:
+        return f":{port}/proxy.pac" in url
+    return "/proxy.pac" in url and ("127.0.0.1" in url or "localhost" in url)
 
 def enable_pac_proxy(pac_url: str = "http://127.0.0.1:8124/proxy.pac") -> bool:
     """Enable Windows system PAC proxy pointing to local accelerator server."""
@@ -55,7 +57,8 @@ def enable_pac_proxy(pac_url: str = "http://127.0.0.1:8124/proxy.pac") -> bool:
         return False
     try:
         current = get_current_pac_url()
-        if current and "8124" not in current:
+        is_our_pac = bool(current and ("/proxy.pac" in current and ("127.0.0.1" in current or "localhost" in current)))
+        if current and not is_our_pac:
             _original_pac_url = current
 
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS_KEY, 0, winreg.KEY_SET_VALUE) as key:
