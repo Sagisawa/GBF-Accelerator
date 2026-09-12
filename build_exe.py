@@ -81,6 +81,8 @@ def build():
             zf.write(BASE_DIR / "proxy.pac", arcname="proxy.pac")
         if readme_path.is_file():
             zf.write(readme_path, arcname="使用说明.txt")
+        if (BASE_DIR / "LICENSE").is_file():
+            zf.write(BASE_DIR / "LICENSE", arcname="LICENSE")
 
     print(f"\n[***] RELEASE READY: {zip_path}")
     print(f"      Zip Package Size: {zip_path.stat().st_size / (1024 * 1024):.2f} MB")

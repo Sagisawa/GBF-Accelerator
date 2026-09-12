@@ -31,6 +31,8 @@ from config_manager import (
     is_ca_installed,
     install_ca_certificate,
     uninstall_ca_certificate,
+    check_legacy_leaked_ca_installed,
+    clean_legacy_leaked_ca,
     auto_detect_acgpower_cache,
     auto_detect_upstream_proxy,
     is_port_open,
@@ -100,10 +102,9 @@ class GBFAcceleratorGUI:
         # Window events
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
 
-        # Check CA status
+        # Check CA status and detect legacy leaked cert
         self.update_ca_status()
-        if not is_ca_installed():
-            self.root.after(500, self.prompt_first_run_ca)
+        self.root.after(500, self.check_and_prompt_ca_state)
 
         # Ensure helper files
         from app_main import ensure_bundled_files
@@ -168,7 +169,12 @@ class GBFAcceleratorGUI:
         h_left = ttk.Frame(card_header, style="CardInner.TFrame")
         h_left.pack(side="left", fill="both", expand=True)
 
-        ttk.Label(h_left, text="碧蓝幻想 GBF 加速器", style="Title.TLabel").pack(anchor="w")
+        h_title_box = ttk.Frame(h_left, style="CardInner.TFrame")
+        h_title_box.pack(anchor="w")
+        ttk.Label(h_title_box, text="碧蓝幻想 GBF 加速器", style="Title.TLabel").pack(side="left")
+        lbl_ver = ttk.Label(h_title_box, text="v1.1.0", style="Gray.TLabel")
+        lbl_ver.pack(side="left", padx=(6, 0), pady=(3, 0))
+
         self.lbl_status = ttk.Label(h_left, textvariable=self.var_status_text, style="Subtitle.TLabel")
         self.lbl_status.pack(anchor="w", pady=(2, 0))
 
@@ -223,16 +229,19 @@ class GBFAcceleratorGUI:
         f_bottom = ttk.Frame(main_container)
         f_bottom.pack(side="bottom", fill="x", pady=(8, 0))
 
-        btn_open_folder = ttk.Button(f_bottom, text="📂 打开缓存目录", command=self.open_cache_folder)
-        btn_open_folder.pack(side="left", padx=(0, 6))
+        btn_open_folder = ttk.Button(f_bottom, text="📂 缓存目录", command=self.open_cache_folder)
+        btn_open_folder.pack(side="left", padx=(0, 4))
 
-        btn_clear_cache = ttk.Button(f_bottom, text="🗑️ 清空本地缓存", command=self.clear_cache_dialog)
-        btn_clear_cache.pack(side="left", padx=(0, 6))
+        btn_clear_cache = ttk.Button(f_bottom, text="🗑️ 清空缓存", command=self.clear_cache_dialog)
+        btn_clear_cache.pack(side="left", padx=(0, 4))
 
-        btn_proxy_guide = ttk.Button(f_bottom, text="🌐 分流与说明", command=self.show_guide)
-        btn_proxy_guide.pack(side="left", padx=(0, 6))
+        btn_proxy_guide = ttk.Button(f_bottom, text="🌐 分流说明", command=self.show_guide)
+        btn_proxy_guide.pack(side="left", padx=(0, 4))
 
-        btn_tray = ttk.Button(f_bottom, text="⬇ 最小化到系统托盘", command=self.hide_to_tray)
+        btn_github = ttk.Button(f_bottom, text="⭐ GitHub", command=self.open_github)
+        btn_github.pack(side="left", padx=(0, 4))
+
+        btn_tray = ttk.Button(f_bottom, text="⬇ 最小化到托盘", command=self.hide_to_tray)
         btn_tray.pack(side="right")
 
         # ---------------- 4. Settings Card ----------------
@@ -362,10 +371,15 @@ class GBFAcceleratorGUI:
             self.var_ca_status.set("未安装信任")
             self.lbl_ca.configure(foreground="#dc3545")
 
+    def open_github(self):
+        webbrowser.open("https://github.com/Sagisawa/GBF-Accelerator")
+
     def install_ca(self):
         ensure_ca()
+        if check_legacy_leaked_ca_installed():
+            clean_legacy_leaked_ca()
         if is_ca_installed():
-            messagebox.showinfo("根证书提示", "根证书已在系统的【受信任的根证书颁发机构】中，无需重复安装！")
+            messagebox.showinfo("根证书提示", "本机专属根证书已在系统的【受信任的根证书颁发机构】中，正常工作中！")
             return
 
         messagebox.showinfo("安装指引", "即将调起 Windows 证书导入向导，若弹出系统安全提示框，请点击【是 (Y)】允许信任。")
@@ -373,17 +387,40 @@ class GBFAcceleratorGUI:
         self.update_ca_status()
 
     def uninstall_ca(self):
-        if not is_ca_installed():
+        if not is_ca_installed() and not check_legacy_leaked_ca_installed():
             messagebox.showinfo("根证书提示", "系统中未检测到已安装的根证书。")
             return
         if not messagebox.askyesno("注销根证书", "确定要从系统【受信任的根证书颁发机构】中注销/卸载根证书吗？\n\n注销后，加速器将无法解密和缓存 HTTPS 资源，直到重新安装。"):
             return
         ok, msg = uninstall_ca_certificate()
+        clean_legacy_leaked_ca()
         if ok:
             messagebox.showinfo("注销成功", f"根证书已成功从系统受信任列表中移除。\n\n{msg}")
         else:
             messagebox.showwarning("注销提示", f"注销结果：\n{msg}")
         self.update_ca_status()
+
+    def check_and_prompt_ca_state(self):
+        legacy_found = check_legacy_leaked_ca_installed()
+        current_installed = is_ca_installed()
+
+        if legacy_found:
+            if messagebox.askyesno(
+                "检测到旧版废弃根证书",
+                "⚠️ 安全与兼容性提示：\n\n"
+                "检测到您的系统根证书库中存在已废弃的旧版公开根证书 (GBF Speed CA)。\n\n"
+                "• 旧证书私钥曾公开，继续保留存在安全隐患，且会导致新版无法解密与缓存游戏资源。\n"
+                "• 建议立即执行一键清理旧证书，并安装本机生成的专属新根证书。\n\n"
+                "是否立即执行一键迁移？\n"
+                "（若弹出 Windows 证书提示框，请点击【是 (Y)】允许信任）",
+            ):
+                clean_legacy_leaked_ca()
+                self.install_ca()
+                self.update_ca_status()
+                return
+
+        if not current_installed:
+            self.prompt_first_run_ca()
 
     def prompt_first_run_ca(self):
         if not is_ca_installed():
@@ -398,12 +435,16 @@ class GBFAcceleratorGUI:
                 self.install_ca()
 
     def clear_cache_dialog(self):
+        current_dir = Path(self.var_cache_dir.get()).resolve()
         if not messagebox.askyesno(
             "清空本地缓存确认",
-            "确定要清空全部本地缓存吗？\n\n"
-            "• 将删除磁盘缓存目录中的所有已下载静态资源文件\n"
-            "• 将清空当前内存热点缓存\n\n"
-            "下次游玩时将重新按需下载最新素材。",
+            f"确定要清空全部本地缓存吗？\n\n"
+            f"目标缓存目录：\n{current_dir}\n\n"
+            "⚠️ 注意事项：\n"
+            "• 将删除该目录下的所有静态资源（立绘、音频、剧场漫画等）\n"
+            "• 若您直接复用了 ACGPower 缓存目录，此操作将清空 ACGPower 的已有资源！\n"
+            "• 将同步清空内存热点缓存 (RAM Cache)\n\n"
+            "确认执行清空？",
         ):
             return
         deleted, freed = cache_manager.clear_all_cache()

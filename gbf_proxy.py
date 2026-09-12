@@ -448,6 +448,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
             if not req:
                 break
             method, path, version, headers, body = req
+            is_head = (method.upper() == "HEAD")
 
             # ---------------- Rule 1: CORS OPTIONS ----------------
             if method.upper() == "OPTIONS":
@@ -458,7 +459,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     "Access-Control-Max-Age": "604800",
                     "Connection": "keep-alive",
                 }
-                await send_cached_response(writer, 200, "OK", cors_headers, b"")
+                await send_cached_response(writer, 200, "OK", cors_headers, b"", is_head=is_head)
                 format_log("OPTIONS", "35", f"CORS Preflight Mock -> {target_host}{path}")
                 continue
 
@@ -469,7 +470,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     "Access-Control-Allow-Origin": "*",
                     "Connection": "keep-alive",
                 }
-                await send_cached_response(writer, 200, "OK", mock_headers, b'{"success":true}')
+                await send_cached_response(writer, 200, "OK", mock_headers, b'{"success":true}', is_head=is_head)
                 err_msg = ""
                 if "error" in path and body:
                     try:
@@ -530,12 +531,12 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 except httpx.TimeoutException:
                     format_log("TIMEOUT", "31", f"Timeout fetching asset -> {url}")
                     err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
-                    await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body)
+                    await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                     continue
                 except Exception as e:
                     format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
                     err_body = b'{"error": "Bad Gateway", "code": 502}'
-                    await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body)
+                    await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                     continue
 
                 elapsed_ms = int((time.perf_counter() - start_t) * 1000)
@@ -566,12 +567,12 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
             except httpx.TimeoutException:
                 format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
                 err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
-                await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body)
+                await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                 continue
             except Exception as e:
                 format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
                 err_body = b'{"error": "Bad Gateway", "code": 502}'
-                await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body)
+                await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                 continue
 
             elapsed_ms = int((time.perf_counter() - start_t) * 1000)
