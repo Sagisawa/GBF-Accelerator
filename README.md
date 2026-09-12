@@ -1,19 +1,28 @@
 # GBF Accelerator
 
-碧蓝幻想（Granblue Fantasy）本地静态资源缓存与代理转发工具。
+碧蓝幻想（Granblue Fantasy）本地静态资源缓存与加速代理工具。
 
-通过在本地磁盘缓存游戏的静态资源（立绘、音频、战斗动画等），并结合已有上游代理分流转发，减少重复静态资源请求的网络延迟与流量消耗。
+[![Release](https://img.shields.io/github/v/release/Sagisawa/GBF-Accelerator?color=blue&logo=github)](https://github.com/Sagisawa/GBF-Accelerator/releases)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)]()
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+通过将游戏静态资源（立绘、音频、战斗动画、脚本）本地化缓存至 SSD / 内存中，大幅减少跨海 CDN 网络延迟与流量消耗；同时透明联动 Clash / v2rayN 等上游代理，保证核心游戏 API（抽卡、编队、结算、多人战等）零篡改、原样稳定传输。
+
+> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.1_GUI.zip`，解压即用，无需配置 Python 环境。
 
 ---
 
 ## 主要功能
 
-- **静态资源本地缓存**：首次加载的静态资源通过上游代理拉取并缓存至本地磁盘，后续请求直接由本地服务高速响应。
-- **支持复用现有缓存**：支持自定义缓存存储路径，可直接检测并复用已有缓存目录（如 ACGP 等工具的历史缓存）。
+- **静态资源本地加速**：首次加载的静态资源通过上游代理拉取并原子落盘缓存至本地，后续请求直接由本地极速响应。
+- **内存热点缓存 (RAM Cache)**：高频静态资源直接载入内存（默认上限 256MB），0 磁盘 I/O 毫秒级极速直出。
+- **支持复用现有缓存**：支持自定义缓存存储路径，可自动检测并无缝复用已有缓存目录（如 ACGPower 等工具的历史缓存）。
 - **系统 PAC 代理支持**：
   - 支持一键开启 Windows 系统 PAC 自动配置，开启后无需在浏览器安装任何插件即可生效。
-  - 内置 PAC 服务（默认 `http://127.0.0.1:8124/proxy.pac`），也支持配合 SwitchyOmega / ZeroOmega 等浏览器扩展使用。
-- **图形界面与系统托盘**：提供直观的配置界面，支持自定义本地监听端口（默认 8124）及上游代理，支持最小化至任务栏系统托盘在后台运行。
+  - 内置 PAC 服务（默认 `http://127.0.0.1:8124/proxy.pac`），精准收敛分流规则，也支持配合 SwitchyOmega / ZeroOmega 等扩展使用。
+- **图形界面与系统托盘**：Windows 原生控件风格美化与 DPI 自适应清晰渲染；支持自定义监听端口（默认 8124）及上游代理，支持最小化至系统托盘后台静默运行。
+- **缓存原子落盘与自愈防护**：采用临时文件（`.tmp`）原子替换（`os.replace` + `fsync`），防止写入异常产生损坏残卷；自动识别上游 HTML 错误页并拒绝落盘；自动识别并清理 0 字节损坏文件。
 - **冗余请求拦截**：自动拦截游戏附带的第三方埋点与统计上报请求，减少无效网络连接。
 
 ---
