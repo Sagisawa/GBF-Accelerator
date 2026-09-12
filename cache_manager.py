@@ -3,6 +3,8 @@ import json
 import time
 import hashlib
 import mimetypes
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, Tuple, Dict
 
@@ -29,19 +31,84 @@ class CacheManager:
         self.cache_base = cache_base_dir or config_manager.get_effective_cache_dir(interactive=False)
         self.cache_base.mkdir(parents=True, exist_ok=True)
 
+        # In-Memory Hot Cache (LRU)
+        self._ram_lock = threading.Lock()
+        self._ram_cache: OrderedDict[str, Tuple[Dict[str, str], bytes, int]] = OrderedDict()
+        self._ram_cache_bytes: int = 0
+        self._max_item_bytes: int = 5 * 1024 * 1024  # Don't cache assets > 5MB in RAM
+
     def set_cache_base(self, path: Path):
         self.cache_base = path
         self.cache_base.mkdir(parents=True, exist_ok=True)
+        self.clear_ram_cache()
+
+    def clear_ram_cache(self):
+        """Clear all in-memory hot cache items."""
+        with self._ram_lock:
+            self._ram_cache.clear()
+            self._ram_cache_bytes = 0
+
+    def get_ram_cache_stats(self) -> Tuple[int, int]:
+        """Return (item_count, total_bytes_used) in RAM cache."""
+        with self._ram_lock:
+            return len(self._ram_cache), self._ram_cache_bytes
+
+    def _get_max_ram_bytes(self) -> int:
+        mb = config_manager.config.get("ram_cache_max_mb", 256)
+        try:
+            return int(mb) * 1024 * 1024
+        except Exception:
+            return 256 * 1024 * 1024
 
     def _get_local_path(self, url_path: str) -> Path:
         clean_path = url_path.split("?")[0].lstrip("/")
-        # URL path typically starts with "assets/..."
         return self.cache_base / clean_path
 
+    def _apply_browser_cache_headers(self, headers: Dict[str, str]):
+        """Inject or omit immutable cache headers according to user config."""
+        enable_browser_cache = config_manager.config.get("enable_browser_cache", True)
+        if enable_browser_cache:
+            headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            headers["Expires"] = "Wed, 01 Jan 2038 00:00:00 GMT"
+        else:
+            headers["Cache-Control"] = "public, max-age=3600"
+            if "Expires" in headers:
+                del headers["Expires"]
+
     def get_cache(self, url_path: str) -> Optional[Tuple[Dict[str, str], bytes]]:
+        clean_key = url_path.split("?")[0].lstrip("/")
+        enable_ram = config_manager.config.get("enable_ram_cache", True)
+        enable_auto_repair = config_manager.config.get("enable_auto_repair", True)
+
+        # 1. Try In-Memory Hot Cache (RAM Cache)
+        if enable_ram:
+            with self._ram_lock:
+                if clean_key in self._ram_cache:
+                    base_headers, data, _ = self._ram_cache[clean_key]
+                    self._ram_cache.move_to_end(clean_key)
+                    # Prepare response headers with dynamic browser cache settings
+                    headers = dict(base_headers)
+                    self._apply_browser_cache_headers(headers)
+                    headers["X-Cache-Source"] = "RAM"
+                    return headers, data
+
+        # 2. Read from disk
         file_path = self._get_local_path(url_path)
         if not file_path.is_file():
             return None
+
+        # Auto-Repair: Detect and clean 0-byte broken files
+        if enable_auto_repair:
+            try:
+                if file_path.stat().st_size == 0:
+                    try:
+                        file_path.unlink(missing_ok=True)
+                        file_path.with_name(file_path.name + ".ext").unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    return None
+            except Exception:
+                return None
 
         ext_path = file_path.with_name(file_path.name + ".ext")
         content_type = ""
@@ -64,23 +131,45 @@ class CacheManager:
             with open(file_path, "rb") as f:
                 data = f.read()
 
+            if not data and enable_auto_repair:
+                try:
+                    file_path.unlink(missing_ok=True)
+                    ext_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return None
+
             mtime = int(file_path.stat().st_mtime)
             etag = f'"{mtime:x}-{len(data):x}"'
             headers = {
                 "Content-Type": content_type,
                 "Content-Length": str(len(data)),
                 "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "public, max-age=31536000, immutable",
-                "Expires": "Wed, 01 Jan 2038 00:00:00 GMT",
                 "ETag": etag,
                 "X-Proxy-Cache": "HIT",
+                "X-Cache-Source": "DISK",
             }
-            # Strictly verify if data is genuinely gzip compressed before claiming Content-Encoding: gzip
+            self._apply_browser_cache_headers(headers)
+
+            # Strictly verify gzip signature
             is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
             if is_gzip:
                 headers["Content-Encoding"] = "gzip"
             elif "content-encoding" in headers:
                 del headers["content-encoding"]
+
+            # Store into RAM Cache for future instant reads
+            if enable_ram and len(data) <= self._max_item_bytes:
+                with self._ram_lock:
+                    max_ram = self._get_max_ram_bytes()
+                    item_len = len(data)
+                    # Evict old items if needed
+                    while self._ram_cache and (self._ram_cache_bytes + item_len > max_ram):
+                        _, (_, _, evicted_size) = self._ram_cache.popitem(last=False)
+                        self._ram_cache_bytes -= evicted_size
+
+                    self._ram_cache[clean_key] = (dict(headers), data, item_len)
+                    self._ram_cache_bytes += item_len
 
             return headers, data
         except Exception:
@@ -89,6 +178,9 @@ class CacheManager:
     def save_cache(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
         if not data:
             return False
+        clean_key = url_path.split("?")[0].lstrip("/")
+        enable_ram = config_manager.config.get("enable_ram_cache", True)
+
         try:
             file_path = self._get_local_path(url_path)
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,14 +190,13 @@ class CacheManager:
             etag = headers.get("etag") or headers.get("ETag", "")
             last_modified = headers.get("last-modified") or headers.get("Last-Modified", "")
 
-            # If upstream was gzip or content is text/js/css, ensure we save it properly compressed
             is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
             if ce.lower() == "gzip" and not is_gzip:
                 import gzip
                 data = gzip.compress(data)
                 is_gzip = True
 
-            # If saving set-error-handler.js, neuter the disruptive alert() popup automatically
+            # Neuter disruptive alert() in set-error-handler.js
             if url_path.endswith("set-error-handler.js"):
                 try:
                     import gzip
@@ -133,6 +224,28 @@ class CacheManager:
             }
             with open(ext_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, indent=2)
+
+            # Also update RAM cache if enabled
+            if enable_ram and len(data) <= self._max_item_bytes:
+                item_len = len(data)
+                max_ram = self._get_max_ram_bytes()
+                with self._ram_lock:
+                    while self._ram_cache and (self._ram_cache_bytes + item_len > max_ram):
+                        _, (_, _, evicted_size) = self._ram_cache.popitem(last=False)
+                        self._ram_cache_bytes -= evicted_size
+
+                    saved_headers = {
+                        "Content-Type": ct or MIME_FALLBACKS.get(file_path.suffix.lower(), "application/octet-stream"),
+                        "Content-Length": str(item_len),
+                        "Access-Control-Allow-Origin": "*",
+                        "ETag": etag,
+                        "X-Proxy-Cache": "HIT",
+                    }
+                    if is_gzip:
+                        saved_headers["Content-Encoding"] = "gzip"
+                    self._ram_cache[clean_key] = (saved_headers, data, item_len)
+                    self._ram_cache_bytes += item_len
+
             return True
         except Exception:
             return False
