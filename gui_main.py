@@ -3,6 +3,7 @@ import sys
 import time
 import threading
 import subprocess
+import urllib.parse
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -48,9 +49,9 @@ def create_tray_icon_image(is_running: bool = True) -> Image.Image:
 class GBFAcceleratorGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("GBF 极速加速器 v1.1")
-        self.root.geometry("640x580")
-        self.root.minsize(600, 550)
+        self.root.title("GBF 加速器")
+        self.root.geometry("640x630")
+        self.root.minsize(600, 580)
 
         # Center window
         self.center_window()
@@ -65,6 +66,7 @@ class GBFAcceleratorGUI:
         self.var_apis = tk.StringVar(value="0")
         self.var_cache_dir = tk.StringVar(value=str(config_manager.get_effective_cache_dir(interactive=False)))
         self.var_upstream = tk.StringVar(value=config_manager.get_effective_upstream_proxy())
+        self.var_listen_port = tk.StringVar(value=str(config_manager.get_listen_port()))
         self.var_ca_status = tk.StringVar(value="检测中...")
         self.var_auto_pac = tk.BooleanVar(value=config_manager.config.get("auto_system_proxy", True))
 
@@ -135,7 +137,7 @@ class GBFAcceleratorGUI:
         h_left = ttk.Frame(card_header, style="CardInner.TFrame")
         h_left.pack(side="left", fill="both", expand=True)
 
-        ttk.Label(h_left, text="碧蓝幻想 GBF 极速加速器", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(h_left, text="碧蓝幻想 GBF 加速器", style="Title.TLabel").pack(anchor="w")
         self.lbl_status = ttk.Label(h_left, textvariable=self.var_status_text, style="Subtitle.TLabel")
         self.lbl_status.pack(anchor="w", pady=(2, 0))
 
@@ -165,19 +167,19 @@ class GBFAcceleratorGUI:
         grid_frame.columnconfigure(1, weight=1)
         grid_frame.columnconfigure(2, weight=1)
 
-        # Stat 1: 0ms Hits
+        # Stat 1: Cache Hits
         c1 = ttk.Frame(grid_frame, style="CardInner.TFrame")
         c1.grid(row=0, column=0, sticky="ew")
         lbl_hits_num = ttk.Label(c1, textvariable=self.var_hits, style="StatNum.TLabel", foreground="#28a745")
         lbl_hits_num.pack(anchor="center")
-        ttk.Label(c1, text="⚡ 0ms SSD 命中次数", style="StatLabel.TLabel").pack(anchor="center")
+        ttk.Label(c1, text="⚡ 本地缓存命中", style="StatLabel.TLabel").pack(anchor="center")
 
         # Stat 2: Downloads
         c2 = ttk.Frame(grid_frame, style="CardInner.TFrame")
         c2.grid(row=0, column=1, sticky="ew")
         lbl_dl_num = ttk.Label(c2, textvariable=self.var_downloads, style="StatNum.TLabel", foreground="#007bff")
         lbl_dl_num.pack(anchor="center")
-        ttk.Label(c2, text="📥 在线下载缓存", style="StatLabel.TLabel").pack(anchor="center")
+        ttk.Label(c2, text="📥 远程下载缓存", style="StatLabel.TLabel").pack(anchor="center")
 
         # Stat 3: APIs
         c3 = ttk.Frame(grid_frame, style="CardInner.TFrame")
@@ -215,13 +217,24 @@ class GBFAcceleratorGUI:
         self.entry_up.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         btn_probe = ttk.Button(f_up, text="自动探测", width=10, command=self.probe_upstream)
-        btn_probe.pack(side="left", padx=(0, 4))
+        btn_probe.pack(side="left")
 
-        btn_save_up = ttk.Button(f_up, text="保存设置", width=9, command=self.save_settings)
-        btn_save_up.pack(side="left")
+        # Field 3: Local Listen Port
+        ttk.Label(card_settings, text="本地监听端口（默认 8124，支持自定义）：", style="Normal.TLabel").pack(anchor="w")
+        f_port = ttk.Frame(card_settings, style="CardInner.TFrame")
+        f_port.pack(fill="x", pady=(3, 8))
 
-        # Field 3: CA Certificate
-        ttk.Label(card_settings, text="HTTPS 根证书状态（游戏静态资源解密加速必需）：", style="Normal.TLabel").pack(anchor="w")
+        self.entry_port = ttk.Entry(f_port, textvariable=self.var_listen_port, font=("Consolas", 9), width=10)
+        self.entry_port.pack(side="left", padx=(0, 6))
+
+        btn_reset_port = ttk.Button(f_port, text="恢复默认 (8124)", width=14, command=self.reset_port_default)
+        btn_reset_port.pack(side="left", padx=(0, 6))
+
+        btn_save = ttk.Button(f_port, text="保存配置", width=10, command=self.save_settings)
+        btn_save.pack(side="left")
+
+        # Field 4: CA Certificate
+        ttk.Label(card_settings, text="HTTPS 根证书状态（游戏静态资源本地解析必需）：", style="Normal.TLabel").pack(anchor="w")
         f_ca = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_ca.pack(fill="x", pady=(3, 4))
 
@@ -231,12 +244,12 @@ class GBFAcceleratorGUI:
         btn_install_ca = ttk.Button(f_ca, text="一键安装/修复根证书", command=self.install_ca)
         btn_install_ca.pack(side="left")
 
-        # Field 4: Windows System PAC Automation
+        # Field 5: Windows System PAC Automation
         f_sys_proxy = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_sys_proxy.pack(fill="x", pady=(10, 2))
         chk_pac = ttk.Checkbutton(
             f_sys_proxy,
-            text="自动配置 Windows 系统代理（开箱即玩，无需装任何浏览器插件，仅分流 GBF）",
+            text="自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）",
             variable=self.var_auto_pac,
             command=self.toggle_sys_proxy_setting,
         )
@@ -303,20 +316,60 @@ class GBFAcceleratorGUI:
         gbf_proxy.UPSTREAM_PROXY = active
         messagebox.showinfo("上游探测结果", f"检测到可用的本地代理服务：\n{active}\n\n已成功应用设置！")
 
+    def reset_port_default(self):
+        self.var_listen_port.set("8124")
+
     def save_settings(self):
         up = self.var_upstream.get().strip()
         cd = self.var_cache_dir.get().strip()
+        port_str = self.var_listen_port.get().strip()
+
         if not up:
             messagebox.showerror("错误", "上游代理地址不能为空！")
             return
+
+        try:
+            port = int(port_str)
+            if not (1 <= port <= 65535):
+                raise ValueError()
+        except ValueError:
+            messagebox.showerror("错误", "本地监听端口必须是 1 到 65535 之间的有效整数！")
+            return
+
+        # Prevent port conflict with upstream proxy
+        try:
+            parsed_up = urllib.parse.urlparse(up)
+            if parsed_up.port == port:
+                messagebox.showerror("端口冲突", "本地监听端口不能与上游代理端口相同！")
+                return
+        except Exception:
+            pass
+
+        old_port = gbf_proxy.LISTEN_PORT
+        port_changed = (port != old_port)
+
         config_manager.config["upstream_proxy"] = up
         config_manager.config["cache_dir"] = cd
+        config_manager.config["listen_port"] = port
         config_manager.config["auto_system_proxy"] = self.var_auto_pac.get()
         config_manager.save_config()
+
         gbf_proxy.UPSTREAM_PROXY = up
         if cd:
             cache_manager.set_cache_base(Path(cd).resolve())
-        messagebox.showinfo("保存成功", "配置已保存并即时生效！")
+
+        # Update local proxy.pac file
+        from app_main import update_pac_file
+        update_pac_file(port)
+
+        if port_changed and gbf_proxy.PROXY_STATS.get("is_running", False):
+            self.stop_proxy()
+            gbf_proxy.LISTEN_PORT = port
+            self.start_proxy()
+            messagebox.showinfo("保存成功", f"配置已保存！\n监听端口已更新为 {port}，代理服务已自动重启生效。")
+        else:
+            gbf_proxy.LISTEN_PORT = port
+            messagebox.showinfo("保存成功", "配置已保存成功！")
 
     def toggle_sys_proxy_setting(self):
         enabled = self.var_auto_pac.get()
@@ -339,7 +392,7 @@ class GBFAcceleratorGUI:
         if readme.is_file():
             os.startfile(str(readme))
         else:
-            messagebox.showinfo("分流指引", "请使用 ZeroOmega / SwitchyOmega 导入同目录下的 SwitchyOmega_GBF.bak，或直接勾选【自动配置 Windows 系统代理】实现免插件极速游玩。")
+            messagebox.showinfo("分流指引", "请使用 ZeroOmega / SwitchyOmega 导入同目录下的 SwitchyOmega_GBF.bak，或直接勾选【自动配置 Windows 系统 PAC 代理】实现免插件极速游玩。")
 
     def toggle_proxy(self):
         if gbf_proxy.PROXY_STATS["is_running"]:
@@ -348,17 +401,43 @@ class GBFAcceleratorGUI:
             self.start_proxy()
 
     def start_proxy(self):
+        port_str = self.var_listen_port.get().strip()
+        try:
+            port = int(port_str)
+            if not (1 <= port <= 65535):
+                raise ValueError()
+        except ValueError:
+            messagebox.showerror("端口错误", "本地监听端口必须是 1 到 65535 之间的整数！")
+            return
+
+        up = self.var_upstream.get().strip() or "http://127.0.0.1:7897"
+        try:
+            parsed_up = urllib.parse.urlparse(up)
+            if parsed_up.port == port:
+                messagebox.showerror("端口冲突", "本地监听端口不能与上游代理端口相同！")
+                return
+        except Exception:
+            pass
+
         gbf_proxy.LISTEN_HOST = config_manager.config.get("listen_host", "127.0.0.1")
-        gbf_proxy.LISTEN_PORT = int(config_manager.config.get("listen_port", 8124))
-        gbf_proxy.UPSTREAM_PROXY = self.var_upstream.get().strip() or "http://127.0.0.1:7897"
+        gbf_proxy.LISTEN_PORT = port
+        gbf_proxy.UPSTREAM_PROXY = up
+        config_manager.config["listen_port"] = port
+        config_manager.config["upstream_proxy"] = up
+        config_manager.save_config()
+
         cache_manager.set_cache_base(Path(self.var_cache_dir.get()).resolve())
+
+        # Update local proxy.pac file
+        from app_main import update_pac_file
+        update_pac_file(port)
 
         gbf_proxy.start_proxy_thread()
 
         if self.var_auto_pac.get():
             system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
 
-        self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT}) - 0ms 极速就绪")
+        self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT})")
         self.lbl_status.configure(foreground="#28a745")
         self.btn_toggle.configure(text="停止加速", bg="#dc3545", activebackground="#bd2130")
         if self.tray_icon:
@@ -368,7 +447,7 @@ class GBFAcceleratorGUI:
         gbf_proxy.stop_proxy_thread()
         if self.var_auto_pac.get():
             system_proxy.disable_pac_proxy()
-        self.var_status_text.set("● 已停止加速")
+        self.var_status_text.set("● 服务已停止")
         self.lbl_status.configure(foreground="#6c757d")
         self.btn_toggle.configure(text="启动加速", bg="#28a745", activebackground="#218838")
         if self.tray_icon:
@@ -390,7 +469,7 @@ class GBFAcceleratorGUI:
 
         if is_running and "停止" not in self.btn_toggle.cget("text"):
             self.btn_toggle.configure(text="停止加速", bg="#dc3545", activebackground="#bd2130")
-            self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT}) - 0ms 极速就绪")
+            self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT})")
             self.lbl_status.configure(foreground="#28a745")
             if self.tray_icon:
                 self.tray_icon.icon = create_tray_icon_image(True)
@@ -400,7 +479,7 @@ class GBFAcceleratorGUI:
                 self.var_status_text.set(f"● 异常停止: {last_error[:25]}")
                 self.lbl_status.configure(foreground="#dc3545")
             else:
-                self.var_status_text.set("● 已停止加速")
+                self.var_status_text.set("● 服务已停止")
                 self.lbl_status.configure(foreground="#6c757d")
             if self.tray_icon:
                 self.tray_icon.icon = create_tray_icon_image(False)
@@ -418,7 +497,7 @@ class GBFAcceleratorGUI:
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("彻底退出", self.quit_app),
         )
-        self.tray_icon = pystray.Icon("GBF_Speed_Proxy", icon_img, "GBF 极速加速器 (0ms 运行中)", menu)
+        self.tray_icon = pystray.Icon("GBF_Speed_Proxy", icon_img, f"GBF 加速代理 (端口 {gbf_proxy.LISTEN_PORT})", menu)
         # Run tray in separate background thread
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
@@ -426,7 +505,7 @@ class GBFAcceleratorGUI:
         self.root.withdraw()
         try:
             if self.tray_icon:
-                self.tray_icon.notify("GBF 极速加速器已最小化到系统托盘，后台持续为你加速中。", "GBF 加速器后台运行中")
+                self.tray_icon.notify("GBF 加速代理已最小化到系统托盘，正在后台运行。", "GBF 加速代理")
         except Exception:
             pass
 

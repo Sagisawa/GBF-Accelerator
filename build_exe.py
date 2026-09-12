@@ -10,10 +10,19 @@ DIST_DIR = BASE_DIR / "dist"
 BUILD_DIR = BASE_DIR / "build"
 RELEASE_DIR = BASE_DIR / "release"
 
+def kill_running_instances():
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "GBF_Accelerator.exe"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
 def build():
     print("=" * 60)
     print("   Starting PyInstaller Compilation for GBF Accelerator...")
     print("=" * 60)
+
+    kill_running_instances()
 
     pyinstaller_exe = BASE_DIR / ".venv" / "Scripts" / "pyinstaller.exe"
     if not pyinstaller_exe.is_file():

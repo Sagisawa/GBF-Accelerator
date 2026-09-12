@@ -21,7 +21,7 @@ if sys.platform == "win32":
 
 # ================= Configuration =================
 LISTEN_HOST = config_manager.config.get("listen_host", "127.0.0.1")
-LISTEN_PORT = int(config_manager.config.get("listen_port", 8124))
+LISTEN_PORT = config_manager.get_listen_port()
 UPSTREAM_PROXY = config_manager.get_effective_upstream_proxy()
 
 # Host patterns to perform SSL MITM inspection & caching
@@ -112,6 +112,11 @@ def stop_proxy_thread():
             for task in asyncio.all_tasks(proxy_loop):
                 task.cancel()
             proxy_loop.call_soon_threadsafe(proxy_loop.stop)
+        except Exception:
+            pass
+    if proxy_thread and proxy_thread.is_alive():
+        try:
+            proxy_thread.join(timeout=1.5)
         except Exception:
             pass
     proxy_thread = None
@@ -473,8 +478,8 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         else:
             # 1. Check if client is requesting the local PAC script
             if target == "/proxy.pac" or target.endswith("/proxy.pac"):
-                from app_main import PAC_CONTENT
-                pac_bytes = PAC_CONTENT.encode("utf-8")
+                from app_main import get_pac_content
+                pac_bytes = get_pac_content(LISTEN_PORT).encode("utf-8")
                 pac_headers = {
                     "Content-Type": "application/x-ns-proxy-autoconfig",
                     "Content-Length": str(len(pac_bytes)),
@@ -483,7 +488,7 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                     "Connection": "close",
                 }
                 await send_http_response(writer, 200, "OK", pac_headers, pac_bytes)
-                format_log("PAC", "36", "Served /proxy.pac to browser/system")
+                format_log("PAC", "36", f"Served /proxy.pac (port {LISTEN_PORT}) to browser/system")
                 writer.close()
                 await writer.wait_closed()
                 return

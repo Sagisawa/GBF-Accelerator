@@ -51,7 +51,9 @@ USAGE_TEXT = """================================================================
 - 静态资源立绘/音频均缓存在本地，越玩越快，永不封号。
 """
 
-PAC_CONTENT = """function FindProxyForURL(url, host) {
+def get_pac_content(port: int = 8124) -> str:
+    """Generate PAC script content pointing to the specified local port."""
+    return f"""function FindProxyForURL(url, host) {{
     if (
         shExpMatch(host, "*.granbluefantasy.jp") ||
         shExpMatch(host, "granbluefantasy.jp") ||
@@ -67,25 +69,33 @@ PAC_CONTENT = """function FindProxyForURL(url, host) {
         shExpMatch(host, "*datadoghq-browser-agent*") ||
         shExpMatch(host, "*google-analytics.com") ||
         shExpMatch(host, "*googletagmanager.com")
-    ) {
-        return "PROXY 127.0.0.1:8124; DIRECT";
-    }
+    ) {{
+        return "PROXY 127.0.0.1:{port}; DIRECT";
+    }}
     return "DIRECT";
-}
+}}
 """
+
+PAC_CONTENT = get_pac_content(8124)
+
+def update_pac_file(port: int = 8124):
+    """Write or update proxy.pac in base directory with the specified port."""
+    base_dir = get_base_dir()
+    pac_file = base_dir / "proxy.pac"
+    try:
+        with open(pac_file, "w", encoding="utf-8") as f:
+            f.write(get_pac_content(port))
+    except Exception:
+        pass
 
 def ensure_bundled_files():
     """Ensure auxiliary helper files exist in the base directory."""
     base_dir = get_base_dir()
+    port = config_manager.get_listen_port()
 
     # 1. proxy.pac
+    update_pac_file(port)
     pac_file = base_dir / "proxy.pac"
-    if not pac_file.is_file():
-        try:
-            with open(pac_file, "w", encoding="utf-8") as f:
-                f.write(PAC_CONTENT)
-        except Exception:
-            pass
 
     # 2. 使用说明.txt
     readme_file = base_dir / "使用说明.txt"
