@@ -35,6 +35,7 @@ def build():
         "--onefile",
         "--windowed",  # No console black box
         "--name", "GBF_Accelerator",
+        "--icon", str(BASE_DIR / "gbf_accelerator.ico"),
         "--paths", str(BASE_DIR),
         "--collect-all", "cryptography",
         "--collect-all", "pystray",
@@ -68,7 +69,7 @@ def build():
 
     # Prepare Release Package
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = RELEASE_DIR / "GBF_Accelerator_v1.2.0_GUI.zip"
+    zip_path = RELEASE_DIR / "GBF_Accelerator_v1.3.0_GUI.zip"
     readme_path = BASE_DIR / "使用说明.txt"
     if not readme_path.is_file():
         from app_main import ensure_bundled_files
