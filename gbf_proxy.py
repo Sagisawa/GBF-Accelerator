@@ -24,11 +24,12 @@ LISTEN_HOST = config_manager.config.get("listen_host", "127.0.0.1")
 LISTEN_PORT = config_manager.get_listen_port()
 UPSTREAM_PROXY = config_manager.get_effective_upstream_proxy()
 
-# Host patterns to perform SSL MITM inspection & caching
+# Host patterns to perform SSL MITM inspection & caching (strictly scoped to GBF domains)
 MITM_SUFFIXES = (
     "granbluefantasy.jp",
     "granbluefantasy.com",
-    "akamaized.net",
+    "granbluefantasy.akamaized.net",
+    "gbf.akamaized.net",
     "mbga.jp",
 )
 
@@ -213,7 +214,7 @@ async def handle_passthrough(client_reader: asyncio.StreamReader, client_writer:
         client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         await client_writer.drain()
 
-        format_log("PASS-TCP", "36", f"Tunneling {target_host}:{target_port} directly via Clash")
+        format_log("BYPASS-TCP", "36", f"Tunneling {target_host}:{target_port} via upstream")
 
         # Bidirectional raw TCP piping
         await asyncio.gather(
@@ -492,14 +493,14 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         PROXY_STATS["hits"] += 1
                         if is_ram:
                             PROXY_STATS["ram_hits"] += 1
-                        format_log("304 HIT", "32", f"{'RAM' if is_ram else 'DISK'} 304 -> {path}")
+                        format_log(f"CACHE-{'RAM' if is_ram else 'DISK'}", "32", f"304 Not Modified -> {path}")
                         continue
 
                     await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
                     PROXY_STATS["hits"] += 1
                     if is_ram:
                         PROXY_STATS["ram_hits"] += 1
-                    format_log("CACHE HIT", "32", f"{'RAM' if is_ram else 'DISK'} -> {path} ({len(c_data):,} B)")
+                    format_log(f"CACHE-{'RAM' if is_ram else 'DISK'}", "32", f"HIT -> {path} ({len(c_data):,} B)")
                     continue
 
                 # Cache MISS: fetch via Clash, save & compress
@@ -522,14 +523,15 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 elapsed_ms = int((time.perf_counter() - start_t) * 1000)
 
                 if resp.status_code == 200 and resp.content:
-                    cache_manager.save_cache(path, dict(resp.headers), resp.content)
-                    PROXY_STATS["downloads"] += 1
-                    format_log("DOWNLOAD", "34", f"FETCHED & CACHED ({elapsed_ms}ms) -> {path}")
-                    verified_cache = cache_manager.get_cache(path)
-                    if verified_cache:
-                        c_headers, c_data = verified_cache
-                        await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
-                        continue
+                    saved = cache_manager.save_cache(path, dict(resp.headers), resp.content)
+                    if saved:
+                        PROXY_STATS["downloads"] += 1
+                        format_log("FETCH-ASSET", "34", f"200 OK & CACHED ({elapsed_ms}ms) -> {path}")
+                        verified_cache = cache_manager.get_cache(path)
+                        if verified_cache:
+                            c_headers, c_data = verified_cache
+                            await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
+                            continue
 
                 # Fallback if non-200 or unable to cache
                 keep_alive = await forward_upstream_response(writer, headers, resp)
@@ -560,7 +562,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
 
             # Highlight slow API responses (>300ms) or errors
             color = "31" if resp.status_code >= 400 else ("33" if elapsed_ms > 300 else "37")
-            format_log(f"API {resp.status_code}", color, f"{method} {path} ({elapsed_ms}ms)")
+            format_log("BYPASS-API", color, f"{resp.status_code} {method} {target_host}{path} ({elapsed_ms}ms)")
 
             if not keep_alive:
                 break
@@ -614,11 +616,15 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             else:
                 host, port = target, 443
 
-            # Determine whether to MITM or Passthrough
+            # Determine whether to MITM or Passthrough (strictly scope Akamai to GBF subdomains)
+            is_gbf_akamaized = ("granbluefantasy.akamaized.net" in host or "gbf.akamaized.net" in host)
             should_mitm = (
                 host not in PASSTHROUGH_HOSTS
                 and "analytics" not in host
-                and any(host == s or host.endswith("." + s) for s in MITM_SUFFIXES)
+                and (
+                    is_gbf_akamaized
+                    or any(host == s or host.endswith("." + s) for s in ("granbluefantasy.jp", "granbluefantasy.com", "mbga.jp"))
+                )
             )
 
             if should_mitm:

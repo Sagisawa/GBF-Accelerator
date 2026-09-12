@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import hashlib
@@ -64,10 +65,16 @@ class CacheManager:
         clean_path = url_path.split("?")[0].lstrip("/")
         return self.cache_base / clean_path
 
-    def _apply_browser_cache_headers(self, headers: Dict[str, str]):
-        """Inject or omit immutable cache headers according to user config."""
-        enable_browser_cache = config_manager.config.get("enable_browser_cache", True)
-        if enable_browser_cache:
+    def _apply_browser_cache_headers(self, headers: Dict[str, str], url_path: str = ""):
+        """Inject or omit immutable cache headers according to user config.
+        Crucial safety rule: ONLY inject immutable if the URL is confirmed to be versioned
+        (e.g. contains numeric timestamp/hash like /assets/1772717316/ or /\d{8,}/).
+        Never inject immutable into unversioned assets to prevent serving stale assets after updates.
+        """
+        enable_browser_cache = config_manager.config.get("enable_browser_cache", False)
+        is_versioned = bool(re.search(r"/assets/\d+/", url_path) or re.search(r"/\d{8,}/", url_path))
+
+        if enable_browser_cache and is_versioned:
             headers["Cache-Control"] = "public, max-age=31536000, immutable"
             headers["Expires"] = "Wed, 01 Jan 2038 00:00:00 GMT"
         else:
@@ -88,7 +95,7 @@ class CacheManager:
                     self._ram_cache.move_to_end(clean_key)
                     # Prepare response headers with dynamic browser cache settings
                     headers = dict(base_headers)
-                    self._apply_browser_cache_headers(headers)
+                    self._apply_browser_cache_headers(headers, url_path)
                     headers["X-Cache-Source"] = "RAM"
                     return headers, data
 
@@ -157,7 +164,7 @@ class CacheManager:
                 "X-Proxy-Cache": "HIT",
                 "X-Cache-Source": "DISK",
             }
-            self._apply_browser_cache_headers(headers)
+            self._apply_browser_cache_headers(headers, url_path)
 
             # Strictly verify gzip signature
             is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
@@ -183,9 +190,31 @@ class CacheManager:
         except Exception:
             return None
 
-    def save_cache(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
-        if not data:
+    def is_valid_cache_content(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
+        """Verify that downloaded static asset is not truncated, empty, or an HTML error page."""
+        if not data or len(data) == 0:
             return False
+
+        clean_lower = url_path.split("?")[0].lower()
+        non_html_exts = (
+            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp3", ".wav", ".webm",
+            ".js", ".css", ".wasm", ".woff", ".woff2", ".ttf", ".mp4"
+        )
+        if any(clean_lower.endswith(ext) for ext in non_html_exts):
+            ct_lower = (headers.get("content-type") or headers.get("Content-Type", "")).lower()
+            if "text/html" in ct_lower:
+                return False
+            # Check leading bytes for HTML error page markup
+            sample = data[:256].strip().lower()
+            if sample.startswith(b"<!doctype") or sample.startswith(b"<html") or sample.startswith(b"<head"):
+                return False
+
+        return True
+
+    def save_cache(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
+        if not self.is_valid_cache_content(url_path, headers, data):
+            return False
+
         clean_key = url_path.split("?")[0].lstrip("/")
         enable_ram = config_manager.config.get("enable_ram_cache", True)
 
@@ -217,8 +246,20 @@ class CacheManager:
                 except Exception:
                     pass
 
-            with open(file_path, "wb") as f:
-                f.write(data)
+            # Atomic file writing via temporary file and fsync
+            pid = os.getpid()
+            ts = int(time.time() * 1000)
+            tmp_data_path = file_path.with_name(f"{file_path.name}.tmp.{pid}.{ts}")
+            try:
+                with open(tmp_data_path, "wb") as f:
+                    f.write(data)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_data_path, file_path)
+            except Exception:
+                if tmp_data_path.is_file():
+                    tmp_data_path.unlink(missing_ok=True)
+                return False
 
             ext_path = file_path.with_name(file_path.name + ".ext")
             meta = {
@@ -230,8 +271,16 @@ class CacheManager:
                 "ct": ct,
                 "v": 1
             }
-            with open(ext_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, indent=2)
+            tmp_ext_path = ext_path.with_name(f"{ext_path.name}.tmp.{pid}.{ts}")
+            try:
+                with open(tmp_ext_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_ext_path, ext_path)
+            except Exception:
+                if tmp_ext_path.is_file():
+                    tmp_ext_path.unlink(missing_ok=True)
 
             # Also update RAM cache if enabled
             if enable_ram and len(data) <= self._max_item_bytes:

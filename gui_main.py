@@ -86,7 +86,7 @@ class GBFAcceleratorGUI:
 
         # Performance & Resource Controls
         self.var_ram_cache = tk.BooleanVar(value=config_manager.config.get("enable_ram_cache", True))
-        self.var_browser_cache = tk.BooleanVar(value=config_manager.config.get("enable_browser_cache", True))
+        self.var_browser_cache = tk.BooleanVar(value=config_manager.config.get("enable_browser_cache", False))
         self.var_auto_repair = tk.BooleanVar(value=config_manager.config.get("enable_auto_repair", True))
 
         # Build UI
@@ -327,7 +327,7 @@ class GBFAcceleratorGUI:
 
         chk_browser = ttk.Checkbutton(
             f_perf,
-            text="启用浏览器强缓存与渲染留存 - 注入 immutable 标识加速切屏，会占用部分浏览器显存/内存",
+            text="启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认关闭）",
             variable=self.var_browser_cache,
             command=self.toggle_perf_settings,
         )
