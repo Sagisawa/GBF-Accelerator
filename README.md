@@ -1,41 +1,32 @@
-# GBF Speed Proxy (碧蓝幻想极速本地缓存代理)
+# GBF Accelerator (碧蓝幻想极速本地缓存与加速器)
 
-专为 GBF 打造的高性能本地缓存与分流代理，利用你电脑上的 **Clash Verge（7897 端口）+ 机场日本节点**，并**直接挂接 `d:\acgpower\cache\gbf` 现有的海量缓存**，实现与 ACGPower 相同（甚至更纯净）的 0ms 闪电载入。
+专为 GBF（碧蓝幻想）打造的现代化本地缓存加速系统，直接复用电脑上现存的 ACGPower 海量缓存（或自动本地创建），并与 **Clash Verge（7897）/ Clash（7890）/ v2rayN** 深度结合，实现 **0ms 闪电进本与秒级切屏**。
 
 ---
 
 ## 核心特性
 
-1. **0ms 本地 SSD 命中**：直接读取你电脑上已有的大量立绘、音频、骨骼动画与静态脚本，无网速瓶颈。
-2. **新素材边玩边存**：遇到游戏新活动素材时，自动通过 Clash 机场节点下载并存入本地，第二次打开直接秒开。
-3. **多人战进房加速**：内存级缓存房间 Socket URI（60 秒缓存），进本抢怪更快。
-4. **无用报错拦截**：自动就地 Mock `/rest/error/js`、`/ob/r`、`/user/nickname.woff` 与 CORS `OPTIONS` 预检，消灭多余网络往返。
-5. **精准定向分流**：只有 GBF 流量走加速代理，电脑看视频、刷网页完全不受任何干扰。
+1. **0ms 本地 SSD + 内存强缓存**：
+   - 自动挂载读取海量立绘、音效与动画，直接注入 `Cache-Control: immutable`，浏览器常驻内存命中。
+2. **全自动免插件开箱即用（支持 Windows 系统 PAC 自动托管）**：
+   - 内置 WinINet 系统代理托管引擎，软件启动自动挂载 PAC 分流，退出自动还原，**无需安装任何浏览器插件**，任何 Chromium / Edge 浏览器直接打开即玩！
+   - 同时兼容 ZeroOmega / SwitchyOmega 插件分流。
+3. **现代化桌面 GUI + 任务栏右下角系统托盘**：
+   - 最小化或点击右上角关闭直接缩入 Windows 系统托盘后台无感加速；
+   - 动态托盘菜单：一键显示、暂停加速、打开缓存、彻底退出。
+4. **游戏级特征阻断与报错免疫**：
+   - 彻底修复战斗攻击时频繁弹出的 `新しいバージョンがあります、更新します。` 错误弹窗；
+   - 本地阻断并秒回 Mobage、SmartBeat、Datadog 等第三方埋点监控，网络瀑布流零阻塞。
+5. **智能探测与无缝兼容**：
+   - 自动探测 ACGPower 现有缓存目录（支持 D/C/E/F 盘）；
+   - 自动嗅探 Clash Verge / Clash / v2rayN 端口；
+   - 确定性内置根证书，首次启动自动提示 Windows 信任。
 
 ---
 
-## 30 秒开玩配置步骤
+## 极简使用指南（只需 2 步）
 
-### 第 1 步：安装本地根证书（只需一次）
-由于 GBF 全站强制 HTTPS，要解密静态素材并从本地硬盘快速读取，需要信任本地根证书：
-* 双击运行本目录下的 `install_ca.bat`；
-* 弹出的 Windows 安全警告提示中，点击 **【是 (Y)】** 即可。
+1. **启动上游代理**：确保你的 Clash Verge / Clash / v2rayN 正在运行并连上日本节点；
+2. **双击 `GBF_Accelerator.exe`**：点击【启动加速】即可！
+   - 默认开启 **【自动配置 Windows 系统代理】**，此时直接在 Edge / Chrome 浏览器打开 `game.granbluefantasy.jp`，即刻享受 0ms 极速游玩！
 
-### 第 2 步：启动加速代理
-* 确保你的 **Clash Verge** 正在运行（默认端口 7897，且选择了可用的日本节点）；
-* 双击运行本目录下的 `start_proxy.bat`；
-* 窗口提示 `[READY] 代理服务已成功启动！` 即表示就绪。
-
-### 第 3 步：浏览器接入（二选一）
-
-#### 选项 A：使用 SwitchyOmega / ZeroOmega 插件（最推荐，速度最纯净）
-1. 在 Chrome / Edge 商店安装 **ZeroOmega** 或 **SwitchyOmega** 插件；
-2. 打开插件设置 -> 【导入/导出】 -> 点击【从备份文件恢复】；
-3. 选择本目录下的 `SwitchyOmega_GBF.bak`；
-4. 在浏览器右上角插件图标中，选择 **【GBF_AutoSwitch】**；
-5. 打开 `game.granbluefantasy.jp` 开始极速游玩！在代理控制台可看到绿色的 `[0ms CACHE HIT]`。
-
-#### 选项 B：使用 Windows 系统 PAC 脚本（无需装插件）
-1. 打开 Windows 设置 -> 【网络和 Internet】 -> 【代理】；
-2. 在“使用安装程序脚本”（PAC）中，开启开关；
-3. 填入脚本地址：`file://d:/acgpower/gbf_speed_proxy/proxy.pac`，保存即可。

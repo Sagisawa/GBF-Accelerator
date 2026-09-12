@@ -64,11 +64,15 @@ class CacheManager:
             with open(file_path, "rb") as f:
                 data = f.read()
 
+            mtime = int(file_path.stat().st_mtime)
+            etag = f'"{mtime:x}-{len(data):x}"'
             headers = {
                 "Content-Type": content_type,
                 "Content-Length": str(len(data)),
                 "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "public, max-age=31536000",
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "Expires": "Wed, 01 Jan 2038 00:00:00 GMT",
+                "ETag": etag,
                 "X-Proxy-Cache": "HIT",
             }
             # Strictly verify if data is genuinely gzip compressed before claiming Content-Encoding: gzip

@@ -44,6 +44,19 @@ MOCK_PATHS = (
     "/ob/r",
 )
 
+# Third-party telemetry, ad, and tracking domains to block/mock locally
+TELEMETRY_PATTERNS = (
+    "smbeat.jp",
+    "smrtbeat.com",
+    "rcv.a-i-ad.com",
+    "datadoghq-browser-agent",
+    "datadoghq.com",
+    "spdmg-backend.i-mobile.co.jp",
+    "creativecdn.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+)
+
 # In-memory Raid Socket URI cache: (path, uid) -> (timestamp, status, headers, body)
 RAID_SOCKET_CACHE: Dict[Tuple[str, str], Tuple[float, int, Dict[str, str], bytes]] = {}
 RAID_CACHE_TTL = 60.0  # seconds
@@ -303,11 +316,25 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 format_log("MOCK-200", "33", f"Direct Mock -> {path}{err_msg}")
                 continue
 
-            # ---------------- Rule 3: Static Asset Cache (*.akamaized.net) ----------------
-            if "akamaized.net" in target_host:
+            # ---------------- Rule 3: Static Asset Cache (*.akamaized.net or /assets/...) ----------------
+            if "akamaized.net" in target_host or path.startswith("/assets/"):
                 cache_hit = cache_manager.get_cache(path)
                 if cache_hit:
                     c_headers, c_data = cache_hit
+                    # Check 304 Not Modified from browser cache
+                    req_etag = headers.get("if-none-match", "")
+                    if req_etag and req_etag == c_headers.get("ETag"):
+                        not_mod_headers = {
+                            "ETag": c_headers["ETag"],
+                            "Cache-Control": c_headers["Cache-Control"],
+                            "Access-Control-Allow-Origin": "*",
+                            "Connection": "keep-alive",
+                        }
+                        await send_http_response(writer, 304, "Not Modified", not_mod_headers, b"")
+                        PROXY_STATS["hits"] += 1
+                        format_log("0ms 304", "32", f"HIT 304 {path}")
+                        continue
+
                     await send_http_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
                     PROXY_STATS["hits"] += 1
                     format_log("0ms CACHE", "32", f"HIT {path} ({len(c_data):,} B)")
@@ -417,6 +444,14 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                 if not line or line in (b"\r\n", b"\n"):
                     break
 
+            # Block telemetry tunnels immediately
+            if any(pat in target for pat in TELEMETRY_PATTERNS):
+                writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                writer.close()
+                format_log("BLOCK", "90", f"Blocked telemetry tunnel: {target}")
+                return
+
             # CONNECT host:port
             if ":" in target:
                 host, port_str = target.split(":", 1)
@@ -436,6 +471,30 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             else:
                 await handle_passthrough(reader, writer, host, port)
         else:
+            # 1. Check if client is requesting the local PAC script
+            if target == "/proxy.pac" or target.endswith("/proxy.pac"):
+                from app_main import PAC_CONTENT
+                pac_bytes = PAC_CONTENT.encode("utf-8")
+                pac_headers = {
+                    "Content-Type": "application/x-ns-proxy-autoconfig",
+                    "Content-Length": str(len(pac_bytes)),
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-cache",
+                    "Connection": "close",
+                }
+                await send_http_response(writer, 200, "OK", pac_headers, pac_bytes)
+                format_log("PAC", "36", "Served /proxy.pac to browser/system")
+                writer.close()
+                await writer.wait_closed()
+                return
+
+            # 2. Block plain HTTP telemetry requests
+            if any(pat in target for pat in TELEMETRY_PATTERNS):
+                await send_http_response(writer, 200, "OK", {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Content-Length": "2", "Connection": "close"}, b"{}")
+                writer.close()
+                await writer.wait_closed()
+                return
+
             # Plain HTTP request (e.g. GET http://gbf.game.mbga.jp/...)
             headers: Dict[str, str] = {}
             while True:

@@ -24,6 +24,7 @@ from config_manager import (
 from cert_manager import ensure_ca, CA_CERT_PATH
 from cache_manager import cache_manager
 import gbf_proxy
+import system_proxy
 
 def create_tray_icon_image(is_running: bool = True) -> Image.Image:
     """Generate a clean lightning bolt icon for system tray."""
@@ -65,6 +66,7 @@ class GBFAcceleratorGUI:
         self.var_cache_dir = tk.StringVar(value=str(config_manager.get_effective_cache_dir(interactive=False)))
         self.var_upstream = tk.StringVar(value=config_manager.get_effective_upstream_proxy())
         self.var_ca_status = tk.StringVar(value="检测中...")
+        self.var_auto_pac = tk.BooleanVar(value=config_manager.config.get("auto_system_proxy", True))
 
         # Build UI
         self.build_ui()
@@ -229,6 +231,17 @@ class GBFAcceleratorGUI:
         btn_install_ca = ttk.Button(f_ca, text="一键安装/修复根证书", command=self.install_ca)
         btn_install_ca.pack(side="left")
 
+        # Field 4: Windows System PAC Automation
+        f_sys_proxy = ttk.Frame(card_settings, style="CardInner.TFrame")
+        f_sys_proxy.pack(fill="x", pady=(10, 2))
+        chk_pac = ttk.Checkbutton(
+            f_sys_proxy,
+            text="自动配置 Windows 系统代理（开箱即玩，无需装任何浏览器插件，仅分流 GBF）",
+            variable=self.var_auto_pac,
+            command=self.toggle_sys_proxy_setting,
+        )
+        chk_pac.pack(anchor="w")
+
         # ---------------- 4. Bottom Action Bar ----------------
         f_bottom = ttk.Frame(main_container)
         f_bottom.pack(fill="x", pady=(2, 0))
@@ -298,11 +311,22 @@ class GBFAcceleratorGUI:
             return
         config_manager.config["upstream_proxy"] = up
         config_manager.config["cache_dir"] = cd
+        config_manager.config["auto_system_proxy"] = self.var_auto_pac.get()
         config_manager.save_config()
         gbf_proxy.UPSTREAM_PROXY = up
         if cd:
             cache_manager.set_cache_base(Path(cd).resolve())
         messagebox.showinfo("保存成功", "配置已保存并即时生效！")
+
+    def toggle_sys_proxy_setting(self):
+        enabled = self.var_auto_pac.get()
+        config_manager.config["auto_system_proxy"] = enabled
+        config_manager.save_config()
+        if gbf_proxy.PROXY_STATS.get("is_running", False):
+            if enabled:
+                system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
+            else:
+                system_proxy.disable_pac_proxy()
 
     def open_cache_folder(self):
         p = Path(self.var_cache_dir.get()).resolve()
@@ -315,7 +339,7 @@ class GBFAcceleratorGUI:
         if readme.is_file():
             os.startfile(str(readme))
         else:
-            messagebox.showinfo("分流指引", "请使用 ZeroOmega / SwitchyOmega 导入同目录下的 SwitchyOmega_GBF.bak，并切换到 GBF_AutoSwitch 模式。")
+            messagebox.showinfo("分流指引", "请使用 ZeroOmega / SwitchyOmega 导入同目录下的 SwitchyOmega_GBF.bak，或直接勾选【自动配置 Windows 系统代理】实现免插件极速游玩。")
 
     def toggle_proxy(self):
         if gbf_proxy.PROXY_STATS["is_running"]:
@@ -330,6 +354,10 @@ class GBFAcceleratorGUI:
         cache_manager.set_cache_base(Path(self.var_cache_dir.get()).resolve())
 
         gbf_proxy.start_proxy_thread()
+
+        if self.var_auto_pac.get():
+            system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
+
         self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT}) - 0ms 极速就绪")
         self.lbl_status.configure(foreground="#28a745")
         self.btn_toggle.configure(text="停止加速", bg="#dc3545", activebackground="#bd2130")
@@ -338,6 +366,8 @@ class GBFAcceleratorGUI:
 
     def stop_proxy(self):
         gbf_proxy.stop_proxy_thread()
+        if self.var_auto_pac.get():
+            system_proxy.disable_pac_proxy()
         self.var_status_text.set("● 已停止加速")
         self.lbl_status.configure(foreground="#6c757d")
         self.btn_toggle.configure(text="启动加速", bg="#28a745", activebackground="#218838")
@@ -410,6 +440,7 @@ class GBFAcceleratorGUI:
 
     def quit_app(self):
         gbf_proxy.stop_proxy_thread()
+        system_proxy.disable_pac_proxy()
         if self.tray_icon:
             self.tray_icon.stop()
         self.root.after(0, self.root.destroy)

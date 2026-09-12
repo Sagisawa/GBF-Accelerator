@@ -55,9 +55,18 @@ PAC_CONTENT = """function FindProxyForURL(url, host) {
     if (
         shExpMatch(host, "*.granbluefantasy.jp") ||
         shExpMatch(host, "granbluefantasy.jp") ||
+        shExpMatch(host, "*.granbluefantasy.com") ||
+        shExpMatch(host, "granbluefantasy.com") ||
         shExpMatch(host, "*.akamaized.net") ||
+        shExpMatch(host, "akamaized.net") ||
         shExpMatch(host, "*.mbga.jp") ||
-        shExpMatch(host, "mbga.jp")
+        shExpMatch(host, "mbga.jp") ||
+        shExpMatch(host, "rcv.a-i-ad.com") ||
+        shExpMatch(host, "*.smbeat.jp") ||
+        shExpMatch(host, "*.smrtbeat.com") ||
+        shExpMatch(host, "*datadoghq-browser-agent*") ||
+        shExpMatch(host, "*google-analytics.com") ||
+        shExpMatch(host, "*googletagmanager.com")
     ) {
         return "PROXY 127.0.0.1:8124; DIRECT";
     }
