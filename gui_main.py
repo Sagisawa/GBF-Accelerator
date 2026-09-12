@@ -50,8 +50,8 @@ class GBFAcceleratorGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("GBF 加速器")
-        self.root.geometry("640x630")
-        self.root.minsize(600, 580)
+        self.root.geometry("640x730")
+        self.root.minsize(600, 680)
 
         # Center window
         self.center_window()
@@ -69,6 +69,12 @@ class GBFAcceleratorGUI:
         self.var_listen_port = tk.StringVar(value=str(config_manager.get_listen_port()))
         self.var_ca_status = tk.StringVar(value="检测中...")
         self.var_auto_pac = tk.BooleanVar(value=config_manager.config.get("auto_system_proxy", True))
+
+        # Batch 2 Performance & Resource Controls
+        self.var_ram_cache = tk.BooleanVar(value=config_manager.config.get("enable_ram_cache", True))
+        self.var_browser_cache = tk.BooleanVar(value=config_manager.config.get("enable_browser_cache", True))
+        self.var_raid_cache = tk.BooleanVar(value=config_manager.config.get("enable_raid_socket_cache", True))
+        self.var_auto_repair = tk.BooleanVar(value=config_manager.config.get("enable_auto_repair", True))
 
         # Build UI
         self.build_ui()
@@ -255,6 +261,49 @@ class GBFAcceleratorGUI:
         )
         chk_pac.pack(anchor="w")
 
+        # Field 6: Performance & System Resource Options (Batch 2)
+        ttk.Separator(card_settings, orient="horizontal").pack(fill="x", pady=(8, 6))
+        ttk.Label(
+            card_settings,
+            text="性能与系统资源选项（默认全部开启；若需降低内存/显存占用可取消对应勾选）：",
+            style="Normal.TLabel",
+        ).pack(anchor="w", pady=(0, 3))
+
+        f_perf = ttk.Frame(card_settings, style="CardInner.TFrame")
+        f_perf.pack(fill="x", pady=(2, 2))
+
+        chk_ram = ttk.Checkbutton(
+            f_perf,
+            text="启用内存热点缓存 (RAM Cache) - 占用约 256MB 内存，高频静态资源 0 磁盘 I/O 极速直出",
+            variable=self.var_ram_cache,
+            command=self.toggle_perf_settings,
+        )
+        chk_ram.pack(anchor="w", pady=(1, 2))
+
+        chk_browser = ttk.Checkbutton(
+            f_perf,
+            text="启用浏览器强缓存与渲染留存 - 注入 immutable 标识加速切屏，会占用部分浏览器显存/内存",
+            variable=self.var_browser_cache,
+            command=self.toggle_perf_settings,
+        )
+        chk_browser.pack(anchor="w", pady=(1, 2))
+
+        chk_raid = ttk.Checkbutton(
+            f_perf,
+            text="启用多人战 Socket 内存加速 - 内存预热并复用多人战连接票据，秒进战斗",
+            variable=self.var_raid_cache,
+            command=self.toggle_perf_settings,
+        )
+        chk_raid.pack(anchor="w", pady=(1, 2))
+
+        chk_repair = ttk.Checkbutton(
+            f_perf,
+            text="自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防止黑屏卡死",
+            variable=self.var_auto_repair,
+            command=self.toggle_perf_settings,
+        )
+        chk_repair.pack(anchor="w", pady=(1, 2))
+
         # ---------------- 4. Bottom Action Bar ----------------
         f_bottom = ttk.Frame(main_container)
         f_bottom.pack(fill="x", pady=(2, 0))
@@ -352,7 +401,14 @@ class GBFAcceleratorGUI:
         config_manager.config["cache_dir"] = cd
         config_manager.config["listen_port"] = port
         config_manager.config["auto_system_proxy"] = self.var_auto_pac.get()
+        config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
+        config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
+        config_manager.config["enable_raid_socket_cache"] = self.var_raid_cache.get()
+        config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
         config_manager.save_config()
+
+        if not self.var_ram_cache.get():
+            cache_manager.clear_ram_cache()
 
         gbf_proxy.UPSTREAM_PROXY = up
         if cd:
@@ -370,6 +426,15 @@ class GBFAcceleratorGUI:
         else:
             gbf_proxy.LISTEN_PORT = port
             messagebox.showinfo("保存成功", "配置已保存成功！")
+
+    def toggle_perf_settings(self):
+        config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
+        config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
+        config_manager.config["enable_raid_socket_cache"] = self.var_raid_cache.get()
+        config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
+        config_manager.save_config()
+        if not self.var_ram_cache.get():
+            cache_manager.clear_ram_cache()
 
     def toggle_sys_proxy_setting(self):
         enabled = self.var_auto_pac.get()
@@ -424,6 +489,10 @@ class GBFAcceleratorGUI:
         gbf_proxy.UPSTREAM_PROXY = up
         config_manager.config["listen_port"] = port
         config_manager.config["upstream_proxy"] = up
+        config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
+        config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
+        config_manager.config["enable_raid_socket_cache"] = self.var_raid_cache.get()
+        config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
         config_manager.save_config()
 
         cache_manager.set_cache_base(Path(self.var_cache_dir.get()).resolve())
@@ -456,9 +525,13 @@ class GBFAcceleratorGUI:
     def update_stats_loop(self):
         # Update numbers from PROXY_STATS
         hits = gbf_proxy.PROXY_STATS.get("hits", 0)
+        ram_hits = gbf_proxy.PROXY_STATS.get("ram_hits", 0)
         dls = gbf_proxy.PROXY_STATS.get("downloads", 0)
         apis = gbf_proxy.PROXY_STATS.get("apis", 0)
-        self.var_hits.set(f"{hits:,}")
+        if ram_hits > 0:
+            self.var_hits.set(f"{hits:,} (内存 {ram_hits:,})")
+        else:
+            self.var_hits.set(f"{hits:,}")
         self.var_downloads.set(f"{dls:,}")
         self.var_apis.set(f"{apis:,}")
 

@@ -22,6 +22,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "cache_dir": "auto",       # auto-detect ACGPower or use ./cache/gbf/https
     "clean_zombies": True,
     "auto_system_proxy": True, # Automatically mount PAC in Windows Internet Settings
+    "enable_ram_cache": True,  # In-memory LRU hot cache (fast RAM lookup)
+    "ram_cache_max_mb": 256,   # Max RAM allocation for hot cache (in MB)
+    "enable_browser_cache": True, # Inject immutable headers for browser RAM/VRAM texture caching
+    "enable_raid_socket_cache": True, # Fast raid socket ticket memory caching
+    "enable_auto_repair": True, # Auto-detect and clean 0-byte or corrupted cache files
 }
 
 KNOWN_ACGPOWER_PATHS = [

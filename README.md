@@ -41,7 +41,11 @@
   "upstream_proxy": "http://127.0.0.1:7897",
   "listen_port": 8124,
   "cache_dir": "D:\\gbf_cache",
-  "auto_system_proxy": true
+  "auto_system_proxy": true,
+  "enable_ram_cache": true,
+  "enable_browser_cache": true,
+  "enable_raid_socket_cache": true,
+  "enable_auto_repair": true
 }
 ```
 
@@ -49,6 +53,10 @@
 - `listen_port`: 本地加速服务监听端口（默认 8124，支持在界面中自定义）。
 - `cache_dir`: 静态资源缓存落盘路径。
 - `auto_system_proxy`: 启动加速时是否自动挂载 Windows 系统 PAC 代理。
+- `enable_ram_cache`: 启用内存热点缓存（默认开启，占用约 256MB 内存，高频资源 0 磁盘 I/O）。
+- `enable_browser_cache`: 启用浏览器强缓存与渲染留存（默认开启，注入 immutable 标识加速切屏，会占用部分浏览器显存/内存）。
+- `enable_raid_socket_cache`: 启用多人战 Socket 内存预取与连接加速（默认开启）。
+- `enable_auto_repair`: 自动检测并清除损坏/0字节缓存文件并重新拉取（默认开启）。
 
 ---
 

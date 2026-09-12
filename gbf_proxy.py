@@ -67,6 +67,7 @@ http_client: Optional[httpx.AsyncClient] = None
 # Real-time statistics dictionary for GUI
 PROXY_STATS = {
     "hits": 0,
+    "ram_hits": 0,
     "downloads": 0,
     "apis": 0,
     "is_running": False,
@@ -326,6 +327,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 cache_hit = cache_manager.get_cache(path)
                 if cache_hit:
                     c_headers, c_data = cache_hit
+                    is_ram = c_headers.get("X-Cache-Source") == "RAM"
                     # Check 304 Not Modified from browser cache
                     req_etag = headers.get("if-none-match", "")
                     if req_etag and req_etag == c_headers.get("ETag"):
@@ -337,12 +339,16 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         }
                         await send_http_response(writer, 304, "Not Modified", not_mod_headers, b"")
                         PROXY_STATS["hits"] += 1
-                        format_log("0ms 304", "32", f"HIT 304 {path}")
+                        if is_ram:
+                            PROXY_STATS["ram_hits"] += 1
+                        format_log("304 HIT", "32", f"{'RAM' if is_ram else 'DISK'} 304 -> {path}")
                         continue
 
                     await send_http_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
                     PROXY_STATS["hits"] += 1
-                    format_log("0ms CACHE", "32", f"HIT {path} ({len(c_data):,} B)")
+                    if is_ram:
+                        PROXY_STATS["ram_hits"] += 1
+                    format_log("CACHE HIT", "32", f"{'RAM' if is_ram else 'DISK'} -> {path} ({len(c_data):,} B)")
                     continue
 
                 # Cache MISS: fetch via Clash, save & compress, then serve through verified cache pipeline
@@ -370,7 +376,8 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 continue
 
             # ---------------- Rule 4: Raid Socket URI In-Memory Cache ----------------
-            if path.startswith(("/socket/chat/raid/uri/raid", "/socket/uri/raid")):
+            enable_raid_cache = config_manager.config.get("enable_raid_socket_cache", True)
+            if enable_raid_cache and path.startswith(("/socket/chat/raid/uri/raid", "/socket/uri/raid")):
                 parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
                 uid = parsed_qs.get("uid", [""])[0]
                 clean_path = path.split("?")[0]
@@ -384,6 +391,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         c_headers["X-Raid-Cache"] = "HIT"
                         await send_http_response(writer, c_status, "OK", c_headers, c_body)
                         PROXY_STATS["hits"] += 1
+                        PROXY_STATS["ram_hits"] += 1
                         format_log("RAID-CACHE", "32", f"RAM Socket HIT -> {path}")
                         continue
 
