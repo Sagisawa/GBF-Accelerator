@@ -9,7 +9,7 @@
 
 通过将游戏静态资源（立绘、音频、战斗动画、脚本）本地化缓存至 SSD / 内存中，大幅减少跨海 CDN 网络延迟与流量消耗；同时透明联动 Clash / v2rayN 等上游代理，保证核心游戏 API（抽卡、编队、结算、多人战等）零篡改、原样稳定传输。
 
-> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.1_GUI.zip`，解压即用，无需配置 Python 环境。
+> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.2.0_GUI.zip`，解压即用，无需配置 Python 环境。
 
 ---
 
@@ -22,6 +22,7 @@
   - 支持一键开启 Windows 系统 PAC 自动配置，开启后无需在浏览器安装任何插件即可生效。
   - 内置 PAC 服务（默认 `http://127.0.0.1:8124/proxy.pac`），精准收敛分流规则，也支持配合 SwitchyOmega / ZeroOmega 等扩展使用。
 - **图形界面与系统托盘**：Windows 原生控件风格美化与 DPI 自适应清晰渲染；支持自定义监听端口（默认 8124）及上游代理，支持最小化至系统托盘后台静默运行。
+- **直连模式**：在 GUI 中勾选后，动态请求和长连接改用本机网络直连，同时继续使用本地静态缓存；取消勾选即可立即恢复上游代理模式。
 - **缓存原子落盘与自愈防护**：采用临时文件（`.tmp`）原子替换（`os.replace` + `fsync`），防止写入异常产生损坏残卷；自动识别上游 HTML 错误页并拒绝落盘；自动识别并清理 0 字节损坏文件。
 - **冗余请求拦截**：自动拦截游戏附带的第三方埋点与统计上报请求，减少无效网络连接。
 
@@ -48,6 +49,7 @@
 ```json
 {
   "upstream_proxy": "http://127.0.0.1:7897",
+  "direct_mode": false,
   "listen_port": 8124,
   "cache_dir": "D:\\gbf_cache",
   "auto_system_proxy": true,
@@ -59,6 +61,7 @@
 ```
 
 - `upstream_proxy`: 上游代理地址。
+- `direct_mode`: 直连模式开关；开启后不使用上游代理，但本地缓存仍然生效。
 - `listen_port`: 本地加速服务监听端口（默认 8124，支持在界面中自定义）。
 - `cache_dir`: 静态资源缓存落盘路径。
 - `auto_system_proxy`: 启动加速时是否自动挂载 Windows 系统 PAC 代理。

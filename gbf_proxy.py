@@ -23,6 +23,7 @@ if sys.platform == "win32":
 LISTEN_HOST = config_manager.config.get("listen_host", "127.0.0.1")
 LISTEN_PORT = config_manager.get_listen_port()
 UPSTREAM_PROXY = config_manager.get_effective_upstream_proxy()
+DIRECT_MODE = bool(config_manager.config.get("direct_mode", False))
 
 # Host patterns to perform SSL MITM inspection & caching (strictly scoped to GBF domains)
 MITM_SUFFIXES = (
@@ -95,6 +96,28 @@ proxy_thread = None
 import threading
 proxy_ready_event = threading.Event()
 
+def _is_domain_or_subdomain(host: str, domain: str) -> bool:
+    host = (host or "").rstrip(".").lower()
+    domain = domain.rstrip(".").lower()
+    return host == domain or host.endswith("." + domain)
+
+def _is_gbf_akamai_host(host: str) -> bool:
+    normalized = (host or "").rstrip(".").lower()
+    # These are the GBF CDN hostnames currently used by the game. The
+    # explicit prd-game-a* entries avoid treating unrelated Akamai tenants as GBF.
+    explicit = {
+        "prd-game-a-granbluefantasy.akamaized.net",
+        *(f"prd-game-a{i}-granbluefantasy.akamaized.net" for i in range(1, 6)),
+    }
+    return normalized in explicit or any(
+        _is_domain_or_subdomain(normalized, d) for d in ("granbluefantasy.akamaized.net", "gbf.akamaized.net")
+    )
+
+def _is_gbf_host(host: str) -> bool:
+    return _is_gbf_akamai_host(host) or any(
+        _is_domain_or_subdomain(host, d) for d in ("granbluefantasy.jp", "granbluefantasy.com", "mbga.jp")
+    )
+
 def run_proxy_in_thread():
     global proxy_loop, proxy_server_instance
     proxy_loop = asyncio.new_event_loop()
@@ -124,16 +147,19 @@ def stop_proxy_thread():
     global proxy_loop, proxy_server_instance, proxy_thread
     PROXY_STATS["is_running"] = False
     proxy_ready_event.clear()
-    if proxy_server_instance:
-        try:
-            proxy_server_instance.close()
-        except Exception:
-            pass
     if proxy_loop and proxy_loop.is_running():
         try:
-            for task in asyncio.all_tasks(proxy_loop):
-                task.cancel()
-            proxy_loop.call_soon_threadsafe(proxy_loop.stop)
+            def request_shutdown():
+                # This callback runs on the proxy loop's own thread. Cancelling
+                # tasks from the GUI thread is not asyncio-thread-safe and can
+                # leave the old HTTP client alive during a routing switch.
+                if proxy_server_instance:
+                    proxy_server_instance.close()
+                current = asyncio.current_task()
+                for task in asyncio.all_tasks():
+                    if task is not current:
+                        task.cancel()
+            proxy_loop.call_soon_threadsafe(request_shutdown)
         except Exception:
             pass
     if proxy_thread and proxy_thread.is_alive():
@@ -156,11 +182,12 @@ async def init_http_client():
     verify_tls = config_manager.config.get("verify_upstream_tls", True)
     limits = httpx.Limits(max_keepalive_connections=50, max_connections=100, keepalive_expiry=60.0)
     http_client = httpx.AsyncClient(
-        proxy=UPSTREAM_PROXY,
+        proxy=None if DIRECT_MODE else UPSTREAM_PROXY,
         verify=verify_tls,
         timeout=httpx.Timeout(15.0, connect=8.0),
         limits=limits,
         follow_redirects=False,
+        trust_env=False,
     )
 
 async def close_http_client():
@@ -190,31 +217,60 @@ async def pipe_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 async def handle_passthrough(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter, target_host: str, target_port: int):
     """Tunnel raw TCP via Clash upstream for WebSockets and non-MITM hosts."""
     try:
-        # Connect to upstream proxy (Clash/v2rayN)
-        parsed = urllib.parse.urlparse(UPSTREAM_PROXY)
-        proxy_h = parsed.hostname or "127.0.0.1"
-        proxy_p = parsed.port or 7897
-        upstream_reader, upstream_writer = await asyncio.wait_for(
-            asyncio.open_connection(proxy_h, proxy_p),
-            timeout=8.0,
-        )
-        connect_req = f"CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n\r\n"
-        upstream_writer.write(connect_req.encode("ascii"))
-        await upstream_writer.drain()
-
-        # Read CONNECT response from Clash
-        resp_line = await asyncio.wait_for(upstream_reader.readline(), timeout=10.0)
-        parts = resp_line.decode("iso-8859-1", errors="replace").strip().split()
-        if len(parts) < 2 or parts[1] != "200":
-            client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            await client_writer.drain()
-            client_writer.close()
-            return
-
-        while True:
-            line = await upstream_reader.readline()
-            if line in (b"\r\n", b"\n", b""):
-                break
+        if DIRECT_MODE:
+            upstream_reader, upstream_writer = await asyncio.wait_for(
+                asyncio.open_connection(target_host, target_port), timeout=8.0
+            )
+        else:
+            parsed = urllib.parse.urlparse(UPSTREAM_PROXY)
+            proxy_h = parsed.hostname or "127.0.0.1"
+            proxy_p = parsed.port or 7897
+            upstream_reader, upstream_writer = await asyncio.wait_for(
+                asyncio.open_connection(proxy_h, proxy_p), timeout=8.0
+            )
+            scheme = (parsed.scheme or "http").lower()
+            if scheme.startswith("socks"):
+                username = urllib.parse.unquote(parsed.username or "").encode("utf-8")
+                password = urllib.parse.unquote(parsed.password or "").encode("utf-8")
+                methods = b"\x00" if not username else b"\x00\x02"
+                upstream_writer.write(b"\x05" + bytes([len(methods)]) + methods)
+                await upstream_writer.drain()
+                greeting = await asyncio.wait_for(upstream_reader.readexactly(2), timeout=8.0)
+                if greeting[0] != 5 or greeting[1] == 255:
+                    raise OSError("SOCKS5 authentication negotiation failed")
+                if greeting[1] == 2:
+                    if len(username) > 255 or len(password) > 255:
+                        raise OSError("SOCKS5 credentials are too long")
+                    upstream_writer.write(b"\x01" + bytes([len(username)]) + username + bytes([len(password)]) + password)
+                    await upstream_writer.drain()
+                    if await asyncio.wait_for(upstream_reader.readexactly(2), timeout=8.0) != b"\x01\x00":
+                        raise OSError("SOCKS5 username/password authentication failed")
+                host_bytes = target_host.encode("idna")
+                if len(host_bytes) > 255:
+                    raise OSError("target hostname too long")
+                upstream_writer.write(b"\x05\x01\x00\x03" + bytes([len(host_bytes)]) + host_bytes + target_port.to_bytes(2, "big"))
+                await upstream_writer.drain()
+                reply = await asyncio.wait_for(upstream_reader.readexactly(4), timeout=8.0)
+                if reply[1] != 0:
+                    raise OSError(f"SOCKS5 CONNECT failed: {reply[1]}")
+                atyp = reply[3]
+                addr_len = 4 if atyp == 1 else (16 if atyp == 4 else (await upstream_reader.readexactly(1))[0])
+                await upstream_reader.readexactly(addr_len + 2)
+            else:
+                connect_req = f"CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n\r\n"
+                upstream_writer.write(connect_req.encode("ascii"))
+                await upstream_writer.drain()
+                resp_line = await asyncio.wait_for(upstream_reader.readline(), timeout=10.0)
+                parts = resp_line.decode("iso-8859-1", errors="replace").strip().split()
+                if len(parts) < 2 or parts[1] != "200":
+                    client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    await client_writer.drain()
+                    client_writer.close()
+                    return
+                while True:
+                    line = await upstream_reader.readline()
+                    if line in (b"\r\n", b"\n", b""):
+                        break
 
         # Acknowledge to client
         client_writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -381,6 +437,7 @@ async def forward_upstream_response(
     writer: asyncio.StreamWriter,
     client_headers: Dict[str, str],
     upstream_resp: httpx.Response,
+    is_head: bool = False,
 ) -> bool:
     """Forward dynamic API response strictly preserving original upstream headers without CORS tampering."""
     # Since httpx automatically decompresses content into upstream_resp.content,
@@ -419,7 +476,10 @@ async def forward_upstream_response(
         res_lines.append(f"Set-Cookie: {cookie}")
 
     raw_header = ("\r\n".join(res_lines) + "\r\n\r\n").encode("iso-8859-1")
-    writer.write(raw_header + upstream_resp.content)
+    if is_head:
+        writer.write(raw_header)
+    else:
+        writer.write(raw_header + upstream_resp.content)
     await writer.drain()
 
     return not should_close
@@ -486,7 +546,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 method.upper() in ("GET", "HEAD")
                 and not path.startswith(DYNAMIC_API_PREFIXES)
                 and (
-                    "akamaized.net" in target_host
+                    _is_gbf_akamai_host(target_host)
                     or target_host.startswith("game-a")
                     or path.startswith(STATIC_PATH_PREFIXES)
                     or any(clean_path_lower.endswith(ext) for ext in STATIC_EXTENSIONS)
@@ -553,7 +613,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             continue
 
                 # Fallback if non-200 or unable to cache
-                keep_alive = await forward_upstream_response(writer, headers, resp)
+                keep_alive = await forward_upstream_response(writer, headers, resp, is_head=is_head)
                 if not keep_alive:
                     break
                 continue
@@ -576,7 +636,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 continue
 
             elapsed_ms = int((time.perf_counter() - start_t) * 1000)
-            keep_alive = await forward_upstream_response(writer, headers, resp)
+            keep_alive = await forward_upstream_response(writer, headers, resp, is_head=is_head)
             PROXY_STATS["apis"] += 1
 
             # Highlight slow API responses (>300ms) or errors
@@ -629,20 +689,29 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                 return
 
             # CONNECT host:port
-            if ":" in target:
-                host, port_str = target.split(":", 1)
-                port = int(port_str)
-            else:
-                host, port = target, 443
+            try:
+                if ":" in target:
+                    host, port_str = target.rsplit(":", 1)
+                    port = int(port_str)
+                else:
+                    host, port = target, 443
+                if not (1 <= port <= 65535) or not host:
+                    raise ValueError
+            except ValueError:
+                writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                writer.close()
+                return
 
             # Determine whether to MITM or Passthrough (strictly scope Akamai to GBF subdomains)
-            is_gbf_akamaized = ("granbluefantasy.akamaized.net" in host or "gbf.akamaized.net" in host)
+            host = host.rstrip(".").lower()
+            is_gbf_akamaized = _is_gbf_akamai_host(host)
             should_mitm = (
                 host not in PASSTHROUGH_HOSTS
                 and "analytics" not in host
                 and (
                     is_gbf_akamaized
-                    or any(host == s or host.endswith("." + s) for s in ("granbluefantasy.jp", "granbluefantasy.com", "mbga.jp"))
+                    or _is_gbf_host(host)
                 )
             )
 
@@ -689,12 +758,20 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                 except Exception:
                     pass
 
-            content_length = int(headers.get("content-length", 0))
+            try:
+                content_length = int(headers.get("content-length", 0))
+                if content_length < 0 or content_length > 32 * 1024 * 1024:
+                    raise ValueError
+            except ValueError:
+                writer.write(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                await writer.drain()
+                writer.close()
+                return
             body = await reader.readexactly(content_length) if content_length > 0 else b""
 
             clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
             resp = await http_client.request(method, target, headers=clean_headers, content=body)
-            await forward_upstream_response(writer, headers, resp)
+            await forward_upstream_response(writer, headers, resp, is_head=(method == "HEAD"))
             format_log(f"HTTP {resp.status_code}", "37", f"{method} {target}")
             writer.close()
             await writer.wait_closed()
