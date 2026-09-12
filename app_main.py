@@ -70,6 +70,12 @@ def get_pac_content(port: int = 8124) -> str:
         shExpMatch(host, "prd-game-a3-granbluefantasy.akamaized.net") ||
         shExpMatch(host, "prd-game-a4-granbluefantasy.akamaized.net") ||
         shExpMatch(host, "prd-game-a5-granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "prd-game-a-granbluefantasy-steam.akamaized.net") ||
+        shExpMatch(host, "prd-game-a1-granbluefantasy-steam.akamaized.net") ||
+        shExpMatch(host, "prd-game-a2-granbluefantasy-steam.akamaized.net") ||
+        shExpMatch(host, "prd-game-a3-granbluefantasy-steam.akamaized.net") ||
+        shExpMatch(host, "prd-game-a4-granbluefantasy-steam.akamaized.net") ||
+        shExpMatch(host, "prd-game-a5-granbluefantasy-steam.akamaized.net") ||
         shExpMatch(host, "*.mbga.jp") ||
         shExpMatch(host, "mbga.jp") ||
         shExpMatch(host, "rcv.a-i-ad.com") ||

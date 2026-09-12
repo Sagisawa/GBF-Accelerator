@@ -34,6 +34,15 @@ MITM_SUFFIXES = (
     "mbga.jp",
 )
 
+# Steam edition's dedicated Akamai CDN hosts. Keep this list explicit so
+# unrelated Akamai tenants are never brought into the local MITM scope.
+STEAM_AKAMAI_HOSTS = frozenset(
+    {
+        "prd-game-a-granbluefantasy-steam.akamaized.net",
+        *(f"prd-game-a{i}-granbluefantasy-steam.akamaized.net" for i in range(1, 6)),
+    }
+)
+
 # Raw passthrough domains (no SSL MITM, direct low-latency TCP stream)
 PASSTHROUGH_HOSTS = {
     "ws.game.granbluefantasy.jp",
@@ -109,7 +118,7 @@ def _is_gbf_akamai_host(host: str) -> bool:
         "prd-game-a-granbluefantasy.akamaized.net",
         *(f"prd-game-a{i}-granbluefantasy.akamaized.net" for i in range(1, 6)),
     }
-    return normalized in explicit or any(
+    return normalized in explicit or normalized in STEAM_AKAMAI_HOSTS or any(
         _is_domain_or_subdomain(normalized, d) for d in ("granbluefantasy.akamaized.net", "gbf.akamaized.net")
     )
 

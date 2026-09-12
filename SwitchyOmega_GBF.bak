@@ -50,27 +50,45 @@
         "profileName": "GBF_Speed"
       },
       {
-        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a-granbluefantasy.akamaized.net"},
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a-granbluefantasy.akamaized.net"
+        },
         "profileName": "GBF_Speed"
       },
       {
-        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a1-granbluefantasy.akamaized.net"},
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a1-granbluefantasy.akamaized.net"
+        },
         "profileName": "GBF_Speed"
       },
       {
-        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a2-granbluefantasy.akamaized.net"},
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a2-granbluefantasy.akamaized.net"
+        },
         "profileName": "GBF_Speed"
       },
       {
-        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a3-granbluefantasy.akamaized.net"},
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a3-granbluefantasy.akamaized.net"
+        },
         "profileName": "GBF_Speed"
       },
       {
-        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a4-granbluefantasy.akamaized.net"},
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a4-granbluefantasy.akamaized.net"
+        },
         "profileName": "GBF_Speed"
       },
       {
-        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a5-granbluefantasy.akamaized.net"},
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a5-granbluefantasy.akamaized.net"
+        },
         "profileName": "GBF_Speed"
       },
       {
@@ -81,17 +99,65 @@
         "profileName": "GBF_Speed"
       },
       {
-        "condition": {"conditionType": "HostWildcardCondition", "pattern": "granbluefantasy.akamaized.net"},
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "granbluefantasy.akamaized.net"
+        },
         "profileName": "GBF_Speed"
       },
       {
-        "condition": {"conditionType": "HostWildcardCondition", "pattern": "gbf.akamaized.net"},
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "gbf.akamaized.net"
+        },
         "profileName": "GBF_Speed"
       },
       {
         "condition": {
           "conditionType": "HostWildcardCondition",
           "pattern": "*.mbga.jp"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a-granbluefantasy-steam.akamaized.net"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a1-granbluefantasy-steam.akamaized.net"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a2-granbluefantasy-steam.akamaized.net"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a3-granbluefantasy-steam.akamaized.net"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a4-granbluefantasy-steam.akamaized.net"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "prd-game-a5-granbluefantasy-steam.akamaized.net"
         },
         "profileName": "GBF_Speed"
       }
