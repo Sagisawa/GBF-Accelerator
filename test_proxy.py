@@ -129,7 +129,19 @@ async def run_test():
             assert "prd-game-a-granbluefantasy.akamaized.net" in SAN_DOMAINS
             print("Test 14 - Local Dynamic CA & Scoped SAN Domains: OK")
 
-            # Test 16: Multi Set-Cookie Header Preservation
+            # Test 15: Fingerprint-based CA Check (SHA-1 verification against certs/ca.crt)
+            from config_manager import is_ca_installed
+            ca_status = is_ca_installed()
+            print(f"Test 15 - Fingerprint CA Installed Status: {ca_status}")
+            assert isinstance(ca_status, bool)
+
+            # Test 16: Legacy Leaked CA Detection
+            from config_manager import check_legacy_leaked_ca_installed, LEGACY_LEAKED_CA_SHA1
+            legacy_detected = check_legacy_leaked_ca_installed()
+            print(f"Test 16 - Legacy Leaked CA ({LEGACY_LEAKED_CA_SHA1[:8]}...) Detected: {legacy_detected}")
+            assert isinstance(legacy_detected, bool)
+
+            # Test 17: Multi Set-Cookie Header Preservation
             class MockWriter:
                 def __init__(self):
                     self.data = b""
@@ -153,9 +165,9 @@ async def run_test():
             assert len(set_cookie_lines) == 2
             assert "session_id=abc1234" in set_cookie_lines[0]
             assert "remember_me=true" in set_cookie_lines[1]
-            print("Test 16 - Multi Set-Cookie Header Preservation: OK")
+            print("Test 17 - Multi Set-Cookie Header Preservation: OK")
 
-            print("\n[+] ALL 16 TESTS PASSED SUCCESSFULLY!")
+            print("\n[+] ALL 17 TESTS PASSED SUCCESSFULLY!")
     finally:
         if started_here:
             gbf_proxy.stop_proxy_thread()

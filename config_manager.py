@@ -72,22 +72,83 @@ def auto_detect_acgpower_cache() -> Optional[Path]:
             return p
     return None
 
+LEGACY_LEAKED_CA_SHA1 = "51e9aa40a64fb8dc63f18f4b1a11b98d1cf8d3ff"
+
 def is_ca_installed() -> bool:
-    """Check if GBF Root CA is installed in CurrentUser Root store."""
-    for name in ["GBF Local Accelerator Root CA", "GBF Speed CA", "GBF Local CA"]:
+    """Check if the current unique Root CA (from certs/ca.crt) is installed in CurrentUser Root store.
+    Strictly verifies by SHA-1 hash of the local certificate to prevent mismatch with legacy/other certs.
+    """
+    if sys.platform != "win32":
+        return True
+    ca_crt_path = get_base_dir() / "certs" / "ca.crt"
+    if not ca_crt_path.is_file():
+        return False
+    try:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+        cert_data = ca_crt_path.read_bytes()
+        cert = x509.load_pem_x509_certificate(cert_data)
+        sha1 = cert.fingerprint(hashes.SHA1()).hex().lower()
+        res = subprocess.run(
+            ["certutil", "-user", "-verifystore", "Root", sha1],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+def check_legacy_leaked_ca_installed() -> bool:
+    """Check whether the old public leaked CA ('GBF Speed CA') is present in CurrentUser Root store."""
+    if sys.platform != "win32":
+        return False
+    try:
+        res = subprocess.run(
+            ["certutil", "-user", "-verifystore", "Root", LEGACY_LEAKED_CA_SHA1],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+        )
+        if res.returncode == 0:
+            return True
+        res_name = subprocess.run(
+            ["certutil", "-user", "-verifystore", "Root", "GBF Speed CA"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+        )
+        return res_name.returncode == 0
+    except Exception:
+        return False
+
+def clean_legacy_leaked_ca() -> bool:
+    """Remove the old leaked CA certificate from CurrentUser Root store."""
+    if sys.platform != "win32":
+        return True
+    cleaned = False
+    for target in [LEGACY_LEAKED_CA_SHA1, "GBF Speed CA"]:
         try:
-            res = subprocess.run(
-                ["certutil", "-user", "-verifystore", "Root", name],
+            # Only attempt deletion if target actually exists in store
+            chk = subprocess.run(
+                ["certutil", "-user", "-verifystore", "Root", target],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
                 timeout=3,
             )
+            if chk.returncode != 0:
+                continue
+            res = subprocess.run(
+                ["certutil", "-delstore", "-user", "Root", target],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
             if res.returncode == 0:
-                return True
+                cleaned = True
         except Exception:
             pass
-    return False
+    return cleaned
 
 def install_ca_certificate(ca_path: Path) -> bool:
     """Install Root CA into CurrentUser Root store."""
@@ -98,7 +159,6 @@ def install_ca_certificate(ca_path: Path) -> bool:
             ["certutil", "-addstore", "-user", "Root", str(ca_path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             timeout=10,
         )
         return res.returncode == 0
@@ -111,13 +171,39 @@ def uninstall_ca_certificate() -> Tuple[bool, str]:
         return False, "非 Windows 系统无需卸载"
     success = False
     messages = []
-    for name in ["GBF Local Accelerator Root CA", "GBF Speed CA", "GBF Local CA"]:
+    
+    # Check ca.crt SHA1
+    ca_crt_path = get_base_dir() / "certs" / "ca.crt"
+    targets = []
+    if ca_crt_path.is_file():
         try:
+            from cryptography import x509
+            from cryptography.hazmat.primitives import hashes
+            cert = x509.load_pem_x509_certificate(ca_crt_path.read_bytes())
+            targets.append(cert.fingerprint(hashes.SHA1()).hex().lower())
+        except Exception:
+            pass
+    targets.extend(["GBF Local Accelerator Root CA", "GBF Speed CA", "GBF Local CA", LEGACY_LEAKED_CA_SHA1])
+
+    seen = set()
+    for name in targets:
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            # Only attempt deletion if target actually exists in store
+            chk = subprocess.run(
+                ["certutil", "-user", "-verifystore", "Root", name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=3,
+            )
+            if chk.returncode != 0:
+                continue
             res = subprocess.run(
                 ["certutil", "-delstore", "-user", "Root", name],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
                 timeout=10,
             )
             if res.returncode == 0:
@@ -146,14 +232,14 @@ def check_upstream_connectivity(upstream_url: str) -> Tuple[bool, str]:
 
 def kill_process_on_port(port: int) -> bool:
     """Safely terminate previous GBF_Accelerator instances listening on port.
-    Guarantees exact port boundary matching and strictly inspects process identity.
+    Guarantees exact port boundary matching and strictly inspects process identity without relying on wmic.
     """
     if sys.platform != "win32":
         return False
     if port in (7890, 7897, 10808, 10809, 80, 443):
         return False
     try:
-        output = subprocess.check_output("netstat -aon", shell=True, text=True, timeout=3)
+        output = subprocess.check_output("netstat -aon", shell=True, encoding="gbk", errors="replace", timeout=3)
         # Match exact local address and port boundary: e.g. "  TCP    127.0.0.1:8124    0.0.0.0:0   LISTENING   12345"
         port_pattern = re.compile(rf":{port}\s+.*LISTENING\s+(\d+)", re.IGNORECASE)
         pids = set()
@@ -166,20 +252,19 @@ def kill_process_on_port(port: int) -> bool:
         for pid in pids:
             if not pid.isdigit() or pid in ("0", "4", current_pid):
                 continue
-            proc_info = subprocess.check_output(f'tasklist /FI "PID eq {pid}" /FO CSV /NH', shell=True, text=True, timeout=3).strip()
+            proc_info = subprocess.check_output(f'tasklist /FI "PID eq {pid}" /FO CSV /NH', shell=True, encoding="gbk", errors="replace", timeout=3).strip()
             
             should_kill = False
             if "GBF_Accelerator" in proc_info:
                 should_kill = True
             elif "python" in proc_info.lower():
-                # Inspect command line to be 100% sure it's this proxy and not an unrelated Python development project
+                # Inspect command line via modern PowerShell CIM (compatible with Win10 and Win11 24H2+)
                 try:
                     cmd_out = subprocess.check_output(
-                        f'wmic process where "ProcessId={pid}" get CommandLine /format:list',
-                        shell=True,
-                        text=True,
-                        stderr=subprocess.DEVNULL,
-                        timeout=3,
+                        ["powershell", "-NoProfile", "-Command", f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
+                        encoding="gbk",
+                        errors="replace",
+                        timeout=4,
                     )
                     if any(target in cmd_out for target in ("gbf_proxy", "app_main", "GBFAccelerator")):
                         should_kill = True
