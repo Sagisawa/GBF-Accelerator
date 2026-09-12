@@ -110,7 +110,7 @@ python build_exe.py
 ## 安全与技术说明
 
 - **根证书透明管理**：根证书仅在首次运行时由本机独立生成私钥与证书，私钥严格保存在本地 `certs/` 目录不外泄。主界面实时展示证书的 SHA-256 指纹，并提供“一键注销/卸载根证书”功能，方便随时清理受信任根证书。
-- **精准分流规则**：PAC 脚本及 SwitchyOmega 规则严格限制为 GBF 主站域名与 `*granbluefantasy.akamaized.net`，绝不通配公共 `*.akamaized.net`，确保 Steam、苹果等其他使用 Akamai CDN 的国际应用流量不受任何干扰。
+- **精准分流规则**：PAC 脚本及 SwitchyOmega 规则严格限制为 GBF 主站域名、标准版 CDN、以及 Steam 版专用 CDN（`prd-game-a*-granbluefantasy-steam.akamaized.net`），绝不通配公共 `*.akamaized.net`，确保其他使用 Akamai CDN 的国际应用流量不受任何干扰。
 - **缓存原子落盘与完整性校验**：静态资源下载采用临时文件（`.tmp`）及原子替换（`os.replace` + `fsync`），防止写入意外中断产生半截残损文件；同时严格校验非 HTML 静态资源的内容完整性与 MIME，杜绝将上游错误 HTML 页面误作为资源持久缓存。
 - **动态 API 原样透明转发**：所有动态接口（抽卡、编队、结算、`/socket/` 多人战等）均保持 100% 原样透明转发，严格保留 Cygames 原生 CORS 响应头，绝不干预、注入或缓存动态数据，杜绝多人战不同步与状态不一致风险。
 - **免责声明**：本软件为开源网络辅助与本地静态资源缓存工具，不篡改任何游戏数据或内存。请遵守 Cygames 最终用户许可协议，使用风险自负。

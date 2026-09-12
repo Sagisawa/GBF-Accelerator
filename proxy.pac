@@ -18,6 +18,16 @@ function FindProxyForURL(url, host) {
         return "PROXY 127.0.0.1:8124; DIRECT";
     }
 
+    // Steam edition's dedicated GBF Akamai CDN
+    if (host === "prd-game-a-granbluefantasy-steam.akamaized.net" ||
+        host === "prd-game-a1-granbluefantasy-steam.akamaized.net" ||
+        host === "prd-game-a2-granbluefantasy-steam.akamaized.net" ||
+        host === "prd-game-a3-granbluefantasy-steam.akamaized.net" ||
+        host === "prd-game-a4-granbluefantasy-steam.akamaized.net" ||
+        host === "prd-game-a5-granbluefantasy-steam.akamaized.net") {
+        return "PROXY 127.0.0.1:8124; DIRECT";
+    }
+
     var gbf_domains = [
         "granbluefantasy.jp",
         "granbluefantasy.com",

@@ -127,6 +127,9 @@ async def run_test():
             from cert_manager import SAN_DOMAINS
             assert "*.akamaized.net" not in SAN_DOMAINS
             assert "prd-game-a-granbluefantasy.akamaized.net" in SAN_DOMAINS
+            assert "prd-game-a-granbluefantasy-steam.akamaized.net" in SAN_DOMAINS
+            assert gbf_proxy._is_gbf_akamai_host("prd-game-a-granbluefantasy-steam.akamaized.net")
+            assert not gbf_proxy._is_gbf_akamai_host("unrelated.example.akamaized.net")
             print("Test 14 - Local Dynamic CA & Scoped SAN Domains: OK")
 
             # Test 15: Fingerprint-based CA Check (SHA-1 verification against certs/ca.crt)
