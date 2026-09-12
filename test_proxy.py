@@ -52,7 +52,38 @@ async def run_test():
             assert resp_game.status_code == 200
             assert "グランブルーファンタジー" in resp_game.text
 
-            print("\n[+] ALL TESTS (INCLUDING CLASH UPSTREAM) PASSED SUCCESSFULLY!")
+            # Test 6: CA Fingerprint SHA-256
+            from cert_manager import get_ca_fingerprint_sha256
+            fp = get_ca_fingerprint_sha256()
+            print(f"Test 6 - CA SHA-256 Fingerprint: {fp}")
+            assert len(fp.split(":")) == 32
+
+            # Test 7: Chunked Transfer-Encoding POST
+            async def chunked_stream():
+                yield b"part1_"
+                yield b"part2_"
+                yield b"payload"
+
+            resp_chunked = await client.post(
+                "https://game.granbluefantasy.jp/rest/error/js",
+                content=chunked_stream(),
+                headers={"transfer-encoding": "chunked"},
+            )
+            print(f"Test 7 - Chunked POST handling: status={resp_chunked.status_code}, body={resp_chunked.json()}")
+            assert resp_chunked.status_code == 200
+
+            # Test 8: Dynamic API CORS preservation (do not inject '*' into dynamic pages)
+            print(f"Test 8 - Dynamic API CORS preservation: CORS header={resp_game.headers.get('access-control-allow-origin')}")
+            assert resp_game.headers.get("access-control-allow-origin") != "*"
+
+            # Test 9: Cache Query String Normalization
+            url_cache_q = "https://prd-game-a-granbluefantasy.akamaized.net/assets/1772717316/css/arousal/form.css?_t=999999999&debug=1"
+            resp_q = await client.get(url_cache_q)
+            print(f"Test 9 - Cache Query Normalization: status={resp_q.status_code}, cache={resp_q.headers.get('x-proxy-cache')}")
+            assert resp_q.status_code == 200
+            assert resp_q.headers.get("x-proxy-cache") == "HIT"
+
+            print("\n[+] ALL 9 TESTS PASSED SUCCESSFULLY!")
     finally:
         if started_here:
             gbf_proxy.stop_proxy_thread()

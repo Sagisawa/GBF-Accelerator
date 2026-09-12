@@ -30,11 +30,12 @@ from config_manager import (
     config_manager,
     is_ca_installed,
     install_ca_certificate,
+    uninstall_ca_certificate,
     auto_detect_acgpower_cache,
     auto_detect_upstream_proxy,
     is_port_open,
 )
-from cert_manager import ensure_ca, CA_CERT_PATH
+from cert_manager import ensure_ca, CA_CERT_PATH, get_ca_fingerprint_sha256
 from cache_manager import cache_manager
 import gbf_proxy
 import system_proxy
@@ -80,12 +81,12 @@ class GBFAcceleratorGUI:
         self.var_upstream = tk.StringVar(value=config_manager.get_effective_upstream_proxy())
         self.var_listen_port = tk.StringVar(value=str(config_manager.get_listen_port()))
         self.var_ca_status = tk.StringVar(value="检测中...")
+        self.var_ca_fp = tk.StringVar(value="")
         self.var_auto_pac = tk.BooleanVar(value=config_manager.config.get("auto_system_proxy", True))
 
-        # Batch 2 Performance & Resource Controls
+        # Performance & Resource Controls
         self.var_ram_cache = tk.BooleanVar(value=config_manager.config.get("enable_ram_cache", True))
         self.var_browser_cache = tk.BooleanVar(value=config_manager.config.get("enable_browser_cache", True))
-        self.var_raid_cache = tk.BooleanVar(value=config_manager.config.get("enable_raid_socket_cache", True))
         self.var_auto_repair = tk.BooleanVar(value=config_manager.config.get("enable_auto_repair", True))
 
         # Build UI
@@ -276,17 +277,27 @@ class GBFAcceleratorGUI:
         # Field 4: CA Certificate
         ttk.Label(card_settings, text="HTTPS 根证书状态（游戏静态资源本地解析必需）：", style="Normal.TLabel").pack(anchor="w")
         f_ca = ttk.Frame(card_settings, style="CardInner.TFrame")
-        f_ca.pack(fill="x", pady=(2, 4))
+        f_ca.pack(fill="x", pady=(2, 2))
 
         self.lbl_ca = ttk.Label(f_ca, textvariable=self.var_ca_status, font=("Microsoft YaHei UI", 9, "bold"))
         self.lbl_ca.pack(side="left", padx=(0, 10))
 
         btn_install_ca = ttk.Button(f_ca, text="一键安装/修复根证书", command=self.install_ca)
-        btn_install_ca.pack(side="left")
+        btn_install_ca.pack(side="left", padx=(0, 6))
+
+        btn_uninstall_ca = ttk.Button(f_ca, text="一键注销/卸载根证书", command=self.uninstall_ca)
+        btn_uninstall_ca.pack(side="left")
+
+        # CA Fingerprint info
+        f_ca_fp = ttk.Frame(card_settings, style="CardInner.TFrame")
+        f_ca_fp.pack(fill="x", pady=(1, 4))
+        ttk.Label(f_ca_fp, text="SHA-256 指纹：", style="Gray.TLabel").pack(side="left")
+        self.lbl_ca_fp = ttk.Label(f_ca_fp, textvariable=self.var_ca_fp, style="Gray.TLabel", font=("Consolas", 8))
+        self.lbl_ca_fp.pack(side="left")
 
         # Field 5: Windows System PAC Automation
         f_sys_proxy = ttk.Frame(card_settings, style="CardInner.TFrame")
-        f_sys_proxy.pack(fill="x", pady=(6, 2))
+        f_sys_proxy.pack(fill="x", pady=(4, 2))
         chk_pac = ttk.Checkbutton(
             f_sys_proxy,
             text="自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）",
@@ -295,11 +306,11 @@ class GBFAcceleratorGUI:
         )
         chk_pac.pack(anchor="w")
 
-        # Field 6: Performance & System Resource Options (Batch 2)
+        # Field 6: Performance & System Resource Options
         ttk.Separator(card_settings, orient="horizontal").pack(fill="x", pady=(6, 6))
         ttk.Label(
             card_settings,
-            text="性能与系统资源选项（默认全部开启；若需降低内存/显存占用可取消对应勾选）：",
+            text="性能与系统资源选项（默认开启；若需降低内存/显存占用可取消对应勾选）：",
             style="Normal.TLabel",
         ).pack(anchor="w", pady=(0, 3))
 
@@ -322,14 +333,6 @@ class GBFAcceleratorGUI:
         )
         chk_browser.pack(anchor="w", pady=2)
 
-        chk_raid = ttk.Checkbutton(
-            f_perf,
-            text="启用多人战 Socket 内存加速 - 内存预热并复用多人战连接票据，秒进战斗",
-            variable=self.var_raid_cache,
-            command=self.toggle_perf_settings,
-        )
-        chk_raid.pack(anchor="w", pady=2)
-
         chk_repair = ttk.Checkbutton(
             f_perf,
             text="自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防止黑屏卡死",
@@ -340,6 +343,12 @@ class GBFAcceleratorGUI:
 
     # ================= Functional Methods =================
     def update_ca_status(self):
+        fp = get_ca_fingerprint_sha256()
+        if fp:
+            self.var_ca_fp.set(fp)
+        else:
+            self.var_ca_fp.set("未生成")
+
         if is_ca_installed():
             self.var_ca_status.set("已信任 (正常工作)")
             self.lbl_ca.configure(foreground="#28a745")
@@ -355,6 +364,19 @@ class GBFAcceleratorGUI:
 
         messagebox.showinfo("安装指引", "即将调起 Windows 证书导入向导，若弹出系统安全提示框，请点击【是 (Y)】允许信任。")
         install_ca_certificate(CA_CERT_PATH)
+        self.update_ca_status()
+
+    def uninstall_ca(self):
+        if not is_ca_installed():
+            messagebox.showinfo("根证书提示", "系统中未检测到已安装的根证书。")
+            return
+        if not messagebox.askyesno("注销根证书", "确定要从系统【受信任的根证书颁发机构】中注销/卸载根证书吗？\n\n注销后，加速器将无法解密和缓存 HTTPS 资源，直到重新安装。"):
+            return
+        ok, msg = uninstall_ca_certificate()
+        if ok:
+            messagebox.showinfo("注销成功", f"根证书已成功从系统受信任列表中移除。\n\n{msg}")
+        else:
+            messagebox.showwarning("注销提示", f"注销结果：\n{msg}")
         self.update_ca_status()
 
     def browse_cache_dir(self):
@@ -424,7 +446,6 @@ class GBFAcceleratorGUI:
         config_manager.config["auto_system_proxy"] = self.var_auto_pac.get()
         config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
         config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
-        config_manager.config["enable_raid_socket_cache"] = self.var_raid_cache.get()
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
         config_manager.save_config()
 
@@ -451,7 +472,6 @@ class GBFAcceleratorGUI:
     def toggle_perf_settings(self):
         config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
         config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
-        config_manager.config["enable_raid_socket_cache"] = self.var_raid_cache.get()
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
         config_manager.save_config()
         if not self.var_ram_cache.get():
@@ -512,7 +532,6 @@ class GBFAcceleratorGUI:
         config_manager.config["upstream_proxy"] = up
         config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
         config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
-        config_manager.config["enable_raid_socket_cache"] = self.var_raid_cache.get()
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
         config_manager.save_config()
 

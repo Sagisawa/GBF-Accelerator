@@ -25,8 +25,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "enable_ram_cache": True,  # In-memory LRU hot cache (fast RAM lookup)
     "ram_cache_max_mb": 256,   # Max RAM allocation for hot cache (in MB)
     "enable_browser_cache": True, # Inject immutable headers for browser RAM/VRAM texture caching
-    "enable_raid_socket_cache": True, # Fast raid socket ticket memory caching
     "enable_auto_repair": True, # Auto-detect and clean 0-byte or corrupted cache files
+    "verify_upstream_tls": True, # Upstream TLS certificate verification for security
 }
 
 KNOWN_ACGPOWER_PATHS = [
@@ -100,18 +100,52 @@ def install_ca_certificate(ca_path: Path) -> bool:
     except Exception:
         return False
 
-def kill_process_on_port(port: int):
-    """Find and terminate any process listening on the given local port."""
+def uninstall_ca_certificate() -> bool:
+    """Uninstall and remove GBF Root CA from CurrentUser Root store."""
     if sys.platform != "win32":
-        return
-    # Guard against accidentally killing upstream proxies or standard system ports
+        return False
+    success = False
+    for name in ["GBF Speed CA", "GBF Local CA"]:
+        try:
+            res = subprocess.run(
+                ["certutil", "-delstore", "-user", "Root", name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0:
+                success = True
+        except Exception:
+            pass
+    return success
+
+def kill_process_on_port(port: int) -> bool:
+    """Safely terminate previous GBF_Accelerator instances listening on port."""
+    if sys.platform != "win32":
+        return False
     if port in (7890, 7897, 10808, 10809, 80, 443):
-        return
+        return False
     try:
-        cmd = f'for /f "tokens=5" %a in (\'netstat -aon ^| findstr ":{port}" ^| findstr "LISTENING"\') do taskkill /F /PID %a'
-        subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+        output = subprocess.check_output(f'netstat -aon | findstr ":{port}" | findstr "LISTENING"', shell=True, text=True, timeout=3)
+        pids = set()
+        for line in output.strip().splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 5:
+                pids.add(parts[-1])
+
+        for pid in pids:
+            if not pid.isdigit() or pid == "0":
+                continue
+            proc_info = subprocess.check_output(f'tasklist /FI "PID eq {pid}" /FO CSV /NH', shell=True, text=True, timeout=3).strip()
+            # Only terminate if it belongs to our own program
+            if "GBF_Accelerator" in proc_info or "python" in proc_info:
+                subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            else:
+                return False
+        return True
     except Exception:
-        pass
+        return False
 
 class ConfigManager:
     def __init__(self):

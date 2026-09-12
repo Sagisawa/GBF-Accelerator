@@ -5,10 +5,13 @@ function FindProxyForURL(url, host) {
     }
 
     // GBF 核心主站、静态 CDN 与 Mobage 域名走本地加速代理
+    if (host === "gbf.akamaized.net") {
+        return "PROXY 127.0.0.1:8124; DIRECT";
+    }
+
     var gbf_domains = [
         "granbluefantasy.jp",
         "granbluefantasy.com",
-        "akamaized.net",
         "mbga.jp"
     ];
 

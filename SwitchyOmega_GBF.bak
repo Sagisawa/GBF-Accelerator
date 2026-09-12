@@ -45,7 +45,7 @@
       {
         "condition": {
           "conditionType": "HostWildcardCondition",
-          "pattern": "*.akamaized.net"
+          "pattern": "gbf.akamaized.net"
         },
         "profileName": "GBF_Speed"
       },
