@@ -1,0 +1,80 @@
+import os
+import shutil
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+BASE_DIR = Path(__file__).parent.resolve()
+DIST_DIR = BASE_DIR / "dist"
+BUILD_DIR = BASE_DIR / "build"
+RELEASE_DIR = BASE_DIR / "release"
+
+def build():
+    print("=" * 60)
+    print("   Starting PyInstaller Compilation for GBF Accelerator...")
+    print("=" * 60)
+
+    pyinstaller_exe = BASE_DIR / ".venv" / "Scripts" / "pyinstaller.exe"
+    if not pyinstaller_exe.is_file():
+        pyinstaller_exe = "pyinstaller"
+
+    cmd = [
+        str(pyinstaller_exe),
+        "--noconfirm",
+        "--clean",
+        "--onefile",
+        "--windowed",  # No console black box
+        "--name", "GBF_Accelerator",
+        "--paths", str(BASE_DIR),
+        "--collect-all", "cryptography",
+        "--collect-all", "pystray",
+        "--collect-all", "PIL",
+        "--hidden-import", "cert_manager",
+        "--hidden-import", "cache_manager",
+        "--hidden-import", "config_manager",
+        "--hidden-import", "gbf_proxy",
+        "--hidden-import", "gui_main",
+        "--hidden-import", "app_main",
+        "--add-data", f"{BASE_DIR / 'SwitchyOmega_GBF.bak'};.",
+        "--add-data", f"{BASE_DIR / 'proxy.pac'};.",
+        str(BASE_DIR / "gui_main.py"),
+    ]
+
+    print("Running command:", " ".join(cmd))
+    res = subprocess.run(cmd, cwd=str(BASE_DIR))
+    if res.returncode != 0:
+        print("[!] PyInstaller build failed!")
+        return False
+
+    exe_path = DIST_DIR / "GBF_Accelerator.exe"
+    if not exe_path.is_file():
+        print("[!] Cannot find compiled GBF_Accelerator.exe in dist!")
+        return False
+
+    print(f"[+] Compiled successfully! Size: {exe_path.stat().st_size / (1024 * 1024):.2f} MB")
+
+    # Prepare Release Package
+    RELEASE_DIR.mkdir(parents=True, exist_ok=True)
+    zip_path = RELEASE_DIR / "GBF_Accelerator_v1.1_GUI.zip"
+    readme_path = BASE_DIR / "使用说明.txt"
+    if not readme_path.is_file():
+        from app_main import ensure_bundled_files
+        ensure_bundled_files()
+
+    print(f"[+] Packaging into portable distribution: {zip_path}")
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(exe_path, arcname="GBF_Accelerator.exe")
+        if (BASE_DIR / "SwitchyOmega_GBF.bak").is_file():
+            zf.write(BASE_DIR / "SwitchyOmega_GBF.bak", arcname="SwitchyOmega_GBF.bak")
+        if (BASE_DIR / "proxy.pac").is_file():
+            zf.write(BASE_DIR / "proxy.pac", arcname="proxy.pac")
+        if readme_path.is_file():
+            zf.write(readme_path, arcname="使用说明.txt")
+
+    print(f"\n[***] RELEASE READY: {zip_path}")
+    print(f"      Zip Package Size: {zip_path.stat().st_size / (1024 * 1024):.2f} MB")
+    return True
+
+if __name__ == "__main__":
+    build()

@@ -1,0 +1,27 @@
+﻿# Python cache & virtualenv
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# PyInstaller build artifacts & executables
+build/
+dist/
+release/
+*.spec
+
+# Local user configurations & certs generated at runtime
+certs/
+config.json
+*.log
+stdout.log
+stderr.log
+
+# IDE & OS files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store

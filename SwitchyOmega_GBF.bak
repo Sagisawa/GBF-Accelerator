@@ -1,0 +1,63 @@
+{
+  "+GBF_Speed": {
+    "name": "GBF_Speed",
+    "profileType": "FixedProfile",
+    "fallbackProxy": {
+      "host": "127.0.0.1",
+      "port": 8124,
+      "scheme": "http"
+    },
+    "color": "#16a085"
+  },
+  "+GBF_AutoSwitch": {
+    "name": "GBF_AutoSwitch",
+    "profileType": "SwitchProfile",
+    "color": "#2980b9",
+    "rules": [
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.granbluefantasy.jp"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "granbluefantasy.jp"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.granbluefantasy.com"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "granbluefantasy.com"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.akamaized.net"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.mbga.jp"
+        },
+        "profileName": "GBF_Speed"
+      }
+    ],
+    "defaultProfileName": "direct"
+  },
+  "schemaVersion": 2
+}
