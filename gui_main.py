@@ -9,6 +9,18 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 
+# Enable DPI awareness on Windows before creating Tk windows
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            import ctypes
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 # Ensure PIL and pystray
 from PIL import Image, ImageDraw
 import pystray
@@ -50,8 +62,8 @@ class GBFAcceleratorGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("GBF 加速器")
-        self.root.geometry("640x730")
-        self.root.minsize(600, 680)
+        self.root.geometry("640x740")
+        self.root.minsize(600, 700)
 
         # Center window
         self.center_window()
@@ -111,7 +123,13 @@ class GBFAcceleratorGUI:
 
     def setup_styles(self):
         style = ttk.Style(self.root)
-        style.theme_use("clam")
+        available = style.theme_names()
+        if "vista" in available:
+            style.theme_use("vista")
+        elif "winnative" in available:
+            style.theme_use("winnative")
+        else:
+            style.theme_use("clam")
 
         # Backgrounds
         self.root.configure(bg="#f4f6f9")
@@ -119,10 +137,13 @@ class GBFAcceleratorGUI:
         style.configure("Card.TFrame", background="#ffffff", relief="flat")
         style.configure("CardInner.TFrame", background="#ffffff")
 
+        # Checkbutton
+        style.configure("TCheckbutton", background="#ffffff", font=("Microsoft YaHei UI", 9))
+
         # Labels
-        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 13, "bold"), background="#ffffff", foreground="#212529")
+        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 12, "bold"), background="#ffffff", foreground="#212529")
         style.configure("Subtitle.TLabel", font=("Microsoft YaHei UI", 9), background="#ffffff", foreground="#6c757d")
-        style.configure("StatNum.TLabel", font=("Microsoft YaHei UI", 16, "bold"), background="#ffffff")
+        style.configure("StatNum.TLabel", font=("Microsoft YaHei UI", 15, "bold"), background="#ffffff")
         style.configure("StatLabel.TLabel", font=("Microsoft YaHei UI", 9), background="#ffffff", foreground="#6c757d")
         style.configure("Normal.TLabel", font=("Microsoft YaHei UI", 9), background="#ffffff", foreground="#333333")
         style.configure("Gray.TLabel", font=("Microsoft YaHei UI", 8), background="#ffffff", foreground="#888888")
@@ -133,12 +154,12 @@ class GBFAcceleratorGUI:
         style.configure("Danger.TButton", font=("Microsoft YaHei UI", 9, "bold"))
 
     def build_ui(self):
-        main_container = ttk.Frame(self.root, padding="16 12 16 12")
+        main_container = ttk.Frame(self.root, padding="14 10 14 10")
         main_container.pack(fill="both", expand=True)
 
         # ---------------- 1. Status & Header Card ----------------
-        card_header = ttk.Frame(main_container, style="Card.TFrame", padding="16 14 16 14")
-        card_header.pack(fill="x", pady=(0, 10))
+        card_header = ttk.Frame(main_container, style="Card.TFrame", padding="14 10 14 10")
+        card_header.pack(fill="x", pady=(0, 8))
 
         h_left = ttk.Frame(card_header, style="CardInner.TFrame")
         h_left.pack(side="left", fill="both", expand=True)
@@ -157,15 +178,15 @@ class GBFAcceleratorGUI:
             font=("Microsoft YaHei UI", 10, "bold"),
             relief="flat",
             padx=16,
-            pady=6,
+            pady=5,
             cursor="hand2",
             command=self.toggle_proxy,
         )
         self.btn_toggle.pack(side="right")
 
         # ---------------- 2. Real-time Stats Card ----------------
-        card_stats = ttk.Frame(main_container, style="Card.TFrame", padding="14 12 14 12")
-        card_stats.pack(fill="x", pady=(0, 10))
+        card_stats = ttk.Frame(main_container, style="Card.TFrame", padding="12 8 12 8")
+        card_stats.pack(fill="x", pady=(0, 8))
 
         grid_frame = ttk.Frame(card_stats, style="CardInner.TFrame")
         grid_frame.pack(fill="x")
@@ -194,16 +215,29 @@ class GBFAcceleratorGUI:
         lbl_api_num.pack(anchor="center")
         ttk.Label(c3, text="🔄 游戏 API 转发", style="StatLabel.TLabel").pack(anchor="center")
 
-        # ---------------- 3. Settings Card ----------------
-        card_settings = ttk.Frame(main_container, style="Card.TFrame", padding="16 14 16 14")
-        card_settings.pack(fill="both", expand=True, pady=(0, 10))
+        # ---------------- 3. Bottom Action Bar (Pack to bottom FIRST so it is NEVER cut off) ----------------
+        f_bottom = ttk.Frame(main_container)
+        f_bottom.pack(side="bottom", fill="x", pady=(8, 0))
 
-        ttk.Label(card_settings, text="配置选项", style="Title.TLabel").pack(anchor="w", pady=(0, 8))
+        btn_open_folder = ttk.Button(f_bottom, text="📂 打开缓存目录", command=self.open_cache_folder)
+        btn_open_folder.pack(side="left", padx=(0, 6))
+
+        btn_proxy_guide = ttk.Button(f_bottom, text="🌐 分流与使用说明", command=self.show_guide)
+        btn_proxy_guide.pack(side="left", padx=(0, 6))
+
+        btn_tray = ttk.Button(f_bottom, text="⬇ 最小化到系统托盘", command=self.hide_to_tray)
+        btn_tray.pack(side="right")
+
+        # ---------------- 4. Settings Card ----------------
+        card_settings = ttk.Frame(main_container, style="Card.TFrame", padding="14 10 14 10")
+        card_settings.pack(fill="both", expand=True)
+
+        ttk.Label(card_settings, text="配置选项", style="Title.TLabel").pack(anchor="w", pady=(0, 6))
 
         # Field 1: Local Cache Dir
         ttk.Label(card_settings, text="本地缓存目录（支持无缝复用 ACGPower 缓存）：", style="Normal.TLabel").pack(anchor="w")
         f_dir = ttk.Frame(card_settings, style="CardInner.TFrame")
-        f_dir.pack(fill="x", pady=(3, 8))
+        f_dir.pack(fill="x", pady=(2, 6))
 
         self.entry_dir = ttk.Entry(f_dir, textvariable=self.var_cache_dir, font=("Consolas", 9))
         self.entry_dir.pack(side="left", fill="x", expand=True, padx=(0, 6))
@@ -217,7 +251,7 @@ class GBFAcceleratorGUI:
         # Field 2: Upstream Proxy
         ttk.Label(card_settings, text="上游网络代理（Clash Verge / Clash / v2rayN）：", style="Normal.TLabel").pack(anchor="w")
         f_up = ttk.Frame(card_settings, style="CardInner.TFrame")
-        f_up.pack(fill="x", pady=(3, 8))
+        f_up.pack(fill="x", pady=(2, 6))
 
         self.entry_up = ttk.Entry(f_up, textvariable=self.var_upstream, font=("Consolas", 9))
         self.entry_up.pack(side="left", fill="x", expand=True, padx=(0, 6))
@@ -228,7 +262,7 @@ class GBFAcceleratorGUI:
         # Field 3: Local Listen Port
         ttk.Label(card_settings, text="本地监听端口（默认 8124，支持自定义）：", style="Normal.TLabel").pack(anchor="w")
         f_port = ttk.Frame(card_settings, style="CardInner.TFrame")
-        f_port.pack(fill="x", pady=(3, 8))
+        f_port.pack(fill="x", pady=(2, 6))
 
         self.entry_port = ttk.Entry(f_port, textvariable=self.var_listen_port, font=("Consolas", 9), width=10)
         self.entry_port.pack(side="left", padx=(0, 6))
@@ -242,7 +276,7 @@ class GBFAcceleratorGUI:
         # Field 4: CA Certificate
         ttk.Label(card_settings, text="HTTPS 根证书状态（游戏静态资源本地解析必需）：", style="Normal.TLabel").pack(anchor="w")
         f_ca = ttk.Frame(card_settings, style="CardInner.TFrame")
-        f_ca.pack(fill="x", pady=(3, 4))
+        f_ca.pack(fill="x", pady=(2, 4))
 
         self.lbl_ca = ttk.Label(f_ca, textvariable=self.var_ca_status, font=("Microsoft YaHei UI", 9, "bold"))
         self.lbl_ca.pack(side="left", padx=(0, 10))
@@ -252,7 +286,7 @@ class GBFAcceleratorGUI:
 
         # Field 5: Windows System PAC Automation
         f_sys_proxy = ttk.Frame(card_settings, style="CardInner.TFrame")
-        f_sys_proxy.pack(fill="x", pady=(10, 2))
+        f_sys_proxy.pack(fill="x", pady=(6, 2))
         chk_pac = ttk.Checkbutton(
             f_sys_proxy,
             text="自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）",
@@ -262,7 +296,7 @@ class GBFAcceleratorGUI:
         chk_pac.pack(anchor="w")
 
         # Field 6: Performance & System Resource Options (Batch 2)
-        ttk.Separator(card_settings, orient="horizontal").pack(fill="x", pady=(8, 6))
+        ttk.Separator(card_settings, orient="horizontal").pack(fill="x", pady=(6, 6))
         ttk.Label(
             card_settings,
             text="性能与系统资源选项（默认全部开启；若需降低内存/显存占用可取消对应勾选）：",
@@ -270,7 +304,7 @@ class GBFAcceleratorGUI:
         ).pack(anchor="w", pady=(0, 3))
 
         f_perf = ttk.Frame(card_settings, style="CardInner.TFrame")
-        f_perf.pack(fill="x", pady=(2, 2))
+        f_perf.pack(fill="x", pady=(1, 2))
 
         chk_ram = ttk.Checkbutton(
             f_perf,
@@ -278,7 +312,7 @@ class GBFAcceleratorGUI:
             variable=self.var_ram_cache,
             command=self.toggle_perf_settings,
         )
-        chk_ram.pack(anchor="w", pady=(1, 2))
+        chk_ram.pack(anchor="w", pady=2)
 
         chk_browser = ttk.Checkbutton(
             f_perf,
@@ -286,7 +320,7 @@ class GBFAcceleratorGUI:
             variable=self.var_browser_cache,
             command=self.toggle_perf_settings,
         )
-        chk_browser.pack(anchor="w", pady=(1, 2))
+        chk_browser.pack(anchor="w", pady=2)
 
         chk_raid = ttk.Checkbutton(
             f_perf,
@@ -294,7 +328,7 @@ class GBFAcceleratorGUI:
             variable=self.var_raid_cache,
             command=self.toggle_perf_settings,
         )
-        chk_raid.pack(anchor="w", pady=(1, 2))
+        chk_raid.pack(anchor="w", pady=2)
 
         chk_repair = ttk.Checkbutton(
             f_perf,
@@ -302,28 +336,15 @@ class GBFAcceleratorGUI:
             variable=self.var_auto_repair,
             command=self.toggle_perf_settings,
         )
-        chk_repair.pack(anchor="w", pady=(1, 2))
-
-        # ---------------- 4. Bottom Action Bar ----------------
-        f_bottom = ttk.Frame(main_container)
-        f_bottom.pack(fill="x", pady=(2, 0))
-
-        btn_open_folder = ttk.Button(f_bottom, text="📂 打开缓存目录", command=self.open_cache_folder)
-        btn_open_folder.pack(side="left", padx=(0, 6))
-
-        btn_proxy_guide = ttk.Button(f_bottom, text="🌐 分流与使用说明", command=self.show_guide)
-        btn_proxy_guide.pack(side="left", padx=(0, 6))
-
-        btn_tray = ttk.Button(f_bottom, text="⬇ 最小化到系统托盘", command=self.hide_to_tray)
-        btn_tray.pack(side="right")
+        chk_repair.pack(anchor="w", pady=2)
 
     # ================= Functional Methods =================
     def update_ca_status(self):
         if is_ca_installed():
-            self.var_ca_status.set("✔ 已信任安装 (正常工作)")
+            self.var_ca_status.set("已信任 (正常工作)")
             self.lbl_ca.configure(foreground="#28a745")
         else:
-            self.var_ca_status.set("✖ 尚未安装信任")
+            self.var_ca_status.set("未安装信任")
             self.lbl_ca.configure(foreground="#dc3545")
 
     def install_ca(self):
