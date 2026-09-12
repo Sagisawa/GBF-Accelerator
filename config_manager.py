@@ -25,6 +25,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "cache_dir": "auto",       # auto-detect ACGPower or use ./cache/gbf/https
     "clean_zombies": True,
     "auto_system_proxy": True, # Automatically mount PAC in Windows Internet Settings
+    "auto_start": False,       # Start the GUI with Windows and minimize to tray
     "enable_ram_cache": True,  # In-memory LRU hot cache (fast RAM lookup)
     "ram_cache_max_mb": 256,   # Max RAM allocation for hot cache (in MB)
     "enable_browser_cache": False, # Conservative default: only inject immutable on versioned assets if enabled

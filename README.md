@@ -22,6 +22,7 @@
   - 支持一键开启 Windows 系统 PAC 自动配置，开启后无需在浏览器安装任何插件即可生效。
   - 内置 PAC 服务（默认 `http://127.0.0.1:8124/proxy.pac`），精准收敛分流规则，也支持配合 SwitchyOmega / ZeroOmega 等扩展使用。
 - **图形界面与系统托盘**：Windows 原生控件风格美化与 DPI 自适应清晰渲染；支持自定义监听端口（默认 8124）及上游代理，支持最小化至系统托盘后台静默运行。
+- **开机自启**：可在 GUI 中选择随 Windows 启动，启动后自动隐藏到系统托盘；默认关闭。
 - **直连模式**：在 GUI 中勾选后，动态请求和长连接改用本机网络直连，同时继续使用本地静态缓存；取消勾选即可立即恢复上游代理模式。
 - **缓存原子落盘与自愈防护**：采用临时文件（`.tmp`）原子替换（`os.replace` + `fsync`），防止写入异常产生损坏残卷；自动识别上游 HTML 错误页并拒绝落盘；自动识别并清理 0 字节损坏文件。
 - **冗余请求拦截**：自动拦截游戏附带的第三方埋点与统计上报请求，减少无效网络连接。
@@ -53,6 +54,7 @@
   "listen_port": 8124,
   "cache_dir": "D:\\gbf_cache",
   "auto_system_proxy": true,
+  "auto_start": false,
   "enable_ram_cache": true,
   "enable_browser_cache": false,
   "enable_auto_repair": true,
@@ -65,6 +67,7 @@
 - `listen_port`: 本地加速服务监听端口（默认 8124，支持在界面中自定义）。
 - `cache_dir`: 静态资源缓存落盘路径。
 - `auto_system_proxy`: 启动加速时是否自动挂载 Windows 系统 PAC 代理。
+- `auto_start`: 是否随 Windows 启动并自动缩小到系统托盘（默认关闭）。
 - `enable_ram_cache`: 启用内存热点缓存（默认开启，占用约 256MB 内存，高频资源 0 磁盘 I/O 极速直出）。
 - `enable_browser_cache`: 启用浏览器强缓存与渲染留存（默认关闭；开启时仅对带版本哈希/时间戳的不可变资源如 `/assets/<timestamp>/...` 注入 `immutable`，普通未版本化资源不注入，避免更新时产生陈旧缓存）。
 - `enable_auto_repair`: 自动检测并清除损坏/0字节缓存文件并重新拉取（默认开启）。

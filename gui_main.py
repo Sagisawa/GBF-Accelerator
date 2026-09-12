@@ -42,6 +42,9 @@ from cert_manager import ensure_ca, CA_CERT_PATH, get_ca_fingerprint_sha256
 from cache_manager import cache_manager
 import gbf_proxy
 import system_proxy
+from startup_manager import is_startup_enabled, set_startup_enabled
+
+START_MINIMIZED = "--minimized" in sys.argv
 
 def create_tray_icon_image(is_running: bool = True) -> Image.Image:
     """Generate a clean lightning bolt icon for system tray."""
@@ -87,6 +90,9 @@ class GBFAcceleratorGUI:
         self.var_ca_status = tk.StringVar(value="检测中...")
         self.var_ca_fp = tk.StringVar(value="")
         self.var_auto_pac = tk.BooleanVar(value=config_manager.config.get("auto_system_proxy", True))
+        self.var_auto_start = tk.BooleanVar(
+            value=bool(config_manager.config.get("auto_start", False)) or is_startup_enabled()
+        )
 
         # Performance & Resource Controls
         self.var_ram_cache = tk.BooleanVar(value=config_manager.config.get("enable_ram_cache", True))
@@ -330,6 +336,14 @@ class GBFAcceleratorGUI:
             command=self.toggle_sys_proxy_setting,
         )
         chk_pac.pack(anchor="w")
+
+        chk_startup = ttk.Checkbutton(
+            f_sys_proxy,
+            text="开机自启（启动后自动缩小到系统托盘，默认关闭）",
+            variable=self.var_auto_start,
+            command=self.toggle_startup_setting,
+        )
+        chk_startup.pack(anchor="w", pady=(2, 0))
 
         # Field 6: Performance & System Resource Options
         ttk.Separator(card_settings, orient="horizontal").pack(fill="x", pady=(6, 6))
@@ -614,6 +628,16 @@ class GBFAcceleratorGUI:
             else:
                 system_proxy.disable_pac_proxy()
 
+    def toggle_startup_setting(self):
+        enabled = self.var_auto_start.get()
+        ok, msg = set_startup_enabled(enabled)
+        if not ok:
+            self.var_auto_start.set(not enabled)
+            messagebox.showerror("开机自启设置失败", msg or "无法修改 Windows 开机启动项。")
+            return
+        config_manager.config["auto_start"] = enabled
+        config_manager.save_config()
+
     def open_cache_folder(self):
         p = Path(self.var_cache_dir.get()).resolve()
         p.mkdir(parents=True, exist_ok=True)
@@ -756,13 +780,14 @@ class GBFAcceleratorGUI:
         # Run tray in separate background thread
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
-    def hide_to_tray(self):
+    def hide_to_tray(self, notify=True):
         self.root.withdraw()
-        try:
-            if self.tray_icon:
-                self.tray_icon.notify("GBF 加速代理已最小化到系统托盘，正在后台运行。", "GBF 加速代理")
-        except Exception:
-            pass
+        if notify:
+            try:
+                if self.tray_icon:
+                    self.tray_icon.notify("GBF 加速代理已最小化到系统托盘，正在后台运行。", "GBF 加速代理")
+            except Exception:
+                pass
 
     def show_from_tray(self):
         self.root.deiconify()
@@ -782,6 +807,8 @@ class GBFAcceleratorGUI:
 def main():
     root = tk.Tk()
     app = GBFAcceleratorGUI(root)
+    if START_MINIMIZED:
+        root.after(100, lambda: app.hide_to_tray(notify=False))
     root.mainloop()
 
 if __name__ == "__main__":
