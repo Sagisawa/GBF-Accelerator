@@ -46,6 +46,7 @@ def build():
         "--hidden-import", "gui_main",
         "--hidden-import", "app_main",
         "--hidden-import", "system_proxy",
+        "--hidden-import", "socksio",
         "--add-data", f"{BASE_DIR / 'SwitchyOmega_GBF.bak'};.",
         "--add-data", f"{BASE_DIR / 'proxy.pac'};.",
         str(BASE_DIR / "gui_main.py"),
@@ -66,7 +67,7 @@ def build():
 
     # Prepare Release Package
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = RELEASE_DIR / "GBF_Accelerator_v1.1_GUI.zip"
+    zip_path = RELEASE_DIR / "GBF_Accelerator_v1.2.0_GUI.zip"
     readme_path = BASE_DIR / "使用说明.txt"
     if not readme_path.is_file():
         from app_main import ensure_bundled_files

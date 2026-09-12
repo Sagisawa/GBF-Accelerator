@@ -82,6 +82,7 @@ class GBFAcceleratorGUI:
         self.var_apis = tk.StringVar(value="0")
         self.var_cache_dir = tk.StringVar(value=str(config_manager.get_effective_cache_dir(interactive=False)))
         self.var_upstream = tk.StringVar(value=config_manager.get_effective_upstream_proxy())
+        self.var_direct_mode = tk.BooleanVar(value=config_manager.config.get("direct_mode", False))
         self.var_listen_port = tk.StringVar(value=str(config_manager.get_listen_port()))
         self.var_ca_status = tk.StringVar(value="检测中...")
         self.var_ca_fp = tk.StringVar(value="")
@@ -272,8 +273,17 @@ class GBFAcceleratorGUI:
         self.entry_up = ttk.Entry(f_up, textvariable=self.var_upstream, font=("Consolas", 9))
         self.entry_up.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
-        btn_probe = ttk.Button(f_up, text="自动探测", width=10, command=self.probe_upstream)
-        btn_probe.pack(side="left")
+        self.btn_probe = ttk.Button(f_up, text="自动探测", width=10, command=self.probe_upstream)
+        self.btn_probe.pack(side="left")
+
+        self.chk_direct = ttk.Checkbutton(
+            card_settings,
+            text="直连模式（使用本机网络，不经过上游代理；仍使用本地缓存）",
+            variable=self.var_direct_mode,
+            command=self.toggle_direct_mode,
+        )
+        self.chk_direct.pack(anchor="w", pady=(0, 6))
+        self.update_upstream_controls()
 
         # Field 3: Local Listen Port
         ttk.Label(card_settings, text="本地监听端口（默认 8124，支持自定义）：", style="Normal.TLabel").pack(anchor="w")
@@ -473,6 +483,9 @@ class GBFAcceleratorGUI:
             messagebox.showwarning("探测结果", "在常用盘符（C/D/E/F 盘）中未找到现成的 ACGPower 缓存。\n你可以点击【浏览...】手动指定。")
 
     def probe_upstream(self):
+        if self.var_direct_mode.get():
+            messagebox.showinfo("直连模式", "当前已启用直连模式，请先取消勾选后再探测上游代理。")
+            return
         active = auto_detect_upstream_proxy()
         self.var_upstream.set(active)
         config_manager.config["upstream_proxy"] = active
@@ -489,6 +502,12 @@ class GBFAcceleratorGUI:
         else:
             messagebox.showwarning("上游探测警告", f"检测到本地代理地址：\n{active}\n\n但连通测试失败：{msg}\n请确认 Clash 是否已启动并开启本地监听。")
 
+    def update_upstream_controls(self):
+        """Disable upstream controls while direct mode is active."""
+        direct = self.var_direct_mode.get()
+        self.entry_up.configure(state="disabled" if direct else "normal")
+        self.btn_probe.configure(state="disabled" if direct else "normal")
+
     def reset_port_default(self):
         self.var_listen_port.set("8124")
 
@@ -497,7 +516,7 @@ class GBFAcceleratorGUI:
         cd = self.var_cache_dir.get().strip()
         port_str = self.var_listen_port.get().strip()
 
-        if not up:
+        if not up and not self.var_direct_mode.get():
             messagebox.showerror("错误", "上游代理地址不能为空！")
             return
 
@@ -512,7 +531,7 @@ class GBFAcceleratorGUI:
         # Prevent port conflict with upstream proxy
         try:
             parsed_up = urllib.parse.urlparse(up)
-            if parsed_up.port == port:
+            if not self.var_direct_mode.get() and parsed_up.port == port:
                 messagebox.showerror("端口冲突", "本地监听端口不能与上游代理端口相同！")
                 return
         except Exception:
@@ -520,16 +539,19 @@ class GBFAcceleratorGUI:
 
         old_port = gbf_proxy.LISTEN_PORT
         old_up = gbf_proxy.UPSTREAM_PROXY
+        old_direct = bool(config_manager.config.get("direct_mode", False))
         port_changed = (port != old_port)
         upstream_changed = (up != old_up)
+        direct_changed = (self.var_direct_mode.get() != old_direct)
 
         # Check connectivity to upstream
         up_ok, up_msg = check_upstream_connectivity(up)
-        if not up_ok and up != "direct":
+        if not up_ok and not self.var_direct_mode.get():
             if not messagebox.askyesno("上游代理连通警告", f"测试连接上游代理失败：\n{up_msg}\n\n是否仍然保存该代理地址？"):
                 return
 
         config_manager.config["upstream_proxy"] = up
+        config_manager.config["direct_mode"] = self.var_direct_mode.get()
         config_manager.config["cache_dir"] = cd
         config_manager.config["listen_port"] = port
         config_manager.config["auto_system_proxy"] = self.var_auto_pac.get()
@@ -542,6 +564,7 @@ class GBFAcceleratorGUI:
             cache_manager.clear_ram_cache()
 
         gbf_proxy.UPSTREAM_PROXY = up
+        gbf_proxy.DIRECT_MODE = self.var_direct_mode.get()
         if cd:
             cache_manager.set_cache_base(Path(cd).resolve())
 
@@ -549,7 +572,7 @@ class GBFAcceleratorGUI:
         from app_main import update_pac_file
         update_pac_file(port)
 
-        if (port_changed or upstream_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
+        if (port_changed or upstream_changed or direct_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
             self.stop_proxy()
             gbf_proxy.LISTEN_PORT = port
             gbf_proxy.UPSTREAM_PROXY = up
@@ -567,6 +590,19 @@ class GBFAcceleratorGUI:
         config_manager.save_config()
         if not self.var_ram_cache.get():
             cache_manager.clear_ram_cache()
+
+    def toggle_direct_mode(self):
+        """Switch routing immediately while keeping the local cache/proxy active."""
+        enabled = self.var_direct_mode.get()
+        self.update_upstream_controls()
+        config_manager.config["direct_mode"] = enabled
+        config_manager.save_config()
+        gbf_proxy.DIRECT_MODE = enabled
+        if gbf_proxy.PROXY_STATS.get("is_running", False):
+            self.stop_proxy()
+            self.start_proxy()
+        else:
+            self.var_status_text.set("● 直连模式已启用" if enabled else "● 上游代理模式已启用")
 
     def toggle_sys_proxy_setting(self):
         enabled = self.var_auto_pac.get()
@@ -610,7 +646,7 @@ class GBFAcceleratorGUI:
         up = self.var_upstream.get().strip() or "http://127.0.0.1:7897"
         try:
             parsed_up = urllib.parse.urlparse(up)
-            if parsed_up.port == port:
+            if not self.var_direct_mode.get() and parsed_up.port == port:
                 messagebox.showerror("端口冲突", "本地监听端口不能与上游代理端口相同！")
                 return
         except Exception:
@@ -619,8 +655,10 @@ class GBFAcceleratorGUI:
         gbf_proxy.LISTEN_HOST = config_manager.config.get("listen_host", "127.0.0.1")
         gbf_proxy.LISTEN_PORT = port
         gbf_proxy.UPSTREAM_PROXY = up
+        gbf_proxy.DIRECT_MODE = self.var_direct_mode.get()
         config_manager.config["listen_port"] = port
         config_manager.config["upstream_proxy"] = up
+        config_manager.config["direct_mode"] = self.var_direct_mode.get()
         config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
         config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()

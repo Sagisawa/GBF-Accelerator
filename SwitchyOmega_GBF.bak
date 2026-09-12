@@ -45,15 +45,47 @@
       {
         "condition": {
           "conditionType": "HostWildcardCondition",
-          "pattern": "*granbluefantasy.akamaized.net"
+          "pattern": "*.granbluefantasy.akamaized.net"
         },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a-granbluefantasy.akamaized.net"},
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a1-granbluefantasy.akamaized.net"},
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a2-granbluefantasy.akamaized.net"},
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a3-granbluefantasy.akamaized.net"},
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a4-granbluefantasy.akamaized.net"},
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {"conditionType": "HostWildcardCondition", "pattern": "prd-game-a5-granbluefantasy.akamaized.net"},
         "profileName": "GBF_Speed"
       },
       {
         "condition": {
           "conditionType": "HostWildcardCondition",
-          "pattern": "*gbf.akamaized.net"
+          "pattern": "*.gbf.akamaized.net"
         },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {"conditionType": "HostWildcardCondition", "pattern": "granbluefantasy.akamaized.net"},
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {"conditionType": "HostWildcardCondition", "pattern": "gbf.akamaized.net"},
         "profileName": "GBF_Speed"
       },
       {

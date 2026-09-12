@@ -60,16 +60,27 @@ def get_pac_content(port: int = 8124) -> str:
         shExpMatch(host, "granbluefantasy.jp") ||
         shExpMatch(host, "*.granbluefantasy.com") ||
         shExpMatch(host, "granbluefantasy.com") ||
-        shExpMatch(host, "*granbluefantasy.akamaized.net") ||
-        shExpMatch(host, "*gbf.akamaized.net") ||
+        shExpMatch(host, "granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "*.granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "gbf.akamaized.net") ||
+        shExpMatch(host, "*.gbf.akamaized.net") ||
+        shExpMatch(host, "prd-game-a-granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "prd-game-a1-granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "prd-game-a2-granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "prd-game-a3-granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "prd-game-a4-granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "prd-game-a5-granbluefantasy.akamaized.net") ||
         shExpMatch(host, "*.mbga.jp") ||
         shExpMatch(host, "mbga.jp") ||
         shExpMatch(host, "rcv.a-i-ad.com") ||
         shExpMatch(host, "*.smbeat.jp") ||
         shExpMatch(host, "*.smrtbeat.com") ||
-        shExpMatch(host, "*datadoghq-browser-agent*") ||
-        shExpMatch(host, "*google-analytics.com") ||
-        shExpMatch(host, "*googletagmanager.com")
+        shExpMatch(host, "datadoghq-browser-agent") ||
+        shExpMatch(host, "*.datadoghq-browser-agent") ||
+        shExpMatch(host, "google-analytics.com") ||
+        shExpMatch(host, "*.google-analytics.com") ||
+        shExpMatch(host, "googletagmanager.com") ||
+        shExpMatch(host, "*.googletagmanager.com")
     ) {{
         return "PROXY 127.0.0.1:{port}; DIRECT";
     }}

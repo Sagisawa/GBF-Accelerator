@@ -5,7 +5,16 @@ function FindProxyForURL(url, host) {
     }
 
     // GBF 专属 Akamai CDN 静态资源域名 (如 prd-game-a-granbluefantasy.akamaized.net)
-    if (host.indexOf("granbluefantasy.akamaized.net") !== -1 || host.indexOf("gbf.akamaized.net") !== -1) {
+    if (shExpMatch(host, "granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "*.granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "gbf.akamaized.net") ||
+        shExpMatch(host, "*.gbf.akamaized.net") ||
+        host === "prd-game-a-granbluefantasy.akamaized.net" ||
+        host === "prd-game-a1-granbluefantasy.akamaized.net" ||
+        host === "prd-game-a2-granbluefantasy.akamaized.net" ||
+        host === "prd-game-a3-granbluefantasy.akamaized.net" ||
+        host === "prd-game-a4-granbluefantasy.akamaized.net" ||
+        host === "prd-game-a5-granbluefantasy.akamaized.net") {
         return "PROXY 127.0.0.1:8124; DIRECT";
     }
 

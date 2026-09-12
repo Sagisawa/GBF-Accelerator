@@ -21,6 +21,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "listen_host": "127.0.0.1",
     "listen_port": 8124,
     "upstream_proxy": "auto",  # auto-probe 7897, 7890, 10808, 10809
+    "direct_mode": False,       # connect directly while retaining local cache
     "cache_dir": "auto",       # auto-detect ACGPower or use ./cache/gbf/https
     "clean_zombies": True,
     "auto_system_proxy": True, # Automatically mount PAC in Windows Internet Settings
@@ -56,7 +57,17 @@ def auto_detect_upstream_proxy() -> str:
     """Probe common local proxy ports and return active proxy URL."""
     for port, name in PROBE_PROXY_PORTS:
         if is_port_open("127.0.0.1", port):
-            return f"http://127.0.0.1:{port}"
+            # Distinguish a pure SOCKS5 listener (common v2rayN 10809) from HTTP.
+            scheme = "http"
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.4) as sock:
+                    sock.settimeout(0.4)
+                    sock.sendall(b"\x05\x01\x00")
+                    if sock.recv(2) == b"\x05\x00":
+                        scheme = "socks5"
+            except (socket.timeout, ConnectionResetError, OSError):
+                pass
+            return f"{scheme}://127.0.0.1:{port}"
     return "http://127.0.0.1:7897"  # Default fallback
 
 def auto_detect_acgpower_cache() -> Optional[Path]:
