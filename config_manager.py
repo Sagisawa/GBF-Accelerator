@@ -21,6 +21,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "upstream_proxy": "auto",  # auto-probe 7897, 7890, 10808, 10809
     "cache_dir": "auto",       # auto-detect ACGPower or use ./cache/gbf/https
     "clean_zombies": True,
+    "auto_system_proxy": True, # Automatically mount PAC in Windows Internet Settings
 }
 
 KNOWN_ACGPOWER_PATHS = [

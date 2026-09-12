@@ -36,6 +36,7 @@ def build():
         "--hidden-import", "gbf_proxy",
         "--hidden-import", "gui_main",
         "--hidden-import", "app_main",
+        "--hidden-import", "system_proxy",
         "--add-data", f"{BASE_DIR / 'SwitchyOmega_GBF.bak'};.",
         "--add-data", f"{BASE_DIR / 'proxy.pac'};.",
         str(BASE_DIR / "gui_main.py"),
