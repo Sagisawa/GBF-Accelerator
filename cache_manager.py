@@ -95,7 +95,15 @@ class CacheManager:
         # 2. Read from disk
         file_path = self._get_local_path(url_path)
         if not file_path.is_file():
-            return None
+            # Intelligent fallback: if path does not start with assets/, check under assets/
+            if not clean_key.startswith("assets/"):
+                fallback_path = self.cache_base / "assets" / clean_key
+                if fallback_path.is_file():
+                    file_path = fallback_path
+                else:
+                    return None
+            else:
+                return None
 
         # Auto-Repair: Detect and clean 0-byte broken files
         if enable_auto_repair:

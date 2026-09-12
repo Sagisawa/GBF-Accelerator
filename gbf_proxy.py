@@ -57,6 +57,17 @@ TELEMETRY_PATTERNS = (
     "googletagmanager.com",
 )
 
+# Static asset extensions and path prefixes for 100% comprehensive cache coverage
+STATIC_EXTENSIONS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm",
+    ".js", ".css", ".woff", ".woff2", ".ttf", ".otf", ".svg", ".ico",
+)
+
+STATIC_PATH_PREFIXES = (
+    "/assets/", "/assets_en/", "/sound/", "/img/", "/css/", "/js/", "/font/",
+)
+
 # In-memory Raid Socket URI cache: (path, uid) -> (timestamp, status, headers, body)
 RAID_SOCKET_CACHE: Dict[Tuple[str, str], Tuple[float, int, Dict[str, str], bytes]] = {}
 RAID_CACHE_TTL = 60.0  # seconds
@@ -322,8 +333,16 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 format_log("MOCK-200", "33", f"Direct Mock -> {path}{err_msg}")
                 continue
 
-            # ---------------- Rule 3: Static Asset Cache (*.akamaized.net or /assets/...) ----------------
-            if "akamaized.net" in target_host or path.startswith("/assets/"):
+            # ---------------- Rule 3: Static Asset Cache (100% Comprehensive) ----------------
+            clean_path_lower = path.split("?")[0].lower()
+            is_static = (
+                "akamaized.net" in target_host
+                or target_host.startswith("game-a")
+                or path.startswith(STATIC_PATH_PREFIXES)
+                or clean_path_lower.endswith(STATIC_EXTENSIONS)
+            )
+
+            if is_static:
                 cache_hit = cache_manager.get_cache(path)
                 if cache_hit:
                     c_headers, c_data = cache_hit
