@@ -15,74 +15,107 @@ CA_KEY_PATH = CERTS_DIR / "ca.key"
 SERVER_CERT_PATH = CERTS_DIR / "server.crt"
 SERVER_KEY_PATH = CERTS_DIR / "server.key"
 
+# Strictly scoped GBF domains for Server Certificate SAN (RFC 6125 compliant, no broad *.akamaized.net)
 SAN_DOMAINS = [
     "*.granbluefantasy.jp",
     "granbluefantasy.jp",
     "*.granbluefantasy.com",
     "granbluefantasy.com",
-    "*.akamaized.net",
-    "*.gbf.akamaized.net",
     "*.mbga.jp",
     "mbga.jp",
+    "prd-game-a-granbluefantasy.akamaized.net",
+    "prd-game-a1-granbluefantasy.akamaized.net",
+    "prd-game-a2-granbluefantasy.akamaized.net",
+    "prd-game-a3-granbluefantasy.akamaized.net",
+    "prd-game-a4-granbluefantasy.akamaized.net",
+    "prd-game-a5-granbluefantasy.akamaized.net",
+    "gbf.akamaized.net",
+    "*.gbf.akamaized.net",
+    "granbluefantasy.akamaized.net",
+    "*.granbluefantasy.akamaized.net",
 ]
 
-EMBEDDED_CA_CERT = b"""-----BEGIN CERTIFICATE-----
-MIIDHzCCAgegAwIBAgIUNwwrMz315IR1HaTiTIBuSq4kgIswDQYJKoZIhvcNAQEL
-BQAwNzEVMBMGA1UEAwwMR0JGIFNwZWVkIENBMR4wHAYDVQQKDBVHQkYgTG9jYWwg
-QWNjZWxlcmF0b3IwHhcNMjYwOTExMDczMzQ3WhcNMzYwOTA5MDczMzQ3WjA3MRUw
-EwYDVQQDDAxHQkYgU3BlZWQgQ0ExHjAcBgNVBAoMFUdCRiBMb2NhbCBBY2NlbGVy
-YXRvcjCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALtW+91OnJkDHhR4
-AtoODHnQVHUQEicDa08WFjqNBwQi/qg4wGPluo2ZmgHeL32P3UJwS9HNoMqap4Qg
-6918b1i4BU0Ya5Tlqoc3mr+BtU4Ck3W7wKuDFWRqbKnHpzIbdlTAOjWXj1DBlCjx
-OAr/4oUjsQ4PA3tqe+OHXJI8yZjS2R4WeF2hOrUhm6keWspFBPquydFs45OVd8JE
-qkbLVIE9/3mbQqUu+u8FnAymQtJKMrfb8ZRYEPyK0z9bf7DoFmvv4S+uLYaXwvwS
-LXr/boTJgYtTEgqyhxQGhxrcuId23z4xsHElNCiL6h9C/n3FptWYGzu5E9SYFY2T
-M4MV7y0CAwEAAaMjMCEwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAYYw
-DQYJKoZIhvcNAQELBQADggEBABeQ6ZxB4gU1OHmGaZkucl/cnYdkoT0Q85LV3iDd
-raLwtx2KiyRq5c4whlWfERue8m188u/Mhfvb6+Zb/PD9UD9NHx0PbZwrSiJqCnAV
-SEX5fc7UJ3UdOvxcLo3OZPo9n0dFnzdoTUHsWAQLPhUg6jPEcs44sPr+c/SJ6bMk
-NeUWqNuiLF8QNDp0reVjcPQsDK3QLyAePBkc+3FtqjyKDVv1xkbZ15KZMPUaah0T
-TEci4wyKtKaaaXMLUaRLINa9GLACSABCayKVLLhbTWRS/zmwkoxIj3ve1agflAVm
-UujVRZIDjFC0rvUJC2Qh1sTsPd3yXFt32WlfRqQiXqv0kE8=
------END CERTIFICATE-----
-"""
+# Serial numbers / signatures of the previously embedded public CA to trigger automatic replacement
+OLD_LEAKED_SERIALS = {
+    0x370C2B333DF5E484751DA4E24C806E4AAE24808B,
+}
 
-EMBEDDED_CA_KEY = b"""-----BEGIN RSA PRIVATE KEY-----
-MIIEpAIBAAKCAQEAu1b73U6cmQMeFHgC2g4MedBUdRASJwNrTxYWOo0HBCL+qDjA
-Y+W6jZmaAd4vfY/dQnBL0c2gypqnhCDr3XxvWLgFTRhrlOWqhzeav4G1TgKTdbvA
-q4MVZGpsqcenMht2VMA6NZePUMGUKPE4Cv/ihSOxDg8De2p744dckjzJmNLZHhZ4
-XaE6tSGbqR5aykUE+q7J0Wzjk5V3wkSqRstUgT3/eZtCpS767wWcDKZC0koyt9vx
-lFgQ/IrTP1t/sOgWa+/hL64thpfC/BItev9uhMmBi1MSCrKHFAaHGty4h3bfPjGw
-cSU0KIvqH0L+fcWm1ZgbO7kT1JgVjZMzgxXvLQIDAQABAoIBAB4x1+iEmiLjaL69
-1R/WMdaUaHhxvatCFtKpaa3IO0BEb60ncILpbRcTkcoJSLhBLtVdiirnrKnbIXLf
-Z4TMYJn5FwmlDPnzxneC09NYEaPgMGpCd7xtJU6JBLicsGsYGAty7C7lHblTahDr
-SDAlrBnvdcMhUlta/1rd32LGn2udEZu6NHJJJP1gaPUB31N/E+S2lFdJWc+fT3k4
-I/xHhhqGc/FLA7w7m3alttu7MY/muAqBKWDrtyLKP2wiXXpXi2oWiuH2byJMWo4f
-79YSX068n731ozY339mrMNBE1AL8hcWnsxnrT3fBmdgLShSh2aOyxVnwIchVs6iX
-rKFI+UECgYEA6S2OyWUnAJmEoPD+m0pXAiO9tiiZtnZOm6Pwi0ZYYNLr1QHY6tAs
-grEgbycOwH16uMR+1V+eDT9VXYT0WFPhv/A87WIogcJk1qWWk4xXwJwjZFpEzaww
-eOFdqIw+mZMCjVApSmbE6Wndk6tWZX2xMs7LKUSrdcnlrR3FW8H9MhECgYEAzazq
-2eE+195cPPgV8uT1OU1L7zyYsYm6VwEJhObqqolx+c8a5ilRGN5nI2jye3Izi9r0
-H+l5FhK6DB/oEm5UES2vlZZIHEABp+jH5U3348ggXud93hlD11b2p1yUd+dg45TD
-Ctn3wTTgRcmRwoSHXx9K8c1t1tas+rcfBsWvz10CgYEAx+LZ6CLiEE2JuD1exNgx
-RhBFbIXZXuSD9j/O0FV5JWcp6usue/wAa/hTCXW925y1OvaWk2roHgsQrp5up9kg
-SF00nXnrp3Bw6OAB+HHyN5ahcEFBgd39n2Hx2659a0Duix0QiEsYuc6atx/FbDMX
-V6qV1cacBNkSHhjLOiFNX0ECgYBrjmHCTuhuOvpBZ/sSamlS7fknwqiXL08i8Ifp
-2FgfloDkAkou0qx2NNf6zIcBx1btbDL9/To1MNXaQVU7TjboRNvtfgl3vIEhLbpb
-T8qyc5V6C9TmsI+prPCP1PpPOdCRMtpMcm/9uYkO9boj3upr9BFdIfCuyNTsx5aS
-FA88gQKBgQCxT25+kLEqd89MFnt+zqWi8D47xvb9GZKPhVIOCdWtAmTgU+UDSOYA
-56MRV8yVfQ9vdHJTlaFmrk+cH2eqnmwDPD8Q3ps9leWtO/Dh4ScoREFwlN4cR1YJ
-jZxno6VFJONv4YTqbAoxezwg938QiXKMqzLjNXhgZevyZSWZopOipA==
------END RSA PRIVATE KEY-----
-"""
+def generate_ca():
+    """Dynamically generate a unique, per-machine 2048-bit RSA Root CA key and self-signed certificate."""
+    print("[*] Generating unique local Root CA certificate and private key...")
+    CERTS_DIR.mkdir(parents=True, exist_ok=True)
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "GBF Local Accelerator Root CA"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "GBF Local Accelerator"),
+    ])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ca_cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                key_encipherment=False,
+                key_cert_sign=True,
+                key_agreement=False,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+                content_commitment=False,
+                data_encipherment=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+
+    with open(CA_KEY_PATH, "wb") as f:
+        f.write(ca_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        ))
+    with open(CA_CERT_PATH, "wb") as f:
+        f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
+
+    # Invalidate existing server cert if CA was regenerated
+    if SERVER_CERT_PATH.exists():
+        SERVER_CERT_PATH.unlink(missing_ok=True)
+    if SERVER_KEY_PATH.exists():
+        SERVER_KEY_PATH.unlink(missing_ok=True)
+    print(f"[+] Local Root CA successfully generated: {CA_CERT_PATH}")
 
 def ensure_ca():
     CERTS_DIR.mkdir(parents=True, exist_ok=True)
+    need_generate = False
     if not (CA_CERT_PATH.exists() and CA_KEY_PATH.exists()):
-        with open(CA_CERT_PATH, "wb") as f:
-            f.write(EMBEDDED_CA_CERT)
-        with open(CA_KEY_PATH, "wb") as f:
-            f.write(EMBEDDED_CA_KEY)
+        need_generate = True
+    else:
+        try:
+            cert_data = CA_CERT_PATH.read_bytes()
+            existing_cert = x509.load_pem_x509_certificate(cert_data)
+            # Detect old hardcoded CA and regenerate unique one
+            common_names = existing_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+            cn_val = common_names[0].value if common_names else ""
+            if existing_cert.serial_number in OLD_LEAKED_SERIALS or cn_val == "GBF Speed CA":
+                print("[!] Detected old public embedded CA cert. Regenerating secure unique local CA...")
+                need_generate = True
+        except Exception:
+            need_generate = True
+
+    if need_generate:
+        generate_ca()
 
     with open(CA_KEY_PATH, "rb") as f:
         ca_key = serialization.load_pem_private_key(f.read(), password=None)
@@ -92,10 +125,27 @@ def ensure_ca():
 
 def ensure_server_cert():
     ca_cert, ca_key = ensure_ca()
-    if SERVER_CERT_PATH.exists() and SERVER_KEY_PATH.exists():
+    need_generate = False
+    if not (SERVER_CERT_PATH.exists() and SERVER_KEY_PATH.exists()):
+        need_generate = True
+    else:
+        try:
+            srv_data = SERVER_CERT_PATH.read_bytes()
+            srv_cert = x509.load_pem_x509_certificate(srv_data)
+            if srv_cert.issuer != ca_cert.subject:
+                need_generate = True
+            else:
+                ext = srv_cert.extensions.get_extension_for_oid(x509.ExtensionOID.SUBJECT_ALTERNATIVE_NAME)
+                current_sans = set(ext.value.get_values_for_type(x509.DNSName))
+                if not set(SAN_DOMAINS).issubset(current_sans):
+                    need_generate = True
+        except Exception:
+            need_generate = True
+
+    if not need_generate:
         return
 
-    print("[*] Generating wildcard server certificate for GBF domains...")
+    print("[*] Generating scoped server certificate for GBF domains...")
     server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     server_name = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "*.granbluefantasy.jp"),
@@ -103,14 +153,15 @@ def ensure_server_cert():
     ])
     sans = [x509.DNSName(d) for d in SAN_DOMAINS]
 
+    now = datetime.datetime.now(datetime.timezone.utc)
     server_cert = (
         x509.CertificateBuilder()
         .subject_name(server_name)
         .issuer_name(ca_cert.subject)
         .public_key(server_key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1))
-        .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650))
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=3650))
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.SubjectAlternativeName(sans), critical=False)
         .sign(ca_key, hashes.SHA256())
@@ -124,7 +175,7 @@ def ensure_server_cert():
         ))
     with open(SERVER_CERT_PATH, "wb") as f:
         f.write(server_cert.public_bytes(serialization.Encoding.PEM))
-    print(f"[+] Wildcard Server cert generated: {SERVER_CERT_PATH}")
+    print(f"[+] Scoped Server cert generated: {SERVER_CERT_PATH}")
 
 def get_server_ssl_context() -> ssl.SSLContext:
     ensure_server_cert()

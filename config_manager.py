@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 def get_base_dir() -> Path:
     """Return directory where executable or main script is located."""
@@ -71,18 +73,21 @@ def auto_detect_acgpower_cache() -> Optional[Path]:
     return None
 
 def is_ca_installed() -> bool:
-    """Check if GBF Speed CA is installed in CurrentUser Root store."""
-    try:
-        res = subprocess.run(
-            ["certutil", "-user", "-verifystore", "Root", "GBF Speed CA"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=3,
-        )
-        return res.returncode == 0
-    except Exception:
-        return False
+    """Check if GBF Root CA is installed in CurrentUser Root store."""
+    for name in ["GBF Local Accelerator Root CA", "GBF Speed CA", "GBF Local CA"]:
+        try:
+            res = subprocess.run(
+                ["certutil", "-user", "-verifystore", "Root", name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=3,
+            )
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
 
 def install_ca_certificate(ca_path: Path) -> bool:
     """Install Root CA into CurrentUser Root store."""
@@ -100,12 +105,13 @@ def install_ca_certificate(ca_path: Path) -> bool:
     except Exception:
         return False
 
-def uninstall_ca_certificate() -> bool:
+def uninstall_ca_certificate() -> Tuple[bool, str]:
     """Uninstall and remove GBF Root CA from CurrentUser Root store."""
     if sys.platform != "win32":
-        return False
+        return False, "非 Windows 系统无需卸载"
     success = False
-    for name in ["GBF Speed CA", "GBF Local CA"]:
+    messages = []
+    for name in ["GBF Local Accelerator Root CA", "GBF Speed CA", "GBF Local CA"]:
         try:
             res = subprocess.run(
                 ["certutil", "-delstore", "-user", "Root", name],
@@ -116,30 +122,71 @@ def uninstall_ca_certificate() -> bool:
             )
             if res.returncode == 0:
                 success = True
+                messages.append(f"已清理证书: {name}")
         except Exception:
             pass
-    return success
+    if success:
+        return True, "\n".join(messages)
+    return False, "未在系统中找到 GBF 根证书"
+
+def check_upstream_connectivity(upstream_url: str) -> Tuple[bool, str]:
+    """Test TCP connectivity to the upstream proxy server."""
+    if not upstream_url or upstream_url == "direct":
+        return True, "直连模式"
+    try:
+        parsed = urllib.parse.urlparse(upstream_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or (7890 if "7890" in upstream_url else 7897)
+        with socket.create_connection((host, port), timeout=1.5):
+            return True, f"成功连通上游代理 {host}:{port}"
+    except (socket.timeout, ConnectionRefusedError):
+        return False, f"上游代理无法连通（连接被拒绝或超时，请检查 Clash 是否已启动）"
+    except Exception as e:
+        return False, f"上游代理连接异常: {e}"
 
 def kill_process_on_port(port: int) -> bool:
-    """Safely terminate previous GBF_Accelerator instances listening on port."""
+    """Safely terminate previous GBF_Accelerator instances listening on port.
+    Guarantees exact port boundary matching and strictly inspects process identity.
+    """
     if sys.platform != "win32":
         return False
     if port in (7890, 7897, 10808, 10809, 80, 443):
         return False
     try:
-        output = subprocess.check_output(f'netstat -aon | findstr ":{port}" | findstr "LISTENING"', shell=True, text=True, timeout=3)
+        output = subprocess.check_output("netstat -aon", shell=True, text=True, timeout=3)
+        # Match exact local address and port boundary: e.g. "  TCP    127.0.0.1:8124    0.0.0.0:0   LISTENING   12345"
+        port_pattern = re.compile(rf":{port}\s+.*LISTENING\s+(\d+)", re.IGNORECASE)
         pids = set()
-        for line in output.strip().splitlines():
-            parts = line.strip().split()
-            if len(parts) >= 5:
-                pids.add(parts[-1])
+        for line in output.splitlines():
+            m = port_pattern.search(line)
+            if m:
+                pids.add(m.group(1))
 
+        current_pid = str(os.getpid())
         for pid in pids:
-            if not pid.isdigit() or pid == "0":
+            if not pid.isdigit() or pid in ("0", "4", current_pid):
                 continue
             proc_info = subprocess.check_output(f'tasklist /FI "PID eq {pid}" /FO CSV /NH', shell=True, text=True, timeout=3).strip()
-            # Only terminate if it belongs to our own program
-            if "GBF_Accelerator" in proc_info or "python" in proc_info:
+            
+            should_kill = False
+            if "GBF_Accelerator" in proc_info:
+                should_kill = True
+            elif "python" in proc_info.lower():
+                # Inspect command line to be 100% sure it's this proxy and not an unrelated Python development project
+                try:
+                    cmd_out = subprocess.check_output(
+                        f'wmic process where "ProcessId={pid}" get CommandLine /format:list',
+                        shell=True,
+                        text=True,
+                        stderr=subprocess.DEVNULL,
+                        timeout=3,
+                    )
+                    if any(target in cmd_out for target in ("gbf_proxy", "app_main", "GBFAccelerator")):
+                        should_kill = True
+                except Exception:
+                    pass
+
+            if should_kill:
                 subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
             else:
                 return False

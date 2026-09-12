@@ -92,6 +92,8 @@ PROXY_STATS = {
 proxy_server_instance = None
 proxy_loop = None
 proxy_thread = None
+import threading
+proxy_ready_event = threading.Event()
 
 def run_proxy_in_thread():
     global proxy_loop, proxy_server_instance
@@ -103,21 +105,25 @@ def run_proxy_in_thread():
         pass
     except Exception as e:
         PROXY_STATS["last_error"] = str(e)
+        PROXY_STATS["is_running"] = False
+        proxy_ready_event.set()
     finally:
         PROXY_STATS["is_running"] = False
+        proxy_ready_event.set()
 
 def start_proxy_thread():
     global proxy_thread
-    PROXY_STATS["is_running"] = True
+    proxy_ready_event.clear()
+    PROXY_STATS["last_error"] = ""
     if proxy_thread and proxy_thread.is_alive():
         return
-    import threading
     proxy_thread = threading.Thread(target=run_proxy_in_thread, daemon=True)
     proxy_thread.start()
 
 def stop_proxy_thread():
     global proxy_loop, proxy_server_instance, proxy_thread
     PROXY_STATS["is_running"] = False
+    proxy_ready_event.clear()
     if proxy_server_instance:
         try:
             proxy_server_instance.close()
@@ -343,6 +349,7 @@ async def send_cached_response(
     headers: Dict[str, str],
     body: bytes,
     keep_content_encoding: bool = False,
+    is_head: bool = False,
 ):
     """Send HTTP response for local cache hits, mock endpoints, preflights, or synthetic errors."""
     filtered_headers: Dict[str, str] = {}
@@ -364,7 +371,10 @@ async def send_cached_response(
         res_lines.append(f"{k}: {v}")
 
     raw_header = ("\r\n".join(res_lines) + "\r\n\r\n").encode("iso-8859-1")
-    writer.write(raw_header + body)
+    if is_head:
+        writer.write(raw_header)
+    else:
+        writer.write(raw_header + body)
     await writer.drain()
 
 async def forward_upstream_response(
@@ -380,9 +390,12 @@ async def forward_upstream_response(
 
     for k, v in upstream_resp.headers.items():
         k_lower = k.lower()
-        if k_lower in hop_by_hop or k_lower == "content-length":
+        if k_lower in hop_by_hop or k_lower in ("content-length", "set-cookie"):
             continue
         out_headers[k_lower] = v
+
+    # Extract all individual Set-Cookie headers without comma-folding
+    cookies = upstream_resp.headers.get_list("set-cookie")
 
     # Set accurate Content-Length for buffered body
     out_headers["content-length"] = str(len(upstream_resp.content))
@@ -400,6 +413,10 @@ async def forward_upstream_response(
     res_lines = [f"HTTP/1.1 {upstream_resp.status_code} {upstream_resp.reason_phrase}"]
     for k, v in out_headers.items():
         res_lines.append(f"{k}: {v}")
+
+    # Emit each Set-Cookie as an individual header line
+    for cookie in cookies:
+        res_lines.append(f"Set-Cookie: {cookie}")
 
     raw_header = ("\r\n".join(res_lines) + "\r\n\r\n").encode("iso-8859-1")
     writer.write(raw_header + upstream_resp.content)
@@ -476,6 +493,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
             )
 
             if is_static:
+                is_head = (method.upper() == "HEAD")
                 cache_hit = cache_manager.get_cache(path)
                 if cache_hit:
                     c_headers, c_data = cache_hit
@@ -489,14 +507,14 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             "Access-Control-Allow-Origin": "*",
                             "Connection": "keep-alive",
                         }
-                        await send_cached_response(writer, 304, "Not Modified", not_mod_headers, b"")
+                        await send_cached_response(writer, 304, "Not Modified", not_mod_headers, b"", is_head=is_head)
                         PROXY_STATS["hits"] += 1
                         if is_ram:
                             PROXY_STATS["ram_hits"] += 1
                         format_log(f"CACHE-{'RAM' if is_ram else 'DISK'}", "32", f"304 Not Modified -> {path}")
                         continue
 
-                    await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
+                    await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                     PROXY_STATS["hits"] += 1
                     if is_ram:
                         PROXY_STATS["ram_hits"] += 1
@@ -530,7 +548,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         verified_cache = cache_manager.get_cache(path)
                         if verified_cache:
                             c_headers, c_data = verified_cache
-                            await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
+                            await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                             continue
 
                 # Fallback if non-200 or unable to cache
@@ -723,6 +741,7 @@ async def main():
     proxy_server_instance = server
     PROXY_STATS["is_running"] = True
     PROXY_STATS["last_error"] = ""
+    proxy_ready_event.set()
 
     format_log("READY", "32", f"代理服务已成功启动！等待 GBF 请求接入...\n")
 
@@ -731,6 +750,7 @@ async def main():
             await server.serve_forever()
     finally:
         PROXY_STATS["is_running"] = False
+        proxy_ready_event.clear()
         await close_http_client()
 
 if __name__ == "__main__":

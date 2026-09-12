@@ -107,11 +107,55 @@ async def run_test():
             cache_manager._apply_browser_cache_headers(headers_unver, "/manifest.json")
             assert "immutable" not in headers_unver.get("Cache-Control", "")
 
-            # Restore conservative default
-            config_manager.config["enable_browser_cache"] = False
-            print("Test 11 - Versioned Immutable Scoping: OK")
+            # Test 12: Path Traversal Rejection
+            assert cache_manager._get_local_path("/C:/Windows/win.ini") is None
+            assert cache_manager._get_local_path("/../../etc/passwd") is None
+            assert cache_manager._get_local_path("/assets/../../../boot.ini") is None
+            assert cache_manager.get_cache("/C:/Windows/win.ini") is None
+            assert cache_manager.get_cache("/../../test.png") is None
+            print("Test 12 - Path Traversal & Arbitrary File Read Rejection: OK")
 
-            print("\n[+] ALL 11 TESTS PASSED SUCCESSFULLY!")
+            # Test 13: HEAD Request Zero-Body & Content-Length Preservation
+            resp_head = await client.head(url_cache)
+            print(f"Test 13 - HEAD Request: status={resp_head.status_code}, content_len={len(resp_head.content)}, header_len={resp_head.headers.get('content-length')}")
+            assert resp_head.status_code == 200
+            assert resp_head.headers.get("x-proxy-cache") == "HIT"
+            assert len(resp_head.content) == 0
+            assert int(resp_head.headers.get("content-length", 0)) > 0
+
+            # Test 14: Local Unique CA & SAN Scope Check
+            from cert_manager import SAN_DOMAINS
+            assert "*.akamaized.net" not in SAN_DOMAINS
+            assert "prd-game-a-granbluefantasy.akamaized.net" in SAN_DOMAINS
+            print("Test 14 - Local Dynamic CA & Scoped SAN Domains: OK")
+
+            # Test 16: Multi Set-Cookie Header Preservation
+            class MockWriter:
+                def __init__(self):
+                    self.data = b""
+                def write(self, d):
+                    self.data += d
+                async def drain(self):
+                    pass
+
+            mock_writer = MockWriter()
+            mock_upstream = httpx.Response(
+                200,
+                headers=[
+                    ("Set-Cookie", "session_id=abc1234; path=/; HttpOnly"),
+                    ("Set-Cookie", "remember_me=true; expires=Wed, 21 Oct 2026 07:28:00 GMT; path=/"),
+                ],
+                content=b'{"ok": true}',
+            )
+            await gbf_proxy.forward_upstream_response(mock_writer, {}, mock_upstream)
+            raw_resp = mock_writer.data.decode("iso-8859-1")
+            set_cookie_lines = [line for line in raw_resp.split("\r\n") if line.startswith("Set-Cookie:")]
+            assert len(set_cookie_lines) == 2
+            assert "session_id=abc1234" in set_cookie_lines[0]
+            assert "remember_me=true" in set_cookie_lines[1]
+            print("Test 16 - Multi Set-Cookie Header Preservation: OK")
+
+            print("\n[+] ALL 16 TESTS PASSED SUCCESSFULLY!")
     finally:
         if started_here:
             gbf_proxy.stop_proxy_thread()

@@ -34,6 +34,7 @@ from config_manager import (
     auto_detect_acgpower_cache,
     auto_detect_upstream_proxy,
     is_port_open,
+    check_upstream_connectivity,
 )
 from cert_manager import ensure_ca, CA_CERT_PATH, get_ca_fingerprint_sha256
 from cache_manager import cache_manager
@@ -101,6 +102,8 @@ class GBFAcceleratorGUI:
 
         # Check CA status
         self.update_ca_status()
+        if not is_ca_installed():
+            self.root.after(500, self.prompt_first_run_ca)
 
         # Ensure helper files
         from app_main import ensure_bundled_files
@@ -223,7 +226,10 @@ class GBFAcceleratorGUI:
         btn_open_folder = ttk.Button(f_bottom, text="📂 打开缓存目录", command=self.open_cache_folder)
         btn_open_folder.pack(side="left", padx=(0, 6))
 
-        btn_proxy_guide = ttk.Button(f_bottom, text="🌐 分流与使用说明", command=self.show_guide)
+        btn_clear_cache = ttk.Button(f_bottom, text="🗑️ 清空本地缓存", command=self.clear_cache_dialog)
+        btn_clear_cache.pack(side="left", padx=(0, 6))
+
+        btn_proxy_guide = ttk.Button(f_bottom, text="🌐 分流与说明", command=self.show_guide)
         btn_proxy_guide.pack(side="left", padx=(0, 6))
 
         btn_tray = ttk.Button(f_bottom, text="⬇ 最小化到系统托盘", command=self.hide_to_tray)
@@ -379,6 +385,31 @@ class GBFAcceleratorGUI:
             messagebox.showwarning("注销提示", f"注销结果：\n{msg}")
         self.update_ca_status()
 
+    def prompt_first_run_ca(self):
+        if not is_ca_installed():
+            if messagebox.askyesno(
+                "根证书安装引导",
+                "检测到本机尚未安装/信任加速器专属的 HTTPS 根证书。\n\n"
+                "碧蓝幻想的大部分静态资源（立绘、音频、脚本等）均通过 HTTPS 传输。"
+                "安装根证书后，加速器才能解密并为您极速缓存这些静态素材。\n\n"
+                "是否立即启动一键安装向导？\n"
+                "（若弹出系统安全提示框，请点击【是 (Y)】允许信任）",
+            ):
+                self.install_ca()
+
+    def clear_cache_dialog(self):
+        if not messagebox.askyesno(
+            "清空本地缓存确认",
+            "确定要清空全部本地缓存吗？\n\n"
+            "• 将删除磁盘缓存目录中的所有已下载静态资源文件\n"
+            "• 将清空当前内存热点缓存\n\n"
+            "下次游玩时将重新按需下载最新素材。",
+        ):
+            return
+        deleted, freed = cache_manager.clear_all_cache()
+        mb = freed / (1024 * 1024)
+        messagebox.showinfo("清空完成", f"本地缓存已清空！\n已删除 {deleted} 个文件，释放 {mb:.1f} MB 磁盘空间。")
+
     def browse_cache_dir(self):
         chosen = filedialog.askdirectory(title="选择 GBF 本地缓存保存目录", initialdir=self.var_cache_dir.get())
         if chosen:
@@ -406,7 +437,16 @@ class GBFAcceleratorGUI:
         config_manager.config["upstream_proxy"] = active
         config_manager.save_config()
         gbf_proxy.UPSTREAM_PROXY = active
-        messagebox.showinfo("上游探测结果", f"检测到可用的本地代理服务：\n{active}\n\n已成功应用设置！")
+        # Check connectivity
+        ok, msg = check_upstream_connectivity(active)
+        # Restart proxy if running so connection pool picks up the new upstream proxy
+        if gbf_proxy.PROXY_STATS.get("is_running", False):
+            self.stop_proxy()
+            self.start_proxy()
+        if ok:
+            messagebox.showinfo("上游探测结果", f"检测并连通本地代理服务：\n{active}\n\n代理连接池已更新生效！")
+        else:
+            messagebox.showwarning("上游探测警告", f"检测到本地代理地址：\n{active}\n\n但连通测试失败：{msg}\n请确认 Clash 是否已启动并开启本地监听。")
 
     def reset_port_default(self):
         self.var_listen_port.set("8124")
@@ -438,7 +478,15 @@ class GBFAcceleratorGUI:
             pass
 
         old_port = gbf_proxy.LISTEN_PORT
+        old_up = gbf_proxy.UPSTREAM_PROXY
         port_changed = (port != old_port)
+        upstream_changed = (up != old_up)
+
+        # Check connectivity to upstream
+        up_ok, up_msg = check_upstream_connectivity(up)
+        if not up_ok and up != "direct":
+            if not messagebox.askyesno("上游代理连通警告", f"测试连接上游代理失败：\n{up_msg}\n\n是否仍然保存该代理地址？"):
+                return
 
         config_manager.config["upstream_proxy"] = up
         config_manager.config["cache_dir"] = cd
@@ -460,13 +508,15 @@ class GBFAcceleratorGUI:
         from app_main import update_pac_file
         update_pac_file(port)
 
-        if port_changed and gbf_proxy.PROXY_STATS.get("is_running", False):
+        if (port_changed or upstream_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
             self.stop_proxy()
             gbf_proxy.LISTEN_PORT = port
+            gbf_proxy.UPSTREAM_PROXY = up
             self.start_proxy()
-            messagebox.showinfo("保存成功", f"配置已保存！\n监听端口已更新为 {port}，代理服务已自动重启生效。")
+            messagebox.showinfo("保存成功", f"配置已保存！\n代理服务已自动重启生效（上游：{up}，端口：{port}）。")
         else:
             gbf_proxy.LISTEN_PORT = port
+            gbf_proxy.UPSTREAM_PROXY = up
             messagebox.showinfo("保存成功", "配置已保存成功！")
 
     def toggle_perf_settings(self):
@@ -543,14 +593,27 @@ class GBFAcceleratorGUI:
 
         gbf_proxy.start_proxy_thread()
 
-        if self.var_auto_pac.get():
-            system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
+        # Wait for actual socket bind success (up to 2 seconds)
+        is_ready = gbf_proxy.proxy_ready_event.wait(timeout=2.0)
+        is_running = gbf_proxy.PROXY_STATS.get("is_running", False)
 
-        self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT})")
-        self.lbl_status.configure(foreground="#28a745")
-        self.btn_toggle.configure(text="停止加速", bg="#dc3545", activebackground="#bd2130")
-        if self.tray_icon:
-            self.tray_icon.icon = create_tray_icon_image(True)
+        if is_ready and is_running:
+            if self.var_auto_pac.get():
+                system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
+
+            self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT})")
+            self.lbl_status.configure(foreground="#28a745")
+            self.btn_toggle.configure(text="停止加速", bg="#dc3545", activebackground="#bd2130")
+            if self.tray_icon:
+                self.tray_icon.icon = create_tray_icon_image(True)
+        else:
+            err = gbf_proxy.PROXY_STATS.get("last_error", "端口绑定失败或超时")
+            self.var_status_text.set(f"● 启动失败: {err[:20]}")
+            self.lbl_status.configure(foreground="#dc3545")
+            self.btn_toggle.configure(text="启动加速", bg="#28a745", activebackground="#218838")
+            if self.tray_icon:
+                self.tray_icon.icon = create_tray_icon_image(False)
+            messagebox.showerror("启动失败", f"代理服务无法在端口 {port} 启动：\n{err}\n\n请尝试更换端口或检查是否有其他程序占用。")
 
     def stop_proxy(self):
         gbf_proxy.stop_proxy_thread()
