@@ -132,7 +132,21 @@ def get_server_ssl_context() -> ssl.SSLContext:
     ctx.load_cert_chain(str(SERVER_CERT_PATH), str(SERVER_KEY_PATH))
     return ctx
 
+def get_ca_fingerprint_sha256() -> str:
+    """Calculate and return formatted SHA-256 fingerprint of Root CA certificate."""
+    ensure_ca()
+    if CA_CERT_PATH.is_file():
+        try:
+            cert_data = CA_CERT_PATH.read_bytes()
+            cert = x509.load_pem_x509_certificate(cert_data)
+            raw_hex = cert.fingerprint(hashes.SHA256()).hex().upper()
+            return ":".join(raw_hex[i:i+2] for i in range(0, len(raw_hex), 2))
+        except Exception:
+            pass
+    return "未知 / 证书未生成"
+
 if __name__ == "__main__":
     ensure_ca()
     ensure_server_cert()
+    print("CA Fingerprint (SHA-256):", get_ca_fingerprint_sha256())
     print("Done!")

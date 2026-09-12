@@ -57,7 +57,7 @@ TELEMETRY_PATTERNS = (
     "googletagmanager.com",
 )
 
-# Static asset extensions and path prefixes for 100% comprehensive cache coverage
+# Static asset extensions and path prefixes for cache coverage
 STATIC_EXTENSIONS = (
     ".png", ".jpg", ".jpeg", ".gif", ".webp",
     ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm",
@@ -68,9 +68,12 @@ STATIC_PATH_PREFIXES = (
     "/assets/", "/assets_en/", "/sound/", "/img/", "/css/", "/js/", "/font/",
 )
 
-# In-memory Raid Socket URI cache: (path, uid) -> (timestamp, status, headers, body)
-RAID_SOCKET_CACHE: Dict[Tuple[str, str], Tuple[float, int, Dict[str, str], bytes]] = {}
-RAID_CACHE_TTL = 60.0  # seconds
+# Dynamic API prefixes that must NEVER be cached as static assets
+DYNAMIC_API_PREFIXES = (
+    "/rest/", "/quest/", "/party/", "/user/", "/deck/",
+    "/gacha/", "/casino/", "/present/", "/mypage/",
+    "/guild/", "/coopraid/", "/weapon/", "/socket/",
+)
 
 # Global HTTP client pool for upstream requests through Clash
 http_client: Optional[httpx.AsyncClient] = None
@@ -143,10 +146,11 @@ def format_log(level: str, color_code: str, msg: str):
 
 async def init_http_client():
     global http_client
+    verify_tls = config_manager.config.get("verify_upstream_tls", True)
     limits = httpx.Limits(max_keepalive_connections=50, max_connections=100, keepalive_expiry=60.0)
     http_client = httpx.AsyncClient(
         proxy=UPSTREAM_PROXY,
-        verify=False,  # Skip upstream TLS verification on proxy to maximize speed
+        verify=verify_tls,
         timeout=httpx.Timeout(15.0, connect=8.0),
         limits=limits,
         follow_redirects=False,
@@ -183,15 +187,19 @@ async def handle_passthrough(client_reader: asyncio.StreamReader, client_writer:
         parsed = urllib.parse.urlparse(UPSTREAM_PROXY)
         proxy_h = parsed.hostname or "127.0.0.1"
         proxy_p = parsed.port or 7897
-        upstream_reader, upstream_writer = await asyncio.open_connection(proxy_h, proxy_p)
+        upstream_reader, upstream_writer = await asyncio.wait_for(
+            asyncio.open_connection(proxy_h, proxy_p),
+            timeout=8.0,
+        )
         connect_req = f"CONNECT {target_host}:{target_port} HTTP/1.1\r\nHost: {target_host}:{target_port}\r\n\r\n"
         upstream_writer.write(connect_req.encode("ascii"))
         await upstream_writer.drain()
 
         # Read CONNECT response from Clash
-        resp_line = await upstream_reader.readline()
-        if b"200" not in resp_line:
-            client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+        resp_line = await asyncio.wait_for(upstream_reader.readline(), timeout=10.0)
+        parts = resp_line.decode("iso-8859-1", errors="replace").strip().split()
+        if len(parts) < 2 or parts[1] != "200":
+            client_writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             await client_writer.drain()
             client_writer.close()
             return
@@ -220,8 +228,12 @@ async def handle_passthrough(client_reader: asyncio.StreamReader, client_writer:
             pass
 
 async def read_http_request(reader: asyncio.StreamReader) -> Optional[Tuple[str, str, str, Dict[str, str], bytes]]:
-    """Read and parse a full HTTP request from reader."""
-    req_line = await reader.readline()
+    """Read and parse a full HTTP request with Chunked support and timeouts."""
+    try:
+        req_line = await asyncio.wait_for(reader.readline(), timeout=30.0)
+    except (asyncio.TimeoutError, ConnectionResetError, OSError):
+        return None
+
     if not req_line:
         return None
 
@@ -235,10 +247,23 @@ async def read_http_request(reader: asyncio.StreamReader) -> Optional[Tuple[str,
         return None
 
     headers: Dict[str, str] = {}
+    total_header_bytes = len(req_line)
+    MAX_HEADERS_BYTES = 64 * 1024  # 64KB max header
+    MAX_HEADER_COUNT = 128
+
     while True:
-        header_line = await reader.readline()
+        try:
+            header_line = await asyncio.wait_for(reader.readline(), timeout=15.0)
+        except (asyncio.TimeoutError, ConnectionResetError, OSError):
+            return None
+
         if not header_line or header_line in (b"\r\n", b"\n"):
             break
+
+        total_header_bytes += len(header_line)
+        if total_header_bytes > MAX_HEADERS_BYTES or len(headers) > MAX_HEADER_COUNT:
+            return None
+
         try:
             h_str = header_line.decode("iso-8859-1").strip()
             if ":" in h_str:
@@ -248,14 +273,77 @@ async def read_http_request(reader: asyncio.StreamReader) -> Optional[Tuple[str,
             pass
 
     body = b""
-    content_length = int(headers.get("content-length", 0))
-    if content_length > 0:
-        body = await reader.readexactly(content_length)
+    MAX_BODY_BYTES = 32 * 1024 * 1024  # 32MB max body
+
+    # 1. Handle Chunked Transfer-Encoding
+    if "chunked" in headers.get("transfer-encoding", "").lower():
+        chunks = []
+        total_chunk_bytes = 0
+        while True:
+            try:
+                chunk_line = await asyncio.wait_for(reader.readline(), timeout=15.0)
+            except (asyncio.TimeoutError, ConnectionResetError, OSError):
+                return None
+            if not chunk_line:
+                break
+            chunk_line_str = chunk_line.decode("iso-8859-1").strip().split(";")[0]
+            if not chunk_line_str:
+                continue
+            try:
+                chunk_size = int(chunk_line_str, 16)
+            except ValueError:
+                return None
+
+            if chunk_size == 0:
+                # Consume trailing trailer/empty line
+                try:
+                    await asyncio.wait_for(reader.readline(), timeout=5.0)
+                except Exception:
+                    pass
+                break
+
+            if total_chunk_bytes + chunk_size > MAX_BODY_BYTES:
+                return None
+
+            try:
+                chunk_data = await asyncio.wait_for(reader.readexactly(chunk_size), timeout=15.0)
+                # Consume trailing \r\n after chunk data
+                await asyncio.wait_for(reader.readline(), timeout=5.0)
+            except (asyncio.TimeoutError, ConnectionResetError, OSError):
+                return None
+
+            chunks.append(chunk_data)
+            total_chunk_bytes += chunk_size
+
+        body = b"".join(chunks)
+
+    # 2. Handle standard Content-Length
+    else:
+        try:
+            content_length = int(headers.get("content-length", 0))
+        except ValueError:
+            return None
+
+        if content_length > MAX_BODY_BYTES:
+            return None
+
+        if content_length > 0:
+            try:
+                body = await asyncio.wait_for(reader.readexactly(content_length), timeout=30.0)
+            except (asyncio.TimeoutError, ConnectionResetError, OSError):
+                return None
 
     return method, path, version, headers, body
 
-async def send_http_response(writer: asyncio.StreamWriter, status_code: int, status_text: str, headers: Dict[str, str], body: bytes, keep_content_encoding: bool = False):
-    """Send HTTP response to client with clean, deduplicated header framing."""
+async def send_cached_response(
+    writer: asyncio.StreamWriter,
+    status_code: int,
+    status_text: str,
+    headers: Dict[str, str],
+    body: bytes,
+    keep_content_encoding: bool = False,
+):
+    """Send HTTP response for local cache hits, mock endpoints, preflights, or synthetic errors."""
     filtered_headers: Dict[str, str] = {}
     for k, v in headers.items():
         k_lower = k.lower()
@@ -267,7 +355,7 @@ async def send_http_response(writer: asyncio.StreamWriter, status_code: int, sta
 
     filtered_headers["content-length"] = str(len(body))
     filtered_headers["connection"] = "keep-alive"
-    # Ensure strictly ONE valid CORS origin header to prevent W3C CORS duplicate violations
+    # Ensure CORS is allowed for locally mocked or cached static assets
     filtered_headers["access-control-allow-origin"] = "*"
 
     res_lines = [f"HTTP/1.1 {status_code} {status_text}"]
@@ -277,6 +365,46 @@ async def send_http_response(writer: asyncio.StreamWriter, status_code: int, sta
     raw_header = ("\r\n".join(res_lines) + "\r\n\r\n").encode("iso-8859-1")
     writer.write(raw_header + body)
     await writer.drain()
+
+async def forward_upstream_response(
+    writer: asyncio.StreamWriter,
+    client_headers: Dict[str, str],
+    upstream_resp: httpx.Response,
+) -> bool:
+    """Forward dynamic API response strictly preserving original upstream headers without CORS tampering."""
+    # Since httpx automatically decompresses content into upstream_resp.content,
+    # content-encoding must be stripped so clients don't attempt double decompression.
+    hop_by_hop = {"transfer-encoding", "trailer", "te", "upgrade", "content-encoding"}
+    out_headers: Dict[str, str] = {}
+
+    for k, v in upstream_resp.headers.items():
+        k_lower = k.lower()
+        if k_lower in hop_by_hop or k_lower == "content-length":
+            continue
+        out_headers[k_lower] = v
+
+    # Set accurate Content-Length for buffered body
+    out_headers["content-length"] = str(len(upstream_resp.content))
+
+    # Connection negotiation: honor close if requested by client or upstream
+    client_conn = client_headers.get("connection", "").lower()
+    upstream_conn = upstream_resp.headers.get("connection", "").lower()
+    should_close = ("close" in client_conn or "close" in upstream_conn or upstream_resp.http_version == "HTTP/1.0")
+
+    if should_close:
+        out_headers["connection"] = "close"
+    else:
+        out_headers["connection"] = "keep-alive"
+
+    res_lines = [f"HTTP/1.1 {upstream_resp.status_code} {upstream_resp.reason_phrase}"]
+    for k, v in out_headers.items():
+        res_lines.append(f"{k}: {v}")
+
+    raw_header = ("\r\n".join(res_lines) + "\r\n\r\n").encode("iso-8859-1")
+    writer.write(raw_header + upstream_resp.content)
+    await writer.drain()
+
+    return not should_close
 
 async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, target_host: str, ssl_context: ssl.SSLContext):
     """Handle decrypted HTTPS requests for GBF domains."""
@@ -312,7 +440,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     "Access-Control-Max-Age": "604800",
                     "Connection": "keep-alive",
                 }
-                await send_http_response(writer, 200, "OK", cors_headers, b"")
+                await send_cached_response(writer, 200, "OK", cors_headers, b"")
                 format_log("OPTIONS", "35", f"CORS Preflight Mock -> {target_host}{path}")
                 continue
 
@@ -323,7 +451,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     "Access-Control-Allow-Origin": "*",
                     "Connection": "keep-alive",
                 }
-                await send_http_response(writer, 200, "OK", mock_headers, b'{"success":true}')
+                await send_cached_response(writer, 200, "OK", mock_headers, b'{"success":true}')
                 err_msg = ""
                 if "error" in path and body:
                     try:
@@ -333,13 +461,17 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 format_log("MOCK-200", "33", f"Direct Mock -> {path}{err_msg}")
                 continue
 
-            # ---------------- Rule 3: Static Asset Cache (100% Comprehensive) ----------------
+            # ---------------- Rule 3: Static Asset Cache (Strict & Safe) ----------------
             clean_path_lower = path.split("?")[0].lower()
             is_static = (
-                "akamaized.net" in target_host
-                or target_host.startswith("game-a")
-                or path.startswith(STATIC_PATH_PREFIXES)
-                or clean_path_lower.endswith(STATIC_EXTENSIONS)
+                method.upper() in ("GET", "HEAD")
+                and not path.startswith(DYNAMIC_API_PREFIXES)
+                and (
+                    "akamaized.net" in target_host
+                    or target_host.startswith("game-a")
+                    or path.startswith(STATIC_PATH_PREFIXES)
+                    or any(clean_path_lower.endswith(ext) for ext in STATIC_EXTENSIONS)
+                )
             )
 
             if is_static:
@@ -356,96 +488,87 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             "Access-Control-Allow-Origin": "*",
                             "Connection": "keep-alive",
                         }
-                        await send_http_response(writer, 304, "Not Modified", not_mod_headers, b"")
+                        await send_cached_response(writer, 304, "Not Modified", not_mod_headers, b"")
                         PROXY_STATS["hits"] += 1
                         if is_ram:
                             PROXY_STATS["ram_hits"] += 1
                         format_log("304 HIT", "32", f"{'RAM' if is_ram else 'DISK'} 304 -> {path}")
                         continue
 
-                    await send_http_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
+                    await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
                     PROXY_STATS["hits"] += 1
                     if is_ram:
                         PROXY_STATS["ram_hits"] += 1
                     format_log("CACHE HIT", "32", f"{'RAM' if is_ram else 'DISK'} -> {path} ({len(c_data):,} B)")
                     continue
 
-                # Cache MISS: fetch via Clash, save & compress, then serve through verified cache pipeline
+                # Cache MISS: fetch via Clash, save & compress
                 start_t = time.perf_counter()
                 url = f"https://{target_host}{path}"
-                # Strip conditional headers so Akamai always returns full 200 OK body instead of 304
                 clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length", "if-modified-since", "if-none-match")}
-                resp = await http_client.request(method, url, headers=clean_headers, content=body)
+                try:
+                    resp = await http_client.request(method, url, headers=clean_headers, content=body)
+                except httpx.TimeoutException:
+                    format_log("TIMEOUT", "31", f"Timeout fetching asset -> {url}")
+                    err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
+                    await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body)
+                    continue
+                except Exception as e:
+                    format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
+                    err_body = b'{"error": "Bad Gateway", "code": 502}'
+                    await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body)
+                    continue
+
                 elapsed_ms = int((time.perf_counter() - start_t) * 1000)
 
                 if resp.status_code == 200 and resp.content:
                     cache_manager.save_cache(path, dict(resp.headers), resp.content)
                     PROXY_STATS["downloads"] += 1
                     format_log("DOWNLOAD", "34", f"FETCHED & CACHED ({elapsed_ms}ms) -> {path}")
-                    # Serve immediately from verified cache to ensure 100% consistent headers and compression
                     verified_cache = cache_manager.get_cache(path)
                     if verified_cache:
                         c_headers, c_data = verified_cache
-                        await send_http_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
+                        await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True)
                         continue
 
                 # Fallback if non-200 or unable to cache
-                resp_headers = dict(resp.headers)
-                await send_http_response(writer, resp.status_code, resp.reason_phrase, resp_headers, resp.content)
+                keep_alive = await forward_upstream_response(writer, headers, resp)
+                if not keep_alive:
+                    break
                 continue
 
-            # ---------------- Rule 4: Raid Socket URI In-Memory Cache ----------------
-            enable_raid_cache = config_manager.config.get("enable_raid_socket_cache", True)
-            if enable_raid_cache and path.startswith(("/socket/chat/raid/uri/raid", "/socket/uri/raid")):
-                parsed_qs = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
-                uid = parsed_qs.get("uid", [""])[0]
-                clean_path = path.split("?")[0]
-                cache_key = (clean_path, uid)
-
-                now = time.time()
-                if cache_key in RAID_SOCKET_CACHE:
-                    cached_t, c_status, c_headers, c_body = RAID_SOCKET_CACHE[cache_key]
-                    if now - cached_t < RAID_CACHE_TTL:
-                        c_headers["Connection"] = "keep-alive"
-                        c_headers["X-Raid-Cache"] = "HIT"
-                        await send_http_response(writer, c_status, "OK", c_headers, c_body)
-                        PROXY_STATS["hits"] += 1
-                        PROXY_STATS["ram_hits"] += 1
-                        format_log("RAID-CACHE", "32", f"RAM Socket HIT -> {path}")
-                        continue
-
-                # Fetch from upstream
-                url = f"https://{target_host}{path}"
-                clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
-                resp = await http_client.request(method, url, headers=clean_headers, content=body)
-                resp_headers = dict(resp.headers)
-                resp_headers["Connection"] = "keep-alive"
-                await send_http_response(writer, resp.status_code, resp.reason_phrase, resp_headers, resp.content)
-
-                if resp.status_code == 200:
-                    RAID_SOCKET_CACHE[cache_key] = (now, resp.status_code, resp_headers, resp.content)
-                    format_log("RAID-CACHE", "36", f"Updated RAM Socket -> {path}")
-                continue
-
-            # ---------------- Rule 5: Dynamic Game API ----------------
+            # ---------------- Rule 4: Dynamic Game API (100% Pristine Forwarding) ----------------
             start_t = time.perf_counter()
             url = f"https://{target_host}{path}"
             clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
-            resp = await http_client.request(method, url, headers=clean_headers, content=body)
-            elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+            try:
+                resp = await http_client.request(method, url, headers=clean_headers, content=body)
+            except httpx.TimeoutException:
+                format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
+                err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
+                await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body)
+                continue
+            except Exception as e:
+                format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
+                err_body = b'{"error": "Bad Gateway", "code": 502}'
+                await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body)
+                continue
 
-            resp_headers = dict(resp.headers)
-            resp_headers["Connection"] = "keep-alive"
-            await send_http_response(writer, resp.status_code, resp.reason_phrase, resp_headers, resp.content)
+            elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+            keep_alive = await forward_upstream_response(writer, headers, resp)
             PROXY_STATS["apis"] += 1
 
             # Highlight slow API responses (>300ms) or errors
             color = "31" if resp.status_code >= 400 else ("33" if elapsed_ms > 300 else "37")
             format_log(f"API {resp.status_code}", color, f"{method} {path} ({elapsed_ms}ms)")
 
+            if not keep_alive:
+                break
+
         except (asyncio.CancelledError, ConnectionResetError, BrokenPipeError):
             break
         except Exception as e:
+            format_log("SESSION-ERR", "31", f"Unexpected session error on {target_host}: {e}")
             break
 
     try:
@@ -514,7 +637,7 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                     "Cache-Control": "no-cache",
                     "Connection": "close",
                 }
-                await send_http_response(writer, 200, "OK", pac_headers, pac_bytes)
+                await send_cached_response(writer, 200, "OK", pac_headers, pac_bytes)
                 format_log("PAC", "36", f"Served /proxy.pac (port {LISTEN_PORT}) to browser/system")
                 writer.close()
                 await writer.wait_closed()
@@ -522,7 +645,7 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
             # 2. Block plain HTTP telemetry requests
             if any(pat in target for pat in TELEMETRY_PATTERNS):
-                await send_http_response(writer, 200, "OK", {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Content-Length": "2", "Connection": "close"}, b"{}")
+                await send_cached_response(writer, 200, "OK", {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Content-Length": "2", "Connection": "close"}, b"{}")
                 writer.close()
                 await writer.wait_closed()
                 return
@@ -546,8 +669,7 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
 
             clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
             resp = await http_client.request(method, target, headers=clean_headers, content=body)
-            resp_headers = dict(resp.headers)
-            await send_http_response(writer, resp.status_code, resp.reason_phrase, resp_headers, resp.content)
+            await forward_upstream_response(writer, headers, resp)
             format_log(f"HTTP {resp.status_code}", "37", f"{method} {target}")
             writer.close()
             await writer.wait_closed()

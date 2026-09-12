@@ -24,7 +24,7 @@ from cache_manager import cache_manager
 import gbf_proxy
 
 USAGE_TEXT = """=================================================================
-   GBF 极速加速器（GBF Speed Accelerator）使用说明
+   GBF 加速器（GBF Speed Accelerator）使用说明
 =================================================================
 
 【只需 2 步开箱即玩】：
@@ -36,19 +36,20 @@ USAGE_TEXT = """================================================================
 3. 选择本程序同级目录下的【SwitchyOmega_GBF.bak】文件导入。
 4. 在浏览器右上角插件图标处，切换选定为【GBF_AutoSwitch】。
 
-（备用方式：如果不想装插件，可在 Windows 系统代理设置中，将 PAC 脚本
-地址填入：file:///{pac_path} ）
+（备用方式：如果不想装插件，可在软件界面直接勾选【自动配置 Windows 系统 PAC 代理】）
 
-第 2 步：启动本加速器与 Clash
+第 2 步：启动本加速器与科学上网代理
 -----------------------------------------------------------------
 1. 确保你的 Clash Verge / Clash / v2rayN 已开启并连上日本节点。
 2. 双击运行 GBF_Accelerator.exe。
-3. 浏览器打开 game.granbluefantasy.jp 即可享受 0ms 极速游戏！
+3. 浏览器打开 game.granbluefantasy.jp 即可畅玩！
 
 =================================================================
-【原理与安全说明】：
-- 本工具为纯网络层本地静态缓存与连接复用，绝不修改任何游戏数据或伤害。
-- 静态资源立绘/音频均缓存在本地，越玩越快，永不封号。
+【技术原理与免责声明】：
+- 本工具为网络层本地静态资源缓存与透明代理，不修改任何游戏内数据、协议包或战斗参数。
+- 游戏静态资源（立绘、音频、脚本）自动保存在本地，重复加载由本地毫秒级直接响应，减少跨海 CDN 延迟。
+- 游戏核心 API（抽卡、编队、结算、多人战等）原样透明转发至上游代理，保持 Cygames 原生 CORS 与头部一致。
+- 免责声明：本软件为第三方开源网络优化工具，用户请遵守 Cygames 游戏使用条款，使用风险自负。
 """
 
 def get_pac_content(port: int = 8124) -> str:
@@ -59,8 +60,7 @@ def get_pac_content(port: int = 8124) -> str:
         shExpMatch(host, "granbluefantasy.jp") ||
         shExpMatch(host, "*.granbluefantasy.com") ||
         shExpMatch(host, "granbluefantasy.com") ||
-        shExpMatch(host, "*.akamaized.net") ||
-        shExpMatch(host, "akamaized.net") ||
+        shExpMatch(host, "gbf.akamaized.net") ||
         shExpMatch(host, "*.mbga.jp") ||
         shExpMatch(host, "mbga.jp") ||
         shExpMatch(host, "rcv.a-i-ad.com") ||

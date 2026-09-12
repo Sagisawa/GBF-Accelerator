@@ -44,8 +44,8 @@
   "auto_system_proxy": true,
   "enable_ram_cache": true,
   "enable_browser_cache": true,
-  "enable_raid_socket_cache": true,
-  "enable_auto_repair": true
+  "enable_auto_repair": true,
+  "verify_upstream_tls": true
 }
 ```
 
@@ -53,10 +53,10 @@
 - `listen_port`: 本地加速服务监听端口（默认 8124，支持在界面中自定义）。
 - `cache_dir`: 静态资源缓存落盘路径。
 - `auto_system_proxy`: 启动加速时是否自动挂载 Windows 系统 PAC 代理。
-- `enable_ram_cache`: 启用内存热点缓存（默认开启，占用约 256MB 内存，高频资源 0 磁盘 I/O）。
+- `enable_ram_cache`: 启用内存热点缓存（默认开启，占用约 256MB 内存，高频资源 0 磁盘 I/O 极速直出）。
 - `enable_browser_cache`: 启用浏览器强缓存与渲染留存（默认开启，注入 immutable 标识加速切屏，会占用部分浏览器显存/内存）。
-- `enable_raid_socket_cache`: 启用多人战 Socket 内存预取与连接加速（默认开启）。
 - `enable_auto_repair`: 自动检测并清除损坏/0字节缓存文件并重新拉取（默认开启）。
+- `verify_upstream_tls`: 请求上游时是否校验上游 TLS 证书（默认开启，提升网络传输安全性）。
 
 ---
 
@@ -95,7 +95,9 @@ python build_exe.py
 
 ---
 
-## 注意事项
+## 安全与技术说明
 
-- 本工具仅提供网络转发与静态资源本地缓存，不包含任何游戏数据篡改或自动化操作功能。
-- 首次运行时如提示导入本地根证书，系用于代理转发与缓存 GBF 静态资源所必需，确认信任即可。
+- **根证书透明管理**：根证书仅在首次运行时由本机独立生成私钥与证书，私钥严格保存在本地 `certs/` 目录不外泄。主界面实时展示证书的 SHA-256 指纹，并提供“一键注销/卸载根证书”功能，方便随时清理受信任根证书。
+- **精准分流规则**：PAC 脚本及 SwitchyOmega 规则严格限制为 GBF 主站域名与 `gbf.akamaized.net`，杜绝宽泛匹配 `*.akamaized.net`，确保 Steam、苹果等其他使用 Akamai CDN 的国际应用流量不受任何干扰。
+- **动态 API 原样透明转发**：所有动态接口（抽卡、编队、结算、`/socket/` 多人战等）均保持 100% 原样透明转发，严格保留 Cygames 原生 CORS 响应头，绝不干预、注入或缓存动态数据，杜绝多人战不同步与状态不一致风险。
+- **免责声明**：本软件为开源网络辅助与本地静态资源缓存工具，不篡改任何游戏数据或内存。请遵守 Cygames 最终用户许可协议，使用风险自负。
