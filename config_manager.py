@@ -85,17 +85,161 @@ def auto_detect_upstream_proxy() -> str:
         return detected[0][0]
     return "http://127.0.0.1:7897"  # Default fallback
 
-def auto_detect_acgpower_cache() -> Optional[Path]:
-    """Check common paths and relative paths for existing ACGPower cache."""
-    # Check parent paths in case the exe is placed in or near acgpower
-    base_dir = get_base_dir()
-    for p in [base_dir / "cache" / "gbf" / "https", base_dir.parent / "cache" / "gbf" / "https", base_dir.parent.parent / "cache" / "gbf" / "https"]:
-        if p.is_dir() and (p / "assets").is_dir():
-            return p
+def normalize_cache_dir(path: Any) -> Path:
+    """Intelligently normalize cache directory downwards:
+    If user selected an ACGPower root directory, 'cache', or 'cache/gbf',
+    automatically resolve downward to the actual '.../cache/gbf/https' folder.
+    For custom folders without ACGPower sub-structure, retains the user's choice untouched.
+    """
+    if not path:
+        return (get_base_dir() / "cache" / "gbf" / "https").resolve()
+    p = Path(path).resolve()
+    if not p.is_dir():
+        return p
 
-    for p in KNOWN_ACGPOWER_PATHS:
-        if p.is_dir() and (p / "assets").is_dir():
-            return p
+    # 1. If 'assets' directory is already present, it is already the exact target root
+    if (p / "assets").is_dir():
+        return p
+
+    # 2. Check downward subpaths for existing ACGPower structure
+    # Case A: User selected .../cache/gbf
+    if (p / "https" / "assets").is_dir() or (p.name.lower() == "gbf" and (p / "https").is_dir()):
+        return (p / "https").resolve()
+
+    # Case B: User selected .../cache
+    if (p / "gbf" / "https" / "assets").is_dir() or (p.name.lower() == "cache" and (p / "gbf" / "https").is_dir()):
+        return (p / "gbf" / "https").resolve()
+
+    # Case C: User selected ACGPower root folder (e.g. D:\acgpower)
+    if (p / "cache" / "gbf" / "https" / "assets").is_dir() or (
+        (p / "cache" / "gbf" / "https").is_dir() and any((p / exe).is_file() for exe in ("ACGPower.exe", "acgpower.exe"))
+    ):
+        return (p / "cache" / "gbf" / "https").resolve()
+
+    # Case D: Check if any general subfolder has assets
+    if (p / "cache" / "gbf" / "https").is_dir():
+        return (p / "cache" / "gbf" / "https").resolve()
+
+    return p
+
+def _get_running_acgpower_path() -> Optional[Path]:
+    """Lightweight check if ACGPower.exe is currently running.
+    Uses kernel32 CreateToolhelp32Snapshot (pure ctypes, ~2ms, zero dependencies, no console window).
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_void_p),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        hSnapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+        if hSnapshot == -1 or not hSnapshot:
+            return None
+
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+
+        matched_pid = None
+        if kernel32.Process32FirstW(hSnapshot, ctypes.byref(pe)):
+            while True:
+                if "acgpower" in pe.szExeFile.lower():
+                    matched_pid = pe.th32ProcessID
+                    break
+                if not kernel32.Process32NextW(hSnapshot, ctypes.byref(pe)):
+                    break
+        kernel32.CloseHandle(hSnapshot)
+
+        if matched_pid:
+            hProc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, matched_pid)
+            if hProc:
+                buf = ctypes.create_unicode_buffer(1024)
+                size = wintypes.DWORD(1024)
+                if kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size)):
+                    kernel32.CloseHandle(hProc)
+                    return Path(buf.value).parent.resolve()
+                kernel32.CloseHandle(hProc)
+    except Exception:
+        pass
+    return None
+
+def auto_detect_acgpower_cache() -> Optional[Path]:
+    """Check running process, relative paths, and common drive paths for ACGPower cache."""
+    # 1. Check if ACGPower.exe is actively running in background (instant 100% precision)
+    running_dir = _get_running_acgpower_path()
+    if running_dir:
+        cand = normalize_cache_dir(running_dir)
+        if cand.is_dir() and ((cand / "assets").is_dir() or cand.name.lower() == "https"):
+            return cand
+
+    # 2. Check base_dir parents and siblings (portable bundle placement)
+    base_dir = get_base_dir()
+    for p in [
+        base_dir / "cache" / "gbf" / "https",
+        base_dir.parent / "cache" / "gbf" / "https",
+        base_dir.parent.parent / "cache" / "gbf" / "https",
+        base_dir.parent / "acgpower",
+        base_dir.parent / "ACGPower",
+    ]:
+        norm = normalize_cache_dir(p)
+        if norm.is_dir() and (norm / "assets").is_dir():
+            return norm
+
+    # 3. Dynamic system drives & common game/software installation paths
+    candidate_roots = []
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+            for i in range(26):
+                if bitmask & (1 << i):
+                    drive = f"{chr(ord('A') + i)}:/"
+                    for sub in (
+                        "acgpower",
+                        "ACGPower",
+                        "Games/acgpower",
+                        "Games/ACGPower",
+                        "Game/acgpower",
+                        "Program Files/acgpower",
+                        "Program Files (x86)/acgpower",
+                        "Software/acgpower",
+                        "Tools/acgpower",
+                    ):
+                        candidate_roots.append(Path(f"{drive}{sub}"))
+        except Exception:
+            pass
+
+    # Fallback to standard known paths if drive enumeration was empty
+    if not candidate_roots:
+        candidate_roots = [
+            Path(r"D:\acgpower"),
+            Path(r"C:\acgpower"),
+            Path(r"E:\acgpower"),
+            Path(r"F:\acgpower"),
+        ]
+
+    for root in candidate_roots:
+        if root.is_dir():
+            norm = normalize_cache_dir(root)
+            if norm.is_dir() and (norm / "assets").is_dir():
+                return norm
+
     return None
 
 LEGACY_LEAKED_CA_SHA1 = "51e9aa40a64fb8dc63f18f4b1a11b98d1cf8d3ff"
@@ -508,8 +652,12 @@ class ConfigManager:
             p = Path(raw_val)
             if not p.is_absolute():
                 p = (get_base_dir() / p).resolve()
-            p.mkdir(parents=True, exist_ok=True)
-            return p
+            norm_p = normalize_cache_dir(p)
+            if norm_p != p:
+                self.config["cache_dir"] = str(norm_p)
+                self.save_config()
+            norm_p.mkdir(parents=True, exist_ok=True)
+            return norm_p
 
         # Check if ACGPower cache is detected
         acgp_path = auto_detect_acgpower_cache()
@@ -533,7 +681,7 @@ class ConfigManager:
                 chosen = default_local
             elif choice == "3":
                 custom = input("   请输入自定义缓存文件夹路径: ").strip()
-                chosen = Path(custom).resolve() if custom else default_local
+                chosen = normalize_cache_dir(Path(custom).resolve()) if custom else default_local
             else:
                 chosen = acgp_path
 
