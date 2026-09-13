@@ -22,7 +22,7 @@ if sys.platform == "win32":
             pass
 
 # Ensure PIL and pystray
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 import pystray
 
 from config_manager import (
@@ -69,19 +69,45 @@ def create_tray_icon_image(is_running: bool = True) -> Image.Image:
     draw.polygon(bolt_coords, fill=(255, 255, 255))
     return img
 
+# Tk's own emoji font metrics don't match the rendered glyph width, which pushes
+# button text off-center. Emoji are therefore rendered to fixed-size bitmaps and
+# attached via image+compound so centering stays exact.
+_EMOJI_FONT_PATHS = (
+    r"C:\Windows\Fonts\seguiemj.ttf",
+    r"C:\Windows\Fonts\seguisym.ttf",
+)
+
+def render_emoji_image(emoji: str, size: int = 15):
+    """Render an emoji glyph to a transparent RGBA bitmap. None = no usable font."""
+    font_path = next((p for p in _EMOJI_FONT_PATHS if Path(p).is_file()), None)
+    if font_path is None:
+        return None
+    try:
+        big = max(48, size * 4)
+        font = ImageFont.truetype(font_path, big)
+        canvas = Image.new("RGBA", (big * 2, big * 2), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(canvas)
+        try:
+            draw.text((big // 2, big // 2), emoji, font=font, embedded_color=True)
+        except Exception:
+            draw.text((big // 2, big // 2), emoji, font=font, fill=(70, 70, 70, 255))
+        bbox = canvas.getbbox()
+        if not bbox:
+            return None
+        glyph = canvas.crop(bbox)
+        glyph.thumbnail((size, size), Image.LANCZOS)
+        out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        out.paste(glyph, ((size - glyph.width) // 2, (size - glyph.height) // 2), glyph)
+        return out
+    except Exception:
+        return None
+
 class GBFAcceleratorGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.window_icon = ImageTk.PhotoImage(create_tray_icon_image(True))
         self.root.iconphoto(True, self.window_icon)
         self.root.title("GBF 加速器")
-
-        # Responsive window sizing based on screen height
-        screen_h = self.root.winfo_screenheight()
-        win_w = 680
-        win_h = 830 if screen_h >= 900 else max(720, screen_h - 70)
-        self.root.geometry(f"{win_w}x{win_h}")
-        self.root.minsize(620, min(740, win_h))
 
         # Styles
         self.setup_styles()
@@ -105,14 +131,31 @@ class GBFAcceleratorGUI:
 
         # Performance & Resource Controls
         self.var_ram_cache = tk.BooleanVar(value=config_manager.config.get("enable_ram_cache", True))
-        self.var_browser_cache = tk.BooleanVar(value=config_manager.config.get("enable_browser_cache", False))
+        self.var_browser_cache = tk.BooleanVar(value=config_manager.config.get("enable_browser_cache", True))
         self.var_auto_repair = tk.BooleanVar(value=config_manager.config.get("enable_auto_repair", True))
+        self.var_prefetch = tk.BooleanVar(value=config_manager.config.get("enable_prefetch", True))
+        self.var_ram_warmup = tk.BooleanVar(value=config_manager.config.get("enable_ram_warmup", True))
+        self.var_ram_max_mb = tk.StringVar(value=str(config_manager.config.get("ram_cache_max_mb", 256)))
         self.var_auto_update = tk.BooleanVar(value=config_manager.config.get("auto_check_update", True))
         self.update_info: Optional[UpdateInfo] = None
+
+        # Emoji icon cache (buttons attach icons via image+compound for exact centering)
+        self._icon_cache: dict = {}
+        self._icon_size = None
 
         # Build UI
         self.build_ui()
         self.update_shimakaze_controls()
+
+        # Auto-fit window size to the real layout: measure the width Tk actually
+        # needs after construction (bottom action bar, fingerprint line, etc.)
+        # instead of guessing, so nothing on the right edge ever gets clipped.
+        self.root.update_idletasks()
+        screen_h = self.root.winfo_screenheight()
+        win_w = max(680, int(self.root.winfo_reqwidth()) + 16)
+        win_h = 858 if screen_h >= 900 else max(740, screen_h - 70)
+        self.root.geometry(f"{win_w}x{win_h}")
+        self.root.minsize(win_w, min(740, win_h))
 
         # Center window after layout is constructed
         self.center_window()
@@ -184,6 +227,33 @@ class GBFAcceleratorGUI:
         style.configure("Success.TButton", font=("Microsoft YaHei UI", 9, "bold"))
         style.configure("Danger.TButton", font=("Microsoft YaHei UI", 9, "bold"))
 
+    def get_icon(self, emoji: str):
+        """Cached PhotoImage for an emoji glyph, sized to match the 9pt UI font."""
+        key = (emoji, self._icon_size)
+        if key in self._icon_cache:
+            return self._icon_cache[key]
+        if self._icon_size is None:
+            try:
+                px = int(self.root.winfo_fpixels("9p"))
+            except Exception:
+                px = 16
+            self._icon_size = max(14, min(px, 26))
+        img = render_emoji_image(emoji, self._icon_size)
+        if img is None:
+            self._icon_cache[key] = False  # negative cache: no usable emoji font
+            return None
+        photo = ImageTk.PhotoImage(img)
+        self._icon_cache[key] = photo
+        return photo
+
+    def _emoji_button(self, parent, emoji: str, text: str, command, style: str = None):
+        """ttk.Button with a bitmap emoji icon so text stays perfectly centered."""
+        icon = self.get_icon(emoji)
+        if icon is not None:
+            return ttk.Button(parent, text=f" {text}", image=icon, compound="left",
+                              command=command, style=style)
+        return ttk.Button(parent, text=text, command=command, style=style)
+
     def build_ui(self):
         main_container = ttk.Frame(self.root, padding="14 10 14 10")
         main_container.pack(fill="both", expand=True)
@@ -204,7 +274,9 @@ class GBFAcceleratorGUI:
         # Dynamic update badge button (hidden until update is detected)
         self.btn_update_badge = tk.Button(
             h_title_box,
-            text="🔥 发现新版",
+            text=" 发现新版",
+            image=self.get_icon("🔥"),
+            compound="left",
             bg="#ffc107",
             fg="#212529",
             activebackground="#e0a800",
@@ -271,22 +343,25 @@ class GBFAcceleratorGUI:
         f_bottom = ttk.Frame(main_container)
         f_bottom.pack(side="bottom", fill="x", pady=(8, 0))
 
-        btn_open_folder = ttk.Button(f_bottom, text="📂 缓存目录", command=self.open_cache_folder)
+        btn_open_folder = self._emoji_button(f_bottom, "📂", "缓存目录", self.open_cache_folder)
         btn_open_folder.pack(side="left", padx=(0, 4))
 
-        btn_clear_cache = ttk.Button(f_bottom, text="🗑️ 清空缓存", command=self.clear_cache_dialog)
+        btn_clear_cache = self._emoji_button(f_bottom, "🗑️", "清空缓存", self.clear_cache_dialog)
         btn_clear_cache.pack(side="left", padx=(0, 4))
 
-        btn_proxy_guide = ttk.Button(f_bottom, text="🌐 分流说明", command=self.show_guide)
+        btn_proxy_guide = self._emoji_button(f_bottom, "🌐", "分流说明", self.show_guide)
         btn_proxy_guide.pack(side="left", padx=(0, 4))
 
-        btn_github = ttk.Button(f_bottom, text="⭐ GitHub", command=self.open_github)
+        btn_github = self._emoji_button(f_bottom, "⭐", "GitHub", self.open_github)
         btn_github.pack(side="left", padx=(0, 4))
 
-        self.btn_check_update = ttk.Button(f_bottom, text="🔄 检查更新", command=self.manual_check_update)
+        self.btn_check_update = self._emoji_button(f_bottom, "🔄", "检查更新", self.manual_check_update)
         self.btn_check_update.pack(side="left", padx=(0, 4))
 
-        btn_tray = ttk.Button(f_bottom, text="⬇ 最小化到托盘", command=self.hide_to_tray)
+        self.btn_latency = self._emoji_button(f_bottom, "📡", "延迟测试", self.run_latency_test)
+        self.btn_latency.pack(side="left", padx=(0, 4))
+
+        btn_tray = self._emoji_button(f_bottom, "⬇", "最小化到托盘", self.hide_to_tray)
         btn_tray.pack(side="right")
 
         # ---------------- 4. Settings Card ----------------
@@ -423,11 +498,21 @@ class GBFAcceleratorGUI:
 
         chk_ram = ttk.Checkbutton(
             f_perf,
-            text="启用内存热点缓存 (RAM Cache) - 占用约 256MB 内存，高频静态资源 0 磁盘 I/O 极速直出",
+            text="启用内存热点缓存 (RAM Cache) - 占用约 256MB 内存，高频静态资源 0 磁盘 I/O 直接响应",
             variable=self.var_ram_cache,
             command=self.toggle_perf_settings,
         )
         chk_ram.pack(anchor="w", pady=2)
+
+        f_ram_mb = ttk.Frame(f_perf, style="CardInner.TFrame")
+        f_ram_mb.pack(anchor="w", pady=(0, 2))
+        ttk.Label(f_ram_mb, text="内存缓存上限 (MB):", style="Normal.TLabel").pack(side="left")
+        self.entry_ram_mb = ttk.Entry(f_ram_mb, textvariable=self.var_ram_max_mb, width=8, font=("Consolas", 9))
+        self.entry_ram_mb.pack(side="left", padx=(6, 6))
+        self.btn_apply_ram = ttk.Button(f_ram_mb, text="应用", width=6, command=self.apply_ram_max_mb)
+        self.btn_apply_ram.pack(side="left")
+        self.lbl_ram_usage = ttk.Label(f_ram_mb, text="", style="Gray.TLabel")
+        self.lbl_ram_usage.pack(side="left", padx=(10, 0))
 
         chk_browser = ttk.Checkbutton(
             f_perf,
@@ -444,6 +529,22 @@ class GBFAcceleratorGUI:
             command=self.toggle_perf_settings,
         )
         chk_repair.pack(anchor="w", pady=2)
+
+        chk_prefetch = ttk.Checkbutton(
+            f_perf,
+            text="启用资源预加载 - 解析场景 JS 引用的素材并后台预热，首次进新副本/活动更流畅",
+            variable=self.var_prefetch,
+            command=self.toggle_perf_settings,
+        )
+        chk_prefetch.pack(anchor="w", pady=2)
+
+        chk_warm = ttk.Checkbutton(
+            f_perf,
+            text="启动时预热内存缓存 - 把高频小文件预先载入 RAM，消除会话首读的磁盘延迟",
+            variable=self.var_ram_warmup,
+            command=self.toggle_perf_settings,
+        )
+        chk_warm.pack(anchor="w", pady=2)
 
     # ================= Functional Methods =================
     def update_ca_status(self):
@@ -473,7 +574,7 @@ class GBFAcceleratorGUI:
 
     def manual_check_update(self):
         if hasattr(self, "btn_check_update") and self.btn_check_update.winfo_exists():
-            self.btn_check_update.configure(text="⏳ 检查中...", state="disabled")
+            self.btn_check_update.configure(text=" 检查中...", state="disabled")
         threading.Thread(target=self._bg_check_update, args=(True,), daemon=True).start()
 
     def _bg_check_update(self, is_manual: bool):
@@ -487,11 +588,11 @@ class GBFAcceleratorGUI:
     def _handle_update_result(self, info: UpdateInfo, is_manual: bool):
         self.update_info = info
         if hasattr(self, "btn_check_update") and self.btn_check_update.winfo_exists():
-            self.btn_check_update.configure(text="🔄 检查更新", state="normal")
+            self.btn_check_update.configure(text=" 检查更新", state="normal")
 
         if info.has_update:
             if hasattr(self, "btn_update_badge") and self.btn_update_badge.winfo_exists():
-                self.btn_update_badge.configure(text=f"🔥 发现新版 v{info.latest_version}")
+                self.btn_update_badge.configure(text=f" 发现新版 v{info.latest_version}")
                 self.btn_update_badge.pack(side="left", padx=(6, 0))
             if is_manual:
                 self.show_update_dialog(info)
@@ -587,7 +688,9 @@ class GBFAcceleratorGUI:
 
         btn_dl = tk.Button(
             f_btns,
-            text="🚀 前往 GitHub Releases 下载更新",
+            text=" 前往 GitHub Releases 下载更新",
+            image=self.get_icon("🚀"),
+            compound="left",
             bg="#28a745",
             fg="#ffffff",
             activebackground="#218838",
@@ -603,6 +706,66 @@ class GBFAcceleratorGUI:
 
         btn_close = ttk.Button(f_btns, text="稍后再说", command=dialog.destroy)
         btn_close.pack(side="right", padx=(0, 8))
+
+    def run_latency_test(self):
+        """Measure real RTT to the game server through the current upstream route."""
+        self.btn_latency.configure(state="disabled", text=" 测试中...")
+        threading.Thread(target=self._bg_latency_test, daemon=True).start()
+
+    def _bg_latency_test(self):
+        import httpx
+
+        target = "https://game.granbluefantasy.jp/"
+        if self.var_direct_mode.get():
+            proxy_url = None
+            route_desc = "直连模式（不经过上游代理）"
+        else:
+            proxy_url = self.var_upstream.get().strip() or None
+            route_desc = f"经上游代理 {proxy_url or '（未配置）'}"
+
+        verify = False if gbf_proxy.SHIMAKAZE_MODE else bool(config_manager.config.get("verify_upstream_tls", True))
+        cold_ms = None
+        warm = []
+        err = ""
+        try:
+            # Probe 1 (cold): includes proxy CONNECT + cross-sea TCP/TLS setup,
+            # a one-time cost per connection. Probes 2-4 (warm): reuse the
+            # keep-alive connection, representative of in-game API latency.
+            with httpx.Client(proxy=proxy_url, verify=verify, timeout=12.0, trust_env=False, follow_redirects=False) as client:
+                t0 = time.perf_counter()
+                client.get(target)
+                cold_ms = (time.perf_counter() - t0) * 1000
+                for _ in range(3):
+                    t0 = time.perf_counter()
+                    client.get(target)
+                    warm.append((time.perf_counter() - t0) * 1000)
+        except Exception as e:
+            err = str(e)
+
+        def show():
+            try:
+                self.btn_latency.configure(state="normal", text=" 延迟测试")
+            except Exception:
+                pass
+            if cold_ms is None and not warm:
+                messagebox.showwarning("延迟测试失败", f"无法连通 {target}\n\n线路：{route_desc}\n错误：{err}")
+                return
+            lines = [
+                f"目标：{target}",
+                f"线路：{route_desc}",
+                "",
+                f"冷连接（建链 + 首个请求）：{cold_ms:.0f} ms" if cold_ms is not None else "冷连接：失败",
+            ]
+            if warm:
+                warm.sort()
+                w_min, w_mid, w_max = warm[0], warm[len(warm) // 2], warm[-1]
+                lines.append(f"热连接 RTT（3 次）：最快 {w_min:.0f} ｜ 中位 {w_mid:.0f} ｜ 最慢 {w_max:.0f} ms")
+            messagebox.showinfo("上游延迟测试结果", "\n".join(lines))
+
+        try:
+            self.root.after(0, show)
+        except Exception:
+            pass
 
     def install_ca(self):
         ensure_ca()
@@ -659,7 +822,7 @@ class GBFAcceleratorGUI:
                 "根证书安装引导",
                 "检测到本机尚未安装/信任加速器专属的 HTTPS 根证书。\n\n"
                 "碧蓝幻想的大部分静态资源（立绘、音频、脚本等）均通过 HTTPS 传输。"
-                "安装根证书后，加速器才能解密并为您极速缓存这些静态素材。\n\n"
+                "安装根证书后，加速器才能解密并缓存这些静态素材。\n\n"
                 "是否立即启动一键安装向导？\n"
                 "（若弹出系统安全提示框，请点击【是 (Y)】允许信任）",
             ):
@@ -712,7 +875,7 @@ class GBFAcceleratorGUI:
                 "探测结果",
                 "在常用路径与后台运行进程中未找到现成的 ACGPower 缓存。\n\n"
                 "• 若你使用了 ACGP，请确认 ACGP 是否已启动，或点击【浏览...】手动指定。\n"
-                "• 若你未安装 ACGP，本程序已自动为你启用独立的本地极速缓存目录，可直接正常使用！"
+                "• 若你未安装 ACGP，本程序已自动为你启用独立的本地缓存目录，可直接正常使用！"
             )
 
     def probe_upstream(self):
@@ -935,6 +1098,8 @@ class GBFAcceleratorGUI:
         config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
         config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
+        config_manager.config["enable_prefetch"] = self.var_prefetch.get()
+        config_manager.config["enable_ram_warmup"] = self.var_ram_warmup.get()
         config_manager.save_config()
 
         if not self.var_ram_cache.get():
@@ -965,9 +1130,37 @@ class GBFAcceleratorGUI:
         config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
         config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
+        config_manager.config["enable_prefetch"] = self.var_prefetch.get()
+        config_manager.config["enable_ram_warmup"] = self.var_ram_warmup.get()
         config_manager.save_config()
         if not self.var_ram_cache.get():
             cache_manager.clear_ram_cache()
+
+    def apply_ram_max_mb(self):
+        """Persist and immediately enforce a new RAM cache cap entered in the GUI."""
+        raw = self.var_ram_max_mb.get().strip()
+        try:
+            mb = int(raw)
+            if not (16 <= mb <= 8192):
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("错误", "内存缓存上限必须是 16 到 8192 之间的整数 (MB)！")
+            return
+        config_manager.config["ram_cache_max_mb"] = mb
+        config_manager.save_config()
+        cache_manager.enforce_ram_limit()
+        self.refresh_ram_usage_label()
+        messagebox.showinfo("内存缓存", f"内存热点缓存上限已设置为 {mb} MB，并立即生效。")
+
+    def refresh_ram_usage_label(self):
+        try:
+            if not hasattr(self, "lbl_ram_usage") or not self.lbl_ram_usage.winfo_exists():
+                return
+            _items, used = cache_manager.get_ram_cache_stats()
+            cap = config_manager.config.get("ram_cache_max_mb", 256)
+            self.lbl_ram_usage.configure(text=f"使用中 {used / (1024 * 1024):.0f} MB / {cap} MB")
+        except Exception:
+            pass
 
     def toggle_direct_mode(self):
         """Switch routing immediately while keeping the local cache/proxy active."""
@@ -1013,7 +1206,7 @@ class GBFAcceleratorGUI:
         if readme.is_file():
             os.startfile(str(readme))
         else:
-            messagebox.showinfo("分流指引", "请使用 ZeroOmega / SwitchyOmega 导入同目录下的 SwitchyOmega_GBF.bak，或直接勾选【自动配置 Windows 系统 PAC 代理】实现免插件极速游玩。")
+            messagebox.showinfo("分流指引", "请使用 ZeroOmega / SwitchyOmega 导入同目录下的 SwitchyOmega_GBF.bak，或直接勾选【自动配置 Windows 系统 PAC 代理】实现免插件分流。")
 
     def toggle_proxy(self):
         if gbf_proxy.PROXY_STATS["is_running"]:
@@ -1052,6 +1245,8 @@ class GBFAcceleratorGUI:
         config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
         config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
+        config_manager.config["enable_prefetch"] = self.var_prefetch.get()
+        config_manager.config["enable_ram_warmup"] = self.var_ram_warmup.get()
         config_manager.save_config()
 
         cache_manager.set_cache_base(Path(self.var_cache_dir.get()).resolve())
@@ -1106,6 +1301,9 @@ class GBFAcceleratorGUI:
             self.var_hits.set(f"{hits:,}")
         self.var_downloads.set(f"{dls:,}")
         self.var_apis.set(f"{apis:,}")
+
+        # Live RAM cache usage next to the cap entry
+        self.refresh_ram_usage_label()
 
         # Sync button text if state changed outside
         is_thread_alive = gbf_proxy.proxy_thread is not None and gbf_proxy.proxy_thread.is_alive()

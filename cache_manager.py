@@ -36,7 +36,13 @@ class CacheManager:
         self._ram_lock = threading.Lock()
         self._ram_cache: OrderedDict[str, Tuple[Dict[str, str], bytes, int]] = OrderedDict()
         self._ram_cache_bytes: int = 0
-        self._max_item_bytes: int = 5 * 1024 * 1024  # Don't cache assets > 5MB in RAM
+
+    def _get_max_item_bytes(self) -> int:
+        """Per-item RAM admission cap. Admission is otherwise "first touch wins":
+        any asset is promoted to RAM on its first access, LRU keeps the hot ones.
+        Relaxed from 5MB to 16MB so BGM / large art also stay in RAM; shrinks with
+        a small budget so one big file can't monopolize it."""
+        return min(16 * 1024 * 1024, max(4 * 1024 * 1024, self._get_max_ram_bytes() // 4))
 
     def set_cache_base(self, path: Path):
         self.cache_base = path
@@ -57,9 +63,21 @@ class CacheManager:
     def _get_max_ram_bytes(self) -> int:
         mb = config_manager.config.get("ram_cache_max_mb", 256)
         try:
-            return int(mb) * 1024 * 1024
+            mb = int(mb)
         except Exception:
             return 256 * 1024 * 1024
+        # Clamp to a sane range so a typo in the GUI/config can't disable or explode the cache
+        mb = max(16, min(mb, 8192))
+        return mb * 1024 * 1024
+
+    def enforce_ram_limit(self):
+        """Immediately evict LRU items until RAM usage fits the configured cap
+        (called after the user lowers the limit in the GUI)."""
+        with self._ram_lock:
+            max_ram = self._get_max_ram_bytes()
+            while self._ram_cache and self._ram_cache_bytes > max_ram:
+                _, (_, _, evicted_size) = self._ram_cache.popitem(last=False)
+                self._ram_cache_bytes -= evicted_size
 
     def _get_local_path(self, url_path: str) -> Optional[Path]:
         """Safely compute the on-disk cache path for url_path, strictly preventing path traversal.
@@ -91,7 +109,7 @@ class CacheManager:
         (e.g. contains numeric timestamp/hash like /assets/1772717316/ or /\d{8,}/).
         Never inject immutable into unversioned assets to prevent serving stale assets after updates.
         """
-        enable_browser_cache = config_manager.config.get("enable_browser_cache", False)
+        enable_browser_cache = config_manager.config.get("enable_browser_cache", True)
         is_versioned = bool(re.search(r"/assets/\d+/", url_path) or re.search(r"/\d{8,}/", url_path))
 
         if enable_browser_cache and is_versioned:
@@ -197,7 +215,7 @@ class CacheManager:
                 del headers["content-encoding"]
 
             # Store into RAM Cache for future instant reads
-            if enable_ram and len(data) <= self._max_item_bytes:
+            if enable_ram and len(data) <= self._get_max_item_bytes():
                 with self._ram_lock:
                     max_ram = self._get_max_ram_bytes()
                     item_len = len(data)
@@ -212,6 +230,124 @@ class CacheManager:
             return headers, data
         except Exception:
             return None
+
+    def peek_cache_meta(self, url_path: str) -> Optional[Tuple[str, Dict[str, str], bool]]:
+        """Lightweight metadata-only lookup for fast 304 responses.
+        Returns (etag, response_headers, is_ram) without reading the asset body,
+        so a browser revalidation costs a stat + tiny .ext JSON read instead of a full file load.
+        The ETag fallback mirrors get_cache exactly (mtime-size) to stay consistent.
+        """
+        clean_key = url_path.split("?")[0].lstrip("/")
+        enable_ram = config_manager.config.get("enable_ram_cache", True)
+
+        if enable_ram:
+            with self._ram_lock:
+                if clean_key in self._ram_cache:
+                    etag = self._ram_cache[clean_key][0].get("ETag", "")
+                    if etag:
+                        headers = {"ETag": etag}
+                        self._apply_browser_cache_headers(headers, url_path)
+                        return etag, headers, True
+
+        file_path = self._get_local_path(url_path)
+        if file_path is None or not file_path.is_file():
+            if not clean_key.startswith("assets/"):
+                file_path = self._get_local_path("assets/" + clean_key)
+            if file_path is None or not file_path.is_file():
+                return None
+
+        enable_auto_repair = config_manager.config.get("enable_auto_repair", True)
+        try:
+            st = file_path.stat()
+            if enable_auto_repair and st.st_size == 0:
+                try:
+                    file_path.unlink(missing_ok=True)
+                    file_path.with_name(file_path.name + ".ext").unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return None
+
+            etag = ""
+            ext_path = file_path.with_name(file_path.name + ".ext")
+            if ext_path.is_file():
+                try:
+                    with open(ext_path, "r", encoding="utf-8") as f:
+                        etag = json.load(f).get("ETag", "") or ""
+                except Exception:
+                    etag = ""
+            if not etag:
+                etag = f'"{int(st.st_mtime):x}-{st.st_size:x}"'
+
+            headers = {"ETag": etag}
+            self._apply_browser_cache_headers(headers, url_path)
+            return etag, headers, False
+        except OSError:
+            return None
+
+    def has_cache(self, url_path: str) -> bool:
+        """Cheap existence check (RAM + disk stat only, no body read) used by the prefetcher."""
+        clean_key = url_path.split("?")[0].lstrip("/")
+        if config_manager.config.get("enable_ram_cache", True):
+            with self._ram_lock:
+                if clean_key in self._ram_cache:
+                    return True
+
+        def _exists(fp: Optional[Path]) -> bool:
+            try:
+                if fp is None or not fp.is_file():
+                    return False
+                if config_manager.config.get("enable_auto_repair", True) and fp.stat().st_size == 0:
+                    return False
+                return True
+            except OSError:
+                return False
+
+        file_path = self._get_local_path(url_path)
+        if _exists(file_path):
+            return True
+        if not clean_key.startswith("assets/"):
+            return _exists(self._get_local_path("assets/" + clean_key))
+        return False
+
+    def warm_ram_cache(self, max_items: int = 2000) -> int:
+        """Startup warmup: preload small high-frequency files (smallest first) into the RAM
+        cache so the first requests of a session never hit the disk. Runs in a background
+        executor thread, never on the request path. Returns the number of items preloaded.
+        """
+        if not config_manager.config.get("enable_ram_cache", True):
+            return 0
+        try:
+            candidates = []
+            for root, _dirs, files in os.walk(self.cache_base):
+                for name in files:
+                    if name.endswith(".ext") or ".tmp." in name:
+                        continue
+                    fp = Path(root) / name
+                    try:
+                        sz = fp.stat().st_size
+                    except OSError:
+                        continue
+                    if 0 < sz <= self._get_max_item_bytes():
+                        candidates.append((sz, fp))
+            candidates.sort(key=lambda t: t[0])
+        except Exception:
+            return 0
+
+        loaded = 0
+        for _sz, fp in candidates:
+            if loaded >= max_items:
+                break
+            with self._ram_lock:
+                if self._ram_cache_bytes >= self._get_max_ram_bytes():
+                    break
+            try:
+                rel = "/" + fp.relative_to(self.cache_base).as_posix()
+            except ValueError:
+                continue
+            # get_cache builds proper headers and inserts into the RAM cache itself
+            if self.get_cache(rel) is not None:
+                loaded += 1
+        return loaded
 
     def is_valid_cache_content(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
         """Verify that downloaded static asset is not truncated, empty, or an HTML error page."""
@@ -255,7 +391,8 @@ class CacheManager:
             is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
             if ce.lower() == "gzip" and not is_gzip:
                 import gzip
-                data = gzip.compress(data)
+                # Level 6: near-default ratio at a fraction of the CPU cost
+                data = gzip.compress(data, 6)
                 is_gzip = True
 
             # Neuter disruptive alert() in set-error-handler.js
@@ -266,7 +403,7 @@ class CacheManager:
                     target = "t&&alert(t),a&&window.location.reload()"
                     if target in raw_text:
                         raw_text = raw_text.replace(target, 'console.warn("[SpeedProxy] Suppressed RequireJS error:",r)')
-                        data = gzip.compress(raw_text.encode("utf-8"))
+                        data = gzip.compress(raw_text.encode("utf-8"), 6)
                         is_gzip = True
                 except Exception:
                     pass
@@ -308,7 +445,7 @@ class CacheManager:
                     tmp_ext_path.unlink(missing_ok=True)
 
             # Also update RAM cache if enabled
-            if enable_ram and len(data) <= self._max_item_bytes:
+            if enable_ram and len(data) <= self._get_max_item_bytes():
                 item_len = len(data)
                 max_ram = self._get_max_ram_bytes()
                 with self._ram_lock:
