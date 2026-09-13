@@ -9,7 +9,7 @@
 
 通过将游戏静态资源（立绘、音频、战斗动画、脚本）本地化缓存至 SSD / 内存中，大幅减少跨海 CDN 网络延迟与流量消耗；同时透明联动 Clash / v2rayN 等上游代理，保证核心游戏 API（抽卡、编队、结算、多人战等）零篡改、原样稳定传输。
 
-> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.3.0_GUI.zip`，解压即用，无需配置 Python 环境。
+> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.4.0_GUI.zip`，解压即用，无需配置 Python 环境。
 
 ---
 
@@ -58,12 +58,14 @@
   "enable_ram_cache": true,
   "enable_browser_cache": false,
   "enable_auto_repair": true,
-  "verify_upstream_tls": true
+  "verify_upstream_tls": true,
+  "shimakaze_mode": false
 }
 ```
 
 - `upstream_proxy`: 上游代理地址。
 - `direct_mode`: 直连模式开关；开启后不使用上游代理，但本地缓存仍然生效。
+- `shimakaze_mode`: 岛风GO 兼容优化模式（默认关闭；开启后放宽上游超时至 25s/12s、适配岛风GO自签证书、自动对 GET/HEAD 请求进行断线与网关超时自愈重试）。
 - `listen_port`: 本地加速服务监听端口（默认 8124，支持在界面中自定义）。
 - `cache_dir`: 静态资源缓存落盘路径。
 - `auto_system_proxy`: 启动加速时是否自动挂载 Windows 系统 PAC 代理。

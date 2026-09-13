@@ -188,7 +188,7 @@ class GBFAcceleratorGUI:
         h_title_box = ttk.Frame(h_left, style="CardInner.TFrame")
         h_title_box.pack(anchor="w")
         ttk.Label(h_title_box, text="碧蓝幻想 GBF 加速器", style="Title.TLabel").pack(side="left")
-        lbl_ver = ttk.Label(h_title_box, text="v1.3.0", style="Gray.TLabel")
+        lbl_ver = ttk.Label(h_title_box, text="v1.4.0", style="Gray.TLabel")
         lbl_ver.pack(side="left", padx=(6, 0), pady=(3, 0))
 
         self.lbl_status = ttk.Label(h_left, textvariable=self.var_status_text, style="Subtitle.TLabel")
