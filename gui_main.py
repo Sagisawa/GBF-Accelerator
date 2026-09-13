@@ -88,6 +88,7 @@ class GBFAcceleratorGUI:
         self.var_cache_dir = tk.StringVar(value=str(config_manager.get_effective_cache_dir(interactive=False)))
         self.var_upstream = tk.StringVar(value=config_manager.get_effective_upstream_proxy())
         self.var_direct_mode = tk.BooleanVar(value=config_manager.config.get("direct_mode", False))
+        self.var_shimakaze_mode = tk.BooleanVar(value=config_manager.config.get("shimakaze_mode", False))
         self.var_listen_port = tk.StringVar(value=str(config_manager.get_listen_port()))
         self.var_ca_status = tk.StringVar(value="检测中...")
         self.var_ca_fp = tk.StringVar(value="")
@@ -103,6 +104,7 @@ class GBFAcceleratorGUI:
 
         # Build UI
         self.build_ui()
+        self.update_shimakaze_controls()
 
         # System tray setup
         self.tray_icon = None
@@ -293,7 +295,23 @@ class GBFAcceleratorGUI:
             variable=self.var_direct_mode,
             command=self.toggle_direct_mode,
         )
-        self.chk_direct.pack(anchor="w", pady=(0, 6))
+        self.chk_direct.pack(anchor="w", pady=(0, 2))
+
+        self.chk_shimakaze = ttk.Checkbutton(
+            card_settings,
+            text="岛风GO 兼容优化模式（放宽超时、自愈重试、适配自签证书；默认关闭）",
+            variable=self.var_shimakaze_mode,
+            command=self.toggle_shimakaze_mode,
+        )
+        self.chk_shimakaze.pack(anchor="w", pady=(0, 2))
+
+        self.lbl_shimakaze_hint = ttk.Label(
+            card_settings,
+            text="⚠️ 提示：使用岛风GO时，请务必在岛风GO主界面关闭【使用远端缓存】功能，避免双重反代冲突！",
+            style="Gray.TLabel",
+            foreground="#d9534f",
+            wraplength=560,
+        )
         self.update_upstream_controls()
 
         # Field 3: Local Listen Port
@@ -531,6 +549,16 @@ class GBFAcceleratorGUI:
             self.stop_proxy()
             self.start_proxy()
         if ok:
+            if "8099" in active and not self.var_shimakaze_mode.get():
+                if messagebox.askyesno(
+                    "岛风GO 适配建议",
+                    "检测到上游代理为岛风GO (8099)。\n\n是否立即启用【岛风GO 兼容优化模式】？\n\n（将自动放宽超时、启用断线自愈重试、适配自签证书；请记得在岛风GO主界面关闭远端缓存）",
+                ):
+                    self.var_shimakaze_mode.set(True)
+                    config_manager.config["shimakaze_mode"] = True
+                    config_manager.save_config()
+                    gbf_proxy.SHIMAKAZE_MODE = True
+                    self.update_shimakaze_controls()
             messagebox.showinfo("上游探测结果", f"检测并连通本地代理服务：\n{active}\n\n代理连接池已更新生效！")
         else:
             messagebox.showwarning("上游探测警告", f"检测到本地代理地址：\n{active}\n\n但连通测试失败：{msg}\n请确认 Clash 是否已启动并开启本地监听。")
@@ -586,12 +614,31 @@ class GBFAcceleratorGUI:
         self.root.wait_window(dialog)
         return result["url"]
 
+    def update_shimakaze_controls(self):
+        direct = self.var_direct_mode.get()
+        if self.var_shimakaze_mode.get() and not direct:
+            self.lbl_shimakaze_hint.pack(anchor="w", padx=(20, 0), pady=(0, 4), after=self.chk_shimakaze)
+        else:
+            self.lbl_shimakaze_hint.pack_forget()
+
+    def toggle_shimakaze_mode(self):
+        enabled = self.var_shimakaze_mode.get()
+        self.update_shimakaze_controls()
+        config_manager.config["shimakaze_mode"] = enabled
+        config_manager.save_config()
+        gbf_proxy.SHIMAKAZE_MODE = enabled
+        if gbf_proxy.PROXY_STATS.get("is_running", False):
+            self.stop_proxy()
+            self.start_proxy()
+
     def update_upstream_controls(self):
         """Disable upstream controls while direct mode is active."""
         direct = self.var_direct_mode.get()
         self.entry_up.configure(state="disabled" if direct else "normal")
         self.btn_confirm_upstream.configure(state="disabled" if direct else "normal")
         self.btn_probe.configure(state="disabled" if direct else "normal")
+        self.chk_shimakaze.configure(state="disabled" if direct else "normal")
+        self.update_shimakaze_controls()
 
     def reset_port_default(self):
         self.var_listen_port.set("8124")
@@ -666,9 +713,11 @@ class GBFAcceleratorGUI:
         old_port = gbf_proxy.LISTEN_PORT
         old_up = gbf_proxy.UPSTREAM_PROXY
         old_direct = bool(config_manager.config.get("direct_mode", False))
+        old_shimakaze = bool(config_manager.config.get("shimakaze_mode", False))
         port_changed = (port != old_port)
         upstream_changed = (up != old_up)
         direct_changed = (self.var_direct_mode.get() != old_direct)
+        shimakaze_changed = (self.var_shimakaze_mode.get() != old_shimakaze)
 
         # Check connectivity to upstream
         up_ok, up_msg = check_upstream_connectivity(up)
@@ -678,6 +727,7 @@ class GBFAcceleratorGUI:
 
         config_manager.config["upstream_proxy"] = up
         config_manager.config["direct_mode"] = self.var_direct_mode.get()
+        config_manager.config["shimakaze_mode"] = self.var_shimakaze_mode.get()
         config_manager.config["cache_dir"] = cd
         config_manager.config["listen_port"] = port
         config_manager.config["auto_system_proxy"] = self.var_auto_pac.get()
@@ -691,6 +741,7 @@ class GBFAcceleratorGUI:
 
         gbf_proxy.UPSTREAM_PROXY = up
         gbf_proxy.DIRECT_MODE = self.var_direct_mode.get()
+        gbf_proxy.SHIMAKAZE_MODE = self.var_shimakaze_mode.get()
         if cd:
             cache_manager.set_cache_base(Path(cd).resolve())
 
@@ -698,7 +749,7 @@ class GBFAcceleratorGUI:
         from app_main import update_pac_file
         update_pac_file(port)
 
-        if (port_changed or upstream_changed or direct_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
+        if (port_changed or upstream_changed or direct_changed or shimakaze_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
             self.stop_proxy()
             gbf_proxy.LISTEN_PORT = port
             gbf_proxy.UPSTREAM_PROXY = up
@@ -792,9 +843,11 @@ class GBFAcceleratorGUI:
         gbf_proxy.LISTEN_PORT = port
         gbf_proxy.UPSTREAM_PROXY = up
         gbf_proxy.DIRECT_MODE = self.var_direct_mode.get()
+        gbf_proxy.SHIMAKAZE_MODE = self.var_shimakaze_mode.get()
         config_manager.config["listen_port"] = port
         config_manager.config["upstream_proxy"] = up
         config_manager.config["direct_mode"] = self.var_direct_mode.get()
+        config_manager.config["shimakaze_mode"] = self.var_shimakaze_mode.get()
         config_manager.config["enable_ram_cache"] = self.var_ram_cache.get()
         config_manager.config["enable_browser_cache"] = self.var_browser_cache.get()
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
