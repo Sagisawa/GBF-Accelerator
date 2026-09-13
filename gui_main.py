@@ -35,6 +35,7 @@ from config_manager import (
     check_legacy_leaked_ca_installed,
     clean_legacy_leaked_ca,
     auto_detect_acgpower_cache,
+    normalize_cache_dir,
     detect_upstream_proxies,
     is_port_open,
     check_upstream_connectivity,
@@ -685,11 +686,18 @@ class GBFAcceleratorGUI:
         chosen = filedialog.askdirectory(title="选择 GBF 本地缓存保存目录", initialdir=self.var_cache_dir.get())
         if chosen:
             p = Path(chosen).resolve()
-            self.var_cache_dir.set(str(p))
-            cache_manager.set_cache_base(p)
-            config_manager.config["cache_dir"] = str(p)
+            norm_p = normalize_cache_dir(p)
+            self.var_cache_dir.set(str(norm_p))
+            cache_manager.set_cache_base(norm_p)
+            config_manager.config["cache_dir"] = str(norm_p)
             config_manager.save_config()
-            messagebox.showinfo("缓存设置", f"缓存目录已成功更改为：\n{p}")
+            if norm_p != p:
+                messagebox.showinfo(
+                    "缓存设置",
+                    f"检测到您选择了 ACGPower 上级目录，已自动为您校正并锁定到真实缓存子目录：\n\n{norm_p}"
+                )
+            else:
+                messagebox.showinfo("缓存设置", f"缓存目录已成功更改为：\n{norm_p}")
 
     def detect_acgp(self):
         found = auto_detect_acgpower_cache()
@@ -700,7 +708,12 @@ class GBFAcceleratorGUI:
             config_manager.save_config()
             messagebox.showinfo("ACGP 探测成功", f"成功检测到 ACGPower 缓存目录！\n\n路径：{found}\n\n已自动关联，无需重新下载游戏静态资源！")
         else:
-            messagebox.showwarning("探测结果", "在常用盘符（C/D/E/F 盘）中未找到现成的 ACGPower 缓存。\n你可以点击【浏览...】手动指定。")
+            messagebox.showwarning(
+                "探测结果",
+                "在常用路径与后台运行进程中未找到现成的 ACGPower 缓存。\n\n"
+                "• 若你使用了 ACGP，请确认 ACGP 是否已启动，或点击【浏览...】手动指定。\n"
+                "• 若你未安装 ACGP，本程序已自动为你启用独立的本地极速缓存目录，可直接正常使用！"
+            )
 
     def probe_upstream(self):
         if self.var_direct_mode.get():
@@ -870,6 +883,11 @@ class GBFAcceleratorGUI:
     def save_settings(self):
         up = self.var_upstream.get().strip()
         cd = self.var_cache_dir.get().strip()
+        if cd:
+            p = Path(cd).resolve()
+            norm_p = normalize_cache_dir(p)
+            cd = str(norm_p)
+            self.var_cache_dir.set(cd)
         port_str = self.var_listen_port.get().strip()
 
         if not up and not self.var_direct_mode.get():
