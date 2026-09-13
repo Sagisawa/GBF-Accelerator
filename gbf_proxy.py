@@ -24,6 +24,7 @@ LISTEN_HOST = config_manager.config.get("listen_host", "127.0.0.1")
 LISTEN_PORT = config_manager.get_listen_port()
 UPSTREAM_PROXY = config_manager.get_effective_upstream_proxy()
 DIRECT_MODE = bool(config_manager.config.get("direct_mode", False))
+SHIMAKAZE_MODE = bool(config_manager.config.get("shimakaze_mode", False))
 
 # Host patterns to perform SSL MITM inspection & caching (strictly scoped to GBF domains)
 MITM_SUFFIXES = (
@@ -188,12 +189,18 @@ def format_log(level: str, color_code: str, msg: str):
 
 async def init_http_client():
     global http_client
-    verify_tls = config_manager.config.get("verify_upstream_tls", True)
+    if SHIMAKAZE_MODE:
+        verify_tls = False
+        timeout_setting = httpx.Timeout(25.0, connect=12.0)
+    else:
+        verify_tls = config_manager.config.get("verify_upstream_tls", True)
+        timeout_setting = httpx.Timeout(15.0, connect=8.0)
+
     limits = httpx.Limits(max_keepalive_connections=50, max_connections=100, keepalive_expiry=60.0)
     http_client = httpx.AsyncClient(
         proxy=None if DIRECT_MODE else UPSTREAM_PROXY,
         verify=verify_tls,
-        timeout=httpx.Timeout(15.0, connect=8.0),
+        timeout=timeout_setting,
         limits=limits,
         follow_redirects=False,
         trust_env=False,
@@ -595,17 +602,32 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 start_t = time.perf_counter()
                 url = f"https://{target_host}{path}"
                 clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length", "if-modified-since", "if-none-match")}
-                try:
-                    resp = await http_client.request(method, url, headers=clean_headers, content=body)
-                except httpx.TimeoutException:
-                    format_log("TIMEOUT", "31", f"Timeout fetching asset -> {url}")
-                    err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
-                    await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                    continue
-                except Exception as e:
-                    format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
-                    err_body = b'{"error": "Bad Gateway", "code": 502}'
-                    await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                resp = None
+                max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
+                for attempt in range(max_attempts):
+                    try:
+                        resp = await http_client.request(method, url, headers=clean_headers, content=body)
+                        break
+                    except httpx.TimeoutException:
+                        if attempt + 1 < max_attempts:
+                            format_log("RETRY", "33", f"Asset timeout, auto-retrying (1/1) -> {url}")
+                            continue
+                        format_log("TIMEOUT", "31", f"Timeout fetching asset -> {url}")
+                        err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
+                        await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                        resp = None
+                        break
+                    except Exception as e:
+                        if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
+                            format_log("RETRY", "33", f"Asset fetch error, auto-retrying (1/1) -> {url}: {e}")
+                            continue
+                        format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
+                        err_body = b'{"error": "Bad Gateway", "code": 502}'
+                        await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                        resp = None
+                        break
+
+                if resp is None:
                     continue
 
                 elapsed_ms = int((time.perf_counter() - start_t) * 1000)
@@ -631,17 +653,32 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
             start_t = time.perf_counter()
             url = f"https://{target_host}{path}"
             clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
-            try:
-                resp = await http_client.request(method, url, headers=clean_headers, content=body)
-            except httpx.TimeoutException:
-                format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
-                err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
-                await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                continue
-            except Exception as e:
-                format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
-                err_body = b'{"error": "Bad Gateway", "code": 502}'
-                await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+            resp = None
+            max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
+            for attempt in range(max_attempts):
+                try:
+                    resp = await http_client.request(method, url, headers=clean_headers, content=body)
+                    break
+                except httpx.TimeoutException:
+                    if attempt + 1 < max_attempts:
+                        format_log("RETRY", "33", f"API Gateway timeout on {method} {path}, auto-retrying (1/1)...")
+                        continue
+                    format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
+                    err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
+                    await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                    resp = None
+                    break
+                except Exception as e:
+                    if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
+                        format_log("RETRY", "33", f"API network error on {method} {path}, auto-retrying (1/1)...")
+                        continue
+                    format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
+                    err_body = b'{"error": "Bad Gateway", "code": 502}'
+                    await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                    resp = None
+                    break
+
+            if resp is None:
                 continue
 
             elapsed_ms = int((time.perf_counter() - start_t) * 1000)

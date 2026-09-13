@@ -31,6 +31,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "enable_browser_cache": False, # Conservative default: only inject immutable on versioned assets if enabled
     "enable_auto_repair": True, # Auto-detect and clean 0-byte or corrupted cache files
     "verify_upstream_tls": True, # Upstream TLS certificate verification for security
+    "shimakaze_mode": False,   # ShimakazeGo optimization mode (relaxed timeout, retry, self-signed CA)
 }
 
 KNOWN_ACGPOWER_PATHS = [
