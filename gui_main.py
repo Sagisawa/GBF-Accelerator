@@ -71,11 +71,13 @@ class GBFAcceleratorGUI:
         self.window_icon = ImageTk.PhotoImage(create_tray_icon_image(True))
         self.root.iconphoto(True, self.window_icon)
         self.root.title("GBF 加速器")
-        self.root.geometry("640x740")
-        self.root.minsize(600, 700)
 
-        # Center window
-        self.center_window()
+        # Responsive window sizing based on screen height
+        screen_h = self.root.winfo_screenheight()
+        win_w = 680
+        win_h = 830 if screen_h >= 900 else max(720, screen_h - 70)
+        self.root.geometry(f"{win_w}x{win_h}")
+        self.root.minsize(620, min(740, win_h))
 
         # Styles
         self.setup_styles()
@@ -106,6 +108,9 @@ class GBFAcceleratorGUI:
         self.build_ui()
         self.update_shimakaze_controls()
 
+        # Center window after layout is constructed
+        self.center_window()
+
         # System tray setup
         self.tray_icon = None
         self.setup_tray()
@@ -133,8 +138,8 @@ class GBFAcceleratorGUI:
         h = self.root.winfo_height()
         ws = self.root.winfo_screenwidth()
         hs = self.root.winfo_screenheight()
-        x = (ws // 2) - (w // 2)
-        y = (hs // 2) - (h // 2) - 30
+        x = max(0, (ws // 2) - (w // 2))
+        y = max(0, (hs // 2) - (h // 2) - 30)
         self.root.geometry(f"+{x}+{y}")
 
     def setup_styles(self):
