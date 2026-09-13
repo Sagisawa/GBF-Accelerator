@@ -32,6 +32,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "enable_auto_repair": True, # Auto-detect and clean 0-byte or corrupted cache files
     "verify_upstream_tls": True, # Upstream TLS certificate verification for security
     "shimakaze_mode": False,   # ShimakazeGo optimization mode (relaxed timeout, retry, self-signed CA)
+    "auto_check_update": True, # Automatically check for newer releases on startup
 }
 
 KNOWN_ACGPOWER_PATHS = [
@@ -99,8 +100,154 @@ def auto_detect_acgpower_cache() -> Optional[Path]:
 
 LEGACY_LEAKED_CA_SHA1 = "51e9aa40a64fb8dc63f18f4b1a11b98d1cf8d3ff"
 
+def _extract_cert_from_registry_blob(blob: bytes):
+    """Extract an X509 certificate object from a Windows registry certificate property blob."""
+    import struct
+    import warnings
+    from cryptography import x509
+    offset = 0
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        while offset + 12 <= len(blob):
+            prop_id, flags, cb_data = struct.unpack("<III", blob[offset:offset+12])
+            offset += 12
+            if offset + cb_data > len(blob):
+                break
+            prop_data = blob[offset:offset+cb_data]
+            offset += cb_data
+            if prop_id == 32:  # CERT_CERT_PROP_ID
+                try:
+                    return x509.load_der_x509_certificate(prop_data)
+                except Exception:
+                    pass
+        # Fallback: maybe raw DER
+        try:
+            return x509.load_der_x509_certificate(blob)
+        except Exception:
+            return None
+
+def find_installed_gbf_ca_thumbprints() -> Dict[str, str]:
+    """Find all installed GBF-related Root CA certificates in CurrentUser / LocalMachine Root stores.
+    Returns a mapping of thumbprint (uppercase hex) -> description/subject.
+    """
+    if sys.platform != "win32":
+        return {}
+    found: Dict[str, str] = {}
+    gbf_keywords = ["gbf", "granblue", "granbluefantasy"]
+
+    try:
+        import winreg
+        for hive, hive_name in [(winreg.HKEY_CURRENT_USER, "当前用户"), (winreg.HKEY_LOCAL_MACHINE, "本地计算机")]:
+            try:
+                reg_path = r"Software\Microsoft\SystemCertificates\Root\Certificates"
+                with winreg.OpenKey(hive, reg_path) as root_k:
+                    i = 0
+                    while True:
+                        try:
+                            sub_key_name = winreg.EnumKey(root_k, i)
+                            i += 1
+                            thumb = sub_key_name.strip().upper()
+
+                            if thumb == LEGACY_LEAKED_CA_SHA1.upper():
+                                found[thumb] = f"GBF Speed CA (已废弃公开证书, {hive_name})"
+                                continue
+
+                            try:
+                                with winreg.OpenKey(root_k, sub_key_name) as sub_k:
+                                    blob, _ = winreg.QueryValueEx(sub_k, "Blob")
+                                    cert = _extract_cert_from_registry_blob(blob)
+                                    if cert:
+                                        subj_str = cert.subject.rfc4514_string()
+                                        issuer_str = cert.issuer.rfc4514_string()
+                                        combined = (subj_str + " " + issuer_str).lower()
+                                        if any(k in combined for k in gbf_keywords):
+                                            found[thumb] = f"{subj_str} ({hive_name})"
+                            except Exception:
+                                pass
+                        except OSError:
+                            break
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Also check local ca.crt if present
+    ca_crt_path = get_base_dir() / "certs" / "ca.crt"
+    if ca_crt_path.is_file():
+        try:
+            from cryptography import x509
+            from cryptography.hazmat.primitives import hashes
+            local_cert = x509.load_pem_x509_certificate(ca_crt_path.read_bytes())
+            local_sha1 = local_cert.fingerprint(hashes.SHA1()).hex().upper()
+            if local_sha1 not in found and is_ca_installed():
+                found[local_sha1] = f"{local_cert.subject.rfc4514_string()} (当前安装)"
+        except Exception:
+            pass
+
+    return found
+
+def _remove_cert_by_thumbprint(thumbprint: str) -> bool:
+    """Remove a certificate from CurrentUser / LocalMachine Root store by SHA1 thumbprint.
+    Deletes registry entry and invokes certutil with -f as secondary cleanup.
+    """
+    if sys.platform != "win32":
+        return False
+    clean_thumb = thumbprint.strip().replace(" ", "").upper()
+    removed = False
+
+    # 1. Delete from HKCU SystemCertificates\Root\Certificates
+    try:
+        import winreg
+        reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{clean_thumb}"
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, reg_path)
+        removed = True
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+    # 2. Also attempt deletion from HKLM if user has admin privileges
+    try:
+        import winreg
+        reg_path_lm = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{clean_thumb}"
+        winreg.DeleteKey(winreg.HKEY_LOCAL_MACHINE, reg_path_lm)
+        removed = True
+    except Exception:
+        pass
+
+    # 3. Secondary cleanup: certutil -f -user -delstore Root <thumbprint>
+    # Provide input=b"y\r\n" and timeout=3 to avoid interactive hang
+    try:
+        res = subprocess.run(
+            ["certutil", "-f", "-user", "-delstore", "Root", clean_thumb],
+            input=b"y\r\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+        )
+        if res.returncode == 0:
+            removed = True
+    except Exception:
+        pass
+
+    # Also certutil machine store if admin
+    try:
+        res_lm = subprocess.run(
+            ["certutil", "-f", "-delstore", "Root", clean_thumb],
+            input=b"y\r\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+        )
+        if res_lm.returncode == 0:
+            removed = True
+    except Exception:
+        pass
+
+    return removed
+
 def is_ca_installed() -> bool:
-    """Check if the current unique Root CA (from certs/ca.crt) is installed in CurrentUser Root store.
+    """Check if the current unique Root CA (from certs/ca.crt) is installed in CurrentUser / LocalMachine Root store.
     Strictly verifies by SHA-1 hash of the local certificate to prevent mismatch with legacy/other certs.
     """
     if sys.platform != "win32":
@@ -113,7 +260,22 @@ def is_ca_installed() -> bool:
         from cryptography.hazmat.primitives import hashes
         cert_data = ca_crt_path.read_bytes()
         cert = x509.load_pem_x509_certificate(cert_data)
-        sha1 = cert.fingerprint(hashes.SHA1()).hex().lower()
+        sha1 = cert.fingerprint(hashes.SHA1()).hex().upper()
+
+        # Fast path: check Windows Registry HKCU / HKLM (instant, 0ms)
+        try:
+            import winreg
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                try:
+                    reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{sha1}"
+                    with winreg.OpenKey(hive, reg_path):
+                        return True
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+        # Fallback: check via certutil -user -verifystore
         res = subprocess.run(
             ["certutil", "-user", "-verifystore", "Root", sha1],
             stdout=subprocess.PIPE,
@@ -125,9 +287,22 @@ def is_ca_installed() -> bool:
         return False
 
 def check_legacy_leaked_ca_installed() -> bool:
-    """Check whether the old public leaked CA ('GBF Speed CA') is present in CurrentUser Root store."""
+    """Check whether the old public leaked CA ('GBF Speed CA') is present in Root store."""
     if sys.platform != "win32":
         return False
+    # Check registry first
+    try:
+        import winreg
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{LEGACY_LEAKED_CA_SHA1.upper()}"
+                with winreg.OpenKey(hive, reg_path):
+                    return True
+            except OSError:
+                pass
+    except Exception:
+        pass
+
     try:
         res = subprocess.run(
             ["certutil", "-user", "-verifystore", "Root", LEGACY_LEAKED_CA_SHA1],
@@ -148,31 +323,31 @@ def check_legacy_leaked_ca_installed() -> bool:
         return False
 
 def clean_legacy_leaked_ca() -> bool:
-    """Remove the old leaked CA certificate from CurrentUser Root store."""
+    """Remove the old leaked CA certificate from Root store."""
     if sys.platform != "win32":
         return True
     cleaned = False
-    for target in [LEGACY_LEAKED_CA_SHA1, "GBF Speed CA"]:
-        try:
-            # Only attempt deletion if target actually exists in store
-            chk = subprocess.run(
-                ["certutil", "-user", "-verifystore", "Root", target],
+    if _remove_cert_by_thumbprint(LEGACY_LEAKED_CA_SHA1):
+        cleaned = True
+    try:
+        chk = subprocess.run(
+            ["certutil", "-user", "-verifystore", "Root", "GBF Speed CA"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=3,
+        )
+        if chk.returncode == 0:
+            res = subprocess.run(
+                ["certutil", "-f", "-user", "-delstore", "Root", "GBF Speed CA"],
+                input=b"y\r\n",
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=3,
             )
-            if chk.returncode != 0:
-                continue
-            res = subprocess.run(
-                ["certutil", "-delstore", "-user", "Root", target],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=10,
-            )
             if res.returncode == 0:
                 cleaned = True
-        except Exception:
-            pass
+    except Exception:
+        pass
     return cleaned
 
 def install_ca_certificate(ca_path: Path) -> bool:
@@ -191,54 +366,44 @@ def install_ca_certificate(ca_path: Path) -> bool:
         return False
 
 def uninstall_ca_certificate() -> Tuple[bool, str]:
-    """Uninstall and remove GBF Root CA from CurrentUser Root store."""
+    """Uninstall and remove all GBF Root CAs from CurrentUser / LocalMachine Root store."""
     if sys.platform != "win32":
         return False, "非 Windows 系统无需卸载"
-    success = False
-    messages = []
     
-    # Check ca.crt SHA1
+    messages = []
+    targets = find_installed_gbf_ca_thumbprints()
+    
+    # Also ensure local ca.crt sha1 is added to targets if local file exists
     ca_crt_path = get_base_dir() / "certs" / "ca.crt"
-    targets = []
     if ca_crt_path.is_file():
         try:
             from cryptography import x509
             from cryptography.hazmat.primitives import hashes
             cert = x509.load_pem_x509_certificate(ca_crt_path.read_bytes())
-            targets.append(cert.fingerprint(hashes.SHA1()).hex().lower())
+            local_sha1 = cert.fingerprint(hashes.SHA1()).hex().upper()
+            if local_sha1 not in targets and is_ca_installed():
+                targets[local_sha1] = "GBF 本机根证书"
         except Exception:
             pass
-    targets.extend(["GBF Local Accelerator Root CA", "GBF Speed CA", "GBF Local CA", LEGACY_LEAKED_CA_SHA1])
 
-    seen = set()
-    for name in targets:
-        if name in seen:
-            continue
-        seen.add(name)
-        try:
-            # Only attempt deletion if target actually exists in store
-            chk = subprocess.run(
-                ["certutil", "-user", "-verifystore", "Root", name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=3,
-            )
-            if chk.returncode != 0:
-                continue
-            res = subprocess.run(
-                ["certutil", "-delstore", "-user", "Root", name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=10,
-            )
-            if res.returncode == 0:
-                success = True
-                messages.append(f"已清理证书: {name}")
-        except Exception:
-            pass
+    if LEGACY_LEAKED_CA_SHA1.upper() not in targets and check_legacy_leaked_ca_installed():
+        targets[LEGACY_LEAKED_CA_SHA1.upper()] = "GBF Speed CA (旧版公开泄露证书)"
+
+    if not targets:
+        return False, "未在系统中找到已安装的 GBF 根证书"
+
+    success = False
+    for thumb, desc in targets.items():
+        if _remove_cert_by_thumbprint(thumb):
+            success = True
+            messages.append(f"已清理证书 [{thumb[:8]}...]: {desc}")
+
+    # Double check clean legacy by name
+    clean_legacy_leaked_ca()
+
     if success:
         return True, "\n".join(messages)
-    return False, "未在系统中找到 GBF 根证书"
+    return False, "注销证书失败，若证书安装在系统级存储区，请以管理员身份运行本程序或在 certmgr.msc 中手动删除"
 
 def check_upstream_connectivity(upstream_url: str) -> Tuple[bool, str]:
     """Test TCP connectivity to the upstream proxy server."""

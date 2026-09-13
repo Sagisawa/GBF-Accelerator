@@ -6,19 +6,17 @@ import gbf_proxy
 from config_manager import is_port_open
 
 async def run_test():
-    started_here = False
-    if not is_port_open("127.0.0.1", 8124):
-        print("[*] Starting GBF Proxy in background for testing...")
-        gbf_proxy.LISTEN_HOST = "127.0.0.1"
-        gbf_proxy.LISTEN_PORT = 8124
-        gbf_proxy.start_proxy_thread()
-        await asyncio.sleep(0.5)
-        started_here = True
+    test_port = 8126
+    print(f"[*] Starting GBF Proxy in background for testing on port {test_port}...")
+    gbf_proxy.LISTEN_HOST = "127.0.0.1"
+    gbf_proxy.LISTEN_PORT = test_port
+    gbf_proxy.start_proxy_thread()
+    await asyncio.sleep(0.8)
 
     try:
-        print("[*] Testing GBF Speed Proxy using AsyncClient on port 8124...")
+        print(f"[*] Testing GBF Speed Proxy using AsyncClient on port {test_port}...")
         async with httpx.AsyncClient(
-            proxy="http://127.0.0.1:8124",
+            proxy=f"http://127.0.0.1:{test_port}",
             verify="d:/acgpower/gbf_speed_proxy/certs/ca.crt",
             timeout=10.0,
         ) as client:
@@ -172,8 +170,7 @@ async def run_test():
 
             print("\n[+] ALL 17 TESTS PASSED SUCCESSFULLY!")
     finally:
-        if started_here:
-            gbf_proxy.stop_proxy_thread()
+        gbf_proxy.stop_proxy_thread()
 
 if __name__ == "__main__":
     asyncio.run(run_test())
