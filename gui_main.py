@@ -31,6 +31,7 @@ from config_manager import (
     is_ca_installed,
     install_ca_certificate,
     uninstall_ca_certificate,
+    find_installed_gbf_ca_thumbprints,
     check_legacy_leaked_ca_installed,
     clean_legacy_leaked_ca,
     auto_detect_acgpower_cache,
@@ -43,6 +44,8 @@ from cache_manager import cache_manager
 import gbf_proxy
 import system_proxy
 from startup_manager import is_startup_enabled, set_startup_enabled
+import update_manager
+from update_manager import APP_VERSION, UpdateInfo
 
 START_MINIMIZED = "--minimized" in sys.argv
 
@@ -103,6 +106,8 @@ class GBFAcceleratorGUI:
         self.var_ram_cache = tk.BooleanVar(value=config_manager.config.get("enable_ram_cache", True))
         self.var_browser_cache = tk.BooleanVar(value=config_manager.config.get("enable_browser_cache", False))
         self.var_auto_repair = tk.BooleanVar(value=config_manager.config.get("enable_auto_repair", True))
+        self.var_auto_update = tk.BooleanVar(value=config_manager.config.get("auto_check_update", True))
+        self.update_info: Optional[UpdateInfo] = None
 
         # Build UI
         self.build_ui()
@@ -131,6 +136,10 @@ class GBFAcceleratorGUI:
 
         # Periodic timer for stats update
         self.update_stats_loop()
+
+        # Check updates automatically if enabled
+        if self.var_auto_update.get():
+            self.root.after(2000, self.start_auto_update_check)
 
     def center_window(self):
         self.root.update_idletasks()
@@ -188,8 +197,24 @@ class GBFAcceleratorGUI:
         h_title_box = ttk.Frame(h_left, style="CardInner.TFrame")
         h_title_box.pack(anchor="w")
         ttk.Label(h_title_box, text="碧蓝幻想 GBF 加速器", style="Title.TLabel").pack(side="left")
-        lbl_ver = ttk.Label(h_title_box, text="v1.4.0", style="Gray.TLabel")
-        lbl_ver.pack(side="left", padx=(6, 0), pady=(3, 0))
+        self.lbl_ver = ttk.Label(h_title_box, text=f"v{APP_VERSION}", style="Gray.TLabel")
+        self.lbl_ver.pack(side="left", padx=(6, 0), pady=(3, 0))
+
+        # Dynamic update badge button (hidden until update is detected)
+        self.btn_update_badge = tk.Button(
+            h_title_box,
+            text="🔥 发现新版",
+            bg="#ffc107",
+            fg="#212529",
+            activebackground="#e0a800",
+            activeforeground="#212529",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            relief="flat",
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=self.on_click_update_badge,
+        )
 
         self.lbl_status = ttk.Label(h_left, textvariable=self.var_status_text, style="Subtitle.TLabel")
         self.lbl_status.pack(anchor="w", pady=(2, 0))
@@ -256,6 +281,9 @@ class GBFAcceleratorGUI:
 
         btn_github = ttk.Button(f_bottom, text="⭐ GitHub", command=self.open_github)
         btn_github.pack(side="left", padx=(0, 4))
+
+        self.btn_check_update = ttk.Button(f_bottom, text="🔄 检查更新", command=self.manual_check_update)
+        self.btn_check_update.pack(side="left", padx=(0, 4))
 
         btn_tray = ttk.Button(f_bottom, text="⬇ 最小化到托盘", command=self.hide_to_tray)
         btn_tray.pack(side="right")
@@ -373,6 +401,14 @@ class GBFAcceleratorGUI:
         )
         chk_startup.pack(anchor="w", pady=(2, 0))
 
+        chk_auto_update = ttk.Checkbutton(
+            f_sys_proxy,
+            text="启动时自动检测新版本（发现新版时右上角提醒，默认开启）",
+            variable=self.var_auto_update,
+            command=self.toggle_auto_update_setting,
+        )
+        chk_auto_update.pack(anchor="w", pady=(2, 0))
+
         # Field 6: Performance & System Resource Options
         ttk.Separator(card_settings, orient="horizontal").pack(fill="x", pady=(6, 6))
         ttk.Label(
@@ -426,6 +462,147 @@ class GBFAcceleratorGUI:
     def open_github(self):
         webbrowser.open("https://github.com/Sagisawa/GBF-Accelerator")
 
+    def toggle_auto_update_setting(self):
+        val = self.var_auto_update.get()
+        config_manager.config["auto_check_update"] = val
+        config_manager.save_config()
+
+    def start_auto_update_check(self):
+        threading.Thread(target=self._bg_check_update, args=(False,), daemon=True).start()
+
+    def manual_check_update(self):
+        if hasattr(self, "btn_check_update") and self.btn_check_update.winfo_exists():
+            self.btn_check_update.configure(text="⏳ 检查中...", state="disabled")
+        threading.Thread(target=self._bg_check_update, args=(True,), daemon=True).start()
+
+    def _bg_check_update(self, is_manual: bool):
+        up = None if self.var_direct_mode.get() else gbf_proxy.UPSTREAM_PROXY
+        info = update_manager.check_for_updates(upstream_proxy=up)
+        try:
+            self.root.after(0, self._handle_update_result, info, is_manual)
+        except Exception:
+            pass
+
+    def _handle_update_result(self, info: UpdateInfo, is_manual: bool):
+        self.update_info = info
+        if hasattr(self, "btn_check_update") and self.btn_check_update.winfo_exists():
+            self.btn_check_update.configure(text="🔄 检查更新", state="normal")
+
+        if info.has_update:
+            if hasattr(self, "btn_update_badge") and self.btn_update_badge.winfo_exists():
+                self.btn_update_badge.configure(text=f"🔥 发现新版 v{info.latest_version}")
+                self.btn_update_badge.pack(side="left", padx=(6, 0))
+            if is_manual:
+                self.show_update_dialog(info)
+        else:
+            if is_manual:
+                if info.error:
+                    messagebox.showwarning("检查更新", f"检查更新失败：\n{info.error}\n\n建议检查网络连接或稍后重试。")
+                else:
+                    messagebox.showinfo("检查更新", f"当前已是最新版本 (v{info.current_version})！")
+
+    def on_click_update_badge(self):
+        if self.update_info and self.update_info.has_update:
+            self.show_update_dialog(self.update_info)
+
+    def show_update_dialog(self, info: UpdateInfo):
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"发现新版本 - v{info.latest_version}")
+        dialog.geometry("540x420")
+        dialog.minsize(480, 360)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center relative to parent
+        self.root.update_idletasks()
+        dialog.update_idletasks()
+        rx = self.root.winfo_x()
+        ry = self.root.winfo_y()
+        rw = self.root.winfo_width()
+        rh = self.root.winfo_height()
+        x = max(0, rx + (rw - 540) // 2)
+        y = max(0, ry + (rh - 420) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        content = ttk.Frame(dialog, padding="16 14 16 14")
+        content.pack(fill="both", expand=True)
+
+        # Top banner
+        f_top = ttk.Frame(content)
+        f_top.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            f_top,
+            text=f"🎉 发现新版本：v{info.latest_version}",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            foreground="#28a745",
+        ).pack(anchor="w")
+
+        sub_info = f"当前运行版本: v{info.current_version}"
+        if info.published_at:
+            sub_info += f"  |  发布时间: {info.published_at}"
+        ttk.Label(f_top, text=sub_info, style="Gray.TLabel").pack(anchor="w", pady=(2, 0))
+
+        if info.release_title and info.release_title != f"v{info.latest_version}":
+            ttk.Label(
+                f_top,
+                text=info.release_title,
+                font=("Microsoft YaHei UI", 9, "bold"),
+            ).pack(anchor="w", pady=(4, 0))
+
+        # Release notes text
+        ttk.Label(content, text="更新内容：", style="Normal.TLabel").pack(anchor="w", pady=(0, 4))
+        f_text = ttk.Frame(content)
+        f_text.pack(fill="both", expand=True, pady=(0, 12))
+
+        scrollbar = ttk.Scrollbar(f_text)
+        scrollbar.pack(side="right", fill="y")
+
+        txt_notes = tk.Text(
+            f_text,
+            wrap="word",
+            font=("Microsoft YaHei UI", 9),
+            yscrollcommand=scrollbar.set,
+            bg="#fdfdfd",
+            relief="solid",
+            bd=1,
+            padx=8,
+            pady=8,
+        )
+        txt_notes.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=txt_notes.yview)
+
+        notes_content = info.release_notes.strip() if info.release_notes else "暂无详细更新日志。"
+        txt_notes.insert("1.0", notes_content)
+        txt_notes.configure(state="disabled")
+
+        # Buttons
+        f_btns = ttk.Frame(content)
+        f_btns.pack(fill="x")
+
+        def open_download():
+            target_url = info.html_url or f"https://github.com/{update_manager.GITHUB_REPO}/releases/latest"
+            webbrowser.open(target_url)
+            dialog.destroy()
+
+        btn_dl = tk.Button(
+            f_btns,
+            text="🚀 前往 GitHub Releases 下载更新",
+            bg="#28a745",
+            fg="#ffffff",
+            activebackground="#218838",
+            activeforeground="#ffffff",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            padx=14,
+            pady=6,
+            cursor="hand2",
+            command=open_download,
+        )
+        btn_dl.pack(side="right")
+
+        btn_close = ttk.Button(f_btns, text="稍后再说", command=dialog.destroy)
+        btn_close.pack(side="right", padx=(0, 8))
+
     def install_ca(self):
         ensure_ca()
         if check_legacy_leaked_ca_installed():
@@ -439,8 +616,9 @@ class GBFAcceleratorGUI:
         self.update_ca_status()
 
     def uninstall_ca(self):
-        if not is_ca_installed() and not check_legacy_leaked_ca_installed():
-            messagebox.showinfo("根证书提示", "系统中未检测到已安装的根证书。")
+        installed = find_installed_gbf_ca_thumbprints()
+        if not installed and not is_ca_installed() and not check_legacy_leaked_ca_installed():
+            messagebox.showinfo("根证书提示", "系统中未检测到已安装的 GBF 根证书。")
             return
         if not messagebox.askyesno("注销根证书", "确定要从系统【受信任的根证书颁发机构】中注销/卸载根证书吗？\n\n注销后，加速器将无法解密和缓存 HTTPS 资源，直到重新安装。"):
             return

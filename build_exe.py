@@ -48,6 +48,7 @@ def build():
         "--hidden-import", "app_main",
         "--hidden-import", "system_proxy",
         "--hidden-import", "startup_manager",
+        "--hidden-import", "update_manager",
         "--hidden-import", "socksio",
         "--add-data", f"{BASE_DIR / 'SwitchyOmega_GBF.bak'};.",
         "--add-data", f"{BASE_DIR / 'proxy.pac'};.",
