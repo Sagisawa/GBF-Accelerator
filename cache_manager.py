@@ -9,7 +9,7 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Optional, Tuple, Dict
 
-from config_manager import config_manager
+from config_manager import config_manager, normalize_cache_dir
 
 MIME_FALLBACKS = {
     ".png": "image/png",
@@ -29,7 +29,8 @@ MIME_FALLBACKS = {
 
 class CacheManager:
     def __init__(self, cache_base_dir: Optional[Path] = None):
-        self.cache_base = cache_base_dir or config_manager.get_effective_cache_dir(interactive=False)
+        raw_base = cache_base_dir or config_manager.get_effective_cache_dir(interactive=False)
+        self.cache_base = normalize_cache_dir(raw_base)
         self.cache_base.mkdir(parents=True, exist_ok=True)
 
         # In-Memory Hot Cache (LRU)
@@ -55,9 +56,12 @@ class CacheManager:
         return min(16 * 1024 * 1024, max(4 * 1024 * 1024, self._get_max_ram_bytes() // 4))
 
     def set_cache_base(self, path: Path):
-        self.cache_base = path
+        norm_path = normalize_cache_dir(path)
+        self.cache_base = norm_path
         self.cache_base.mkdir(parents=True, exist_ok=True)
         self.clear_ram_cache()
+        with self._missing_lock:
+            self._known_missing.clear()
 
     def clear_ram_cache(self):
         """Clear all in-memory hot cache items."""
@@ -207,7 +211,7 @@ class CacheManager:
         # Read from disk with path validation
         file_path = self._get_local_path(url_path)
         if file_path is None or not file_path.is_file():
-            # Intelligent fallback: if path does not start with assets/, check under assets/
+            # Intelligent fallback 1: if path does not start with assets/, check under assets/
             if not clean_key.startswith("assets/"):
                 fallback_path = self._get_local_path("assets/" + clean_key)
                 if fallback_path is not None and fallback_path.is_file():
@@ -216,8 +220,13 @@ class CacheManager:
                     self._mark_missing(clean_key)
                     return None
             else:
-                self._mark_missing(clean_key)
-                return None
+                # Intelligent fallback 2: if path starts with assets/ but cache_base points directly to assets
+                fallback_path = self._get_local_path(clean_key[7:].lstrip("/"))
+                if fallback_path is not None and fallback_path.is_file():
+                    file_path = fallback_path
+                else:
+                    self._mark_missing(clean_key)
+                    return None
 
         # Auto-Repair: Detect and clean 0-byte broken files
         try:
@@ -333,6 +342,8 @@ class CacheManager:
         if file_path is None or not file_path.is_file():
             if not clean_key.startswith("assets/"):
                 file_path = self._get_local_path("assets/" + clean_key)
+            else:
+                file_path = self._get_local_path(clean_key[7:].lstrip("/"))
             if file_path is None or not file_path.is_file():
                 return None
 
@@ -387,6 +398,8 @@ class CacheManager:
             return True
         if not clean_key.startswith("assets/"):
             return _exists(self._get_local_path("assets/" + clean_key))
+        else:
+            return _exists(self._get_local_path(clean_key[7:].lstrip("/")))
         return False
 
     def warm_ram_cache(self, max_items: int = 2000) -> int:

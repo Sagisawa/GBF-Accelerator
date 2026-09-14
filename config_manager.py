@@ -122,6 +122,11 @@ def normalize_cache_dir(path: Any) -> Path:
     if not p.is_dir():
         return p
 
+    # 0. Foolproof: If user selected an 'assets' folder directly (e.g. D:\1111\assets or ...\https\assets),
+    # where the parent directory is the actual cache root.
+    if p.name.lower() == "assets" and not (p / "assets").is_dir():
+        return p.parent.resolve()
+
     # 1. If 'assets' directory is already present, it is already the exact target root
     if (p / "assets").is_dir():
         return p
