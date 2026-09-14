@@ -50,6 +50,9 @@ USAGE_TEXT = """================================================================
 
 如需随 Windows 自动启动，可在 GUI 中勾选“开机自启”；启动后程序会自动缩小到系统托盘。该选项默认关闭。
 
+如需共享给同一 Wi-Fi 下的手机/iPad/备用机加速：
+可在界面勾选【允许局域网连接 (Allow LAN)】（该选项默认关闭），按弹出的指南为手机配置 Wi-Fi 代理并安装根证书即可。
+
 =================================================================
 【实际效果与限制】：
 - 本工具只缓存静态资源（立绘、音频、脚本、图片等）。这类资源首次加载仍需经过网络下载，加速效果体现在之后的重复加载：第二次起由本地磁盘或内存直接响应，不再走跨海网络。
@@ -62,8 +65,8 @@ USAGE_TEXT = """================================================================
 - 本工具不对账号安全作任何保证。使用第三方网络工具存在违反游戏服务条款的可能，是否使用请自行评估，风险自负。
 """
 
-def get_pac_content(port: int = 8124) -> str:
-    """Generate PAC script content pointing to the specified local port."""
+def get_pac_content(port: int = 8124, host: str = "127.0.0.1") -> str:
+    """Generate PAC script content pointing to the specified host and port."""
     return f"""function FindProxyForURL(url, host) {{
     if (
         shExpMatch(host, "*.granbluefantasy.jp") ||
@@ -86,8 +89,20 @@ def get_pac_content(port: int = 8124) -> str:
         shExpMatch(host, "prd-game-a3-granbluefantasy-steam.akamaized.net") ||
         shExpMatch(host, "prd-game-a4-granbluefantasy-steam.akamaized.net") ||
         shExpMatch(host, "prd-game-a5-granbluefantasy-steam.akamaized.net") ||
+        shExpMatch(host, "*.game.mbga.jp") ||
+        shExpMatch(host, "gbf.game.mbga.jp") ||
+        shExpMatch(host, "*.sp.pf.mbga.jp") ||
+        shExpMatch(host, "*.pf.mbga.jp") ||
+        shExpMatch(host, "*.sp.mbga.jp") ||
+        shExpMatch(host, "sp.mbga.jp") ||
         shExpMatch(host, "*.mbga.jp") ||
         shExpMatch(host, "mbga.jp") ||
+        shExpMatch(host, "*.connect.mobage.jp") ||
+        shExpMatch(host, "connect.mobage.jp") ||
+        shExpMatch(host, "*.game.mobage.jp") ||
+        shExpMatch(host, "gbf.game.mobage.jp") ||
+        shExpMatch(host, "*.mobage.jp") ||
+        shExpMatch(host, "mobage.jp") ||
         shExpMatch(host, "rcv.a-i-ad.com") ||
         shExpMatch(host, "*.smbeat.jp") ||
         shExpMatch(host, "*.smrtbeat.com") ||
@@ -98,7 +113,7 @@ def get_pac_content(port: int = 8124) -> str:
         shExpMatch(host, "googletagmanager.com") ||
         shExpMatch(host, "*.googletagmanager.com")
     ) {{
-        return "PROXY 127.0.0.1:{port}; DIRECT";
+        return "PROXY {host}:{port}; DIRECT";
     }}
     return "DIRECT";
 }}

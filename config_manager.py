@@ -20,6 +20,7 @@ CONFIG_FILE = get_base_dir() / "config.json"
 DEFAULT_CONFIG: Dict[str, Any] = {
     "listen_host": "127.0.0.1",
     "listen_port": 8124,
+    "allow_lan": False,        # Allow other devices on the same local network (LAN) to connect
     "upstream_proxy": "auto",  # auto-probe 7897, 7890, 10808, 10809
     "direct_mode": False,       # connect directly while retaining local cache
     "cache_dir": "auto",       # auto-detect ACGPower or use ./cache/gbf/https
@@ -51,6 +52,28 @@ PROBE_PROXY_PORTS = [
     (10809, "v2rayN (SOCKS/HTTP)"),
     (8099, "岛风 GO (HTTP)"),
 ]
+
+def get_lan_ip() -> str:
+    """Return the primary local IPv4 address (e.g. 192.168.x.x, 10.x.x.x) for LAN sharing."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # 114.114.114.114 is a widely known public DNS; connect() on UDP does not transmit any packets,
+        # but prompts the OS routing stack to determine the primary outbound adapter IP.
+        s.connect(("114.114.114.114", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        if ip and not ip.startswith("127."):
+            return ip
+    except Exception:
+        pass
+    try:
+        hostname = socket.gethostname()
+        for ip in socket.gethostbyname_ex(hostname)[2]:
+            if not ip.startswith("127.") and ":" not in ip:
+                return ip
+    except Exception:
+        pass
+    return "127.0.0.1"
 
 def is_port_open(host: str, port: int, timeout: float = 0.3) -> bool:
     try:
@@ -647,6 +670,16 @@ class ConfigManager:
         except Exception:
             pass
         return 8124
+
+    def get_effective_listen_host(self) -> str:
+        """Return 0.0.0.0 if allow_lan is enabled, otherwise 127.0.0.1 (or user configured listen_host)."""
+        if self.config.get("allow_lan", False):
+            return "0.0.0.0"
+        return self.config.get("listen_host", "127.0.0.1")
+
+    def get_lan_ip(self) -> str:
+        """Return the primary local IPv4 address for LAN sharing."""
+        return get_lan_ip()
 
     def get_effective_cache_dir(self, interactive: bool = True) -> Path:
         raw_val = self.config.get("cache_dir", "auto")

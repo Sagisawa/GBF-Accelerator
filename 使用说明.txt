@@ -18,6 +18,7 @@
 1. 确保你的 Clash Verge / Clash / v2rayN 已开启并连接到可用节点。
 2. 双击运行 GBF_Accelerator.exe。
 3. 浏览器打开 game.granbluefantasy.jp 即可开始游戏。
+   （移动端建议使用手机 Safari / Chrome 等浏览器访问 game.granbluefantasy.jp 游玩。SkyLeap 内置使用的是 gbf.game.mbga.jp，主要用于登录跳转，不包含游戏静态素材，无法走本地缓存）。
 
 上游代理也支持岛风 GO，默认地址为 `http://127.0.0.1:8099`。修改地址后点击“确认”，会立即断开旧连接并切换到新代理；“自动探测”也会检测该端口。若同时检测到多个代理，会弹出列表供选择。
 

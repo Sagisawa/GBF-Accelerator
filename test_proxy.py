@@ -15,9 +15,12 @@ async def run_test():
 
     try:
         print(f"[*] Testing GBF Speed Proxy using AsyncClient on port {test_port}...")
+        import certifi, ssl
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        ssl_ctx.load_verify_locations(cafile="d:/acgpower/gbf_speed_proxy/certs/ca.crt")
         async with httpx.AsyncClient(
             proxy=f"http://127.0.0.1:{test_port}",
-            verify="d:/acgpower/gbf_speed_proxy/certs/ca.crt",
+            verify=ssl_ctx,
             timeout=10.0,
         ) as client:
             # Test 1: Local Cache Hit
@@ -269,7 +272,111 @@ async def run_test():
                     if ext_p.exists():
                         ext_p.unlink()
 
-            print("\n[+] ALL 23 TESTS PASSED SUCCESSFULLY!")
+            # Test 24: LAN IP detection
+            from config_manager import get_lan_ip
+            lan_ip = get_lan_ip()
+            assert isinstance(lan_ip, str) and len(lan_ip.split(".")) == 4
+            assert all(p.isdigit() and 0 <= int(p) <= 255 for p in lan_ip.split("."))
+            print(f"Test 24 - LAN IP Detection: {lan_ip} -> OK")
+
+            # Direct client for testing local HTTP control & download endpoints
+            async with httpx.AsyncClient(trust_env=False, timeout=5.0) as direct_http:
+                # Test 25: Root CA HTTP download endpoint (/ca.crt)
+                resp_ca = await direct_http.get(f"http://127.0.0.1:{test_port}/ca.crt")
+                assert resp_ca.status_code == 200
+                assert resp_ca.headers.get("content-type") == "application/x-x509-ca-cert"
+                assert "attachment" in resp_ca.headers.get("content-disposition", "")
+                assert b"BEGIN CERTIFICATE" in resp_ca.content
+                print(f"Test 25 - Root CA /ca.crt HTTP Endpoint: status={resp_ca.status_code}, length={len(resp_ca.content)} -> OK")
+
+                # Test 26: Dynamic PAC generation with custom Host header
+                resp_pac = await direct_http.get(
+                    f"http://127.0.0.1:{test_port}/proxy.pac",
+                    headers={"Host": "192.168.1.188:8126"},
+                )
+                assert resp_pac.status_code == 200
+                assert resp_pac.headers.get("content-type") == "application/x-ns-proxy-autoconfig"
+                assert "PROXY 192.168.1.188:8126; DIRECT" in resp_pac.text
+                print(f"Test 26 - Dynamic PAC with Host Header (192.168.1.188:8126): status={resp_pac.status_code} -> OK")
+
+                # Test 27: Mobile setup HTML landing page (GET /)
+                resp_index = await direct_http.get(f"http://127.0.0.1:{test_port}/")
+                assert resp_index.status_code == 200
+                assert "text/html" in resp_index.headers.get("content-type", "")
+                assert "GBF 加速器" in resp_index.text
+                assert "/ca.crt" in resp_index.text
+                assert "/proxy.pac" in resp_index.text
+                print(f"Test 27 - Mobile LAN Setup Landing Page (GET /): status={resp_index.status_code} -> OK")
+
+            # Test 28: Apple/Safari Modern TLS Certificate Policy Compliance (validity <= 398 days, SERVER_AUTH EKU)
+            from cert_manager import ensure_server_cert, SERVER_CERT_PATH
+            from cryptography import x509
+            ensure_server_cert()
+            with open(SERVER_CERT_PATH, "rb") as cf:
+                server_cert = x509.load_pem_x509_certificate(cf.read())
+
+            validity_days = (server_cert.not_valid_after_utc - server_cert.not_valid_before_utc).days
+            assert validity_days <= 398, f"Apple/Safari TLS policy suggests server cert validity <= 398 days, got {validity_days}"
+
+            eku_ext = server_cert.extensions.get_extension_for_oid(x509.ExtensionOID.EXTENDED_KEY_USAGE).value
+            assert x509.ExtendedKeyUsageOID.SERVER_AUTH in eku_ext, "Server cert must contain SERVER_AUTH EKU"
+            print(f"Test 28 - Apple/Safari Modern TLS Policy Compliance (validity={validity_days}d <= 398d, EKU=SERVER_AUTH): OK")
+
+            # Test 29: SkyLeap & Mobage multi-level subdomain SAN compliance
+            sans = set(server_cert.extensions.get_extension_for_oid(x509.ExtensionOID.SUBJECT_ALTERNATIVE_NAME).value.get_values_for_type(x509.DNSName))
+            required_mobage_domains = {
+                "gbf.game.mbga.jp",
+                "*.game.mbga.jp",
+                "*.sp.pf.mbga.jp",
+                "g12016007.sp.pf.mbga.jp",
+                "*.pf.mbga.jp",
+                "connect.mobage.jp",
+                "*.connect.mobage.jp",
+                "sp.mbga.jp",
+                "*.sp.mbga.jp",
+                "mobage.jp",
+                "*.mobage.jp",
+            }
+            assert required_mobage_domains.issubset(sans), f"Missing Mobage domains in SAN: {required_mobage_domains - sans}"
+            print("Test 29 - SkyLeap & Mobage Multi-level SANs (gbf.game.mbga.jp, g12016007.sp.pf.mbga.jp, etc.): OK")
+
+            # Test 30: SkyLeap portal upstream proxy request (TLS handshake + query string forwarding)
+            skyleap_url = "https://gbf.game.mbga.jp/?opensocial_viewer_id=129649231&token=b7c52c36fab15341ef70"
+            resp_skyleap = await client.get(skyleap_url)
+            print(f"Test 30 - SkyLeap GBF Gateway Upstream: status={resp_skyleap.status_code}")
+            assert resp_skyleap.status_code in (200, 301, 302, 403, 502, 504)  # Valid HTTP response received across TLS handshake
+
+            # Test 31: Mobage OpenSocial container upstream proxy request (g12016007.sp.pf.mbga.jp)
+            pf_url = "https://g12016007.sp.pf.mbga.jp/"
+            resp_pf = await client.get(pf_url)
+            print(f"Test 31 - Mobage OpenSocial Container Upstream: status={resp_pf.status_code}")
+            assert resp_pf.status_code in (200, 301, 302, 403, 502, 504)
+
+            # Test 32: Network ACL & Private Subnet Access Control
+            from gbf_proxy import is_client_ip_allowed
+            import config_manager
+            # Loopback always allowed
+            assert is_client_ip_allowed("127.0.0.1") is True
+            assert is_client_ip_allowed("::1") is True
+
+            # When allow_lan is False, non-loopback IPs must be blocked
+            config_manager.config_manager.config["allow_lan"] = False
+            assert is_client_ip_allowed("192.168.1.74") is False
+            assert is_client_ip_allowed("8.8.8.8") is False
+
+            # When allow_lan is True, RFC 1918 private IPs are allowed, public IPs are blocked
+            config_manager.config_manager.config["allow_lan"] = True
+            assert is_client_ip_allowed("192.168.1.74") is True
+            assert is_client_ip_allowed("10.0.0.1") is True
+            assert is_client_ip_allowed("172.16.0.5") is True
+            assert is_client_ip_allowed("8.8.8.8") is False
+            assert is_client_ip_allowed("1.1.1.1") is False
+            assert is_client_ip_allowed("203.0.113.1") is False
+            # Restore
+            config_manager.config_manager.config["allow_lan"] = False
+            print("Test 32 - Network ACL & Private Subnet Protection (public/unauthorized IP rejection): OK")
+
+            print("\n[+] ALL 32 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 

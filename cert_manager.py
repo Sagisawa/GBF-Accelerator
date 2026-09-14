@@ -23,6 +23,28 @@ SAN_DOMAINS = [
     "granbluefantasy.com",
     "*.mbga.jp",
     "mbga.jp",
+    "*.game.mbga.jp",
+    "gbf.game.mbga.jp",
+    "game.mbga.jp",
+    "*.sp.pf.mbga.jp",
+    "g12016007.sp.pf.mbga.jp",
+    "sp.pf.mbga.jp",
+    "*.pf.mbga.jp",
+    "pf.mbga.jp",
+    "*.sp.mbga.jp",
+    "sp.mbga.jp",
+    "*.connect.mobage.jp",
+    "connect.mobage.jp",
+    "*.mobage.jp",
+    "mobage.jp",
+    "*.game.mobage.jp",
+    "gbf.game.mobage.jp",
+    "game.mobage.jp",
+    "*.sp.pf.mobage.jp",
+    "g12016007.sp.pf.mobage.jp",
+    "sp.pf.mobage.jp",
+    "*.pf.mobage.jp",
+    "pf.mobage.jp",
     "prd-game-a-granbluefantasy.akamaized.net",
     "prd-game-a1-granbluefantasy.akamaized.net",
     "prd-game-a2-granbluefantasy.akamaized.net",
@@ -145,13 +167,30 @@ def ensure_server_cert():
                 current_sans = set(ext.value.get_values_for_type(x509.DNSName))
                 if not set(SAN_DOMAINS).issubset(current_sans):
                     need_generate = True
+
+                # Apple / Safari TLS compliance: ServerAuth EKU & validity <= 398 days
+                try:
+                    ext_eku = srv_cert.extensions.get_extension_for_oid(x509.ExtensionOID.EXTENDED_KEY_USAGE)
+                    if x509.ExtendedKeyUsageOID.SERVER_AUTH not in ext_eku.value:
+                        need_generate = True
+                except Exception:
+                    need_generate = True
+
+                if hasattr(srv_cert, "not_valid_before_utc"):
+                    not_before = srv_cert.not_valid_before_utc
+                    not_after = srv_cert.not_valid_after_utc
+                else:
+                    not_before = srv_cert.not_valid_before
+                    not_after = srv_cert.not_valid_after
+                if not_before and not_after and (not_after - not_before).days > 398:
+                    need_generate = True
         except Exception:
             need_generate = True
 
     if not need_generate:
         return
 
-    print("[*] Generating scoped server certificate for GBF domains...")
+    print("[*] Generating scoped server certificate for GBF domains (Apple TLS compliant)...")
     server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     server_name = x509.Name([
         x509.NameAttribute(NameOID.COMMON_NAME, "*.granbluefantasy.jp"),
@@ -167,9 +206,13 @@ def ensure_server_cert():
         .public_key(server_key.public_key())
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(days=1))
-        .not_valid_after(now + datetime.timedelta(days=3650))
+        .not_valid_after(now + datetime.timedelta(days=365))  # Apple/Safari TLS policy recommendations (<= 398 days)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.SubjectAlternativeName(sans), critical=False)
+        .add_extension(
+            x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
         .sign(ca_key, hashes.SHA256())
     )
 
@@ -181,7 +224,8 @@ def ensure_server_cert():
         ))
     with open(SERVER_CERT_PATH, "wb") as f:
         f.write(server_cert.public_bytes(serialization.Encoding.PEM))
-    print(f"[+] Scoped Server cert generated: {SERVER_CERT_PATH}")
+        f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
+    print(f"[+] Scoped Server cert generated with full chain: {SERVER_CERT_PATH}")
 
 def get_server_ssl_context() -> ssl.SSLContext:
     ensure_server_cert()
