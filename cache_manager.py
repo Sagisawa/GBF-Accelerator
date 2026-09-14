@@ -79,6 +79,54 @@ class CacheManager:
                 _, (_, _, evicted_size) = self._ram_cache.popitem(last=False)
                 self._ram_cache_bytes -= evicted_size
 
+    def store_ram_cache(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
+        """Instantly store freshly downloaded static asset into the RAM cache (hot path).
+        Runs synchronously on the asyncio event loop (< 2 microseconds), ensuring subsequent
+        concurrent requests immediately hit RAM even before the disk write completes.
+        """
+        if not config_manager.config.get("enable_ram_cache", True):
+            return False
+        if not data or len(data) > self._get_max_item_bytes():
+            return False
+
+        clean_key = url_path.split("?")[0].lstrip("/")
+        ct = headers.get("content-type") or headers.get("Content-Type", "")
+        if not ct:
+            suffix = Path(url_path.split("?")[0]).suffix.lower()
+            ct = MIME_FALLBACKS.get(suffix) or mimetypes.guess_type(clean_key)[0] or "application/octet-stream"
+
+        etag = headers.get("etag") or headers.get("ETag", "")
+        if not etag:
+            etag = f'"{int(time.time()):x}-{len(data):x}"'
+
+        ce = headers.get("content-encoding") or headers.get("Content-Encoding", "")
+        is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
+        item_len = len(data)
+        max_ram = self._get_max_ram_bytes()
+
+        with self._ram_lock:
+            if clean_key in self._ram_cache:
+                _, _, old_sz = self._ram_cache.pop(clean_key)
+                self._ram_cache_bytes -= old_sz
+
+            while self._ram_cache and (self._ram_cache_bytes + item_len > max_ram):
+                _, (_, _, evicted_size) = self._ram_cache.popitem(last=False)
+                self._ram_cache_bytes -= evicted_size
+
+            saved_headers = {
+                "Content-Type": ct,
+                "Content-Length": str(item_len),
+                "Access-Control-Allow-Origin": "*",
+                "ETag": etag,
+                "X-Proxy-Cache": "HIT",
+            }
+            if ce.lower() == "gzip" or is_gzip:
+                saved_headers["Content-Encoding"] = "gzip"
+
+            self._ram_cache[clean_key] = (saved_headers, data, item_len)
+            self._ram_cache_bytes += item_len
+            return True
+
     def _get_local_path(self, url_path: str) -> Optional[Path]:
         """Safely compute the on-disk cache path for url_path, strictly preventing path traversal.
         Rejects Windows drive letters (e.g. C:), NTFS streams, and directory traversal (..)
@@ -475,26 +523,7 @@ class CacheManager:
                     tmp_ext_path.unlink(missing_ok=True)
 
             # Also update RAM cache if enabled
-            if enable_ram and len(data) <= self._get_max_item_bytes():
-                item_len = len(data)
-                max_ram = self._get_max_ram_bytes()
-                with self._ram_lock:
-                    while self._ram_cache and (self._ram_cache_bytes + item_len > max_ram):
-                        _, (_, _, evicted_size) = self._ram_cache.popitem(last=False)
-                        self._ram_cache_bytes -= evicted_size
-
-                    saved_headers = {
-                        "Content-Type": ct or MIME_FALLBACKS.get(file_path.suffix.lower(), "application/octet-stream"),
-                        "Content-Length": str(item_len),
-                        "Access-Control-Allow-Origin": "*",
-                        "ETag": etag,
-                        "X-Proxy-Cache": "HIT",
-                    }
-                    if is_gzip:
-                        saved_headers["Content-Encoding"] = "gzip"
-                    self._ram_cache[clean_key] = (saved_headers, data, item_len)
-                    self._ram_cache_bytes += item_len
-
+            self.store_ram_cache(url_path, headers, data)
             return True
         except Exception:
             return False
