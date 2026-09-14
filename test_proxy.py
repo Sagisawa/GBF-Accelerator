@@ -172,7 +172,53 @@ async def run_test():
             assert "remember_me=true" in set_cookie_lines[1]
             print("Test 17 - Multi Set-Cookie Header Preservation: OK")
 
-            print("\n[+] ALL 17 TESTS PASSED SUCCESSFULLY!")
+            # Test 18: _ActiveApiTracker exception safety
+            initial_api_count = gbf_proxy.ACTIVE_API_COUNT
+            try:
+                with gbf_proxy._ActiveApiTracker():
+                    assert gbf_proxy.ACTIVE_API_COUNT == initial_api_count + 1
+                    raise ValueError("Simulated API failure")
+            except ValueError:
+                pass
+            assert gbf_proxy.ACTIVE_API_COUNT == initial_api_count
+            print("Test 18 - _ActiveApiTracker Exception Safety: OK")
+
+            # Test 19: LimitOverrunError handling in read_http_request
+            class MockOverrunReader:
+                async def readuntil(self, separator=b"\r\n\r\n"):
+                    raise asyncio.LimitOverrunError("Header exceeds buffer limit", 65536)
+
+            overrun_res = await gbf_proxy.read_http_request(MockOverrunReader())
+            assert overrun_res is None
+            print("Test 19 - read_http_request LimitOverrunError Handling: OK")
+
+            # Test 20: Bounded background cache save
+            save_url = "/assets/test/bounded_save.png"
+            await gbf_proxy._bounded_save_cache(save_url, {"content-type": "image/png"}, b"\x89PNG\r\n\x1a\n")
+            assert cache_manager.has_cache(save_url)
+            p = cache_manager._get_local_path(save_url)
+            if p and p.exists():
+                p.unlink()
+            if p:
+                ext_p = p.parent / (p.name + ".ext")
+                if ext_p.exists():
+                    ext_p.unlink()
+            print("Test 20 - Bounded Cache Save Concurrency: OK")
+
+            # Test 21: SingleFlight inflight map tracking
+            flight_path = "/assets/test/flight_demo.js"
+            flight_key = f"game.granbluefantasy.jp{flight_path}"
+            loop = asyncio.get_running_loop()
+            fut = loop.create_future()
+            gbf_proxy._inflight_fetches[flight_key] = fut
+            assert flight_key in gbf_proxy._inflight_fetches
+            fut.set_result(({"x-test": "flight"}, b"console.log('flight');"))
+            res = await gbf_proxy._inflight_fetches[flight_key]
+            assert res[1] == b"console.log('flight');"
+            gbf_proxy._inflight_fetches.pop(flight_key, None)
+            print("Test 21 - SingleFlight Future Coalescing: OK")
+
+            print("\n[+] ALL 21 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 

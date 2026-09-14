@@ -122,6 +122,33 @@ import threading
 proxy_ready_event = threading.Event()
 
 ACTIVE_API_COUNT = 0
+_inflight_fetches: Dict[str, asyncio.Future] = {}
+SAVE_CONCURRENCY_LIMIT = 16
+save_semaphore: Optional[asyncio.Semaphore] = None
+
+class _ActiveApiTracker:
+    """Context manager to ensure ACTIVE_API_COUNT is strictly decremented on exit."""
+    __slots__ = ()
+    def __enter__(self):
+        global ACTIVE_API_COUNT
+        ACTIVE_API_COUNT += 1
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        global ACTIVE_API_COUNT
+        ACTIVE_API_COUNT = max(0, ACTIVE_API_COUNT - 1)
+        return False
+
+async def _bounded_save_cache(url_path: str, headers: Dict[str, str], data: bytes):
+    """Save cache asynchronously with bounded concurrency (backpressure)."""
+    global save_semaphore
+    if save_semaphore is None:
+        save_semaphore = asyncio.Semaphore(SAVE_CONCURRENCY_LIMIT)
+    try:
+        async with save_semaphore:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, cache_manager.save_cache, url_path, headers, data)
+    except (asyncio.CancelledError, Exception):
+        pass
 
 @functools.lru_cache(maxsize=256)
 def _is_domain_or_subdomain(host: str, domain: str) -> bool:
@@ -221,18 +248,18 @@ async def prefetch_worker():
     while True:
         target_host, url_path = await prefetch_queue.get()
         try:
-            # Yield to active in-flight game API requests to avoid contending for bandwidth
-            while ACTIVE_API_COUNT > 0:
+            # Yield to active in-flight game API requests to avoid contending for bandwidth (max 1.5s cap)
+            yield_start = time.perf_counter()
+            while ACTIVE_API_COUNT > 0 and (time.perf_counter() - yield_start) < 1.5:
                 await asyncio.sleep(0.05)
 
-            if cache_manager.has_cache(url_path):
+            flight_key = f"{target_host}{url_path}"
+            if cache_manager.has_cache(url_path) or flight_key in _inflight_fetches:
                 continue
             url = f"https://{target_host}{url_path}"
             resp = await http_client.request("GET", url)
             if resp.status_code == 200 and resp.content:
-                await asyncio.get_running_loop().run_in_executor(
-                    None, cache_manager.save_cache, url_path, dict(resp.headers), resp.content
-                )
+                await _bounded_save_cache(url_path, dict(resp.headers), resp.content)
                 format_log("PREFETCH", "35", f"Warmed -> {url_path} ({len(resp.content):,} B)")
         except asyncio.CancelledError:
             raise
@@ -243,7 +270,10 @@ async def prefetch_worker():
             prefetch_queue.task_done()
 
 def run_proxy_in_thread():
-    global proxy_loop, proxy_server_instance
+    global proxy_loop, proxy_server_instance, ACTIVE_API_COUNT, save_semaphore
+    ACTIVE_API_COUNT = 0
+    _inflight_fetches.clear()
+    save_semaphore = None
     proxy_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(proxy_loop)
     try:
@@ -255,11 +285,17 @@ def run_proxy_in_thread():
         PROXY_STATS["is_running"] = False
         proxy_ready_event.set()
     finally:
+        ACTIVE_API_COUNT = 0
+        _inflight_fetches.clear()
+        save_semaphore = None
         PROXY_STATS["is_running"] = False
         proxy_ready_event.set()
 
 def start_proxy_thread():
-    global proxy_thread
+    global proxy_thread, ACTIVE_API_COUNT, save_semaphore
+    ACTIVE_API_COUNT = 0
+    _inflight_fetches.clear()
+    save_semaphore = None
     proxy_ready_event.clear()
     PROXY_STATS["last_error"] = ""
     if proxy_thread and proxy_thread.is_alive():
@@ -268,7 +304,10 @@ def start_proxy_thread():
     proxy_thread.start()
 
 def stop_proxy_thread():
-    global proxy_loop, proxy_server_instance, proxy_thread
+    global proxy_loop, proxy_server_instance, proxy_thread, ACTIVE_API_COUNT, save_semaphore
+    ACTIVE_API_COUNT = 0
+    _inflight_fetches.clear()
+    save_semaphore = None
     PROXY_STATS["is_running"] = False
     proxy_ready_event.clear()
     if proxy_loop and proxy_loop.is_running():
@@ -425,7 +464,7 @@ async def read_http_request(reader: asyncio.StreamReader) -> Optional[Tuple[str,
     """Read and parse a full HTTP request with single-pass header buffering and chunked support."""
     try:
         header_data = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=30.0)
-    except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionResetError, OSError):
+    except (asyncio.TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionResetError, OSError):
         return None
 
     if not header_data or len(header_data) > 64 * 1024:
@@ -715,68 +754,109 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         await maybe_enqueue_prefetch(target_host, path, c_data)
                     continue
 
-                # Cache MISS: fetch via Clash, save & compress
-                start_t = time.perf_counter()
-                url = f"https://{target_host}{path}"
-                clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length", "if-modified-since", "if-none-match")}
-                resp = None
-                max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
-                for attempt in range(max_attempts):
+                # SingleFlight: Coalesce concurrent cache-miss requests for the identical asset
+                flight_key = f"{target_host}{path}"
+                flight_fut = _inflight_fetches.get(flight_key)
+                if flight_fut is not None:
+                    # Another concurrent request is already fetching this asset from upstream!
                     try:
-                        resp = await http_client.request(method, url, headers=clean_headers, content=body)
-                        break
-                    except httpx.TimeoutException:
-                        if attempt + 1 < max_attempts:
-                            format_log("RETRY", "33", f"Asset timeout, auto-retrying (1/1) -> {url}")
-                            continue
-                        format_log("TIMEOUT", "31", f"Timeout fetching asset -> {url}")
-                        err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
-                        await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                        resp = None
-                        break
-                    except Exception as e:
-                        if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
-                            format_log("RETRY", "33", f"Asset fetch error, auto-retrying (1/1) -> {url}: {e}")
-                            continue
-                        format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
-                        err_body = b'{"error": "Bad Gateway", "code": 502}'
-                        await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                        resp = None
-                        break
+                        shared_hit = await asyncio.shield(flight_fut)
+                    except Exception:
+                        shared_hit = None
 
-                if resp is None:
+                    if shared_hit is not None:
+                        c_headers, c_data = shared_hit
+                        await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                        PROXY_STATS["hits"] += 1
+                        format_log("CACHE-FLIGHT", "32", f"COALESCED -> {path} ({len(c_data):,} B)")
+                        if not is_head:
+                            await maybe_enqueue_prefetch(target_host, path, c_data)
+                        continue
+
+                    # If the flight leader failed, check if another task successfully populated cache
+                    cache_hit = await loop.run_in_executor(None, cache_manager.get_cache, path)
+                    if cache_hit:
+                        c_headers, c_data = cache_hit
+                        await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                        PROXY_STATS["hits"] += 1
+                        format_log("CACHE-DISK", "32", f"HIT -> {path} ({len(c_data):,} B)")
+                        continue
+
+                is_flight_leader = False
+                if not is_head:
+                    flight_fut = loop.create_future()
+                    _inflight_fetches[flight_key] = flight_fut
+                    is_flight_leader = True
+
+                try:
+                    # Cache MISS: fetch via Clash, save & compress
+                    start_t = time.perf_counter()
+                    url = f"https://{target_host}{path}"
+                    clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length", "if-modified-since", "if-none-match")}
+                    resp = None
+                    max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
+                    for attempt in range(max_attempts):
+                        try:
+                            resp = await http_client.request(method, url, headers=clean_headers, content=body)
+                            break
+                        except httpx.TimeoutException:
+                            if attempt + 1 < max_attempts:
+                                format_log("RETRY", "33", f"Asset timeout, auto-retrying (1/1) -> {url}")
+                                continue
+                            format_log("TIMEOUT", "31", f"Timeout fetching asset -> {url}")
+                            err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
+                            await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                            resp = None
+                            break
+                        except Exception as e:
+                            if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
+                                format_log("RETRY", "33", f"Asset fetch error, auto-retrying (1/1) -> {url}: {e}")
+                                continue
+                            format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
+                            err_body = b'{"error": "Bad Gateway", "code": 502}'
+                            await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                            resp = None
+                            break
+
+                    if resp is None:
+                        continue
+
+                    elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+
+                    if resp.status_code == 200 and resp.content:
+                        c_data = resp.content
+                        if path.endswith("set-error-handler.js"):
+                            c_data = cache_manager.patch_error_handler(c_data)
+
+                        c_headers = cache_manager.build_response_headers(path, dict(resp.headers), len(c_data), c_data)
+                        if is_flight_leader and not flight_fut.done():
+                            flight_fut.set_result((c_headers, c_data))
+
+                        # Respond-first: deliver asset to browser immediately without waiting for disk I/O
+                        await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                        PROXY_STATS["downloads"] += 1
+                        format_log("FETCH-ASSET", "34", f"200 OK & STREAMED ({elapsed_ms}ms) -> {path}")
+
+                        # Save-async: persist in background executor thread with backpressure
+                        asyncio.create_task(_bounded_save_cache(path, dict(resp.headers), c_data))
+
+                        if not is_head:
+                            await maybe_enqueue_prefetch(target_host, path, c_data)
+                        continue
+
+                    # Fallback if non-200 or unable to cache
+                    keep_alive = await forward_upstream_response(writer, headers, resp, is_head=is_head)
+                    if not keep_alive:
+                        break
                     continue
-
-                elapsed_ms = int((time.perf_counter() - start_t) * 1000)
-
-                if resp.status_code == 200 and resp.content:
-                    c_data = resp.content
-                    if path.endswith("set-error-handler.js"):
-                        c_data = cache_manager.patch_error_handler(c_data)
-
-                    # Respond-first: deliver asset to browser immediately without waiting for disk I/O
-                    c_headers = cache_manager.build_response_headers(path, dict(resp.headers), len(c_data), c_data)
-                    await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
-                    PROXY_STATS["downloads"] += 1
-                    format_log("FETCH-ASSET", "34", f"200 OK & STREAMED ({elapsed_ms}ms) -> {path}")
-
-                    # Save-async: persist in background executor thread
-                    loop.run_in_executor(None, cache_manager.save_cache, path, dict(resp.headers), c_data)
-
-                    if not is_head:
-                        await maybe_enqueue_prefetch(target_host, path, c_data)
-                    continue
-
-                # Fallback if non-200 or unable to cache
-                keep_alive = await forward_upstream_response(writer, headers, resp, is_head=is_head)
-                if not keep_alive:
-                    break
-                continue
+                finally:
+                    if is_flight_leader:
+                        _inflight_fetches.pop(flight_key, None)
+                        if not flight_fut.done():
+                            flight_fut.set_result(None)
 
             # ---------------- Rule 4: Dynamic Game API (100% Pristine Forwarding) ----------------
-            global ACTIVE_API_COUNT
-            ACTIVE_API_COUNT += 1
-            try:
+            with _ActiveApiTracker():
                 start_t = time.perf_counter()
                 url = f"https://{target_host}{path}"
                 clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
@@ -804,8 +884,6 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                         resp = None
                         break
-            finally:
-                ACTIVE_API_COUNT = max(0, ACTIVE_API_COUNT - 1)
 
             if resp is None:
                 continue
