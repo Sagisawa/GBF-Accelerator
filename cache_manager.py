@@ -201,6 +201,7 @@ class CacheManager:
 
         with self._missing_lock:
             if clean_key in self._known_missing:
+                self._known_missing.move_to_end(clean_key)
                 return None
 
         # Read from disk with path validation

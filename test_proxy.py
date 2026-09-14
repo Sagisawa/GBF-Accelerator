@@ -420,7 +420,22 @@ async def run_test():
                 cache_manager._ram_cache.pop(clean_none_key, None)
             print("Test 35 - Bounded Negative Disk Cache Index (NTFS stat bypass): OK")
 
-            print("\n[+] ALL 35 TESTS PASSED SUCCESSFULLY!")
+            # Test 36: Prefetch Cross-Host Reference Extraction
+            from gbf_proxy import extract_asset_refs
+            sample_js = b'''
+                var bg = "https://prd-game-a-granbluefantasy.akamaized.net/assets/img/scene/bg/sample.png";
+                var icon = "/assets/img/icon/item.png";
+                var audio = "sound/bgm/battle.mp3";
+                var invalid_external = "https://malicious-cdn.example.com/assets/hack.png";
+            '''
+            extracted = extract_asset_refs("/manifest.js", sample_js, default_host="game.granbluefantasy.jp")
+            assert ("prd-game-a-granbluefantasy.akamaized.net", "/assets/img/scene/bg/sample.png") in extracted, "Must preserve explicit Akamai CDN host"
+            assert ("game.granbluefantasy.jp", "/assets/img/icon/item.png") in extracted, "Relative path must inherit default_host"
+            assert ("game.granbluefantasy.jp", "/sound/bgm/battle.mp3") in extracted, "Relative sound path must inherit default_host"
+            assert not any("malicious-cdn.example.com" in h for h, p in extracted), "Non-GBF external host must be ignored"
+            print("Test 36 - Prefetch Cross-Host Reference Extraction (explicit CDN host preserved & relative fallback): OK")
+
+            print("\n[+] ALL 36 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 

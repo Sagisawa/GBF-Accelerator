@@ -232,8 +232,10 @@ def _get_prefetch_priority(url_path: str) -> int:
         return 4
     return 2
 
-def extract_asset_refs(url_path: str, data: bytes) -> list:
-    """Extract referenced static asset paths from a cached JS/JSON body (executor thread)."""
+def extract_asset_refs(url_path: str, data: bytes, default_host: str = "") -> list:
+    """Extract referenced static asset (host, path) tuples from a cached JS/JSON body (executor thread).
+    Preserves explicitly declared GBF hosts in absolute URLs; falls back to default_host for relative paths.
+    """
     clean = url_path.split("?")[0].lower()
     if not (clean.endswith(".js") or clean.endswith(".json")):
         return []
@@ -249,6 +251,7 @@ def extract_asset_refs(url_path: str, data: bytes) -> list:
         return []
 
     refs: list = []
+    seen: set = set()
     for m in ASSET_REF_RE.finditer(text):
         ref_host = (m.group(1) or "").lower()
         if ref_host and not (
@@ -257,10 +260,15 @@ def extract_asset_refs(url_path: str, data: bytes) -> list:
             or _is_domain_or_subdomain(ref_host, "granbluefantasy.com")
         ):
             continue
+        host = ref_host if ref_host else default_host
         path = "/" + m.group(2)
-        if len(path) > 200 or path in refs:
+        if len(path) > 200:
             continue
-        refs.append(path)
+        item = (host, path)
+        if item in seen:
+            continue
+        seen.add(item)
+        refs.append(item)
         if len(refs) >= 120:
             break
     return refs
@@ -278,21 +286,22 @@ async def maybe_enqueue_prefetch(target_host: str, url_path: str, data: bytes):
     if prefetch_queue.qsize() >= PREFETCH_QUEUE_MAX:
         return
     try:
-        refs = await asyncio.get_running_loop().run_in_executor(None, extract_asset_refs, url_path, data)
+        refs = await asyncio.get_running_loop().run_in_executor(None, extract_asset_refs, url_path, data, target_host)
     except Exception:
         return
 
     enqueued = 0
-    for ref in refs:
+    for host, ref in refs:
+        effective_host = host or target_host
         if prefetch_queue.qsize() >= PREFETCH_QUEUE_MAX:
             break
-        key = f"{target_host}{ref}"
+        key = f"{effective_host}{ref}"
         if key in prefetch_inflight or cache_manager.has_cache(ref):
             continue
         prefetch_inflight.add(key)
         _prefetch_seq += 1
         prio = _get_prefetch_priority(ref)
-        prefetch_queue.put_nowait((prio, _prefetch_seq, target_host, ref))
+        prefetch_queue.put_nowait((prio, _prefetch_seq, effective_host, ref))
         enqueued += 1
     if enqueued:
         format_log("PREFETCH-Q", "35", f"Queued {enqueued} referenced assets (prioritized) from {url_path}")
@@ -314,7 +323,7 @@ async def prefetch_worker():
             resp = await http_client.request("GET", url)
             if resp.status_code == 200 and resp.content:
                 await _bounded_save_cache(url_path, dict(resp.headers), resp.content)
-                format_log("PREFETCH", "35", f"Warmed (P{prio}) -> {url_path} ({len(resp.content):,} B)")
+                format_log("PREFETCH", "35", f"Warmed (P{prio}) -> {target_host}{url_path} ({len(resp.content):,} B)")
         except asyncio.CancelledError:
             raise
         except Exception:
