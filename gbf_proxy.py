@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import re
 import ssl
 import time
@@ -53,7 +54,6 @@ PASSTHROUGH_HOSTS = {
 # Endpoints to mock locally with 200 OK
 MOCK_PATHS = (
     "/rest/error/js",
-    "/user/nickname.woff",
     "/ob/r",
 )
 
@@ -121,11 +121,15 @@ proxy_thread = None
 import threading
 proxy_ready_event = threading.Event()
 
+ACTIVE_API_COUNT = 0
+
+@functools.lru_cache(maxsize=256)
 def _is_domain_or_subdomain(host: str, domain: str) -> bool:
     host = (host or "").rstrip(".").lower()
     domain = domain.rstrip(".").lower()
     return host == domain or host.endswith("." + domain)
 
+@functools.lru_cache(maxsize=256)
 def _is_gbf_akamai_host(host: str) -> bool:
     normalized = (host or "").rstrip(".").lower()
     # These are the GBF CDN hostnames currently used by the game. The
@@ -138,6 +142,7 @@ def _is_gbf_akamai_host(host: str) -> bool:
         _is_domain_or_subdomain(normalized, d) for d in ("granbluefantasy.akamaized.net", "gbf.akamaized.net")
     )
 
+@functools.lru_cache(maxsize=256)
 def _is_gbf_host(host: str) -> bool:
     return _is_gbf_akamai_host(host) or any(
         _is_domain_or_subdomain(host, d) for d in ("granbluefantasy.jp", "granbluefantasy.com", "mbga.jp")
@@ -216,6 +221,10 @@ async def prefetch_worker():
     while True:
         target_host, url_path = await prefetch_queue.get()
         try:
+            # Yield to active in-flight game API requests to avoid contending for bandwidth
+            while ACTIVE_API_COUNT > 0:
+                await asyncio.sleep(0.05)
+
             if cache_manager.has_cache(url_path):
                 continue
             url = f"https://{target_host}{url_path}"
@@ -413,49 +422,32 @@ async def handle_passthrough(client_reader: asyncio.StreamReader, client_writer:
             pass
 
 async def read_http_request(reader: asyncio.StreamReader) -> Optional[Tuple[str, str, str, Dict[str, str], bytes]]:
-    """Read and parse a full HTTP request with Chunked support and timeouts."""
+    """Read and parse a full HTTP request with single-pass header buffering and chunked support."""
     try:
-        req_line = await asyncio.wait_for(reader.readline(), timeout=30.0)
-    except (asyncio.TimeoutError, ConnectionResetError, OSError):
+        header_data = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=30.0)
+    except (asyncio.TimeoutError, asyncio.IncompleteReadError, ConnectionResetError, OSError):
         return None
 
-    if not req_line:
+    if not header_data or len(header_data) > 64 * 1024:
         return None
 
     try:
-        line_str = req_line.decode("iso-8859-1").strip()
-        parts = line_str.split()
+        raw_header_str = header_data[:-4].decode("iso-8859-1")
+        lines = raw_header_str.split("\r\n")
+        if not lines:
+            return None
+        parts = lines[0].strip().split()
         if len(parts) < 3:
             return None
         method, path, version = parts[0], parts[1], parts[2]
+
+        headers: Dict[str, str] = {}
+        for line in lines[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
     except Exception:
         return None
-
-    headers: Dict[str, str] = {}
-    total_header_bytes = len(req_line)
-    MAX_HEADERS_BYTES = 64 * 1024  # 64KB max header
-    MAX_HEADER_COUNT = 128
-
-    while True:
-        try:
-            header_line = await asyncio.wait_for(reader.readline(), timeout=15.0)
-        except (asyncio.TimeoutError, ConnectionResetError, OSError):
-            return None
-
-        if not header_line or header_line in (b"\r\n", b"\n"):
-            break
-
-        total_header_bytes += len(header_line)
-        if total_header_bytes > MAX_HEADERS_BYTES or len(headers) > MAX_HEADER_COUNT:
-            return None
-
-        try:
-            h_str = header_line.decode("iso-8859-1").strip()
-            if ":" in h_str:
-                k, v = h_str.split(":", 1)
-                headers[k.strip().lower()] = v.strip()
-        except Exception:
-            pass
 
     body = b""
     MAX_BODY_BYTES = 32 * 1024 * 1024  # 32MB max body
@@ -758,17 +750,22 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 elapsed_ms = int((time.perf_counter() - start_t) * 1000)
 
                 if resp.status_code == 200 and resp.content:
-                    saved = await loop.run_in_executor(None, cache_manager.save_cache, path, dict(resp.headers), resp.content)
-                    if saved:
-                        PROXY_STATS["downloads"] += 1
-                        format_log("FETCH-ASSET", "34", f"200 OK & CACHED ({elapsed_ms}ms) -> {path}")
-                        verified_cache = await loop.run_in_executor(None, cache_manager.get_cache, path)
-                        if verified_cache:
-                            c_headers, c_data = verified_cache
-                            await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
-                            if not is_head:
-                                await maybe_enqueue_prefetch(target_host, path, c_data)
-                            continue
+                    c_data = resp.content
+                    if path.endswith("set-error-handler.js"):
+                        c_data = cache_manager.patch_error_handler(c_data)
+
+                    # Respond-first: deliver asset to browser immediately without waiting for disk I/O
+                    c_headers = cache_manager.build_response_headers(path, dict(resp.headers), len(c_data), c_data)
+                    await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                    PROXY_STATS["downloads"] += 1
+                    format_log("FETCH-ASSET", "34", f"200 OK & STREAMED ({elapsed_ms}ms) -> {path}")
+
+                    # Save-async: persist in background executor thread
+                    loop.run_in_executor(None, cache_manager.save_cache, path, dict(resp.headers), c_data)
+
+                    if not is_head:
+                        await maybe_enqueue_prefetch(target_host, path, c_data)
+                    continue
 
                 # Fallback if non-200 or unable to cache
                 keep_alive = await forward_upstream_response(writer, headers, resp, is_head=is_head)
@@ -777,33 +774,38 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 continue
 
             # ---------------- Rule 4: Dynamic Game API (100% Pristine Forwarding) ----------------
-            start_t = time.perf_counter()
-            url = f"https://{target_host}{path}"
-            clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
-            resp = None
-            max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
-            for attempt in range(max_attempts):
-                try:
-                    resp = await http_client.request(method, url, headers=clean_headers, content=body)
-                    break
-                except httpx.TimeoutException:
-                    if attempt + 1 < max_attempts:
-                        format_log("RETRY", "33", f"API Gateway timeout on {method} {path}, auto-retrying (1/1)...")
-                        continue
-                    format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
-                    err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
-                    await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                    resp = None
-                    break
-                except Exception as e:
-                    if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
-                        format_log("RETRY", "33", f"API network error on {method} {path}, auto-retrying (1/1)...")
-                        continue
-                    format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
-                    err_body = b'{"error": "Bad Gateway", "code": 502}'
-                    await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                    resp = None
-                    break
+            global ACTIVE_API_COUNT
+            ACTIVE_API_COUNT += 1
+            try:
+                start_t = time.perf_counter()
+                url = f"https://{target_host}{path}"
+                clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
+                resp = None
+                max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
+                for attempt in range(max_attempts):
+                    try:
+                        resp = await http_client.request(method, url, headers=clean_headers, content=body)
+                        break
+                    except httpx.TimeoutException:
+                        if attempt + 1 < max_attempts:
+                            format_log("RETRY", "33", f"API Gateway timeout on {method} {path}, auto-retrying (1/1)...")
+                            continue
+                        format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
+                        err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
+                        await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                        resp = None
+                        break
+                    except Exception as e:
+                        if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
+                            format_log("RETRY", "33", f"API network error on {method} {path}, auto-retrying (1/1)...")
+                            continue
+                        format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
+                        err_body = b'{"error": "Bad Gateway", "code": 502}'
+                        await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                        resp = None
+                        break
+            finally:
+                ACTIVE_API_COUNT = max(0, ACTIVE_API_COUNT - 1)
 
             if resp is None:
                 continue

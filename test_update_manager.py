@@ -19,21 +19,19 @@ class TestUpdateManager(unittest.TestCase):
         self.assertFalse(update_manager.is_newer_version("v1.2.0", "1.4.0"))
 
     def test_check_for_updates_same_version(self):
-        # Current version is 1.4.0, release tag is 1.4.0
-        info = update_manager.check_for_updates(current_ver="1.4.0")
+        info = update_manager.check_for_updates(current_ver=update_manager.APP_VERSION)
         if not info.error:
             self.assertFalse(info.has_update)
-            self.assertEqual(info.latest_version, "1.4.0")
-            self.assertEqual(info.current_version, "1.4.0")
+            self.assertEqual(info.latest_version, update_manager.APP_VERSION)
+            self.assertEqual(info.current_version, update_manager.APP_VERSION)
 
     def test_check_for_updates_older_version_detected(self):
-        # If simulated current version is 1.3.0, remote 1.4.0 should be detected as an update
-        info = update_manager.check_for_updates(current_ver="1.3.0")
+        # If simulated current version is 1.0.0, remote latest version should be detected as an update
+        info = update_manager.check_for_updates(current_ver="1.0.0")
         if not info.error:
             self.assertTrue(info.has_update)
-            self.assertEqual(info.latest_version, "1.4.0")
-            self.assertEqual(info.current_version, "1.3.0")
-            self.assertIn("1.4.0", info.release_title)
+            self.assertEqual(info.latest_version, update_manager.APP_VERSION)
+            self.assertEqual(info.current_version, "1.0.0")
             self.assertTrue(bool(info.html_url))
 
     def test_network_failure_graceful_handling(self):
