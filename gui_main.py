@@ -888,13 +888,18 @@ class GBFAcceleratorGUI:
             cache_manager.set_cache_base(norm_p)
             config_manager.config["cache_dir"] = str(norm_p)
             config_manager.save_config()
+            was_running = gbf_proxy.PROXY_STATS.get("is_running", False)
+            if was_running:
+                self.stop_proxy()
+                self.start_proxy()
+            restart_tip = "\n\n代理服务已自动重启生效并刷新全部缓存！" if was_running else ""
             if norm_p != p:
                 messagebox.showinfo(
                     "缓存设置",
-                    f"检测到您选择了 ACGPower 上级目录，已自动为您校正并锁定到真实缓存子目录：\n\n{norm_p}"
+                    f"检测到目录层级差异，已自动为您校正并锁定到真实缓存根目录：\n\n{norm_p}{restart_tip}"
                 )
             else:
-                messagebox.showinfo("缓存设置", f"缓存目录已成功更改为：\n{norm_p}")
+                messagebox.showinfo("缓存设置", f"缓存目录已成功更改为：\n{norm_p}{restart_tip}")
 
     def detect_acgp(self):
         found = auto_detect_acgpower_cache()
@@ -903,7 +908,12 @@ class GBFAcceleratorGUI:
             cache_manager.set_cache_base(found)
             config_manager.config["cache_dir"] = str(found)
             config_manager.save_config()
-            messagebox.showinfo("ACGP 探测成功", f"成功检测到 ACGPower 缓存目录！\n\n路径：{found}\n\n已自动关联，无需重新下载游戏静态资源！")
+            was_running = gbf_proxy.PROXY_STATS.get("is_running", False)
+            if was_running:
+                self.stop_proxy()
+                self.start_proxy()
+            restart_tip = "\n\n代理服务已自动重启生效并刷新全部缓存！" if was_running else ""
+            messagebox.showinfo("ACGP 探测成功", f"成功检测到 ACGPower 缓存目录！\n\n路径：{found}\n\n已自动关联，无需重新下载游戏静态资源！{restart_tip}")
         else:
             messagebox.showwarning(
                 "探测结果",
@@ -1113,11 +1123,13 @@ class GBFAcceleratorGUI:
         old_direct = bool(config_manager.config.get("direct_mode", False))
         old_shimakaze = bool(config_manager.config.get("shimakaze_mode", False))
         old_allow_lan = bool(config_manager.config.get("allow_lan", False))
+        old_cache_dir = str(cache_manager.cache_base.resolve())
         port_changed = (port != old_port)
         upstream_changed = (up != old_up)
         direct_changed = (self.var_direct_mode.get() != old_direct)
         shimakaze_changed = (self.var_shimakaze_mode.get() != old_shimakaze)
         allow_lan_changed = (self.var_allow_lan.get() != old_allow_lan)
+        cache_dir_changed = bool(cd and str(Path(cd).resolve()) != old_cache_dir)
 
         # Check connectivity to upstream
         up_ok, up_msg = check_upstream_connectivity(up)
@@ -1154,13 +1166,13 @@ class GBFAcceleratorGUI:
         from app_main import update_pac_file
         update_pac_file(port)
 
-        if (port_changed or upstream_changed or direct_changed or shimakaze_changed or allow_lan_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
+        if (port_changed or upstream_changed or direct_changed or shimakaze_changed or allow_lan_changed or cache_dir_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
             self.stop_proxy()
             gbf_proxy.LISTEN_HOST = config_manager.get_effective_listen_host()
             gbf_proxy.LISTEN_PORT = port
             gbf_proxy.UPSTREAM_PROXY = up
             self.start_proxy()
-            messagebox.showinfo("保存成功", f"配置已保存！\n代理服务已自动重启生效（上游：{up}，端口：{port}）。")
+            messagebox.showinfo("保存成功", f"配置已保存！\n代理服务已自动重启生效（缓存目录：{cache_manager.cache_base}）。")
         else:
             gbf_proxy.LISTEN_HOST = config_manager.get_effective_listen_host()
             gbf_proxy.LISTEN_PORT = port
@@ -1461,9 +1473,13 @@ class GBFAcceleratorGUI:
         config_manager.config["enable_auto_repair"] = self.var_auto_repair.get()
         config_manager.config["enable_prefetch"] = self.var_prefetch.get()
         config_manager.config["enable_ram_warmup"] = self.var_ram_warmup.get()
+        cd_raw = self.var_cache_dir.get().strip()
+        norm_cd = normalize_cache_dir(cd_raw)
+        self.var_cache_dir.set(str(norm_cd))
+        config_manager.config["cache_dir"] = str(norm_cd)
         config_manager.save_config()
 
-        cache_manager.set_cache_base(Path(self.var_cache_dir.get()).resolve())
+        cache_manager.set_cache_base(norm_cd)
 
         # Update local proxy.pac file
         from app_main import update_pac_file
