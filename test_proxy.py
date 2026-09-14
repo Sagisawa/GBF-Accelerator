@@ -218,7 +218,58 @@ async def run_test():
             gbf_proxy._inflight_fetches.pop(flight_key, None)
             print("Test 21 - SingleFlight Future Coalescing: OK")
 
-            print("\n[+] ALL 21 TESTS PASSED SUCCESSFULLY!")
+            # Test 22: Instant RAM cache sync store
+            test_ram_path = "/assets/test/instant_ram.js"
+            cache_manager.store_ram_cache(test_ram_path, {"content-type": "application/javascript"}, b"console.log('ram_instant');")
+            assert cache_manager.has_cache(test_ram_path)
+            ram_cached = cache_manager.get_cache(test_ram_path)
+            assert ram_cached is not None
+            assert ram_cached[0]["X-Cache-Source"] == "RAM"
+            assert ram_cached[1] == b"console.log('ram_instant');"
+            print("Test 22 - Instant RAM Cache Hot-Path Store: OK")
+
+            # Test 23: End-to-End Concurrent SingleFlight Coalescing
+            real_request = gbf_proxy.http_client.request
+            sf_call_count = 0
+
+            async def mock_concurrent_request(method, url, **kwargs):
+                nonlocal sf_call_count
+                if "concurrent_singleflight_test.js" in str(url):
+                    sf_call_count += 1
+                    # Tiny delay to guarantee both concurrent client requests overlap in flight
+                    await asyncio.sleep(0.08)
+                    return httpx.Response(
+                        200,
+                        headers={"content-type": "application/javascript", "etag": '"sf-test-123"'},
+                        content=b"/* singleflight verified */",
+                        request=httpx.Request(method, url),
+                    )
+                return await real_request(method, url, **kwargs)
+
+            gbf_proxy.http_client.request = mock_concurrent_request
+            try:
+                test_sf_url = "https://prd-game-a-granbluefantasy.akamaized.net/assets/test/concurrent_singleflight_test.js"
+                res1, res2 = await asyncio.gather(
+                    client.get(test_sf_url),
+                    client.get(test_sf_url),
+                )
+                assert res1.status_code == 200
+                assert res2.status_code == 200
+                assert res1.content == b"/* singleflight verified */"
+                assert res2.content == b"/* singleflight verified */"
+                assert sf_call_count == 1, f"Expected exactly 1 upstream fetch, got {sf_call_count}"
+                print(f"Test 23 - End-to-End Concurrent SingleFlight Coalescing (2 requests -> {sf_call_count} upstream fetch): OK")
+            finally:
+                gbf_proxy.http_client.request = real_request
+                p = cache_manager._get_local_path("/assets/test/concurrent_singleflight_test.js")
+                if p and p.exists():
+                    p.unlink()
+                if p:
+                    ext_p = p.parent / (p.name + ".ext")
+                    if ext_p.exists():
+                        ext_p.unlink()
+
+            print("\n[+] ALL 23 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 

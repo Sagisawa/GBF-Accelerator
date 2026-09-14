@@ -138,7 +138,7 @@ class _ActiveApiTracker:
         ACTIVE_API_COUNT = max(0, ACTIVE_API_COUNT - 1)
         return False
 
-async def _bounded_save_cache(url_path: str, headers: Dict[str, str], data: bytes):
+async def _bounded_save_cache(url_path: str, headers: Dict[str, str], data: bytes, flight_key: Optional[str] = None):
     """Save cache asynchronously with bounded concurrency (backpressure)."""
     global save_semaphore
     if save_semaphore is None:
@@ -149,6 +149,9 @@ async def _bounded_save_cache(url_path: str, headers: Dict[str, str], data: byte
             await loop.run_in_executor(None, cache_manager.save_cache, url_path, headers, data)
     except (asyncio.CancelledError, Exception):
         pass
+    finally:
+        if flight_key:
+            _inflight_fetches.pop(flight_key, None)
 
 @functools.lru_cache(maxsize=256)
 def _is_domain_or_subdomain(host: str, domain: str) -> bool:
@@ -829,6 +832,10 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             c_data = cache_manager.patch_error_handler(c_data)
 
                         c_headers = cache_manager.build_response_headers(path, dict(resp.headers), len(c_data), c_data)
+
+                        # Instantly register into RAM hot-cache (< 2µs) so subsequent requests immediately hit RAM
+                        cache_manager.store_ram_cache(path, dict(resp.headers), c_data)
+
                         if is_flight_leader and not flight_fut.done():
                             flight_fut.set_result((c_headers, c_data))
 
@@ -837,8 +844,13 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         PROXY_STATS["downloads"] += 1
                         format_log("FETCH-ASSET", "34", f"200 OK & STREAMED ({elapsed_ms}ms) -> {path}")
 
-                        # Save-async: persist in background executor thread with backpressure
-                        asyncio.create_task(_bounded_save_cache(path, dict(resp.headers), c_data))
+                        # Save-async: persist in background executor thread with backpressure;
+                        # Retain SingleFlight entry until disk save completes to eliminate the race window
+                        if is_flight_leader:
+                            is_flight_leader = False  # Transfer cleanup to _bounded_save_cache
+                            asyncio.create_task(_bounded_save_cache(path, dict(resp.headers), c_data, flight_key=flight_key))
+                        else:
+                            asyncio.create_task(_bounded_save_cache(path, dict(resp.headers), c_data))
 
                         if not is_head:
                             await maybe_enqueue_prefetch(target_host, path, c_data)
