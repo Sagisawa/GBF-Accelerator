@@ -1,6 +1,7 @@
 import asyncio
 import httpx
 import sys
+import time
 
 import gbf_proxy
 from config_manager import is_port_open
@@ -353,7 +354,7 @@ async def run_test():
             assert resp_pf.status_code in (200, 301, 302, 403, 502, 504)
 
             # Test 32: Network ACL & Private Subnet Access Control
-            from gbf_proxy import is_client_ip_allowed
+            from gbf_proxy import is_client_ip_allowed, _get_prefetch_priority
             import config_manager
             # Loopback always allowed
             assert is_client_ip_allowed("127.0.0.1") is True
@@ -376,7 +377,50 @@ async def run_test():
             config_manager.config_manager.config["allow_lan"] = False
             print("Test 32 - Network ACL & Private Subnet Protection (public/unauthorized IP rejection): OK")
 
-            print("\n[+] ALL 32 TESTS PASSED SUCCESSFULLY!")
+            # Test 33: Synchronous Zero-Executor RAM Cache Fast Path
+            from cache_manager import cache_manager
+            test_ram_path = "/assets/test/pure_memory_fastpath.js"
+            cache_manager.store_ram_cache(test_ram_path, {"ETag": '"test-etag-123"'}, b'console.log("fast")')
+            ram_res = cache_manager.get_ram_cache(test_ram_path)
+            assert ram_res is not None, "get_ram_cache must return data for in-memory asset"
+            r_headers, r_data = ram_res
+            assert r_headers.get("X-Cache-Source") == "RAM"
+            assert r_data == b'console.log("fast")'
+            print("Test 33 - Synchronous Zero-Executor RAM Cache Fast Path: OK")
+
+            # Test 34: Prefetch PriorityQueue Classification
+            assert _get_prefetch_priority("/app.js") == 1
+            assert _get_prefetch_priority("/style.css") == 1
+            assert _get_prefetch_priority("/manifest.json") == 1
+            assert _get_prefetch_priority("/character.png") == 2
+            assert _get_prefetch_priority("/icon.webp") == 2
+            assert _get_prefetch_priority("/font.woff2") == 3
+            assert _get_prefetch_priority("/bgm.mp3") == 4
+            assert _get_prefetch_priority("/voice.m4a") == 4
+            print("Test 34 - Prefetch Priority Classification (P1 Script/CSS > P2 Image > P3 Font > P4 Audio): OK")
+
+            # Test 35: Bounded Negative Disk Cache Index
+            non_existent = f"/assets/test/definitely_not_exist_{int(time.time()*1000)}.png"
+            assert cache_manager.get_disk_cache(non_existent) is None
+            clean_none_key = non_existent.split("?")[0].lstrip("/")
+            with cache_manager._missing_lock:
+                assert clean_none_key in cache_manager._known_missing, "Missing file must be recorded in negative cache"
+            # Second lookup should hit negative cache directly
+            assert cache_manager.get_disk_cache(non_existent) is None
+            # Storing cache clears negative cache entry
+            cache_manager.save_cache(non_existent, {"ETag": '"found"'}, b"new_data")
+            with cache_manager._missing_lock:
+                assert clean_none_key not in cache_manager._known_missing, "Saving cache must evict from negative cache"
+            # Cleanup test artifacts
+            clean_file = cache_manager._get_local_path(non_existent)
+            if clean_file:
+                clean_file.unlink(missing_ok=True)
+                clean_file.with_name(clean_file.name + ".ext").unlink(missing_ok=True)
+            with cache_manager._ram_lock:
+                cache_manager._ram_cache.pop(clean_none_key, None)
+            print("Test 35 - Bounded Negative Disk Cache Index (NTFS stat bypass): OK")
+
+            print("\n[+] ALL 35 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 

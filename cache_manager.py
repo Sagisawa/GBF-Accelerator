@@ -37,6 +37,16 @@ class CacheManager:
         self._ram_cache: OrderedDict[str, Tuple[Dict[str, str], bytes, int]] = OrderedDict()
         self._ram_cache_bytes: int = 0
 
+        # Bounded negative cache for missing files (skips repetitive slow Windows stat/is_file checks)
+        self._missing_lock = threading.Lock()
+        self._known_missing: OrderedDict[str, None] = OrderedDict()
+
+    def _mark_missing(self, clean_key: str):
+        with self._missing_lock:
+            self._known_missing[clean_key] = None
+            if len(self._known_missing) > 4096:
+                self._known_missing.popitem(last=False)
+
     def _get_max_item_bytes(self) -> int:
         """Per-item RAM admission cap. Admission is otherwise "first touch wins":
         any asset is promoted to RAM on its first access, LRU keeps the hot ones.
@@ -168,24 +178,32 @@ class CacheManager:
             if "Expires" in headers:
                 del headers["Expires"]
 
-    def get_cache(self, url_path: str) -> Optional[Tuple[Dict[str, str], bytes]]:
+    def get_ram_cache(self, url_path: str) -> Optional[Tuple[Dict[str, str], bytes]]:
+        """Fast path: read directly from in-memory RAM cache synchronously (microseconds, zero executor)."""
+        if not config_manager.config.get("enable_ram_cache", True):
+            return None
+        clean_key = url_path.split("?")[0].lstrip("/")
+        with self._ram_lock:
+            if clean_key in self._ram_cache:
+                base_headers, data, _ = self._ram_cache[clean_key]
+                self._ram_cache.move_to_end(clean_key)
+                headers = dict(base_headers)
+                self._apply_browser_cache_headers(headers, url_path)
+                headers["X-Cache-Source"] = "RAM"
+                return headers, data
+        return None
+
+    def get_disk_cache(self, url_path: str) -> Optional[Tuple[Dict[str, str], bytes]]:
+        """Slow path: read from local disk via thread pool executor and promote to RAM cache."""
         clean_key = url_path.split("?")[0].lstrip("/")
         enable_ram = config_manager.config.get("enable_ram_cache", True)
         enable_auto_repair = config_manager.config.get("enable_auto_repair", True)
 
-        # 1. Try In-Memory Hot Cache (RAM Cache)
-        if enable_ram:
-            with self._ram_lock:
-                if clean_key in self._ram_cache:
-                    base_headers, data, _ = self._ram_cache[clean_key]
-                    self._ram_cache.move_to_end(clean_key)
-                    # Prepare response headers with dynamic browser cache settings
-                    headers = dict(base_headers)
-                    self._apply_browser_cache_headers(headers, url_path)
-                    headers["X-Cache-Source"] = "RAM"
-                    return headers, data
+        with self._missing_lock:
+            if clean_key in self._known_missing:
+                return None
 
-        # 2. Read from disk with path validation
+        # Read from disk with path validation
         file_path = self._get_local_path(url_path)
         if file_path is None or not file_path.is_file():
             # Intelligent fallback: if path does not start with assets/, check under assets/
@@ -194,14 +212,17 @@ class CacheManager:
                 if fallback_path is not None and fallback_path.is_file():
                     file_path = fallback_path
                 else:
+                    self._mark_missing(clean_key)
                     return None
             else:
+                self._mark_missing(clean_key)
                 return None
 
         # Auto-Repair: Detect and clean 0-byte broken files
         try:
             st = file_path.stat()
         except OSError:
+            self._mark_missing(clean_key)
             return None
 
         if enable_auto_repair and st.st_size == 0:
@@ -210,6 +231,7 @@ class CacheManager:
                 file_path.with_name(file_path.name + ".ext").unlink(missing_ok=True)
             except Exception:
                 pass
+            self._mark_missing(clean_key)
             return None
 
         ext_path = file_path.with_name(file_path.name + ".ext")
@@ -241,6 +263,7 @@ class CacheManager:
                     ext_path.unlink(missing_ok=True)
                 except Exception:
                     pass
+                self._mark_missing(clean_key)
                 return None
 
             mtime = int(st.st_mtime)
@@ -279,6 +302,13 @@ class CacheManager:
             return headers, data
         except Exception:
             return None
+
+    def get_cache(self, url_path: str) -> Optional[Tuple[Dict[str, str], bytes]]:
+        """Unified cache lookup (RAM first, fallback to disk)."""
+        ram_hit = self.get_ram_cache(url_path)
+        if ram_hit is not None:
+            return ram_hit
+        return self.get_disk_cache(url_path)
 
     def peek_cache_meta(self, url_path: str) -> Optional[Tuple[str, Dict[str, str], bool]]:
         """Lightweight metadata-only lookup for fast 304 responses.
@@ -524,6 +554,8 @@ class CacheManager:
 
             # Also update RAM cache if enabled
             self.store_ram_cache(url_path, headers, data)
+            with self._missing_lock:
+                self._known_missing.pop(clean_key, None)
             return True
         except Exception:
             return False
@@ -533,6 +565,8 @@ class CacheManager:
         Returns (deleted_files_count, freed_bytes).
         """
         self.clear_ram_cache()
+        with self._missing_lock:
+            self._known_missing.clear()
         deleted_count = 0
         freed_bytes = 0
         if self.cache_base.is_dir():

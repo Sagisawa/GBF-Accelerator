@@ -210,8 +210,27 @@ def is_client_ip_allowed(client_ip: str) -> bool:
 # ================= Prefetch (background asset warmup) =================
 PREFETCH_WORKERS = 3
 PREFETCH_QUEUE_MAX = 600
-prefetch_queue: Optional[asyncio.Queue] = None
+prefetch_queue: Optional[asyncio.PriorityQueue] = None
 prefetch_inflight: set = set()
+_prefetch_seq: int = 0
+
+def _get_prefetch_priority(url_path: str) -> int:
+    """Classify assets into priority bands for background prefetching:
+    P1 (Highest): Render-blocking code & styles (.js, .css, .json manifest)
+    P2 (Medium):  Visual UI textures & character assets (.png, .jpg, .webp, .svg, .ico)
+    P3 (Normal):  Web fonts (.woff, .woff2, .ttf, .otf)
+    P4 (Lowest):  Heavy media/audio (.mp3, .wav, .ogg, .m4a, .mp4, .webm)
+    """
+    clean = url_path.split("?")[0].lower()
+    if clean.endswith((".js", ".css", ".json")):
+        return 1
+    if clean.endswith((".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico")):
+        return 2
+    if clean.endswith((".woff", ".woff2", ".ttf", ".otf")):
+        return 3
+    if clean.endswith((".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm")):
+        return 4
+    return 2
 
 def extract_asset_refs(url_path: str, data: bytes) -> list:
     """Extract referenced static asset paths from a cached JS/JSON body (executor thread)."""
@@ -248,6 +267,7 @@ def extract_asset_refs(url_path: str, data: bytes) -> list:
 
 async def maybe_enqueue_prefetch(target_host: str, url_path: str, data: bytes):
     """Queue missing assets referenced by a freshly served JS/JSON for background warmup."""
+    global _prefetch_seq
     if not config_manager.config.get("enable_prefetch", True) or prefetch_queue is None:
         return
     clean = url_path.split("?")[0].lower()
@@ -270,15 +290,17 @@ async def maybe_enqueue_prefetch(target_host: str, url_path: str, data: bytes):
         if key in prefetch_inflight or cache_manager.has_cache(ref):
             continue
         prefetch_inflight.add(key)
-        prefetch_queue.put_nowait((target_host, ref))
+        _prefetch_seq += 1
+        prio = _get_prefetch_priority(ref)
+        prefetch_queue.put_nowait((prio, _prefetch_seq, target_host, ref))
         enqueued += 1
     if enqueued:
-        format_log("PREFETCH-Q", "35", f"Queued {enqueued} referenced assets from {url_path}")
+        format_log("PREFETCH-Q", "35", f"Queued {enqueued} referenced assets (prioritized) from {url_path}")
 
 async def prefetch_worker():
     """Background worker: fetch queued assets via the upstream pool and save them to cache."""
     while True:
-        target_host, url_path = await prefetch_queue.get()
+        prio, seq, target_host, url_path = await prefetch_queue.get()
         try:
             # Yield to active in-flight game API requests to avoid contending for bandwidth (max 1.5s cap)
             yield_start = time.perf_counter()
@@ -292,7 +314,7 @@ async def prefetch_worker():
             resp = await http_client.request("GET", url)
             if resp.status_code == 200 and resp.content:
                 await _bounded_save_cache(url_path, dict(resp.headers), resp.content)
-                format_log("PREFETCH", "35", f"Warmed -> {url_path} ({len(resp.content):,} B)")
+                format_log("PREFETCH", "35", f"Warmed (P{prio}) -> {url_path} ({len(resp.content):,} B)")
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -752,8 +774,32 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 loop = asyncio.get_running_loop()
                 req_etag = headers.get("if-none-match", "")
 
-                # Fast 304 path: answer revalidations from metadata only (RAM / .ext
-                # sidecar), never reading the asset body from disk.
+                # 1. Zero-executor RAM cache fast path (pure memory, sub-millisecond)
+                ram_hit = cache_manager.get_ram_cache(path)
+                if ram_hit:
+                    c_headers, c_data = ram_hit
+                    if req_etag and req_etag == c_headers.get("ETag"):
+                        not_mod_headers = {
+                            "ETag": c_headers["ETag"],
+                            "Cache-Control": c_headers["Cache-Control"],
+                            "Access-Control-Allow-Origin": "*",
+                            "Connection": "keep-alive",
+                        }
+                        await send_cached_response(writer, 304, "Not Modified", not_mod_headers, b"", is_head=is_head)
+                        PROXY_STATS["hits"] += 1
+                        PROXY_STATS["ram_hits"] += 1
+                        format_log("CACHE-RAM", "32", f"304 Not Modified -> {path}")
+                        continue
+
+                    await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                    PROXY_STATS["hits"] += 1
+                    PROXY_STATS["ram_hits"] += 1
+                    format_log("CACHE-RAM", "32", f"HIT -> {path} ({len(c_data):,} B)")
+                    if not is_head:
+                        await maybe_enqueue_prefetch(target_host, path, c_data)
+                    continue
+
+                # 2. Fast 304 path for disk cache: answer revalidations from metadata only (.ext sidecar)
                 if req_etag:
                     peeked = await loop.run_in_executor(None, cache_manager.peek_cache_meta, path)
                     if peeked is not None:
@@ -766,12 +812,11 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             format_log(f"CACHE-{'RAM' if peek_is_ram else 'DISK'}", "32", f"304 Not Modified (meta) -> {path}")
                             continue
 
-                # Body reads/writes run in the executor so slow disk I/O never blocks the event loop
-                cache_hit = await loop.run_in_executor(None, cache_manager.get_cache, path)
+                # 3. Disk cache read (in executor so slow disk I/O never blocks the event loop)
+                cache_hit = await loop.run_in_executor(None, cache_manager.get_disk_cache, path)
                 if cache_hit:
                     c_headers, c_data = cache_hit
-                    is_ram = c_headers.get("X-Cache-Source") == "RAM"
-                    # Fallback 304 check (when the metadata peek missed)
+                    # Fallback 304 check
                     if req_etag and req_etag == c_headers.get("ETag"):
                         not_mod_headers = {
                             "ETag": c_headers["ETag"],
@@ -781,16 +826,12 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         }
                         await send_cached_response(writer, 304, "Not Modified", not_mod_headers, b"", is_head=is_head)
                         PROXY_STATS["hits"] += 1
-                        if is_ram:
-                            PROXY_STATS["ram_hits"] += 1
-                        format_log(f"CACHE-{'RAM' if is_ram else 'DISK'}", "32", f"304 Not Modified -> {path}")
+                        format_log("CACHE-DISK", "32", f"304 Not Modified -> {path}")
                         continue
 
                     await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                     PROXY_STATS["hits"] += 1
-                    if is_ram:
-                        PROXY_STATS["ram_hits"] += 1
-                    format_log(f"CACHE-{'RAM' if is_ram else 'DISK'}", "32", f"HIT -> {path} ({len(c_data):,} B)")
+                    format_log("CACHE-DISK", "32", f"HIT -> {path} ({len(c_data):,} B)")
                     if not is_head:
                         await maybe_enqueue_prefetch(target_host, path, c_data)
                     continue
@@ -1224,7 +1265,7 @@ async def main():
 
     # Prefetch workers + startup RAM warmup: both stay off the request path.
     # stop_proxy_thread cancels all tasks on this loop, which also retires the workers.
-    prefetch_queue = asyncio.Queue()
+    prefetch_queue = asyncio.PriorityQueue()
     prefetch_inflight = set()
     for _ in range(PREFETCH_WORKERS):
         asyncio.create_task(prefetch_worker())
