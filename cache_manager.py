@@ -151,17 +151,18 @@ class CacheManager:
                 return None
 
         # Auto-Repair: Detect and clean 0-byte broken files
-        if enable_auto_repair:
+        try:
+            st = file_path.stat()
+        except OSError:
+            return None
+
+        if enable_auto_repair and st.st_size == 0:
             try:
-                if file_path.stat().st_size == 0:
-                    try:
-                        file_path.unlink(missing_ok=True)
-                        file_path.with_name(file_path.name + ".ext").unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                    return None
+                file_path.unlink(missing_ok=True)
+                file_path.with_name(file_path.name + ".ext").unlink(missing_ok=True)
             except Exception:
-                return None
+                pass
+            return None
 
         ext_path = file_path.with_name(file_path.name + ".ext")
         content_type = ""
@@ -194,7 +195,7 @@ class CacheManager:
                     pass
                 return None
 
-            mtime = int(file_path.stat().st_mtime)
+            mtime = int(st.st_mtime)
             # Consistent ETag: prefer upstream ETag stored in .ext, fallback to mtime-size
             etag = cached_etag or f'"{mtime:x}-{len(data):x}"'
             headers = {
@@ -370,6 +371,45 @@ class CacheManager:
 
         return True
 
+    def patch_error_handler(self, data: bytes) -> bytes:
+        """Neuter disruptive alert() in set-error-handler.js without custom signatures."""
+        try:
+            is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
+            import gzip
+            raw_text = gzip.decompress(data).decode("utf-8") if is_gzip else data.decode("utf-8")
+            target = "t&&alert(t),a&&window.location.reload()"
+            if target in raw_text:
+                raw_text = raw_text.replace(target, "void 0")
+                return gzip.compress(raw_text.encode("utf-8"), 6) if is_gzip else raw_text.encode("utf-8")
+        except Exception:
+            pass
+        return data
+
+    def build_response_headers(self, url_path: str, upstream_headers: Dict[str, str], data_len: int, data: bytes) -> Dict[str, str]:
+        """Construct client HTTP headers for freshly downloaded assets before background disk save."""
+        ct = upstream_headers.get("content-type") or upstream_headers.get("Content-Type", "")
+        if not ct:
+            suffix = Path(url_path.split("?")[0]).suffix.lower()
+            ct = MIME_FALLBACKS.get(suffix) or mimetypes.guess_type(url_path)[0] or "application/octet-stream"
+
+        etag = upstream_headers.get("etag") or upstream_headers.get("ETag", "")
+        if not etag:
+            etag = f'"{int(time.time()):x}-{data_len:x}"'
+
+        headers = {
+            "Content-Type": ct,
+            "Content-Length": str(data_len),
+            "Access-Control-Allow-Origin": "*",
+            "ETag": etag,
+            "X-Proxy-Cache": "MISS-CACHED",
+        }
+        is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
+        if is_gzip:
+            headers["Content-Encoding"] = "gzip"
+
+        self._apply_browser_cache_headers(headers, url_path)
+        return headers
+
     def save_cache(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
         if not self.is_valid_cache_content(url_path, headers, data):
             return False
@@ -397,18 +437,10 @@ class CacheManager:
 
             # Neuter disruptive alert() in set-error-handler.js
             if url_path.endswith("set-error-handler.js"):
-                try:
-                    import gzip
-                    raw_text = gzip.decompress(data).decode("utf-8") if is_gzip else data.decode("utf-8")
-                    target = "t&&alert(t),a&&window.location.reload()"
-                    if target in raw_text:
-                        raw_text = raw_text.replace(target, 'console.warn("[SpeedProxy] Suppressed RequireJS error:",r)')
-                        data = gzip.compress(raw_text.encode("utf-8"), 6)
-                        is_gzip = True
-                except Exception:
-                    pass
+                data = self.patch_error_handler(data)
+                is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
 
-            # Atomic file writing via temporary file and fsync
+            # Atomic file writing via temporary file and replace (without heavy fsync)
             pid = os.getpid()
             ts = int(time.time() * 1000)
             tmp_data_path = file_path.with_name(f"{file_path.name}.tmp.{pid}.{ts}")
@@ -416,7 +448,6 @@ class CacheManager:
                 with open(tmp_data_path, "wb") as f:
                     f.write(data)
                     f.flush()
-                    os.fsync(f.fileno())
                 os.replace(tmp_data_path, file_path)
             except Exception:
                 if tmp_data_path.is_file():
@@ -438,7 +469,6 @@ class CacheManager:
                 with open(tmp_ext_path, "w", encoding="utf-8") as f:
                     json.dump(meta, f, indent=2)
                     f.flush()
-                    os.fsync(f.fileno())
                 os.replace(tmp_ext_path, ext_path)
             except Exception:
                 if tmp_ext_path.is_file():

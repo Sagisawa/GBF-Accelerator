@@ -88,22 +88,26 @@ async def run_test():
             print("Test 10 - Cache Integrity (rejected HTML error page & empty payload): OK")
 
             # Test 11: Immutable Header Logic (only versioned assets get immutable when enabled)
-            headers_test_ver = {}
-            cache_manager._apply_browser_cache_headers(headers_test_ver, "/assets/1772717316/foo.js")
-            # Default enable_browser_cache is False -> should NOT contain immutable
-            assert "immutable" not in headers_test_ver.get("Cache-Control", "")
-
-            # If temporarily enabled:
             from config_manager import config_manager
-            config_manager.config["enable_browser_cache"] = True
-            headers_ver_on = {}
-            cache_manager._apply_browser_cache_headers(headers_ver_on, "/assets/1772717316/foo.js")
-            assert "immutable" in headers_ver_on.get("Cache-Control", "")
+            orig_setting = config_manager.config.get("enable_browser_cache", True)
+            try:
+                config_manager.config["enable_browser_cache"] = False
+                headers_test_ver = {}
+                cache_manager._apply_browser_cache_headers(headers_test_ver, "/assets/1772717316/foo.js")
+                assert "immutable" not in headers_test_ver.get("Cache-Control", "")
 
-            # Unversioned asset even when enabled should NEVER get immutable
-            headers_unver = {}
-            cache_manager._apply_browser_cache_headers(headers_unver, "/manifest.json")
-            assert "immutable" not in headers_unver.get("Cache-Control", "")
+                config_manager.config["enable_browser_cache"] = True
+                headers_ver_on = {}
+                cache_manager._apply_browser_cache_headers(headers_ver_on, "/assets/1772717316/foo.js")
+                assert "immutable" in headers_ver_on.get("Cache-Control", "")
+
+                # Unversioned asset even when enabled should NEVER get immutable
+                headers_unver = {}
+                cache_manager._apply_browser_cache_headers(headers_unver, "/manifest.json")
+                assert "immutable" not in headers_unver.get("Cache-Control", "")
+                print("Test 11 - Immutable Header Logic: OK")
+            finally:
+                config_manager.config["enable_browser_cache"] = orig_setting
 
             # Test 12: Path Traversal Rejection
             assert cache_manager._get_local_path("/C:/Windows/win.ini") is None
@@ -173,4 +177,6 @@ async def run_test():
         gbf_proxy.stop_proxy_thread()
 
 if __name__ == "__main__":
+    import os
     asyncio.run(run_test())
+    os._exit(0)
