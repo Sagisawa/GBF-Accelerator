@@ -1,5 +1,7 @@
 import asyncio
+import datetime
 import functools
+import ipaddress
 import re
 import ssl
 import time
@@ -22,7 +24,7 @@ if sys.platform == "win32":
         pass
 
 # ================= Configuration =================
-LISTEN_HOST = config_manager.config.get("listen_host", "127.0.0.1")
+LISTEN_HOST = config_manager.get_effective_listen_host()
 LISTEN_PORT = config_manager.get_listen_port()
 UPSTREAM_PROXY = config_manager.get_effective_upstream_proxy()
 DIRECT_MODE = bool(config_manager.config.get("direct_mode", False))
@@ -34,7 +36,6 @@ MITM_SUFFIXES = (
     "granbluefantasy.com",
     "granbluefantasy.akamaized.net",
     "gbf.akamaized.net",
-    "mbga.jp",
 )
 
 # Steam edition's dedicated Akamai CDN hosts. Keep this list explicit so
@@ -175,8 +176,36 @@ def _is_gbf_akamai_host(host: str) -> bool:
 @functools.lru_cache(maxsize=256)
 def _is_gbf_host(host: str) -> bool:
     return _is_gbf_akamai_host(host) or any(
-        _is_domain_or_subdomain(host, d) for d in ("granbluefantasy.jp", "granbluefantasy.com", "mbga.jp")
+        _is_domain_or_subdomain(host, d) for d in ("granbluefantasy.jp", "granbluefantasy.com")
     )
+
+# Permitted LAN subnets: RFC 1918 private ranges, RFC 3927 IPv4 link-local, RFC 4193 ULA, and RFC 4291 IPv6 link-local
+_LAN_SUBNETS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+)
+
+def is_client_ip_allowed(client_ip: str) -> bool:
+    """Network ACL: strictly restrict clients to loopback, or RFC 1918 / link-local LAN subnets when allow_lan is True."""
+    if not client_ip:
+        return False
+    # Strip IPv6-mapped IPv4 prefix if present (e.g. ::ffff:192.168.1.50)
+    if client_ip.startswith("::ffff:"):
+        client_ip = client_ip[7:]
+    try:
+        ip_obj = ipaddress.ip_address(client_ip)
+        if ip_obj.is_loopback:
+            return True
+        if not config_manager.config.get("allow_lan", False):
+            return False
+        # When allow_lan is active, only permit genuine LAN subnets
+        return any(ip_obj in net for net in _LAN_SUBNETS)
+    except ValueError:
+        return False
 
 # ================= Prefetch (background asset warmup) =================
 PREFETCH_WORKERS = 3
@@ -339,7 +368,8 @@ def format_log(level: str, color_code: str, msg: str):
     # ANSI colored console log (safe for windowed GUI mode)
     try:
         if sys.stdout is not None:
-            print(f"[{level}] {msg}")
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            print(f"[{ts}] [{level}] {msg}", flush=True)
     except Exception:
         pass
 
@@ -588,6 +618,14 @@ async def send_cached_response(
     else:
         writer.write(raw_header + body)
     await writer.drain()
+
+async def _safe_close_writer(writer: asyncio.StreamWriter, timeout: float = 0.5):
+    """Safely close writer with timeout to avoid hanging on wait_closed."""
+    try:
+        writer.close()
+        await asyncio.wait_for(writer.wait_closed(), timeout=timeout)
+    except Exception:
+        pass
 
 async def forward_upstream_response(
     writer: asyncio.StreamWriter,
@@ -926,6 +964,13 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
 async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, ssl_context: ssl.SSLContext):
     """Entrypoint for all client connections."""
     try:
+        peer = writer.get_extra_info("peername")
+        client_ip = peer[0] if peer else "127.0.0.1"
+        if not is_client_ip_allowed(client_ip):
+            format_log("ACL-BLOCK", "31", f"Rejected unauthorized connection from non-LAN / public IP: {client_ip}")
+            await _safe_close_writer(writer)
+            return
+
         first_line = await reader.readline()
         if not first_line:
             writer.close()
@@ -980,36 +1025,16 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                 )
             )
 
+            peer = writer.get_extra_info("peername")
+            client_ip = f"[{peer[0]}] " if peer else ""
+            format_log("CONNECT", "36", f"{client_ip}{target} -> {'MITM' if should_mitm else 'TUNNEL'}")
+
             if should_mitm:
                 await handle_mitm_session(reader, writer, host, ssl_context)
             else:
                 await handle_passthrough(reader, writer, host, port)
         else:
-            # 1. Check if client is requesting the local PAC script
-            if target == "/proxy.pac" or target.endswith("/proxy.pac"):
-                from app_main import get_pac_content
-                pac_bytes = get_pac_content(LISTEN_PORT).encode("utf-8")
-                pac_headers = {
-                    "Content-Type": "application/x-ns-proxy-autoconfig",
-                    "Content-Length": str(len(pac_bytes)),
-                    "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                }
-                await send_cached_response(writer, 200, "OK", pac_headers, pac_bytes)
-                format_log("PAC", "36", f"Served /proxy.pac (port {LISTEN_PORT}) to browser/system")
-                writer.close()
-                await writer.wait_closed()
-                return
-
-            # 2. Block plain HTTP telemetry requests
-            if any(pat in target for pat in TELEMETRY_PATTERNS):
-                await send_cached_response(writer, 200, "OK", {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Content-Length": "2", "Connection": "close"}, b"{}")
-                writer.close()
-                await writer.wait_closed()
-                return
-
-            # Plain HTTP request (e.g. GET http://gbf.game.mbga.jp/...)
+            # Plain HTTP request (e.g. GET /proxy.pac, GET /ca.crt, or proxy request GET http://gbf.game.mbga.jp/...)
             headers: Dict[str, str] = {}
             while True:
                 line = await reader.readline()
@@ -1022,6 +1047,117 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
                         headers[k.strip().lower()] = v.strip()
                 except Exception:
                     pass
+
+            target_clean = target.split("?")[0].lower()
+
+            # 1. Root CA certificate download endpoint (convenient for iOS / mobile Safari installation)
+            if target_clean in ("/ca.crt", "/ca.pem") or target_clean.endswith(("/ca.crt", "/ca.pem")):
+                from cert_manager import CA_CERT_PATH, ensure_ca
+                ensure_ca()
+                if CA_CERT_PATH.is_file():
+                    cert_bytes = CA_CERT_PATH.read_bytes()
+                    cert_headers = {
+                        "Content-Type": "application/x-x509-ca-cert",
+                        "Content-Length": str(len(cert_bytes)),
+                        "Content-Disposition": 'attachment; filename="gbf_ca.crt"',
+                        "Access-Control-Allow-Origin": "*",
+                        "Cache-Control": "no-cache",
+                        "Connection": "close",
+                    }
+                    await send_cached_response(writer, 200, "OK", cert_headers, cert_bytes)
+                    format_log("CA", "36", f"Served ca.crt to mobile/client {writer.get_extra_info('peername')}")
+                    await _safe_close_writer(writer)
+                    return
+
+            # 2. Local/LAN PAC script (dynamically resolves host for other LAN devices)
+            if target_clean == "/proxy.pac" or target_clean.endswith("/proxy.pac"):
+                from app_main import get_pac_content
+                from config_manager import get_lan_ip
+                host_hdr = headers.get("host", "").split(":")[0].strip()
+                if host_hdr and host_hdr not in ("127.0.0.1", "localhost"):
+                    pac_host = host_hdr
+                elif config_manager.config.get("allow_lan", False):
+                    pac_host = get_lan_ip()
+                else:
+                    pac_host = "127.0.0.1"
+
+                pac_bytes = get_pac_content(LISTEN_PORT, host=pac_host).encode("utf-8")
+                pac_headers = {
+                    "Content-Type": "application/x-ns-proxy-autoconfig",
+                    "Content-Length": str(len(pac_bytes)),
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-cache",
+                    "Connection": "close",
+                }
+                await send_cached_response(writer, 200, "OK", pac_headers, pac_bytes)
+                format_log("PAC", "36", f"Served /proxy.pac (pointing to {pac_host}:{LISTEN_PORT})")
+                await _safe_close_writer(writer)
+                return
+
+            # 3. Mobile LAN landing page (when accessing http://<IP>:<PORT>/ in browser)
+            if target_clean in ("/", "/index.html"):
+                from config_manager import get_lan_ip
+                lan_ip = get_lan_ip()
+                html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GBF 加速器 局域网配置</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif; margin: 24px; background: #f8f9fa; color: #212529; }}
+        .card {{ background: #ffffff; padding: 24px; border-radius: 12px; max-width: 620px; margin: auto; box-shadow: 0 4px 16px rgba(0,0,0,0.06); }}
+        h1 {{ color: #0d6efd; font-size: 18px; margin-top: 0; }}
+        .btn {{ display: inline-block; background: #0d6efd; color: #fff; padding: 8px 16px; border-radius: 4px; text-decoration: none; font-size: 14px; margin: 6px 0; }}
+        code {{ background: #e9ecef; padding: 2px 6px; border-radius: 4px; font-family: Consolas, monospace; word-break: break-all; }}
+        ol {{ padding-left: 20px; line-height: 1.7; }}
+        li {{ margin-bottom: 10px; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>GBF 加速器 局域网配置</h1>
+        <p>移动设备（iOS / Android）配置指引：</p>
+        <ol>
+            <li><b>安装根证书：</b><br>
+                <a href="/ca.crt" class="btn">下载根证书 (ca.crt)</a>
+            </li>
+            <li><b>信任证书（iOS 必做）：</b><br>
+                系统【设置】&rarr;【通用】&rarr;【关于本机】&rarr;【证书信任设置】，找到 <b>GBF Local Accelerator Root CA</b> 并开启完全信任。
+            </li>
+            <li><b>配置 Wi-Fi 代理：</b><br>
+                系统 Wi-Fi 设置 &rarr; 当前 Wi-Fi 详情 &rarr;【配置代理】：<br>
+                &bull; <b>方式 1（自动，推荐）：</b>选择“自动”，URL 填入：<code>http://{lan_ip}:{LISTEN_PORT}/proxy.pac</code><br>
+                &bull; <b>方式 2（手动）：</b>服务器填 <code>{lan_ip}</code>，端口填 <code>{LISTEN_PORT}</code>
+            </li>
+            <li><b>游玩网址与客户端说明：</b><br>
+                建议使用手机浏览器（Safari / Chrome 等）访问：<br>
+                <a href="https://game.granbluefantasy.jp" target="_blank" style="color: #0d6efd; font-weight: bold;">https://game.granbluefantasy.jp</a><br>
+                <span style="font-size: 13px; color: #6c757d; display: inline-block; margin-top: 4px;">
+                注：SkyLeap 内置使用的是 <code>gbf.game.mbga.jp</code>，该地址主要用于账号登录和跳转，不包含游戏静态素材，无法触发本地缓存加速；在手机浏览器中访问 <code>game.granbluefantasy.jp</code> 才能正常使用本地缓存。
+                </span>
+            </li>
+        </ol>
+    </div>
+</body>
+</html>"""
+                html_bytes = html.encode("utf-8")
+                landing_headers = {
+                    "Content-Type": "text/html; charset=utf-8",
+                    "Content-Length": str(len(html_bytes)),
+                    "Access-Control-Allow-Origin": "*",
+                    "Connection": "close",
+                }
+                await send_cached_response(writer, 200, "OK", landing_headers, html_bytes)
+                await _safe_close_writer(writer)
+                return
+
+            # 4. Block plain HTTP telemetry requests
+            if any(pat in target for pat in TELEMETRY_PATTERNS):
+                await send_cached_response(writer, 200, "OK", {"Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Content-Length": "2", "Connection": "close"}, b"{}")
+                writer.close()
+                await writer.wait_closed()
+                return
 
             try:
                 content_length = int(headers.get("content-length", 0))

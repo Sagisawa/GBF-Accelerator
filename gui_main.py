@@ -122,6 +122,8 @@ class GBFAcceleratorGUI:
         self.var_direct_mode = tk.BooleanVar(value=config_manager.config.get("direct_mode", False))
         self.var_shimakaze_mode = tk.BooleanVar(value=config_manager.config.get("shimakaze_mode", False))
         self.var_listen_port = tk.StringVar(value=str(config_manager.get_listen_port()))
+        self.var_allow_lan = tk.BooleanVar(value=config_manager.config.get("allow_lan", False))
+        self.var_lan_ip = tk.StringVar(value=config_manager.get_lan_ip())
         self.var_ca_status = tk.StringVar(value="检测中...")
         self.var_ca_fp = tk.StringVar(value="")
         self.var_auto_pac = tk.BooleanVar(value=config_manager.config.get("auto_system_proxy", True))
@@ -152,10 +154,13 @@ class GBFAcceleratorGUI:
         # instead of guessing, so nothing on the right edge ever gets clipped.
         self.root.update_idletasks()
         screen_h = self.root.winfo_screenheight()
-        win_w = max(680, int(self.root.winfo_reqwidth()) + 16)
-        win_h = 858 if screen_h >= 900 else max(740, screen_h - 70)
+        req_w = int(self.root.winfo_reqwidth())
+        req_h = int(self.root.winfo_reqheight())
+        win_w = max(720, req_w + 24)
+        target_h = max(960, req_h + 50)
+        win_h = min(target_h, screen_h - 80) if screen_h > 800 else target_h
         self.root.geometry(f"{win_w}x{win_h}")
-        self.root.minsize(win_w, min(740, win_h))
+        self.root.minsize(win_w, min(800, win_h))
 
         # Center window after layout is constructed
         self.center_window()
@@ -437,6 +442,33 @@ class GBFAcceleratorGUI:
         btn_save = ttk.Button(f_port, text="保存配置", width=10, command=self.save_settings)
         btn_save.pack(side="left")
 
+        # Allow LAN Checkbutton & Mobile guide button
+        f_lan = ttk.Frame(card_settings, style="CardInner.TFrame")
+        f_lan.pack(fill="x", pady=(0, 4))
+
+        self.chk_allow_lan = ttk.Checkbutton(
+            f_lan,
+            text="允许局域网连接 (Allow LAN) - 允许其他设备（iOS/iPad/安卓等）连接本代理（默认关闭）",
+            variable=self.var_allow_lan,
+            command=self.toggle_allow_lan_setting,
+        )
+        self.chk_allow_lan.pack(side="left")
+
+        self.btn_lan_guide = ttk.Button(
+            f_lan,
+            text="📱 移动端/iOS 连接指引...",
+            command=self.show_lan_guide,
+        )
+        self.btn_lan_guide.pack(side="left", padx=(8, 0))
+
+        self.lbl_lan_status = ttk.Label(
+            card_settings,
+            text="",
+            style="Gray.TLabel",
+            foreground="#007bff",
+        )
+        self.update_lan_status_label()
+
         # Field 4: CA Certificate
         ttk.Label(card_settings, text="HTTPS 根证书状态（游戏静态资源本地解析必需）：", style="Normal.TLabel").pack(anchor="w")
         f_ca = ttk.Frame(card_settings, style="CardInner.TFrame")
@@ -570,15 +602,17 @@ class GBFAcceleratorGUI:
         config_manager.save_config()
 
     def start_auto_update_check(self):
-        threading.Thread(target=self._bg_check_update, args=(False,), daemon=True).start()
+        is_direct = self.var_direct_mode.get()
+        threading.Thread(target=self._bg_check_update, args=(False, is_direct), daemon=True).start()
 
     def manual_check_update(self):
         if hasattr(self, "btn_check_update") and self.btn_check_update.winfo_exists():
             self.btn_check_update.configure(text=" 检查中...", state="disabled")
-        threading.Thread(target=self._bg_check_update, args=(True,), daemon=True).start()
+        is_direct = self.var_direct_mode.get()
+        threading.Thread(target=self._bg_check_update, args=(True, is_direct), daemon=True).start()
 
-    def _bg_check_update(self, is_manual: bool):
-        up = None if self.var_direct_mode.get() else gbf_proxy.UPSTREAM_PROXY
+    def _bg_check_update(self, is_manual: bool, is_direct: bool):
+        up = None if is_direct else gbf_proxy.UPSTREAM_PROXY
         info = update_manager.check_for_updates(upstream_proxy=up)
         try:
             self.root.after(0, self._handle_update_result, info, is_manual)
@@ -1078,10 +1112,12 @@ class GBFAcceleratorGUI:
         old_up = gbf_proxy.UPSTREAM_PROXY
         old_direct = bool(config_manager.config.get("direct_mode", False))
         old_shimakaze = bool(config_manager.config.get("shimakaze_mode", False))
+        old_allow_lan = bool(config_manager.config.get("allow_lan", False))
         port_changed = (port != old_port)
         upstream_changed = (up != old_up)
         direct_changed = (self.var_direct_mode.get() != old_direct)
         shimakaze_changed = (self.var_shimakaze_mode.get() != old_shimakaze)
+        allow_lan_changed = (self.var_allow_lan.get() != old_allow_lan)
 
         # Check connectivity to upstream
         up_ok, up_msg = check_upstream_connectivity(up)
@@ -1092,6 +1128,7 @@ class GBFAcceleratorGUI:
         config_manager.config["upstream_proxy"] = up
         config_manager.config["direct_mode"] = self.var_direct_mode.get()
         config_manager.config["shimakaze_mode"] = self.var_shimakaze_mode.get()
+        config_manager.config["allow_lan"] = self.var_allow_lan.get()
         config_manager.config["cache_dir"] = cd
         config_manager.config["listen_port"] = port
         config_manager.config["auto_system_proxy"] = self.var_auto_pac.get()
@@ -1111,17 +1148,21 @@ class GBFAcceleratorGUI:
         if cd:
             cache_manager.set_cache_base(Path(cd).resolve())
 
+        self.update_lan_status_label()
+
         # Update local proxy.pac file
         from app_main import update_pac_file
         update_pac_file(port)
 
-        if (port_changed or upstream_changed or direct_changed or shimakaze_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
+        if (port_changed or upstream_changed or direct_changed or shimakaze_changed or allow_lan_changed) and gbf_proxy.PROXY_STATS.get("is_running", False):
             self.stop_proxy()
+            gbf_proxy.LISTEN_HOST = config_manager.get_effective_listen_host()
             gbf_proxy.LISTEN_PORT = port
             gbf_proxy.UPSTREAM_PROXY = up
             self.start_proxy()
             messagebox.showinfo("保存成功", f"配置已保存！\n代理服务已自动重启生效（上游：{up}，端口：{port}）。")
         else:
+            gbf_proxy.LISTEN_HOST = config_manager.get_effective_listen_host()
             gbf_proxy.LISTEN_PORT = port
             gbf_proxy.UPSTREAM_PROXY = up
             messagebox.showinfo("保存成功", "配置已保存成功！")
@@ -1195,6 +1236,178 @@ class GBFAcceleratorGUI:
         config_manager.config["auto_start"] = enabled
         config_manager.save_config()
 
+    def update_lan_status_label(self):
+        if not hasattr(self, "lbl_lan_status") or not self.lbl_lan_status.winfo_exists():
+            return
+        if self.var_allow_lan.get():
+            lan_ip = config_manager.get_lan_ip()
+            port = self.var_listen_port.get().strip() or "8124"
+            self.lbl_lan_status.configure(
+                text=f"局域网代理就绪：http://{lan_ip}:{port}  |  PAC 脚本：http://{lan_ip}:{port}/proxy.pac",
+            )
+            self.lbl_lan_status.pack(anchor="w", pady=(0, 4), after=self.chk_allow_lan.master)
+        else:
+            self.lbl_lan_status.pack_forget()
+
+    def toggle_allow_lan_setting(self):
+        val = self.var_allow_lan.get()
+        config_manager.config["allow_lan"] = val
+        config_manager.save_config()
+        self.update_lan_status_label()
+        if gbf_proxy.PROXY_STATS.get("is_running", False):
+            self.stop_proxy()
+            self.start_proxy()
+
+    def show_lan_guide(self):
+        self.update_lan_status_label()
+        lan_ip = config_manager.get_lan_ip()
+        port = self.var_listen_port.get().strip() or "8124"
+        pac_url = f"http://{lan_ip}:{port}/proxy.pac"
+        ca_url = f"http://{lan_ip}:{port}/ca.crt"
+        guide_url = f"http://{lan_ip}:{port}/"
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("移动端 / iOS 设备连接与分流指引")
+        dialog.geometry("660x640")
+        dialog.minsize(600, 540)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center relative to parent
+        self.root.update_idletasks()
+        dialog.update_idletasks()
+        rx = self.root.winfo_x()
+        ry = self.root.winfo_y()
+        rw = self.root.winfo_width()
+        rh = self.root.winfo_height()
+        x = max(0, rx + (rw - 660) // 2)
+        y = max(0, ry + (rh - 640) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        content = ttk.Frame(dialog, padding="16 14 16 14")
+        content.pack(fill="both", expand=True)
+
+        # Header
+        f_top = ttk.Frame(content)
+        f_top.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            f_top,
+            text="移动端 / iOS 设备接入配置指引",
+            font=("Microsoft YaHei UI", 11, "bold"),
+            foreground="#007bff",
+        ).pack(anchor="w")
+
+        # LAN IP & Status display
+        f_status_box = ttk.Frame(content, relief="solid", borderwidth=1, padding="10 8 10 8")
+        f_status_box.pack(fill="x", pady=(0, 10))
+
+        status_text = f"电脑局域网 IP：{lan_ip}    监听端口：{port}"
+        if not self.var_allow_lan.get():
+            status_text += "\n注意：当前尚未开启【允许局域网连接】，外部设备暂无法连接本代理。"
+            lbl_st = ttk.Label(f_status_box, text=status_text, font=("Microsoft YaHei UI", 9), foreground="#dc3545")
+            lbl_st.pack(anchor="w")
+
+            def enable_now():
+                self.var_allow_lan.set(True)
+                self.toggle_allow_lan_setting()
+                lbl_st.configure(
+                    text=f"电脑局域网 IP：{lan_ip}    监听端口：{port}\n已开启局域网连接。",
+                    foreground="#28a745",
+                )
+                btn_enb.pack_forget()
+
+            btn_enb = ttk.Button(f_status_box, text="开启局域网连接", command=enable_now)
+            btn_enb.pack(anchor="w", pady=(4, 0))
+        else:
+            status_text += "\n局域网服务已就绪（支持同一 Wi-Fi 下的 iPhone / iPad / Android 设备）。"
+            ttk.Label(f_status_box, text=status_text, font=("Microsoft YaHei UI", 9), foreground="#28a745").pack(anchor="w")
+
+        # Instructions scrollable text area
+        f_steps = ttk.Frame(content)
+        f_steps.pack(fill="both", expand=True, pady=(0, 10))
+
+        scrollbar = ttk.Scrollbar(f_steps)
+        scrollbar.pack(side="right", fill="y")
+
+        txt = tk.Text(
+            f_steps,
+            wrap="word",
+            font=("Microsoft YaHei UI", 9),
+            yscrollcommand=scrollbar.set,
+            bg="#fdfdfd",
+            relief="solid",
+            bd=1,
+            padx=10,
+            pady=8,
+        )
+        txt.pack(fill="both", expand=True)
+        scrollbar.config(command=txt.yview)
+
+        guide_text = f"""【第一步：安装并信任根证书（iOS 必需，Android 视情况）】
+1. 确保手机与电脑连接在同一个 Wi-Fi 局域网下。
+2. 手机 Safari 访问：{ca_url}
+   （或访问 {guide_url} 查看网页版指引）
+3. 提示时点击【允许】下载描述文件。
+4. 打开手机系统【设置】->【已下载描述文件】-> 点击【安装】。
+5. 系统信任证书：
+   打开手机【设置】->【通用】->【关于本机】-> 底部【证书信任设置】；
+   找到【GBF Local Accelerator Root CA】，打开信任开关。
+
+───────────────────────────────────────
+【第二步：配置手机 Wi-Fi 代理】
+1. 打开手机系统【设置】->【无线局域网 (Wi-Fi)】。
+2. 点击当前已连接 Wi-Fi 右侧的 ⓘ 图标。
+3. 滑动到底部，点击【配置代理】：
+
+方式 1：自动分流（推荐，仅游戏素材走代理）
+   • 选择【自动】
+   • URL 填入：{pac_url}
+   • 存储。
+
+方式 2：手动代理
+   • 选择【手动】
+   • 服务器填入：{lan_ip}
+   • 端口填入：{port}
+   • 存储。
+
+───────────────────────────────────────
+【常见问题】
+• 游玩网址与客户端说明：
+  建议使用手机浏览器（Safari / Chrome）直接访问：
+  https://game.granbluefantasy.jp
+  说明：SkyLeap 内置使用的是 gbf.game.mbga.jp，该地址主要用于账号登录和跳转，不包含游戏静态素材，无法触发本地缓存加速；在手机浏览器中访问 game.granbluefantasy.jp 才能正常走本地缓存。
+• 手机打不开网页或提示连接超时？
+  请检查电脑防火墙是否放行端口 {port}，并确认手机和电脑在同一个 Wi-Fi 网络。
+• iOS 提示证书不受信任或白屏？
+  请检查【关于本机】->【证书信任设置】中的完全信任开关是否已开启。
+• 局域网 IP 变动？
+  若电脑 IP 变化，请在此处查看最新 IP 并更新手机 Wi-Fi 代理设置。"""
+
+        txt.insert("1.0", guide_text)
+        txt.configure(state="disabled")
+
+        # Bottom buttons
+        f_actions = ttk.Frame(content)
+        f_actions.pack(fill="x")
+
+        def copy_pac():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(pac_url)
+            messagebox.showinfo("提示", f"PAC 脚本地址已复制：\n\n{pac_url}", parent=dialog)
+
+        def copy_ca():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(ca_url)
+            messagebox.showinfo("提示", f"根证书下载地址已复制：\n\n{ca_url}", parent=dialog)
+
+        def open_web():
+            webbrowser.open(guide_url)
+
+        ttk.Button(f_actions, text="复制 PAC 地址", command=copy_pac).pack(side="left", padx=(0, 6))
+        ttk.Button(f_actions, text="复制证书地址", command=copy_ca).pack(side="left", padx=(0, 6))
+        ttk.Button(f_actions, text="浏览器打开指引", command=open_web).pack(side="left")
+        ttk.Button(f_actions, text="关闭", width=8, command=dialog.destroy).pack(side="right")
+
     def open_cache_folder(self):
         p = Path(self.var_cache_dir.get()).resolve()
         p.mkdir(parents=True, exist_ok=True)
@@ -1233,12 +1446,13 @@ class GBFAcceleratorGUI:
         except Exception:
             pass
 
-        gbf_proxy.LISTEN_HOST = config_manager.config.get("listen_host", "127.0.0.1")
+        gbf_proxy.LISTEN_HOST = config_manager.get_effective_listen_host()
         gbf_proxy.LISTEN_PORT = port
         gbf_proxy.UPSTREAM_PROXY = up
         gbf_proxy.DIRECT_MODE = self.var_direct_mode.get()
         gbf_proxy.SHIMAKAZE_MODE = self.var_shimakaze_mode.get()
         config_manager.config["listen_port"] = port
+        config_manager.config["allow_lan"] = self.var_allow_lan.get()
         config_manager.config["upstream_proxy"] = up
         config_manager.config["direct_mode"] = self.var_direct_mode.get()
         config_manager.config["shimakaze_mode"] = self.var_shimakaze_mode.get()
