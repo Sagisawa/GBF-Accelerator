@@ -1784,7 +1784,7 @@ class LogViewerWindow:
         # Thread-safe log queue and storage
         self._incoming_queue: collections.deque = collections.deque()
         self._queue_lock: threading.Lock = threading.Lock()
-        self._all_records: List[Tuple[str, str]] = []
+        self._all_records: collections.deque = collections.deque(maxlen=2500)
         self._max_records: int = 2500
         self._is_closed: bool = False
         self._scheduled_job = None
@@ -1797,15 +1797,12 @@ class LogViewerWindow:
         self.setup_ui()
         self.setup_tags()
 
-        # Load recent log history from gbf_proxy
-        history = gbf_proxy.get_recent_logs()
+        # Atomically register live listener and fetch existing history to eliminate race condition
+        history = gbf_proxy.register_log_listener_with_history(self.on_live_log)
         with self._queue_lock:
             for line, lvl in history:
                 self._all_records.append((line, lvl))
                 self._incoming_queue.append((line, lvl))
-
-        # Register live listener
-        gbf_proxy.register_log_listener(self.on_live_log)
 
         # Start background UI update loop
         self._schedule_flush()
@@ -1837,7 +1834,7 @@ class LogViewerWindow:
         btn_copy = ttk.Button(toolbar, text="复制全部", width=9, command=self.copy_all)
         btn_copy.pack(side="right", padx=(4, 0))
 
-        btn_clear = ttk.Button(toolbar, text="清屏", width=7, command=self.clear_display)
+        btn_clear = ttk.Button(toolbar, text="清除显示", width=9, command=self.clear_display)
         btn_clear.pack(side="right", padx=(4, 0))
 
         # 2. Main Console Text with horizontal & vertical scrollbars
@@ -1889,8 +1886,6 @@ class LogViewerWindow:
         if self._is_closed:
             return
         with self._queue_lock:
-            if len(self._all_records) >= self._max_records:
-                self._all_records.pop(0)
             self._all_records.append((line, level))
             self._incoming_queue.append((line, level))
 

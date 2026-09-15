@@ -563,6 +563,16 @@ def register_log_listener(callback):
         if callback not in _log_listeners:
             _log_listeners.append(callback)
 
+def register_log_listener_with_history(callback) -> list:
+    """Atomically register a listener callback and return current log history snapshot.
+    Prevents any race condition where a log could be emitted between reading history
+    and registering the listener.
+    """
+    with _log_lock:
+        if callback not in _log_listeners:
+            _log_listeners.append(callback)
+        return list(_log_history)
+
 def unregister_log_listener(callback):
     """Unregister a live log listener."""
     with _log_lock:
