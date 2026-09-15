@@ -174,6 +174,7 @@ class GBFAcceleratorGUI:
 
         # Window events
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        self.root.bind("<Map>", self._on_window_map)
 
         # Check CA status and detect legacy leaked cert
         self.update_ca_status()
@@ -186,7 +187,9 @@ class GBFAcceleratorGUI:
         # Start proxy thread automatically
         self.start_proxy()
 
-        # Periodic timer for stats update
+        # Periodic timer for stats update (suspended when minimized/in tray)
+        self._stats_job = None
+        self._last_stats_cache = None
         self.update_stats_loop()
 
         # Check updates automatically if enabled
@@ -1655,21 +1658,35 @@ class GBFAcceleratorGUI:
         if self.tray_icon:
             self.tray_icon.icon = create_tray_icon_image(False)
 
+    def _on_window_map(self, event):
+        """Resume stats loop immediately when window is un-minimized or restored."""
+        if event.widget == self.root and self.root.state() == "normal":
+            if getattr(self, "_stats_job", None) is None:
+                self.update_stats_loop()
+
     def update_stats_loop(self):
-        # Update numbers from PROXY_STATS
+        # Suspend loop when window is withdrawn to tray or minimized to taskbar (0.0% CPU in background)
+        if self.root.state() in ("withdrawn", "iconic"):
+            self._stats_job = None
+            return
+
+        # Update numbers from PROXY_STATS with dirty check to avoid redundant widget redraws
         hits = gbf_proxy.PROXY_STATS.get("hits", 0)
         ram_hits = gbf_proxy.PROXY_STATS.get("ram_hits", 0)
         dls = gbf_proxy.PROXY_STATS.get("downloads", 0)
         apis = gbf_proxy.PROXY_STATS.get("apis", 0)
-        if ram_hits > 0:
-            self.var_hits.set(f"{hits:,} (内存 {ram_hits:,})")
-        else:
-            self.var_hits.set(f"{hits:,}")
-        self.var_downloads.set(f"{dls:,}")
-        self.var_apis.set(f"{apis:,}")
+        current_stats = (hits, ram_hits, dls, apis)
 
-        # Live RAM cache usage next to the cap entry
-        self.refresh_ram_usage_label()
+        if getattr(self, "_last_stats_cache", None) != current_stats:
+            self._last_stats_cache = current_stats
+            if ram_hits > 0:
+                self.var_hits.set(f"{hits:,} (内存 {ram_hits:,})")
+            else:
+                self.var_hits.set(f"{hits:,}")
+            self.var_downloads.set(f"{dls:,}")
+            self.var_apis.set(f"{apis:,}")
+            # Live RAM cache usage next to the cap entry
+            self.refresh_ram_usage_label()
 
         # Sync button text if state changed outside
         is_thread_alive = gbf_proxy.proxy_thread is not None and gbf_proxy.proxy_thread.is_alive()
@@ -1694,7 +1711,7 @@ class GBFAcceleratorGUI:
                 self.tray_icon.icon = create_tray_icon_image(False)
 
         # Schedule next update
-        self.root.after(800, self.update_stats_loop)
+        self._stats_job = self.root.after(800, self.update_stats_loop)
 
     # ================= System Tray =================
     def setup_tray(self):
@@ -1712,6 +1729,13 @@ class GBFAcceleratorGUI:
 
     def hide_to_tray(self, notify=True):
         self.root.withdraw()
+        # Cancel running stats timer so CPU stays at absolute 0.0% in background
+        if getattr(self, "_stats_job", None):
+            try:
+                self.root.after_cancel(self._stats_job)
+            except Exception:
+                pass
+            self._stats_job = None
         if notify:
             try:
                 if self.tray_icon:
@@ -1723,6 +1747,9 @@ class GBFAcceleratorGUI:
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
+        # Immediately refresh stats and resume loop upon showing
+        if getattr(self, "_stats_job", None) is None:
+            self.update_stats_loop()
 
     def toggle_proxy_from_tray(self):
         self.root.after(0, self.toggle_proxy)
@@ -1885,14 +1912,33 @@ class LogViewerWindow:
     def on_live_log(self, line: str, level: str):
         if self._is_closed:
             return
+        should_schedule = False
         with self._queue_lock:
             self._all_records.append((line, level))
             self._incoming_queue.append((line, level))
+            if not self._is_closed and self._scheduled_job is None:
+                should_schedule = True
+                self._scheduled_job = True  # Marker before scheduling
+
+        if should_schedule:
+            try:
+                self._scheduled_job = self.top.after(60, self._schedule_flush)
+            except Exception:
+                with self._queue_lock:
+                    self._scheduled_job = None
 
     def _schedule_flush(self):
-        if not self._is_closed:
-            self._flush_queue()
-            self._scheduled_job = self.top.after(60, self._schedule_flush)
+        if self._is_closed:
+            return
+        self._flush_queue()
+        with self._queue_lock:
+            if self._incoming_queue:
+                try:
+                    self._scheduled_job = self.top.after(60, self._schedule_flush)
+                except Exception:
+                    self._scheduled_job = None
+            else:
+                self._scheduled_job = None
 
     def _flush_queue(self):
         with self._queue_lock:
@@ -2027,11 +2073,12 @@ class LogViewerWindow:
     def on_close(self):
         self._is_closed = True
         gbf_proxy.unregister_log_listener(self.on_live_log)
-        if self._scheduled_job:
+        if self._scheduled_job and self._scheduled_job is not True:
             try:
                 self.top.after_cancel(self._scheduled_job)
             except Exception:
                 pass
+        self._scheduled_job = None
         try:
             self.top.destroy()
         except Exception:
