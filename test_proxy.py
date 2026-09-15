@@ -408,7 +408,7 @@ async def run_test():
             # Second lookup should hit negative cache directly
             assert cache_manager.get_disk_cache(non_existent) is None
             # Storing cache clears negative cache entry
-            cache_manager.save_cache(non_existent, {"ETag": '"found"'}, b"new_data")
+            cache_manager.save_cache(non_existent, {"ETag": '"found"'}, b"\x89PNG\r\n\x1a\nnew_data")
             with cache_manager._missing_lock:
                 assert clean_none_key not in cache_manager._known_missing, "Saving cache must evict from negative cache"
             # Cleanup test artifacts
@@ -556,7 +556,50 @@ async def run_test():
                 clean_file2.with_name(clean_file2.name + ".ext").unlink(missing_ok=True)
             print("Test 41 - Upstream Flaky Network Fallback (cross-version, cross-lang, core JS protection): OK")
 
-            print("\n[+] ALL 41 TESTS PASSED SUCCESSFULLY!")
+            # Test 42: Magic Bytes Media Format Validation & One-Click Cache Audit Auto-Repair
+            # 1. Magic Bytes validation for various asset types
+            assert cache_manager.is_valid_cache_content("/test.png", {}, b'\x89PNG\r\n\x1a\n\x00\x00\x00') is True
+            assert cache_manager.is_valid_cache_content("/test.png", {}, b'{"error": "rate limit"}') is False
+            assert cache_manager.is_valid_cache_content("/test.png", {}, b'503 Service Unavailable') is False
+            assert cache_manager.is_valid_cache_content("/test.jpg", {}, b'\xff\xd8\xff\xe0\x00\x10JFIF') is True
+            assert cache_manager.is_valid_cache_content("/test.jpg", {}, b'<html>error</html>') is False
+            assert cache_manager.is_valid_cache_content("/test.webp", {}, b'RIFF\x00\x00\x00\x00WEBPVP8 ') is True
+            assert cache_manager.is_valid_cache_content("/test.webp", {}, b'RIFF\x00\x00\x00\x00JPEG') is False
+            assert cache_manager.is_valid_cache_content("/test.mp3", {}, b'ID3\x03\x00\x00') is True
+            assert cache_manager.is_valid_cache_content("/test.js", {}, b'console.log("ok");') is True
+            assert cache_manager.is_valid_cache_content("/test.js", {}, b'<!DOCTYPE html><html>') is False
+
+            # 2. Cache audit and auto-repair test
+            import tempfile, shutil
+            from pathlib import Path
+            audit_tmp = Path(tempfile.mkdtemp())
+            try:
+                from cache_manager import CacheManager
+                test_cm = CacheManager(cache_base_dir=audit_tmp)
+                # Valid files
+                (audit_tmp / "good.png").write_bytes(b'\x89PNG\r\n\x1a\nreal_png_data')
+                (audit_tmp / "good.js").write_bytes(b'var a = 1;')
+                # Corrupted / Truncated files
+                (audit_tmp / "zero.png").write_bytes(b'')
+                (audit_tmp / "corrupt_txt.png").write_bytes(b'Internal Server Error Text')
+                (audit_tmp / "corrupt_html.jpg").write_bytes(b'<!doctype html><html>504</html>')
+                (audit_tmp / "stale.tmp.1234.5678").write_bytes(b'interrupted write')
+
+                audit_res = test_cm.audit_and_repair_cache()
+                assert audit_res["scanned"] == 6, f"Expected 6 scanned, got {audit_res['scanned']}"
+                assert audit_res["corrupted"] == 4, f"Expected 4 corrupted cleaned, got {audit_res['corrupted']}"
+                assert audit_res["healthy"] == 2, f"Expected 2 healthy, got {audit_res['healthy']}"
+                assert (audit_tmp / "good.png").is_file(), "Good PNG must remain"
+                assert (audit_tmp / "good.js").is_file(), "Good JS must remain"
+                assert not (audit_tmp / "zero.png").exists(), "0-byte file must be deleted"
+                assert not (audit_tmp / "corrupt_txt.png").exists(), "Corrupt PNG must be deleted"
+                assert not (audit_tmp / "corrupt_html.jpg").exists(), "Corrupt JPG must be deleted"
+                assert not (audit_tmp / "stale.tmp.1234.5678").exists(), "Stale .tmp file must be deleted"
+            finally:
+                shutil.rmtree(audit_tmp, ignore_errors=True)
+            print("Test 42 - Magic Bytes Media Format Validation & Cache Audit Auto-Repair: OK")
+
+            print("\n[+] ALL 42 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 

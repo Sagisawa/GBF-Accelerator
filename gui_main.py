@@ -387,7 +387,10 @@ class GBFAcceleratorGUI:
         btn_browse.pack(side="left", padx=(0, 4))
 
         btn_acgp = ttk.Button(f_dir, text="检测 ACGP", width=11, command=self.detect_acgp)
-        btn_acgp.pack(side="left")
+        btn_acgp.pack(side="left", padx=(0, 4))
+
+        self.btn_audit_cache = self._emoji_button(f_dir, "🩺", "一键体检缓存", self.run_cache_audit)
+        self.btn_audit_cache.pack(side="left")
 
         # Field 2: Upstream Proxy
         ttk.Label(card_settings, text="上游网络代理（Clash Verge / Clash / V2ray / 岛风GO 等）：", style="Normal.TLabel").pack(anchor="w")
@@ -951,6 +954,103 @@ class GBFAcceleratorGUI:
                 "• 若你使用了 ACGP，请确认 ACGP 是否已启动，或点击【浏览...】手动指定。\n"
                 "• 若你未安装 ACGP，本程序已自动为你启用独立的本地缓存目录，可直接正常使用！"
             )
+
+    def run_cache_audit(self):
+        """Perform full format integrity health check and auto-repair on local cache."""
+        if getattr(self, "_is_auditing_cache", False):
+            messagebox.showwarning("提示", "缓存体检正在进行中，请稍候...")
+            return
+
+        if not messagebox.askyesno(
+            "缓存体检与健康修复",
+            "【一键体检缓存】将全量扫描本地静态缓存库，自动检测并修复：\n"
+            "• 0 字节损坏空文件\n"
+            "• 伪装成静态素材的 HTML 错误页面\n"
+            "• 文件头损坏或被截断的异常文件（Magic Bytes 校验）\n\n"
+            "检测到的损坏废件将被自动安全清理，方便游戏后续重新下载健康素材。\n\n"
+            "是否立即开始体检？",
+        ):
+            return
+
+        self._is_auditing_cache = True
+        self.btn_audit_cache.configure(state="disabled")
+
+        # Modal progress dialog
+        dlg = tk.Toplevel(self.root)
+        dlg.title("正在体检缓存...")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        frame = ttk.Frame(dlg, padding="20 16 20 16")
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="🔍 正在全量体检本地静态缓存库...", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+
+        var_progress_text = tk.StringVar(value="正在扫描文件结构，请稍候...")
+        lbl_info = ttk.Label(frame, textvariable=var_progress_text, style="Normal.TLabel")
+        lbl_info.pack(anchor="w", pady=(0, 10))
+
+        pb = ttk.Progressbar(frame, mode="indeterminate", length=360)
+        pb.pack(fill="x", pady=(0, 12))
+        pb.start(15)
+
+        dlg.update_idletasks()
+        pw, ph = self.root.winfo_width(), self.root.winfo_height()
+        px, py = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_width(), dlg.winfo_height()
+        dlg.geometry(f"+{px + max(0, (pw - dw) // 2)}+{py + max(0, (ph - dh) // 2)}")
+
+        def worker():
+            def on_progress(scanned: int, corrupted: int):
+                self.root.after(0, lambda: var_progress_text.set(
+                    f"已扫描素材：{scanned:,} 个  |  已修复异常：{corrupted:,} 个"
+                ))
+
+            try:
+                res = cache_manager.audit_and_repair_cache(progress_callback=on_progress)
+            except Exception as e:
+                res = {"error": str(e)}
+
+            def on_done():
+                pb.stop()
+                dlg.destroy()
+                self._is_auditing_cache = False
+                self.btn_audit_cache.configure(state="normal")
+
+                if "error" in res:
+                    messagebox.showerror("体检失败", f"体检过程中发生错误：\n{res['error']}")
+                    return
+
+                scanned = res.get("scanned", 0)
+                healthy = res.get("healthy", 0)
+                corrupted = res.get("corrupted", 0)
+                elapsed = res.get("elapsed", 0.0)
+
+                if corrupted > 0:
+                    msg = (
+                        f"🎉 缓存体检与修复已完成！\n\n"
+                        f"📁 扫描素材总数：{scanned:,} 个\n"
+                        f"✅ 格式健康素材：{healthy:,} 个\n"
+                        f"🛠️ 发现并修复损坏：{corrupted:,} 个\n"
+                        f"⏱️ 耗时：{elapsed} 秒\n\n"
+                        f"已自动清理损坏、截断与 HTML 报错垃圾文件，游戏后续将自动拉取健康素材。"
+                    )
+                else:
+                    msg = (
+                        f"🎉 缓存体检完成！\n\n"
+                        f"📁 扫描素材总数：{scanned:,} 个\n"
+                        f"✅ 格式健康素材：{healthy:,} 个\n"
+                        f"🛡️ 损坏/截断文件：0 个（全部 100% 格式健康！）\n"
+                        f"⏱️ 耗时：{elapsed} 秒\n\n"
+                        f"本地所有图片、音频与动画文件均符合官方规范，未发现任何损坏。"
+                    )
+                messagebox.showinfo("缓存体检结果", msg)
+
+            self.root.after(0, on_done)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
 
     def probe_upstream(self):
         if self.var_direct_mode.get():
