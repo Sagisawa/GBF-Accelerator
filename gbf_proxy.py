@@ -69,8 +69,6 @@ TELEMETRY_PATTERNS = (
     "datadoghq.com",
     "spdmg-backend.i-mobile.co.jp",
     "creativecdn.com",
-    "google-analytics.com",
-    "googletagmanager.com",
 )
 
 # Static asset extensions and path prefixes for cache coverage

@@ -107,11 +107,7 @@ def get_pac_content(port: int = 8124, host: str = "127.0.0.1", *args, **kwargs) 
         shExpMatch(host, "*.smbeat.jp") ||
         shExpMatch(host, "*.smrtbeat.com") ||
         shExpMatch(host, "datadoghq-browser-agent") ||
-        shExpMatch(host, "*.datadoghq-browser-agent") ||
-        shExpMatch(host, "google-analytics.com") ||
-        shExpMatch(host, "*.google-analytics.com") ||
-        shExpMatch(host, "googletagmanager.com") ||
-        shExpMatch(host, "*.googletagmanager.com")
+        shExpMatch(host, "*.datadoghq-browser-agent")
     ) {{
         return "PROXY {host}:{port}; DIRECT";
     }}

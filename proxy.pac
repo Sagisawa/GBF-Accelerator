@@ -38,11 +38,7 @@ function FindProxyForURL(url, host) {
         shExpMatch(host, "*.smbeat.jp") ||
         shExpMatch(host, "*.smrtbeat.com") ||
         shExpMatch(host, "datadoghq-browser-agent") ||
-        shExpMatch(host, "*.datadoghq-browser-agent") ||
-        shExpMatch(host, "google-analytics.com") ||
-        shExpMatch(host, "*.google-analytics.com") ||
-        shExpMatch(host, "googletagmanager.com") ||
-        shExpMatch(host, "*.googletagmanager.com")
+        shExpMatch(host, "*.datadoghq-browser-agent")
     ) {
         return "PROXY 127.0.0.1:8124; DIRECT";
     }
