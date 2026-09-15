@@ -629,7 +629,8 @@ async def request_api(
     Applies strict dual-constraint safe retry:
     - Path must be in RETRYABLE_API_PATHS (read-only idempotent whitelist)
     - Method must be GET
-    - Error must be a connection-level failure before any HTTP response was received
+    - Failure must be a connection-level exception (ConnectError, RemoteProtocolError, ReadError)
+      occurring before receiving a complete HTTP response
     All POST requests (attacks, skills, summons) and unknown paths are NEVER retried.
     Returns (response, reused_bool).
     """

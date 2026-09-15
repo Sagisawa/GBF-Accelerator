@@ -700,9 +700,94 @@ async def run_test():
             assert stats["new_connections"] == 2
             assert stats["reuse_rate"] == 60.0, f"Expected 60.0% reuse rate, got {stats['reuse_rate']}"
             assert stats["protocols"]["HTTP/1.1"] == 5
-            print("Test 45 - Real Connection Reuse Detection & Telemetry Percentiles (P50/P95/P99): OK", flush=True)
+            print("Test 45 - Connection Reuse Telemetry Accounting & Percentiles (P50/P95/P99): OK", flush=True)
 
-            print("\n[+] ALL 45 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # Test 46: Real HTTP/1.1 TCP Connection Pool Reuse & Stale Socket Recovery Integration Test
+            active_server_writers = []
+            should_server_drop = False
+
+            async def handle_mock_http11(r: asyncio.StreamReader, w: asyncio.StreamWriter):
+                nonlocal should_server_drop
+                active_server_writers.append(w)
+                try:
+                    while True:
+                        line = await r.readline()
+                        if not line:
+                            break
+                        while True:
+                            h = await r.readline()
+                            if h in (b"\r\n", b"\n", b""):
+                                break
+                        if should_server_drop:
+                            should_server_drop = False
+                            w.close()
+                            await w.wait_closed()
+                            return
+
+                        resp_bytes = (
+                            b"HTTP/1.1 200 OK\r\n"
+                            b"Content-Type: application/json\r\n"
+                            b"Content-Length: 16\r\n"
+                            b"Connection: keep-alive\r\n\r\n"
+                            b"{\"connected\": 1}"
+                        )
+                        w.write(resp_bytes)
+                        await w.drain()
+                except Exception:
+                    pass
+
+            mock_srv = await asyncio.start_server(handle_mock_http11, "127.0.0.1", 0)
+            mock_port = mock_srv.sockets[0].getsockname()[1]
+            mock_url = f"http://127.0.0.1:{mock_port}/rest/multiraid/start.json"
+
+            orig_proxy_api_client = gbf_proxy.api_client
+            gbf_proxy.api_client = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=4, max_keepalive_connections=4, keepalive_expiry=10.0),
+                http1=True,
+                http2=False
+            )
+            gbf_proxy.api_telemetry.reset()
+
+            try:
+                # 1. First request -> new connection
+                resp_1, reused_1 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/start.json")
+                stream_act_1 = resp_1.extensions.get("network_stream")
+                assert stream_act_1 is not None, "HTTPX response must include network_stream"
+                assert reused_1 is False, "First request must negotiate a new connection"
+
+                # 2. Second request -> HTTPX reuses the same TCP stream
+                resp_2, reused_2 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/start.json")
+                stream_act_2 = resp_2.extensions.get("network_stream")
+                assert stream_act_2 is stream_act_1, "HTTPX connection pool must reuse identical underlying stream"
+                assert reused_2 is True, "Second request on existing socket must be recognized as reused"
+
+                # 3. Third request -> reuses again
+                resp_3, reused_3 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/start.json")
+                stream_act_3 = resp_3.extensions.get("network_stream")
+                assert stream_act_3 is stream_act_1
+                assert reused_3 is True
+
+                # 4. Server drops connection, testing real socket drop & stale retry recovery
+                should_server_drop = True
+                resp_4, reused_4 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/start.json")
+                stream_act_4 = resp_4.extensions.get("network_stream")
+                assert resp_4.status_code == 200
+                assert stream_act_4 is not stream_act_1, "Reconnected request must use a newly negotiated stream"
+                assert gbf_proxy.api_telemetry.retry_count == 1, "Must record 1 retry in telemetry"
+
+                stats_46 = gbf_proxy.api_telemetry.get_stats()
+                assert stats_46["new_connections"] == 2
+                assert stats_46["reused_connections"] == 2
+                assert stats_46["reuse_rate"] == 50.0
+                assert stats_46["protocols"]["HTTP/1.1"] == 4
+                print("Test 46 - Real HTTP/1.1 Server TCP Connection Pool Reuse & Stale Socket Recovery: OK", flush=True)
+            finally:
+                await gbf_proxy.api_client.aclose()
+                gbf_proxy.api_client = orig_proxy_api_client
+                mock_srv.close()
+                await mock_srv.wait_closed()
+
+            print("\n[+] ALL 46 TESTS PASSED SUCCESSFULLY!", flush=True)
     finally:
         gbf_proxy.stop_proxy_thread()
         import os, sys
