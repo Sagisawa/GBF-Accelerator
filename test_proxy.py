@@ -810,6 +810,9 @@ async def run_test():
             assert not cache_manager.has_cache(prefetch_test_path)
 
             orig_req_asset = gbf_proxy.request_asset
+            orig_queue = gbf_proxy.prefetch_queue
+            orig_inflight = set(gbf_proxy.prefetch_inflight)
+            orig_sem = gbf_proxy.save_semaphore
             prefetch_asset_calls = []
 
             async def mock_prefetch_asset_fetch(method, url, headers=None, content=b""):
@@ -850,6 +853,10 @@ async def run_test():
                 print("Test 47 - Real Prefetch Worker Queue -> request_asset -> save_cache Pipeline: OK", flush=True)
             finally:
                 gbf_proxy.request_asset = orig_req_asset
+                gbf_proxy.prefetch_queue = orig_queue
+                gbf_proxy.prefetch_inflight.clear()
+                gbf_proxy.prefetch_inflight.update(orig_inflight)
+                gbf_proxy.save_semaphore = orig_sem
                 cleanup_test_47()
 
             print("\n[+] ALL 47 TESTS PASSED SUCCESSFULLY!", flush=True)
