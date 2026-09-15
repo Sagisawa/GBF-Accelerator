@@ -36,6 +36,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "verify_upstream_tls": True, # Upstream TLS certificate verification for security
     "shimakaze_mode": False,   # ShimakazeGo optimization mode (relaxed timeout, retry, self-signed CA)
     "auto_check_update": True, # Automatically check for newer releases on startup
+    "api_max_connections": 16,     # Dynamic API dedicated connection pool limit
+    "api_max_keepalive": 4,        # Max idle keep-alive connections for dynamic API (1/2/4/8)
+    "api_keepalive_expiry": 20.0,  # Max seconds an idle API connection is kept alive
+    "asset_max_connections": 100,  # Static asset & prefetch connection pool limit
+    "asset_max_keepalive": 40,     # Max idle keep-alive connections for static assets
+    "asset_keepalive_expiry": 60.0,# Max seconds an idle asset connection is kept alive
+    "enable_api_telemetry": True,  # Track API latency percentiles and connection reuse rate
 }
 
 KNOWN_ACGPOWER_PATHS = [

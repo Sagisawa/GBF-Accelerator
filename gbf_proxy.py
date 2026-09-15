@@ -6,9 +6,11 @@ import re
 import ssl
 import time
 import sys
+import threading
 import urllib.parse
+import collections
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any
 
 import httpx
 from cert_manager import get_server_ssl_context
@@ -108,8 +110,124 @@ CJS_IMG_REF_RE = re.compile(
     r'[\'"(]/?((?:sp|assets(?:_(?:en|jp))?/img/sp)/[A-Za-z0-9_\-./%]+\.(?:png|jpe?g|gif|webp))[\'")\s]'
 )
 
-# Global HTTP client pool for upstream requests through Clash
-http_client: Optional[httpx.AsyncClient] = None
+# ================= 1.7.0 Telemetry & Dual Client Isolation Architecture =================
+class ApiTelemetry:
+    """Low-overhead in-memory telemetry for tracking GBF API connection reuse,
+    protocols, latency distributions (P50/P95/P99), and stale connection retries.
+    Default-enabled, lightweight, thread-safe.
+    """
+    def __init__(self, max_samples: int = 1000, enabled: bool = True):
+        self.enabled = enabled
+        self.max_samples = max_samples
+        self._samples = collections.deque(maxlen=max_samples)
+        self._lock = threading.RLock()
+        self.seen_streams: set = set()
+        self.total_requests = 0
+        self.reused_connections = 0
+        self.new_connections = 0
+        self.retry_count = 0
+        self.exception_counts: Dict[str, int] = collections.defaultdict(int)
+        self.protocols: Dict[str, int] = collections.defaultdict(int)
+
+    def record(
+        self,
+        latency_ms: float,
+        protocol: str = "HTTP/1.1",
+        stream: Any = None,
+        exception: Optional[str] = None,
+        retried: bool = False,
+    ) -> bool:
+        if not self.enabled:
+            return False
+        with self._lock:
+            self.total_requests += 1
+            if exception:
+                self.exception_counts[exception] += 1
+                return False
+
+            self._samples.append(latency_ms)
+            if protocol:
+                self.protocols[protocol] += 1
+            if retried:
+                self.retry_count += 1
+
+            reused = False
+            if stream is not None:
+                if stream in self.seen_streams:
+                    reused = True
+                    self.reused_connections += 1
+                else:
+                    self.seen_streams.add(stream)
+                    self.new_connections += 1
+                    if len(self.seen_streams) > 500:
+                        self.seen_streams.clear()
+                        self.seen_streams.add(stream)
+            return reused
+
+    def get_percentiles(self) -> Dict[str, Any]:
+        with self._lock:
+            if not self._samples:
+                return {"p50": 0.0, "p95": 0.0, "p99": 0.0, "count": 0}
+            sorted_lat = sorted(self._samples)
+            n = len(sorted_lat)
+
+            def p(q: float) -> float:
+                idx = min(int(n * q), n - 1)
+                return round(sorted_lat[idx], 1)
+
+            return {
+                "p50": p(0.50),
+                "p95": p(0.95),
+                "p99": p(0.99),
+                "count": n,
+            }
+
+    def get_stats(self) -> Dict[str, Any]:
+        with self._lock:
+            pct = self.get_percentiles()
+            total = self.total_requests
+            denom = self.reused_connections + self.new_connections
+            reuse_rate = round(self.reused_connections / max(1, denom) * 100, 1)
+            return {
+                "total_requests": total,
+                "reused_connections": self.reused_connections,
+                "new_connections": self.new_connections,
+                "reuse_rate": reuse_rate,
+                "retry_count": self.retry_count,
+                "percentiles": pct,
+                "protocols": dict(self.protocols),
+                "exceptions": dict(self.exception_counts),
+            }
+
+    def reset(self):
+        with self._lock:
+            self._samples.clear()
+            self.seen_streams.clear()
+            self.total_requests = 0
+            self.reused_connections = 0
+            self.new_connections = 0
+            self.retry_count = 0
+            self.exception_counts.clear()
+            self.protocols.clear()
+
+api_telemetry = ApiTelemetry(enabled=bool(config_manager.config.get("enable_api_telemetry", True)))
+
+# Strict read-only idempotent whitelist: only these paths may be retried on connection-level drop
+RETRYABLE_API_PATHS = frozenset({
+    "/rest/multiraid/start.json",
+    "/rest/multiraid/condition.json",
+    "/rest/raid/start.json",
+    "/rest/quest/start.json",
+    "/rest/quest/stage_list",
+    "/rest/party/deck_info",
+})
+
+# Dedicated Dual Clients:
+# - api_client: Dedicated HTTP/1.1 Keep-Alive pool for game.granbluefantasy.jp (never blocked by prefetch)
+# - asset_client: Dedicated HTTP/2 multiplexed pool for Akamai CDN & static assets
+api_client: Optional[httpx.AsyncClient] = None
+asset_client: Optional[httpx.AsyncClient] = None
+http_client: Optional[httpx.AsyncClient] = None  # Backward-compatible alias
 
 # Real-time statistics dictionary for GUI
 PROXY_STATS = {
@@ -360,7 +478,7 @@ async def prefetch_worker():
             if cache_manager.has_cache(url_path) or flight_key in _inflight_fetches:
                 continue
             url = f"https://{target_host}{url_path}"
-            resp = await http_client.request("GET", url)
+            resp = await request_asset("GET", url)
             if resp.status_code == 200 and resp.content:
                 await _bounded_save_cache(url_path, dict(resp.headers), resp.content)
                 format_log("PREFETCH", "35", f"Warmed (P{prio}) -> {target_host}{url_path} ({len(resp.content):,} B)")
@@ -445,29 +563,117 @@ def format_log(level: str, color_code: str, msg: str):
         pass
 
 async def init_http_client():
-    global http_client
+    global api_client, asset_client, http_client
     if SHIMAKAZE_MODE:
         verify_tls = False
-        timeout_setting = httpx.Timeout(25.0, connect=12.0)
+        api_timeout = httpx.Timeout(20.0, connect=10.0)
+        asset_timeout = httpx.Timeout(25.0, connect=12.0)
     else:
         verify_tls = config_manager.config.get("verify_upstream_tls", True)
-        timeout_setting = httpx.Timeout(15.0, connect=8.0)
+        api_timeout = httpx.Timeout(12.0, connect=6.0)
+        asset_timeout = httpx.Timeout(15.0, connect=8.0)
 
-    limits = httpx.Limits(max_keepalive_connections=50, max_connections=100, keepalive_expiry=60.0)
-    http_client = httpx.AsyncClient(
+    # 1. Dedicated Dynamic Game API Client (Strict HTTP/1.1, isolated Keep-Alive pool)
+    api_limits = httpx.Limits(
+        max_connections=int(config_manager.config.get("api_max_connections", 16)),
+        max_keepalive_connections=int(config_manager.config.get("api_max_keepalive", 4)),
+        keepalive_expiry=float(config_manager.config.get("api_keepalive_expiry", 20.0)),
+    )
+    api_client = httpx.AsyncClient(
         proxy=None if DIRECT_MODE else UPSTREAM_PROXY,
         verify=verify_tls,
-        timeout=timeout_setting,
-        limits=limits,
+        timeout=api_timeout,
+        limits=api_limits,
         follow_redirects=False,
         trust_env=False,
+        http1=True,
+        http2=False,  # Explicit HTTP/1.1 for game.granbluefantasy.jp
+    )
+    http_client = api_client
+
+    # 2. Dedicated Static Asset & Prefetch Client (HTTP/2 multiplexing for Akamai CDN)
+    asset_limits = httpx.Limits(
+        max_connections=int(config_manager.config.get("asset_max_connections", 100)),
+        max_keepalive_connections=int(config_manager.config.get("asset_max_keepalive", 40)),
+        keepalive_expiry=float(config_manager.config.get("asset_keepalive_expiry", 60.0)),
+    )
+    asset_client = httpx.AsyncClient(
+        proxy=None if DIRECT_MODE else UPSTREAM_PROXY,
+        verify=verify_tls,
+        timeout=asset_timeout,
+        limits=asset_limits,
+        follow_redirects=False,
+        trust_env=False,
+        http1=True,
         http2=HTTP2_ENABLED,
     )
 
 async def close_http_client():
-    global http_client
-    if http_client:
-        await http_client.aclose()
+    global api_client, asset_client, http_client
+    if api_client:
+        await api_client.aclose()
+        api_client = None
+    if asset_client:
+        await asset_client.aclose()
+        asset_client = None
+    http_client = None
+
+async def request_api(
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    content: bytes = b"",
+    path: str = "",
+) -> Tuple[httpx.Response, bool]:
+    """Execute dynamic game API request via dedicated api_client (HTTP/1.1 Keep-Alive pool).
+    Applies strict dual-constraint safe retry:
+    - Path must be in RETRYABLE_API_PATHS (read-only idempotent whitelist)
+    - Method must be GET
+    - Error must be a connection-level failure before any HTTP response was received
+    All POST requests (attacks, skills, summons) and unknown paths are NEVER retried.
+    Returns (response, reused_bool).
+    """
+    clean_path = path.split("?")[0].lower() if path else url.split("?")[0].lower()
+    is_retryable = (method.upper() == "GET" and clean_path in RETRYABLE_API_PATHS)
+    max_attempts = 2 if is_retryable else 1
+
+    start_t = time.perf_counter()
+    for attempt in range(max_attempts):
+        try:
+            resp = await api_client.request(method, url, headers=headers, content=content)
+            elapsed_ms = (time.perf_counter() - start_t) * 1000
+            stream = resp.extensions.get("network_stream") if hasattr(resp, "extensions") else None
+            reused = api_telemetry.record(
+                latency_ms=elapsed_ms,
+                protocol=resp.http_version,
+                stream=stream,
+                retried=(attempt > 0),
+            )
+            return resp, reused
+        except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
+            if attempt + 1 < max_attempts:
+                format_log("STALE-RETRY", "33", f"Stale connection on read-only {clean_path} ({e.__class__.__name__}), fast-reconnecting (1/1)...")
+                continue
+            api_telemetry.record(
+                latency_ms=(time.perf_counter() - start_t) * 1000,
+                exception=e.__class__.__name__,
+            )
+            raise
+        except Exception as e:
+            api_telemetry.record(
+                latency_ms=(time.perf_counter() - start_t) * 1000,
+                exception=e.__class__.__name__,
+            )
+            raise
+
+async def request_asset(
+    method: str,
+    url: str,
+    headers: Dict[str, str],
+    content: bytes = b"",
+) -> httpx.Response:
+    """Execute static asset or prefetch request via dedicated asset_client (HTTP/2 multiplexing)."""
+    return await asset_client.request(method, url, headers=headers, content=content)
 
 async def pipe_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     try:
@@ -928,7 +1134,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
                     for attempt in range(max_attempts):
                         try:
-                            resp = await http_client.request(method, url, headers=clean_headers, content=body)
+                            resp = await request_asset(method, url, headers=clean_headers, content=body)
                             break
                         except httpx.TimeoutException:
                             if attempt + 1 < max_attempts:
@@ -1035,35 +1241,25 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         if not flight_fut.done():
                             flight_fut.set_result(None)
 
-            # ---------------- Rule 4: Dynamic Game API (100% Pristine Forwarding) ----------------
+            # ---------------- Rule 4: Dynamic Game API (Dedicated api_client, HTTP/1.1 Keep-Alive) ----------------
             with _ActiveApiTracker():
                 start_t = time.perf_counter()
                 url = f"https://{target_host}{path}"
                 clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
                 resp = None
-                max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
-                for attempt in range(max_attempts):
-                    try:
-                        resp = await http_client.request(method, url, headers=clean_headers, content=body)
-                        break
-                    except httpx.TimeoutException:
-                        if attempt + 1 < max_attempts:
-                            format_log("RETRY", "33", f"API Gateway timeout on {method} {path}, auto-retrying (1/1)...")
-                            continue
-                        format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
-                        err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
-                        await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                        resp = None
-                        break
-                    except Exception as e:
-                        if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
-                            format_log("RETRY", "33", f"API network error on {method} {path}, auto-retrying (1/1)...")
-                            continue
-                        format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
-                        err_body = b'{"error": "Bad Gateway", "code": 502}'
-                        await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                        resp = None
-                        break
+                reused = False
+                try:
+                    resp, reused = await request_api(method, url, headers=clean_headers, content=body, path=path)
+                except httpx.TimeoutException:
+                    format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
+                    err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
+                    await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                    resp = None
+                except Exception as e:
+                    format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
+                    err_body = b'{"error": "Bad Gateway", "code": 502}'
+                    await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
+                    resp = None
 
             if resp is None:
                 continue
@@ -1072,9 +1268,11 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
             keep_alive = await forward_upstream_response(writer, headers, resp, is_head=is_head)
             PROXY_STATS["apis"] += 1
 
-            # Highlight slow API responses (>300ms) or errors
+            # Highlight slow API responses (>300ms) or errors, with protocol and reuse tag
             color = "31" if resp.status_code >= 400 else ("33" if elapsed_ms > 300 else "37")
-            format_log("BYPASS-API", color, f"{resp.status_code} {method} {target_host}{path} ({elapsed_ms}ms)")
+            proto_str = f", {resp.http_version}" if hasattr(resp, "http_version") else ""
+            reused_str = ", reused" if reused else ", new"
+            format_log("BYPASS-API", color, f"{resp.status_code} {method} {target_host}{path} ({elapsed_ms}ms{proto_str}{reused_str})")
 
             if not keep_alive:
                 break
@@ -1301,7 +1499,11 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             body = await reader.readexactly(content_length) if content_length > 0 else b""
 
             clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length")}
-            resp = await http_client.request(method, target, headers=clean_headers, content=body)
+            clean_lower = target.split("?")[0].lower()
+            if _is_gbf_akamai_host(target) or any(clean_lower.endswith(ext) for ext in STATIC_EXTENSIONS):
+                resp = await request_asset(method, target, headers=clean_headers, content=body)
+            else:
+                resp, _ = await request_api(method, target, headers=clean_headers, content=body, path=target)
             await forward_upstream_response(writer, headers, resp, is_head=(method == "HEAD"))
             format_log(f"HTTP {resp.status_code}", "37", f"{method} {target}")
             writer.close()

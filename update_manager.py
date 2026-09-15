@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any
 import httpx
 
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.7.0"
 GITHUB_REPO = "Sagisawa/GBF-Accelerator"
 RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 

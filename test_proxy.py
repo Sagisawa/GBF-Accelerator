@@ -233,7 +233,8 @@ async def run_test():
             print("Test 22 - Instant RAM Cache Hot-Path Store: OK")
 
             # Test 23: End-to-End Concurrent SingleFlight Coalescing
-            real_request = gbf_proxy.http_client.request
+            target_client = gbf_proxy.asset_client if getattr(gbf_proxy, "asset_client", None) else gbf_proxy.http_client
+            real_request = target_client.request
             sf_call_count = 0
 
             async def mock_concurrent_request(method, url, **kwargs):
@@ -250,7 +251,7 @@ async def run_test():
                     )
                 return await real_request(method, url, **kwargs)
 
-            gbf_proxy.http_client.request = mock_concurrent_request
+            target_client.request = mock_concurrent_request
             try:
                 test_sf_url = "https://prd-game-a-granbluefantasy.akamaized.net/assets/test/concurrent_singleflight_test.js"
                 res1, res2 = await asyncio.gather(
@@ -264,7 +265,7 @@ async def run_test():
                 assert sf_call_count == 1, f"Expected exactly 1 upstream fetch, got {sf_call_count}"
                 print(f"Test 23 - End-to-End Concurrent SingleFlight Coalescing (2 requests -> {sf_call_count} upstream fetch): OK")
             finally:
-                gbf_proxy.http_client.request = real_request
+                target_client.request = real_request
                 p = cache_manager._get_local_path("/assets/test/concurrent_singleflight_test.js")
                 if p and p.exists():
                     p.unlink()
@@ -599,9 +600,115 @@ async def run_test():
                 shutil.rmtree(audit_tmp, ignore_errors=True)
             print("Test 42 - Magic Bytes Media Format Validation & Cache Audit Auto-Repair: OK")
 
-            print("\n[+] ALL 42 TESTS PASSED SUCCESSFULLY!")
+            # Test 43: 1.7.0 Dual Client Isolation & Protocol Integrity
+            assert gbf_proxy.api_client is not None, "api_client must be initialized"
+            assert gbf_proxy.asset_client is not None, "asset_client must be initialized"
+            assert gbf_proxy.api_client is not gbf_proxy.asset_client, "api_client and asset_client must be isolated instances"
+            # Verify protocol settings: api_client is HTTP/1.1 only, asset_client has HTTP/2 enabled
+            api_pool = getattr(gbf_proxy.api_client._transport, "_pool", None)
+            asset_pool = getattr(gbf_proxy.asset_client._transport, "_pool", None)
+            if api_pool:
+                assert getattr(api_pool, "_http1", False) is True, "api_client must use HTTP/1.1"
+                assert getattr(api_pool, "_http2", False) is False, "api_client must not use HTTP/2"
+            if asset_pool:
+                assert getattr(asset_pool, "_http2", False) == gbf_proxy.HTTP2_ENABLED, "asset_client must use HTTP/2"
+            print("Test 43 - Dual Client Isolation & Protocol Configuration Integrity: OK")
+
+            # Test 44: Safe Stale Retry with Dual Constraints (POST never, unknown GET never, whitelist GET 1x)
+            orig_api_req = gbf_proxy.api_client.request
+            gbf_proxy.api_telemetry.reset()
+            import collections
+            test_call_counts = collections.defaultdict(int)
+
+            async def mock_retry_api_client_request(method, url, headers=None, content=b""):
+                clean_p = url.split("?")[0].lower()
+                test_call_counts[clean_p] += 1
+                if "fail_stale" in url:
+                    if test_call_counts[clean_p] == 1:
+                        raise httpx.RemoteProtocolError("Server disconnected (simulated stale socket)")
+                    return httpx.Response(200, json={"success": True, "recovered": True}, request=httpx.Request(method, url))
+                if "fail_permanent" in url:
+                    raise httpx.ConnectError("Connection refused")
+                return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, url))
+
+            gbf_proxy.api_client.request = mock_retry_api_client_request
+            try:
+                # 1. State-changing POST (normal_attack_result.json): MUST NEVER RETRY
+                post_url = "https://game.granbluefantasy.jp/rest/multiraid/normal_attack_result.json?fail_stale=1"
+                try:
+                    await gbf_proxy.request_api("POST", post_url, {}, content=b"{}", path="/rest/multiraid/normal_attack_result.json")
+                    assert False, "State-changing POST must raise exception and never retry"
+                except httpx.RemoteProtocolError:
+                    pass
+                assert test_call_counts["https://game.granbluefantasy.jp/rest/multiraid/normal_attack_result.json"] == 1, \
+                    "POST normal_attack_result.json must be attempted exactly 1 time (NEVER retried)"
+
+                # 2. Unknown GET path: MUST NEVER RETRY
+                unknown_url = "https://game.granbluefantasy.jp/rest/unknown/action.json?fail_stale=1"
+                try:
+                    await gbf_proxy.request_api("GET", unknown_url, {}, path="/rest/unknown/action.json")
+                    assert False, "Unknown GET path must raise exception and never retry"
+                except httpx.RemoteProtocolError:
+                    pass
+                assert test_call_counts["https://game.granbluefantasy.jp/rest/unknown/action.json"] == 1, \
+                    "Unknown GET path must be attempted exactly 1 time (NEVER retried)"
+
+                # 3. Whitelist read-only GET (start.json): MUST RETRY EXACTLY ONCE on stale drop
+                whitelist_url = "https://game.granbluefantasy.jp/rest/multiraid/start.json?fail_stale=1"
+                resp, reused = await gbf_proxy.request_api("GET", whitelist_url, {}, path="/rest/multiraid/start.json")
+                assert resp.status_code == 200
+                assert resp.json().get("recovered") is True
+                assert test_call_counts["https://game.granbluefantasy.jp/rest/multiraid/start.json"] == 2, \
+                    "Whitelist start.json must be retried exactly once on connection-level drop"
+                assert gbf_proxy.api_telemetry.retry_count == 1, "Telemetry retry_count must record exactly 1 retry"
+                print("Test 44 - Strict Dual-Constraint Retry (POST never, unknown GET never, whitelist GET once): OK")
+            finally:
+                gbf_proxy.api_client.request = orig_api_req
+
+            # Test 45: Connection Reuse Telemetry & Latency Percentiles (P50/P95/P99)
+            gbf_proxy.api_telemetry.reset()
+            # Simulate a stream object shared across multiple requests
+            class DummyStream:
+                pass
+            stream_1 = DummyStream()
+            stream_2 = DummyStream()
+
+            # Record simulated requests
+            r1 = gbf_proxy.api_telemetry.record(latency_ms=120.0, protocol="HTTP/1.1", stream=stream_1)
+            assert r1 is False, "First request on stream_1 must be a new connection"
+            r2 = gbf_proxy.api_telemetry.record(latency_ms=90.0, protocol="HTTP/1.1", stream=stream_1)
+            assert r2 is True, "Second request on stream_1 must be recognized as reused"
+            r3 = gbf_proxy.api_telemetry.record(latency_ms=85.0, protocol="HTTP/1.1", stream=stream_1)
+            assert r3 is True, "Third request on stream_1 must be recognized as reused"
+
+            # Stream 2: new connection
+            r4 = gbf_proxy.api_telemetry.record(latency_ms=210.0, protocol="HTTP/1.1", stream=stream_2)
+            assert r4 is False, "First request on stream_2 must be a new connection"
+            r5 = gbf_proxy.api_telemetry.record(latency_ms=95.0, protocol="HTTP/1.1", stream=stream_2)
+            assert r5 is True, "Second request on stream_2 must be recognized as reused"
+
+            # Check latency percentiles calculation
+            pct = gbf_proxy.api_telemetry.get_percentiles()
+            assert pct["count"] == 5
+            assert 85.0 <= pct["p50"] <= 100.0, f"Unexpected P50: {pct['p50']}"
+            assert pct["p95"] >= 120.0, f"Unexpected P95: {pct['p95']}"
+            assert pct["p99"] >= pct["p95"], f"P99 should be >= P95: {pct['p99']}"
+
+            stats = gbf_proxy.api_telemetry.get_stats()
+            assert stats["total_requests"] == 5
+            assert stats["reused_connections"] == 3
+            assert stats["new_connections"] == 2
+            assert stats["reuse_rate"] == 60.0, f"Expected 60.0% reuse rate, got {stats['reuse_rate']}"
+            assert stats["protocols"]["HTTP/1.1"] == 5
+            print("Test 45 - Real Connection Reuse Detection & Telemetry Percentiles (P50/P95/P99): OK", flush=True)
+
+            print("\n[+] ALL 45 TESTS PASSED SUCCESSFULLY!", flush=True)
     finally:
         gbf_proxy.stop_proxy_thread()
+        import os, sys
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 if __name__ == "__main__":
     import os
