@@ -488,7 +488,30 @@ async def run_test():
                 assert not gz_ext_p.exists(), "Gzipped broken .ext file must be automatically deleted"
             print("Test 39 - Gzip-Compressed HTML Error Page Auto-Repair (streaming zlib chunk inspect): OK")
 
-            print("\n[+] ALL 39 TESTS PASSED SUCCESSFULLY!")
+            # Test 40: CreateJS Animation & Manifest Prefetch Extraction
+            manifest_sample = b'define(["jquery","backbone"],function(a,b){var c=b.Model.extend({defaults:{manifest:[{src:Game.imgUri+"/sp/cjs/npc_3040620000_02.png",id:"npc_3040620000_02",type:"image"},{src:Game.imgUri+"/sp/cjs/ab_all_3040620000_02.png",id:"ab_all",type:"image"}]}});return c});'
+            m_refs = gbf_proxy.extract_asset_refs(
+                "/assets/1789040290/js/model/manifest/npc_3040620000_02.js",
+                manifest_sample,
+                "prd-game-a-granbluefantasy.akamaized.net"
+            )
+            extracted_paths = [p for _, p in m_refs]
+            assert "/assets/1789040290/js/cjs/npc_3040620000_02.js" in extracted_paths, "Twin CreateJS code script must be deduced"
+            assert "/assets/img/sp/cjs/npc_3040620000_02.png" in extracted_paths, "CreateJS character sprite PNG must be extracted"
+            assert "/assets/img/sp/cjs/ab_all_3040620000_02.png" in extracted_paths, "CreateJS ability sprite PNG must be extracted"
+
+            # Test English version manifest
+            en_refs = gbf_proxy.extract_asset_refs(
+                "/assets_en/1789040290/js/model/manifest/npc_3040620000_02.js",
+                manifest_sample,
+                "prd-game-a-granbluefantasy.akamaized.net"
+            )
+            en_paths = [p for _, p in en_refs]
+            assert "/assets_en/1789040290/js/cjs/npc_3040620000_02.js" in en_paths, "English twin CreateJS script must be deduced"
+            assert "/assets_en/img/sp/cjs/npc_3040620000_02.png" in en_paths, "English CreateJS character sprite PNG must be extracted"
+            print("Test 40 - CreateJS Character/Enemy Animation & Manifest Prefetch Extraction: OK")
+
+            print("\n[+] ALL 40 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 
