@@ -715,11 +715,11 @@ async def request_api(
 async def request_asset(
     method: str,
     url: str,
-    headers: Dict[str, str],
+    headers: Optional[Dict[str, str]] = None,
     content: bytes = b"",
 ) -> httpx.Response:
     """Execute static asset or prefetch request via dedicated asset_client (HTTP/2 multiplexing)."""
-    return await asset_client.request(method, url, headers=headers, content=content)
+    return await asset_client.request(method, url, headers=headers or {}, content=content)
 
 async def pipe_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
     try:

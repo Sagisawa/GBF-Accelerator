@@ -65,7 +65,7 @@ USAGE_TEXT = """================================================================
 - 本工具不对账号安全作任何保证。使用第三方网络工具存在违反游戏服务条款的可能，是否使用请自行评估，风险自负。
 """
 
-def get_pac_content(port: int = 8124, host: str = "127.0.0.1") -> str:
+def get_pac_content(port: int = 8124, host: str = "127.0.0.1", *args, **kwargs) -> str:
     """Generate PAC script content pointing to the specified host and port."""
     return f"""function FindProxyForURL(url, host) {{
     if (

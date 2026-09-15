@@ -787,7 +787,72 @@ async def run_test():
                 mock_srv.close()
                 await mock_srv.wait_closed()
 
-            print("\n[+] ALL 46 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # Test 47: Real Prefetch Worker Queue -> request_asset -> save_cache Pipeline
+            prefetch_test_path = "/assets/test/prefetch_live_worker_test.png"
+            prefetch_test_host = "prd-game-a-granbluefantasy.akamaized.net"
+
+            def cleanup_test_47():
+                p = cache_manager._get_local_path(prefetch_test_path)
+                if p and p.exists():
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+                    p_ext = p.with_name(p.name + ".ext")
+                    if p_ext.exists():
+                        try:
+                            p_ext.unlink()
+                        except Exception:
+                            pass
+                cache_manager._ram_cache.pop(prefetch_test_path, None)
+
+            cleanup_test_47()
+            assert not cache_manager.has_cache(prefetch_test_path)
+
+            orig_req_asset = gbf_proxy.request_asset
+            prefetch_asset_calls = []
+
+            async def mock_prefetch_asset_fetch(method, url, headers=None, content=b""):
+                prefetch_asset_calls.append((method, url, headers))
+                png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + b"\x00" * 30
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "image/png", "Content-Length": str(len(png_bytes))},
+                    content=png_bytes,
+                    request=httpx.Request(method, url)
+                )
+
+            gbf_proxy.request_asset = mock_prefetch_asset_fetch
+            if gbf_proxy.save_semaphore is None:
+                gbf_proxy.save_semaphore = asyncio.Semaphore(16)
+            gbf_proxy.prefetch_queue = asyncio.PriorityQueue()
+            gbf_proxy.prefetch_inflight.clear()
+
+            try:
+                await gbf_proxy.prefetch_queue.put((1, 0, prefetch_test_host, prefetch_test_path))
+                gbf_proxy.prefetch_inflight.add(f"{prefetch_test_host}{prefetch_test_path}")
+
+                worker_task = asyncio.create_task(gbf_proxy.prefetch_worker())
+                await asyncio.wait_for(gbf_proxy.prefetch_queue.join(), timeout=3.0)
+                worker_task.cancel()
+                try:
+                    await worker_task
+                except asyncio.CancelledError:
+                    pass
+
+                assert len(prefetch_asset_calls) == 1, f"Expected 1 fetch, got {len(prefetch_asset_calls)}"
+                assert prefetch_asset_calls[0][0] == "GET"
+                assert prefetch_asset_calls[0][1] == f"https://{prefetch_test_host}{prefetch_test_path}"
+                await asyncio.sleep(0.05)
+                assert cache_manager.has_cache(prefetch_test_path) is True, "Prefetched asset must be successfully saved to cache"
+                meta_47, data_47 = cache_manager.get_cache(prefetch_test_path)
+                assert data_47.startswith(b"\x89PNG"), "Cached data must match PNG magic bytes"
+                print("Test 47 - Real Prefetch Worker Queue -> request_asset -> save_cache Pipeline: OK", flush=True)
+            finally:
+                gbf_proxy.request_asset = orig_req_asset
+                cleanup_test_47()
+
+            print("\n[+] ALL 47 TESTS PASSED SUCCESSFULLY!", flush=True)
     finally:
         gbf_proxy.stop_proxy_thread()
         import os, sys
