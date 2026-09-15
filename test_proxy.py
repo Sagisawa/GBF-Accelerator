@@ -511,7 +511,52 @@ async def run_test():
             assert "/assets_en/img/sp/cjs/npc_3040620000_02.png" in en_paths, "English CreateJS character sprite PNG must be extracted"
             print("Test 40 - CreateJS Character/Enemy Animation & Manifest Prefetch Extraction: OK")
 
-            print("\n[+] ALL 40 TESTS PASSED SUCCESSFULLY!")
+            # Test 41: Upstream Flaky Network & Offline Cache Fallback (Direction 1)
+            # 1. Setup sample cached assets in historical version
+            v_hist_path = "/assets/1789040290/js/cjs/test_flaky_fallback_cjs.js"
+            v_hist_data = b'define(["cjs"], function(){ return {test: true}; });'
+            cache_manager.save_cache(v_hist_path, {"ETag": '"v1789-cjs"'}, v_hist_data)
+
+            # 2. Test cross-version fallback for simulated new version (e.g. v9999999999)
+            future_path = "/assets/9999999999/js/cjs/test_flaky_fallback_cjs.js"
+            fb_hit = cache_manager.get_fallback_cache(future_path)
+            assert fb_hit is not None, "Fallback cache must find historical asset under older version"
+            fb_headers, fb_data = fb_hit
+            assert fb_data == v_hist_data, "Fallback data must match historical cached asset"
+            assert fb_headers.get("X-Proxy-Fallback") == "STALE-VERSION-1789040290", "Fallback header must indicate source version"
+            assert "max-age=60" in fb_headers.get("Cache-Control", ""), "Fallback must have short max-age for self-healing"
+            assert fb_headers.get("X-Proxy-Cache") == "FALLBACK"
+            # Ensure future path was NOT written to disk permanently
+            assert not cache_manager.has_cache(future_path), "Fallback must NOT contaminate new version disk path"
+
+            # 3. Test core business logic scripts are strictly excluded from fallback
+            assert cache_manager.get_fallback_cache("/assets/9999999999/js/app.js") is None, "app.js must be excluded"
+            assert cache_manager.get_fallback_cache("/assets/9999999999/js/main.js") is None, "main.js must be excluded"
+            assert cache_manager.get_fallback_cache("/assets/9999999999/set-error-handler.js") is None, "set-error-handler must be excluded"
+
+            # 4. Test cross-language fallback (assets_en -> assets)
+            lang_base_path = "/assets/img/sp/cjs/test_lang_fallback.png"
+            lang_png_data = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4'
+            cache_manager.save_cache(lang_base_path, {"ETag": '"lang-png"'}, lang_png_data)
+            en_img_req = "/assets_en/img/sp/cjs/test_lang_fallback.png"
+            lang_fb = cache_manager.get_fallback_cache(en_img_req)
+            assert lang_fb is not None, "Cross-language fallback must locate Japanese asset"
+            l_headers, l_data = lang_fb
+            assert l_data == lang_png_data
+            assert l_headers.get("X-Proxy-Fallback") == "CROSS-LANG-JP"
+
+            # Cleanup test artifacts
+            clean_file1 = cache_manager._get_local_path(v_hist_path)
+            if clean_file1:
+                clean_file1.unlink(missing_ok=True)
+                clean_file1.with_name(clean_file1.name + ".ext").unlink(missing_ok=True)
+            clean_file2 = cache_manager._get_local_path(lang_base_path)
+            if clean_file2:
+                clean_file2.unlink(missing_ok=True)
+                clean_file2.with_name(clean_file2.name + ".ext").unlink(missing_ok=True)
+            print("Test 41 - Upstream Flaky Network Fallback (cross-version, cross-lang, core JS protection): OK")
+
+            print("\n[+] ALL 41 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 

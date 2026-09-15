@@ -934,6 +934,19 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             if attempt + 1 < max_attempts:
                                 format_log("RETRY", "33", f"Asset timeout, auto-retrying (1/1) -> {url}")
                                 continue
+                            fb = await loop.run_in_executor(None, cache_manager.get_fallback_cache, path)
+                            if fb is not None:
+                                c_headers, c_data = fb
+                                if is_flight_leader and not flight_fut.done():
+                                    flight_fut.set_result((c_headers, c_data))
+                                await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                                PROXY_STATS["hits"] += 1
+                                fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
+                                format_log("FALLBACK", "33", f"Timeout -> Served fallback cache ({fb_src}) -> {path}")
+                                if not is_head:
+                                    asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                                resp = None
+                                break
                             format_log("TIMEOUT", "31", f"Timeout fetching asset -> {url}")
                             err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
                             await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
@@ -943,6 +956,19 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
                                 format_log("RETRY", "33", f"Asset fetch error, auto-retrying (1/1) -> {url}: {e}")
                                 continue
+                            fb = await loop.run_in_executor(None, cache_manager.get_fallback_cache, path)
+                            if fb is not None:
+                                c_headers, c_data = fb
+                                if is_flight_leader and not flight_fut.done():
+                                    flight_fut.set_result((c_headers, c_data))
+                                await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                                PROXY_STATS["hits"] += 1
+                                fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
+                                format_log("FALLBACK", "33", f"Fetch error ({e}) -> Served fallback cache ({fb_src}) -> {path}")
+                                if not is_head:
+                                    asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                                resp = None
+                                break
                             format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
                             err_body = b'{"error": "Bad Gateway", "code": 502}'
                             await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
@@ -953,6 +979,20 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         continue
 
                     elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+
+                    if resp.status_code in (500, 502, 503, 504):
+                        fb = await loop.run_in_executor(None, cache_manager.get_fallback_cache, path)
+                        if fb is not None:
+                            c_headers, c_data = fb
+                            if is_flight_leader and not flight_fut.done():
+                                flight_fut.set_result((c_headers, c_data))
+                            await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                            PROXY_STATS["hits"] += 1
+                            fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
+                            format_log("FALLBACK", "33", f"Upstream {resp.status_code} -> Served fallback cache ({fb_src}) -> {path}")
+                            if not is_head:
+                                asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                            continue
 
                     if resp.status_code == 200 and resp.content:
                         c_data = resp.content

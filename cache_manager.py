@@ -27,6 +27,13 @@ MIME_FALLBACKS = {
     ".mp4": "video/mp4",
 }
 
+FALLBACK_SAFE_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico",
+    ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm",
+    ".woff", ".woff2", ".ttf", ".otf",
+    ".css",
+})
+
 class CacheManager:
     def __init__(self, cache_base_dir: Optional[Path] = None):
         raw_base = cache_base_dir or config_manager.get_effective_cache_dir(interactive=False)
@@ -41,6 +48,11 @@ class CacheManager:
         # Bounded negative cache for missing files (skips repetitive slow Windows stat/is_file checks)
         self._missing_lock = threading.Lock()
         self._known_missing: OrderedDict[str, None] = OrderedDict()
+
+        # Cached version directory names for fast cross-version fallback (< 0.1ms)
+        self._version_dirs_lock = threading.Lock()
+        self._cached_version_dirs: Dict[str, list] = {}
+        self._cached_version_dirs_ts: Dict[str, float] = {}
 
     def _mark_missing(self, clean_key: str):
         with self._missing_lock:
@@ -62,6 +74,9 @@ class CacheManager:
         self.clear_ram_cache()
         with self._missing_lock:
             self._known_missing.clear()
+        with self._version_dirs_lock:
+            self._cached_version_dirs.clear()
+            self._cached_version_dirs_ts.clear()
 
     def clear_ram_cache(self):
         """Clear all in-memory hot cache items."""
@@ -330,6 +345,173 @@ class CacheManager:
         if ram_hit is not None:
             return ram_hit
         return self.get_disk_cache(url_path)
+
+    def _is_fallback_safe_asset(self, clean_path: str) -> bool:
+        """Strict whitelist: only pure media, styles, and CJS animation scripts are eligible for fallback.
+        Core application logic (app.js, main.js, user models) is strictly excluded to prevent logic mismatch.
+        """
+        clean = clean_path.split("?")[0].lower()
+        suffix = Path(clean).suffix
+        if suffix in FALLBACK_SAFE_EXTENSIONS:
+            return True
+        if suffix == ".js":
+            # Strictly allow only CreateJS animation timelines and model manifests
+            if "/js/cjs/" in clean or "/js/model/manifest/" in clean:
+                return True
+        return False
+
+    def _get_version_dirs(self, prefix: str = "assets") -> list:
+        """Return cached version directories sorted descending (newest first). Refreshed at most once per 60s."""
+        now = time.time()
+        with self._version_dirs_lock:
+            ts = self._cached_version_dirs_ts.get(prefix, 0.0)
+            cached = self._cached_version_dirs.get(prefix)
+            if (now - ts) < 60.0 and cached is not None:
+                return cached
+
+            try:
+                target_dir = self.cache_base / prefix
+                if not target_dir.is_dir():
+                    if self.cache_base.name == prefix or self.cache_base.name == "https":
+                        target_dir = self.cache_base / prefix if (self.cache_base / prefix).is_dir() else self.cache_base
+                if target_dir.is_dir():
+                    v_dirs = [d.name for d in target_dir.iterdir() if d.is_dir() and d.name.isdigit()]
+                    v_dirs.sort(key=int, reverse=True)
+                    self._cached_version_dirs[prefix] = v_dirs
+                    self._cached_version_dirs_ts[prefix] = now
+                    return v_dirs
+            except Exception:
+                pass
+            return []
+
+    def _read_fallback_file(self, candidate_url: str) -> Optional[Tuple[Dict[str, str], bytes]]:
+        """Read and validate a candidate fallback file from disk without caching into RAM."""
+        file_path = self._get_local_path(candidate_url)
+        clean_key = candidate_url.split("?")[0].lstrip("/")
+        if file_path is None or not file_path.is_file():
+            if not clean_key.startswith("assets/"):
+                fallback_p = self._get_local_path("assets/" + clean_key)
+                if fallback_p is not None and fallback_p.is_file():
+                    file_path = fallback_p
+                else:
+                    return None
+            else:
+                fallback_p = self._get_local_path(clean_key[7:].lstrip("/"))
+                if fallback_p is not None and fallback_p.is_file():
+                    file_path = fallback_p
+                else:
+                    return None
+
+        try:
+            st = file_path.stat()
+            if st.st_size == 0:
+                return None
+            with open(file_path, "rb") as f:
+                data = f.read()
+            if not data:
+                return None
+
+            ext_path = file_path.with_name(file_path.name + ".ext")
+            content_type = ""
+            cached_etag = ""
+            if ext_path.is_file():
+                try:
+                    with open(ext_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                        content_type = meta.get("ct", "")
+                        cached_etag = meta.get("ETag", "")
+                except Exception:
+                    pass
+
+            if not content_type:
+                suffix = file_path.suffix.lower()
+                content_type = MIME_FALLBACKS.get(suffix) or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+
+            # Integrity check: reject HTML error pages or empty content
+            if not self.is_valid_cache_content(candidate_url, {"content-type": content_type}, data):
+                return None
+
+            etag = cached_etag or f'"{int(st.st_mtime):x}-{len(data):x}"'
+            headers = {
+                "Content-Type": content_type,
+                "Content-Length": str(len(data)),
+                "Access-Control-Allow-Origin": "*",
+                "ETag": etag,
+                "Cache-Control": "public, max-age=60",
+                "X-Proxy-Cache": "FALLBACK",
+                "X-Cache-Source": "DISK-FALLBACK",
+            }
+            # Strictly verify gzip signature
+            is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
+            if is_gzip:
+                headers["Content-Encoding"] = "gzip"
+
+            return headers, data
+        except Exception:
+            return None
+
+    def get_fallback_cache(self, url_path: str) -> Optional[Tuple[Dict[str, str], bytes]]:
+        """Retrieve a stale or alternative valid cached asset when upstream fetch fails (timeout/5xx).
+        Strictly restricted to pure media, styles, and CJS animation scripts to protect game logic.
+        Provides cross-version fallback (e.g. /assets/<NEW_VER>/... -> /assets/<OLD_VER>/...)
+        and cross-language fallback (/assets_en/... <-> /assets/...).
+        Returns (headers, data) with short TTL (max-age=60) and X-Proxy-Fallback header.
+        NEVER writes to the requested new path to prevent stale cache contamination.
+        """
+        if not config_manager.config.get("enable_cache_fallback", True):
+            return None
+
+        clean_path = url_path.split("?")[0]
+        if not self._is_fallback_safe_asset(clean_path):
+            return None
+
+        # 1. First, check if exact file already exists on disk
+        direct = self.get_disk_cache(url_path)
+        if direct is not None:
+            return direct
+
+        # 2. Cross-version fallback for versioned assets: /(assets(?:_(?:en|jp))?)/(\d+)/(.+)
+        m_ver = re.match(r"^/(assets(?:_(?:en|jp))?)/(\d+)/(.+)$", clean_path)
+        if m_ver:
+            prefix, req_ver, subpath = m_ver.group(1), m_ver.group(2), m_ver.group(3)
+            # Try same prefix across recent versions (check up to top 8 versions)
+            for v in self._get_version_dirs(prefix)[:8]:
+                if v == req_ver:
+                    continue
+                candidate_url = f"/{prefix}/{v}/{subpath}"
+                candidate_hit = self._read_fallback_file(candidate_url)
+                if candidate_hit is not None:
+                    headers, data = candidate_hit
+                    headers["X-Proxy-Fallback"] = f"STALE-VERSION-{v}"
+                    return headers, data
+
+            # If not found and prefix is not standard assets, try assets across versions
+            if prefix != "assets":
+                for v in self._get_version_dirs("assets")[:8]:
+                    candidate_url = f"/assets/{v}/{subpath}"
+                    candidate_hit = self._read_fallback_file(candidate_url)
+                    if candidate_hit is not None:
+                        headers, data = candidate_hit
+                        headers["X-Proxy-Fallback"] = f"STALE-LANG-VERSION-{v}"
+                        return headers, data
+
+        # 3. Cross-language fallback for unversioned assets (e.g. /assets_en/img/... <-> /assets/img/...)
+        if clean_path.startswith("/assets_en/"):
+            alt_url = "/assets/" + clean_path[len("/assets_en/"):]
+            alt_hit = self._read_fallback_file(alt_url)
+            if alt_hit is not None:
+                headers, data = alt_hit
+                headers["X-Proxy-Fallback"] = "CROSS-LANG-JP"
+                return headers, data
+        elif clean_path.startswith("/assets/"):
+            alt_url = "/assets_en/" + clean_path[len("/assets/"):]
+            alt_hit = self._read_fallback_file(alt_url)
+            if alt_hit is not None:
+                headers, data = alt_hit
+                headers["X-Proxy-Fallback"] = "CROSS-LANG-EN"
+                return headers, data
+
+        return None
 
     def peek_cache_meta(self, url_path: str) -> Optional[Tuple[str, Dict[str, str], bool]]:
         """Lightweight metadata-only lookup for fast 304 responses.
