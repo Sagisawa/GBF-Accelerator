@@ -9,22 +9,21 @@
 
 通过将游戏静态资源（立绘、音频、战斗动画、脚本）本地化缓存至 SSD / 内存中，减少静态资源的跨海重复下载，降低重复加载延迟与流量消耗；同时透明联动 Clash / v2rayN 等上游代理，核心游戏 API（抽卡、编队、结算、多人战等）原样转发、不做修改。
 
-> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.7.0_GUI.zip`，解压即用，无需配置 Python 环境。
+> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.7.0_GUI.zip`，解压即用，无需配置 Python 环境。各版本改动参见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
 ## 主要功能
 
 - **动态 API / 静态素材双通道物理隔离 (Dual-Client)**：
-  - **动态 API 通道 (`api_client`)**：针对 `game.granbluefantasy.jp` 专设独立 HTTP/1.1 Keep-Alive 极速连接池，避免协议降级开销与队头阻塞。
+  - **动态 API 通道 (`api_client`)**：针对 `game.granbluefantasy.jp` 专设独立 HTTP/1.1 连接池，避免协议降级开销与队头排队。
   - **静态素材通道 (`asset_client`)**：针对 Akamai CDN 启用 HTTP/2 多路复用并发通道。
-  - **互不干扰**：后台 Prefetch 批量并发预加载几十上百个素材时，API 请求独享专属保活连接，绝不挤占跑 T、刷新与战斗通道。
-- **白名单只读接口连接自愈 (Safe Stale-Retry)**：
-  - **状态修改型请求绝不重试**：普攻、技能、召唤等所有 POST 请求以及未知路径 100% 决不重试，杜绝连击异常与风控风险。
-  - **只读白名单静默断连自愈**：仅对 `/rest/multiraid/start.json`、`/rest/raid/start.json` 等已识别的只读幂等接口，在未收到完整 HTTP 响应且遭遇底层长空闲断连（`ConnectError` / `RemoteProtocolError` / `ReadError`）时，自动执行最多 1 次安全重连自愈。
-- **低开销 API 遥测与观测连接复用率**：
-  - 通过底层传输流物理追踪观测连接复用率（Observed Connection Reuse Rate）。
-  - 毫秒级采集滑动窗口耗时，快速统计 P50 / P95 / P99 尾延迟分布（低开销，可按需在配置中开启/关闭）。
+  - **连接池互不影响**：后台 Prefetch 批量并发预加载素材时，动态 API 拥有专属长连接通道，减少与静态流量的连接排队冲突。
+- **白名单只读接口失效重试 (Safe Stale-Retry)**：
+  - **写请求不重试**：普攻、技能、召唤等所有 POST 请求以及未知路径不进行重试，避免重复触发。
+  - **只读白名单断连重试**：仅对 `/rest/multiraid/start.json`、`/rest/raid/start.json` 等已识别的只读接口，在未收到响应且底层空闲长连接断开（`ConnectError` / `RemoteProtocolError` / `ReadError`）时，自动执行最多 1 次重新建连重发。
+- **GUI 实时日志查看**：主界面底栏提供「实时日志」窗口，显示请求耗时、状态及连接是否复用（`reused` / `new`），支持关键词检索与按分类筛选。
+- **API 延迟与连接复用统计**：通过底层传输流统计连接复用情况，并记录耗时分布（P50 / P95 / P99），支持在配置中开启或关闭。
 - **静态资源本地加速与内存热点缓存 (RAM Cache)**：首次拉取的静态资源原子落盘至本地；高频静态资源直接载入内存（默认上限 256MB），读取不经磁盘；启动时自动预热高频小文件。
 - **资源预加载 (Prefetch)**：自动解析场景 JS/JSON 及 CreateJS 动画引用的素材路径，将本地缺失的资源在后台低并发预热落盘，让首次进入新副本/活动时的大部分素材提前就位。
 - **素材 Magic Bytes 二进制校验与一键体检自愈**：极速校验 PNG / JPEG / WebP / GIF / MP3 / WOFF 等二进制文件头（纳秒级），杜绝 0 字节损坏文件及 502/503 伪装 HTML 落盘；GUI 提供“一键体检缓存”按钮支持一键扫描与坏件自愈。
