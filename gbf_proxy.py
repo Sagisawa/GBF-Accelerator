@@ -103,6 +103,11 @@ ASSET_REF_RE = re.compile(
     r'[A-Za-z0-9_\-./%]+\.(?:png|jpe?g|gif|webp|mp3|wav|ogg|m4a|mp4|webm|js|json|css|woff2?|ttf|otf|svg))'
 )
 
+# CreateJS & Game.imgUri dynamic sprite references (e.g. /sp/cjs/npc_xxx.png, /sp/assets/...)
+CJS_IMG_REF_RE = re.compile(
+    r'[\'"(]/?((?:sp|assets(?:_(?:en|jp))?/img/sp)/[A-Za-z0-9_\-./%]+\.(?:png|jpe?g|gif|webp))[\'")\s]'
+)
+
 # Global HTTP client pool for upstream requests through Clash
 http_client: Optional[httpx.AsyncClient] = None
 
@@ -235,6 +240,7 @@ def _get_prefetch_priority(url_path: str) -> int:
 def extract_asset_refs(url_path: str, data: bytes, default_host: str = "") -> list:
     """Extract referenced static asset (host, path) tuples from a cached JS/JSON body (executor thread).
     Preserves explicitly declared GBF hosts in absolute URLs; falls back to default_host for relative paths.
+    Supports standard assets, CreateJS twin scripts, and dynamic Game.imgUri CreateJS spritesheets.
     """
     clean = url_path.split("?")[0].lower()
     if not (clean.endswith(".js") or clean.endswith(".json")):
@@ -252,6 +258,20 @@ def extract_asset_refs(url_path: str, data: bytes, default_host: str = "") -> li
 
     refs: list = []
     seen: set = set()
+
+    # 1. Deduced twin CreateJS script for model manifest files
+    # E.g. /assets/{ver}/js/model/manifest/npc_xxx.js -> /assets/{ver}/js/cjs/npc_xxx.js
+    clean_url = url_path.split("?")[0]
+    m_twin = re.match(r"^/(assets(?:_(?:en|jp))?/\d+/js/)model/manifest/([^/]+\.js)$", clean_url)
+    if m_twin:
+        twin_host = default_host
+        twin_cjs = f"/{m_twin.group(1)}cjs/{m_twin.group(2)}"
+        item = (twin_host, twin_cjs)
+        if item not in seen:
+            seen.add(item)
+            refs.append(item)
+
+    # 2. Standard asset references (assets/..., img/..., sound/..., etc.)
     for m in ASSET_REF_RE.finditer(text):
         ref_host = (m.group(1) or "").lower()
         if ref_host and not (
@@ -271,6 +291,26 @@ def extract_asset_refs(url_path: str, data: bytes, default_host: str = "") -> li
         refs.append(item)
         if len(refs) >= 120:
             break
+
+    # 3. CreateJS & Game.imgUri spritesheets and textures (e.g. /sp/cjs/npc_xxx.png)
+    if len(refs) < 120:
+        img_prefix = "/assets_en/img" if clean_url.startswith("/assets_en/") else "/assets/img"
+        for m in CJS_IMG_REF_RE.finditer(text):
+            raw_path = m.group(1)
+            if raw_path.startswith("sp/"):
+                img_path = f"{img_prefix}/{raw_path}"
+            else:
+                img_path = "/" + raw_path.lstrip("/")
+            if len(img_path) > 200:
+                continue
+            item = (default_host, img_path)
+            if item in seen:
+                continue
+            seen.add(item)
+            refs.append(item)
+            if len(refs) >= 120:
+                break
+
     return refs
 
 async def maybe_enqueue_prefetch(target_host: str, url_path: str, data: bytes):
