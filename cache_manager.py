@@ -7,7 +7,7 @@ import mimetypes
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Any
 
 from config_manager import config_manager, normalize_cache_dir
 
@@ -636,31 +636,192 @@ class CacheManager:
         return loaded
 
     def is_valid_cache_content(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
-        """Verify that downloaded static asset is not truncated, empty, or an HTML error page."""
+        """Verify that downloaded static asset is not truncated, empty, an HTML error page,
+        or corrupted data whose Magic Bytes do not match the expected media format.
+        """
         if not data or len(data) == 0:
             return False
 
         clean_lower = url_path.split("?")[0].lower()
         non_html_exts = (
             ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp3", ".wav", ".webm",
-            ".js", ".css", ".wasm", ".woff", ".woff2", ".ttf", ".mp4"
+            ".js", ".css", ".wasm", ".woff", ".woff2", ".ttf", ".otf", ".mp4"
         )
         if any(clean_lower.endswith(ext) for ext in non_html_exts):
             ct_lower = (headers.get("content-type") or headers.get("Content-Type", "")).lower()
             if "text/html" in ct_lower:
                 return False
-            # Check leading bytes for HTML error page markup (handles both plain and gzip data)
-            sample = data[:256].strip().lower()
+
+            # Decompress leading chunk if gzip compressed (safe streaming inspect)
+            sample = data[:512]
             if len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b:
                 try:
                     import zlib
-                    sample = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(data[:256]).strip().lower()
+                    decomp = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                    sample = decomp.decompress(data[:min(len(data), 1024)])
+                    if not sample and len(data) > 0:
+                        import gzip
+                        sample = gzip.decompress(data)[:512]
                 except Exception:
-                    pass
-            if sample.startswith(b"<!doctype") or sample.startswith(b"<html") or sample.startswith(b"<head"):
+                    # Malformed gzip stream
+                    return False
+
+            sample_lower = sample.strip().lower()
+            if sample_lower.startswith(b"<!doctype") or sample_lower.startswith(b"<html") or sample_lower.startswith(b"<head"):
                 return False
 
+            # Magic Bytes format verification for media assets (using unstripped binary sample)
+            # 1. PNG: 89 50 4E 47 0D 0A 1A 0A
+            if clean_lower.endswith(".png"):
+                if not sample.startswith(b"\x89PNG\r\n\x1a\n"):
+                    return False
+
+            # 2. JPEG: FF D8 FF
+            elif clean_lower.endswith((".jpg", ".jpeg")):
+                if not sample.startswith(b"\xff\xd8\xff"):
+                    return False
+
+            # 3. WebP: RIFF....WEBP
+            elif clean_lower.endswith(".webp"):
+                if len(sample) < 12 or not (sample[:4] == b"RIFF" and sample[8:12] == b"WEBP"):
+                    return False
+
+            # 4. GIF: GIF87a or GIF89a
+            elif clean_lower.endswith(".gif"):
+                if not (sample.startswith(b"GIF87a") or sample.startswith(b"GIF89a")):
+                    return False
+
+            # 5. MP3: ID3 or frame syncword (FF FB / FF F3 / FF F2)
+            elif clean_lower.endswith(".mp3"):
+                is_id3 = sample.startswith(b"ID3")
+                is_sync = len(sample) >= 2 and sample[0] == 0xff and (sample[1] & 0xe0) == 0xe0
+                if not (is_id3 or is_sync):
+                    return False
+
+            # 6. WebFonts (WOFF2 / WOFF / TTF / OTF)
+            elif clean_lower.endswith(".woff2"):
+                if not sample.startswith(b"wOF2"):
+                    return False
+            elif clean_lower.endswith(".woff"):
+                if not sample.startswith(b"wOFF"):
+                    return False
+            elif clean_lower.endswith(".ttf") or clean_lower.endswith(".otf"):
+                if not (sample.startswith(b"\x00\x01\x00\x00") or sample.startswith(b"OTTO") or sample.startswith(b"true")):
+                    return False
+
         return True
+
+    def audit_and_repair_cache(self, progress_callback=None, cancel_event=None) -> Dict[str, Any]:
+        """Audit all static cache files on disk. Detects and deletes 0-byte files,
+        HTML error pages saved as static assets, and corrupted files whose Magic Bytes
+        do not match their extension. Evicts any deleted items from memory.
+        Runs in worker thread; invokes progress_callback(scanned, corrupted) periodically.
+        Returns summary statistics dictionary.
+        """
+        start_t = time.perf_counter()
+        scanned = 0
+        healthy = 0
+        corrupted = 0
+        base = self.cache_base
+
+        if not base.is_dir():
+            return {"scanned": 0, "healthy": 0, "corrupted": 0, "elapsed": 0.0}
+
+        cleaned_keys = []
+
+        try:
+            for root, _dirs, files in os.walk(base):
+                if cancel_event and cancel_event.is_set():
+                    break
+                for fname in files:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    if fname.endswith(".ext"):
+                        continue
+
+                    fp = Path(root) / fname
+
+                    # Clean orphaned temporary files from interrupted writes (.tmp.)
+                    if ".tmp." in fname:
+                        scanned += 1
+                        corrupted += 1
+                        try:
+                            fp.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        continue
+
+                    scanned += 1
+                    try:
+                        st = fp.stat()
+                    except OSError:
+                        continue
+
+                    # 1. Check 0-byte corrupt files
+                    is_bad = False
+                    if st.st_size == 0:
+                        is_bad = True
+                    else:
+                        clean_name = fname.lower()
+                        if clean_name.endswith((
+                            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp3",
+                            ".woff", ".woff2", ".ttf", ".otf", ".js", ".css"
+                        )):
+                            try:
+                                with open(fp, "rb") as f:
+                                    head_sample = f.read(1024)
+                                if not self.is_valid_cache_content(fname, {}, head_sample):
+                                    is_bad = True
+                            except Exception:
+                                is_bad = True
+
+                    if is_bad:
+                        corrupted += 1
+                        try:
+                            fp.unlink(missing_ok=True)
+                            fp.with_name(fp.name + ".ext").unlink(missing_ok=True)
+                            try:
+                                rel_k = "/" + fp.relative_to(base).as_posix()
+                                cleaned_keys.append(rel_k.split("?")[0].lstrip("/"))
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                    else:
+                        healthy += 1
+
+                    if progress_callback and scanned % 1000 == 0:
+                        try:
+                            progress_callback(scanned, corrupted)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # Evict cleaned keys from RAM cache & negative cache
+        if cleaned_keys:
+            with self._ram_lock:
+                for k in cleaned_keys:
+                    if k in self._ram_cache:
+                        _, (_, _, sz) = self._ram_cache.pop(k, (None, (None, None, 0)))
+                        self._ram_cache_bytes = max(0, self._ram_cache_bytes - sz)
+            with self._missing_lock:
+                for k in cleaned_keys:
+                    self._known_missing.pop(k, None)
+
+        if progress_callback:
+            try:
+                progress_callback(scanned, corrupted)
+            except Exception:
+                pass
+
+        elapsed = round(time.perf_counter() - start_t, 2)
+        return {
+            "scanned": scanned,
+            "healthy": healthy,
+            "corrupted": corrupted,
+            "elapsed": elapsed,
+        }
 
     def patch_error_handler(self, data: bytes) -> bytes:
         """Neuter disruptive alert() in set-error-handler.js without custom signatures."""
