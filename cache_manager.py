@@ -595,44 +595,129 @@ class CacheManager:
             return _exists(self._get_local_path(clean_key[7:].lstrip("/")))
         return False
 
-    def warm_ram_cache(self, max_items: int = 2000) -> int:
-        """Startup warmup: preload small high-frequency files (smallest first) into the RAM
-        cache so the first requests of a session never hit the disk. Runs in a background
-        executor thread, never on the request path. Returns the number of items preloaded.
+    def warm_ram_cache(self, max_items: int = 6000) -> int:
+        """Startup warmup: preload high-frequency static assets (active versions, core UI,
+        fonts, navigation, common SE) into the RAM cache so initial requests of a session
+        never hit the disk. Runs in a background executor thread, never on the request path.
+        Returns the number of items preloaded.
         """
         if not config_manager.config.get("enable_ram_cache", True):
             return 0
+
+        t0 = time.perf_counter()
+        max_ram = self._get_max_ram_bytes()
+        # Budget target: up to 70% of max RAM cache capacity, leaving headroom for runtime writes
+        target_budget = int(max_ram * 0.70)
+
+        candidates = []
+        seen_paths = set()
+
         try:
-            candidates = []
-            for root, _dirs, files in os.walk(self.cache_base):
-                for name in files:
-                    if name.endswith(".ext") or ".tmp." in name:
+            # 1. Target active version directories (top 1-2 newest versions only, skipping dead historical versions)
+            active_version_targets = []
+            for prefix in ("assets", "assets_en"):
+                root_p = self.cache_base / prefix if (self.cache_base / prefix).is_dir() else (self.cache_base if self.cache_base.name.lower() == prefix else None)
+                if not root_p or not root_p.is_dir():
+                    continue
+                v_dirs = self._get_version_dirs(prefix)
+                for v in v_dirs[:2]:
+                    vp = root_p / v
+                    if vp.is_dir():
+                        active_version_targets.append((0, 2 * 1024 * 1024, vp))
+
+            # 2. Target high-frequency core directories with tiered priorities & file size limits:
+            # Priority 0: Active version JS/CSS, web fonts
+            # Priority 1: Core UI components (icons, frames, buttons), CSS backgrounds
+            # Priority 2: Common sound effects, main navigation UI (submenu, top, mypage)
+            targets = list(active_version_targets)
+            for prefix in ("assets", "assets_en"):
+                root_p = self.cache_base / prefix if (self.cache_base / prefix).is_dir() else (self.cache_base if self.cache_base.name.lower() == prefix else None)
+                if not root_p or not root_p.is_dir():
+                    continue
+                if (root_p / "font").is_dir():
+                    targets.append((0, 1024 * 1024, root_p / "font"))
+                for sub in ("ui", "css_img"):
+                    p = root_p / "img" / "sp" / sub
+                    if p.is_dir():
+                        targets.append((1, 512 * 1024, p))
+                if (root_p / "sound" / "se").is_dir():
+                    targets.append((2, 512 * 1024, root_p / "sound" / "se"))
+                for sub in ("submenu", "top", "mypage"):
+                    p = root_p / "img" / "sp" / sub
+                    if p.is_dir():
+                        targets.append((2, 512 * 1024, p))
+
+            # 3. Collect candidates from targeted directories
+            for prio, cap, target in targets:
+                for root, _dirs, files in os.walk(target):
+                    for name in files:
+                        if name.endswith(".ext") or ".tmp." in name:
+                            continue
+                        fp = Path(root) / name
+                        if fp in seen_paths:
+                            continue
+                        seen_paths.add(fp)
+                        try:
+                            sz = fp.stat().st_size
+                            if 0 < sz <= cap:
+                                candidates.append((prio, sz, fp))
+                        except OSError:
+                            continue
+
+            # Fallback for non-standard, custom, or empty cache directories
+            if not candidates:
+                for root, _dirs, files in os.walk(self.cache_base):
+                    root_lower = root.lower().replace("\\", "/")
+                    if any(bad in root_lower for bad in ("/voice/", "/bgm/", "/comic/", "/test/")):
                         continue
-                    fp = Path(root) / name
-                    try:
-                        sz = fp.stat().st_size
-                    except OSError:
-                        continue
-                    if 0 < sz <= self._get_max_item_bytes():
-                        candidates.append((sz, fp))
-            candidates.sort(key=lambda t: t[0])
+                    for name in files:
+                        if name.endswith(".ext") or ".tmp." in name:
+                            continue
+                        fp = Path(root) / name
+                        try:
+                            sz = fp.stat().st_size
+                        except OSError:
+                            continue
+                        if 0 < sz <= 512 * 1024:
+                            candidates.append((1, sz, fp))
+                    if len(candidates) >= max_items:
+                        break
+
+            # Sort candidates by (priority asc, file size asc)
+            candidates.sort(key=lambda t: (t[0], t[1]))
         except Exception:
             return 0
 
         loaded = 0
-        for _sz, fp in candidates:
+        loaded_bytes = 0
+        for _prio, _sz, fp in candidates:
             if loaded >= max_items:
                 break
             with self._ram_lock:
-                if self._ram_cache_bytes >= self._get_max_ram_bytes():
+                if self._ram_cache_bytes >= target_budget or self._ram_cache_bytes >= max_ram:
                     break
             try:
                 rel = "/" + fp.relative_to(self.cache_base).as_posix()
             except ValueError:
                 continue
+
             # get_cache builds proper headers and inserts into the RAM cache itself
-            if self.get_cache(rel) is not None:
+            hit = self.get_cache(rel)
+            if hit is not None:
                 loaded += 1
+                loaded_bytes += len(hit[1])
+
+        try:
+            import gbf_proxy
+            if hasattr(gbf_proxy, "format_log"):
+                mb_loaded = loaded_bytes / (1024 * 1024)
+                gbf_proxy.format_log(
+                    "RAM-WARM", "32",
+                    f"Prewarm complete: loaded {loaded:,} hot assets ({mb_loaded:.1f} MB) in {time.perf_counter() - t0:.2f}s"
+                )
+        except Exception:
+            pass
+
         return loaded
 
     def is_valid_cache_content(self, url_path: str, headers: Dict[str, str], data: bytes) -> bool:
