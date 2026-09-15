@@ -134,7 +134,7 @@ class CacheManager:
                 "ETag": etag,
                 "X-Proxy-Cache": "HIT",
             }
-            if ce.lower() == "gzip" or is_gzip:
+            if is_gzip:
                 saved_headers["Content-Encoding"] = "gzip"
 
             self._ram_cache[clean_key] = (saved_headers, data, item_len)
@@ -273,6 +273,17 @@ class CacheManager:
                     ext_path.unlink(missing_ok=True)
                 except Exception:
                     pass
+                self._mark_missing(clean_key)
+                return None
+
+            # Content Integrity Auto-Repair: Detect corrupt HTML error pages or malformed files
+            if not self.is_valid_cache_content(url_path, {"content-type": content_type}, data):
+                if enable_auto_repair:
+                    try:
+                        file_path.unlink(missing_ok=True)
+                        ext_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
                 self._mark_missing(clean_key)
                 return None
 
@@ -456,8 +467,14 @@ class CacheManager:
             ct_lower = (headers.get("content-type") or headers.get("Content-Type", "")).lower()
             if "text/html" in ct_lower:
                 return False
-            # Check leading bytes for HTML error page markup
+            # Check leading bytes for HTML error page markup (handles both plain and gzip data)
             sample = data[:256].strip().lower()
+            if len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b:
+                try:
+                    import zlib
+                    sample = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(data[:256]).strip().lower()
+                except Exception:
+                    pass
             if sample.startswith(b"<!doctype") or sample.startswith(b"<html") or sample.startswith(b"<head"):
                 return False
 

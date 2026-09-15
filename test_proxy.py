@@ -435,7 +435,60 @@ async def run_test():
             assert not any("malicious-cdn.example.com" in h for h, p in extracted), "Non-GBF external host must be ignored"
             print("Test 36 - Prefetch Cross-Host Reference Extraction (explicit CDN host preserved & relative fallback): OK")
 
-            print("\n[+] ALL 36 TESTS PASSED SUCCESSFULLY!")
+            # Test 37: RAM Cache Gzip Header Integrity (Never claim gzip on uncompressed data)
+            uncompressed_js = b"console.log('clean_js_no_gzip');"
+            cache_manager.store_ram_cache("/assets/test/uncompressed_decompressed_upstream.js", {"content-encoding": "gzip", "content-type": "application/javascript"}, uncompressed_js)
+            ram_item = cache_manager.get_ram_cache("/assets/test/uncompressed_decompressed_upstream.js")
+            assert ram_item is not None
+            r_head, r_body = ram_item
+            assert "Content-Encoding" not in r_head or r_head["Content-Encoding"] != "gzip", "Uncompressed plaintext must NEVER have Content-Encoding: gzip in RAM cache"
+            assert r_body == uncompressed_js
+
+            # Genuine gzip data must retain Content-Encoding: gzip
+            import gzip
+            genuine_gzip_js = gzip.compress(uncompressed_js)
+            cache_manager.store_ram_cache("/assets/test/genuine_gzip.js", {"content-type": "application/javascript"}, genuine_gzip_js)
+            ram_gzip_item = cache_manager.get_ram_cache("/assets/test/genuine_gzip.js")
+            assert ram_gzip_item is not None
+            rg_head, rg_body = ram_gzip_item
+            assert rg_head.get("Content-Encoding") == "gzip", "Genuine gzip data must retain Content-Encoding: gzip"
+            print("Test 37 - RAM Cache Gzip Header Integrity (prevents ERR_CONTENT_DECODING_FAILED & update loop): OK")
+
+            # Test 38: Disk Cache HTML Error Auto-Repair (Plain Text)
+            broken_rel = "/assets/test/corrupt_502_error.js"
+            broken_p = cache_manager._get_local_path(broken_rel)
+            if broken_p:
+                broken_p.parent.mkdir(parents=True, exist_ok=True)
+                broken_p.write_bytes(b"<!DOCTYPE html><html><body>502 Bad Gateway</body></html>")
+                ext_p = broken_p.with_name(broken_p.name + ".ext")
+                ext_p.write_text('{"ct": "application/javascript"}', encoding="utf-8")
+                # Clear negative cache for this test key
+                with cache_manager._missing_lock:
+                    cache_manager._known_missing.pop("assets/test/corrupt_502_error.js", None)
+
+                # get_disk_cache must detect corrupt HTML, auto-repair (delete), and return None
+                assert cache_manager.get_disk_cache(broken_rel) is None, "Corrupt HTML error file must be rejected by get_disk_cache"
+                assert not broken_p.exists(), "Broken file must be automatically deleted (auto-repair)"
+                assert not ext_p.exists(), "Broken .ext file must be automatically deleted (auto-repair)"
+            print("Test 38 - Disk Cache HTML Error Page Auto-Repair (prevents Ready-page script freeze): OK")
+
+            # Test 39: Disk Cache HTML Error Auto-Repair (Gzip-compressed HTML)
+            gzip_broken_rel = "/assets/test/corrupt_gzip_502_error.js"
+            gzip_broken_p = cache_manager._get_local_path(gzip_broken_rel)
+            if gzip_broken_p:
+                gzip_broken_p.parent.mkdir(parents=True, exist_ok=True)
+                gzip_broken_p.write_bytes(gzip.compress(b"<!DOCTYPE html><html><body>502 Bad Gateway</body></html>"))
+                gz_ext_p = gzip_broken_p.with_name(gzip_broken_p.name + ".ext")
+                gz_ext_p.write_text('{"ct": "application/javascript", "ce": "gzip"}', encoding="utf-8")
+                with cache_manager._missing_lock:
+                    cache_manager._known_missing.pop("assets/test/corrupt_gzip_502_error.js", None)
+
+                assert cache_manager.get_disk_cache(gzip_broken_rel) is None, "Gzip-compressed HTML error must be rejected by get_disk_cache"
+                assert not gzip_broken_p.exists(), "Gzipped broken file must be automatically deleted"
+                assert not gz_ext_p.exists(), "Gzipped broken .ext file must be automatically deleted"
+            print("Test 39 - Gzip-Compressed HTML Error Page Auto-Repair (streaming zlib chunk inspect): OK")
+
+            print("\n[+] ALL 39 TESTS PASSED SUCCESSFULLY!")
     finally:
         gbf_proxy.stop_proxy_thread()
 
