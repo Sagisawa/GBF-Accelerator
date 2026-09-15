@@ -644,8 +644,16 @@ class GBFAcceleratorGUI:
     def show_update_dialog(self, info: UpdateInfo):
         dialog = tk.Toplevel(self.root)
         dialog.title(f"发现新版本 - v{info.latest_version}")
-        dialog.geometry("540x420")
-        dialog.minsize(480, 360)
+
+        target_url = info.html_url or f"https://github.com/{update_manager.GITHUB_REPO}/releases/latest"
+
+        # Adaptive window geometry
+        screen_w = dialog.winfo_screenwidth()
+        screen_h = dialog.winfo_screenheight()
+        win_w = min(620, screen_w - 40)
+        win_h = min(520, screen_h - 80)
+        dialog.geometry(f"{win_w}x{win_h}")
+        dialog.minsize(500, 380)
         dialog.transient(self.root)
         dialog.grab_set()
 
@@ -656,67 +664,18 @@ class GBFAcceleratorGUI:
         ry = self.root.winfo_y()
         rw = self.root.winfo_width()
         rh = self.root.winfo_height()
-        x = max(0, rx + (rw - 540) // 2)
-        y = max(0, ry + (rh - 420) // 2)
+        x = max(0, rx + (rw - win_w) // 2)
+        y = max(0, ry + (rh - win_h) // 2)
         dialog.geometry(f"+{x}+{y}")
 
         content = ttk.Frame(dialog, padding="16 14 16 14")
         content.pack(fill="both", expand=True)
 
-        # Top banner
-        f_top = ttk.Frame(content)
-        f_top.pack(fill="x", pady=(0, 10))
-        ttk.Label(
-            f_top,
-            text=f"🎉 发现新版本：v{info.latest_version}",
-            font=("Microsoft YaHei UI", 12, "bold"),
-            foreground="#28a745",
-        ).pack(anchor="w")
-
-        sub_info = f"当前运行版本: v{info.current_version}"
-        if info.published_at:
-            sub_info += f"  |  发布时间: {info.published_at}"
-        ttk.Label(f_top, text=sub_info, style="Gray.TLabel").pack(anchor="w", pady=(2, 0))
-
-        if info.release_title and info.release_title != f"v{info.latest_version}":
-            ttk.Label(
-                f_top,
-                text=info.release_title,
-                font=("Microsoft YaHei UI", 9, "bold"),
-            ).pack(anchor="w", pady=(4, 0))
-
-        # Release notes text
-        ttk.Label(content, text="更新内容：", style="Normal.TLabel").pack(anchor="w", pady=(0, 4))
-        f_text = ttk.Frame(content)
-        f_text.pack(fill="both", expand=True, pady=(0, 12))
-
-        scrollbar = ttk.Scrollbar(f_text)
-        scrollbar.pack(side="right", fill="y")
-
-        txt_notes = tk.Text(
-            f_text,
-            wrap="word",
-            font=("Microsoft YaHei UI", 9),
-            yscrollcommand=scrollbar.set,
-            bg="#fdfdfd",
-            relief="solid",
-            bd=1,
-            padx=8,
-            pady=8,
-        )
-        txt_notes.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=txt_notes.yview)
-
-        notes_content = info.release_notes.strip() if info.release_notes else "暂无详细更新日志。"
-        txt_notes.insert("1.0", notes_content)
-        txt_notes.configure(state="disabled")
-
-        # Buttons
+        # 1. BOTTOM BUTTONS: Pack first with side="bottom" so they are ALWAYS visible
         f_btns = ttk.Frame(content)
-        f_btns.pack(fill="x")
+        f_btns.pack(side="bottom", fill="x", pady=(10, 0))
 
         def open_download():
-            target_url = info.html_url or f"https://github.com/{update_manager.GITHUB_REPO}/releases/latest"
             webbrowser.open(target_url)
             dialog.destroy()
 
@@ -740,6 +699,77 @@ class GBFAcceleratorGUI:
 
         btn_close = ttk.Button(f_btns, text="稍后再说", command=dialog.destroy)
         btn_close.pack(side="right", padx=(0, 8))
+
+        def copy_link():
+            dialog.clipboard_clear()
+            dialog.clipboard_append(target_url)
+            messagebox.showinfo("已复制", "下载链接已复制到剪贴板！", parent=dialog)
+
+        btn_copy = ttk.Button(f_btns, text="复制下载链接", command=copy_link)
+        btn_copy.pack(side="left")
+
+        # 2. TOP BANNER
+        f_top = ttk.Frame(content)
+        f_top.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            f_top,
+            text=f"🎉 发现新版本：v{info.latest_version}",
+            font=("Microsoft YaHei UI", 12, "bold"),
+            foreground="#28a745",
+        ).pack(anchor="w")
+
+        sub_info = f"当前运行版本: v{info.current_version}"
+        if info.published_at:
+            sub_info += f"  |  发布时间: {info.published_at}"
+        ttk.Label(f_top, text=sub_info, style="Gray.TLabel").pack(anchor="w", pady=(2, 0))
+
+        if info.release_title and info.release_title != f"v{info.latest_version}":
+            ttk.Label(
+                f_top,
+                text=info.release_title,
+                font=("Microsoft YaHei UI", 9, "bold"),
+            ).pack(anchor="w", pady=(3, 0))
+
+        # Direct clickable download link
+        f_link = ttk.Frame(f_top)
+        f_link.pack(anchor="w", pady=(4, 0))
+        ttk.Label(f_link, text="下载地址: ", style="Normal.TLabel").pack(side="left")
+        lbl_link = tk.Label(
+            f_link,
+            text=target_url,
+            font=("Microsoft YaHei UI", 9, "underline"),
+            fg="#0066cc",
+            cursor="hand2",
+        )
+        lbl_link.bind("<Button-1>", lambda e: webbrowser.open(target_url))
+        lbl_link.pack(side="left")
+
+        # 3. MIDDLE: Release notes text area (takes all remaining space)
+        ttk.Label(content, text="更新内容：", style="Normal.TLabel").pack(anchor="w", pady=(0, 4))
+        f_text = ttk.Frame(content)
+        f_text.pack(fill="both", expand=True, pady=(0, 4))
+
+        scrollbar = ttk.Scrollbar(f_text)
+        scrollbar.pack(side="right", fill="y")
+
+        txt_notes = tk.Text(
+            f_text,
+            wrap="word",
+            height=8,
+            font=("Microsoft YaHei UI", 9),
+            yscrollcommand=scrollbar.set,
+            bg="#fdfdfd",
+            relief="solid",
+            bd=1,
+            padx=8,
+            pady=8,
+        )
+        txt_notes.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=txt_notes.yview)
+
+        notes_content = info.release_notes.strip() if info.release_notes else "暂无详细更新日志。"
+        txt_notes.insert("1.0", notes_content)
+        txt_notes.configure(state="disabled")
 
     def run_latency_test(self):
         """Measure real RTT to the game server through the current upstream route."""
