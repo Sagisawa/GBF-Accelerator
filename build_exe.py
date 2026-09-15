@@ -72,7 +72,7 @@ def build():
 
     # Prepare Release Package
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = RELEASE_DIR / "GBF_Accelerator_v1.6.2_GUI.zip"
+    zip_path = RELEASE_DIR / "GBF_Accelerator_v1.7.0_GUI.zip"
     readme_path = BASE_DIR / "使用说明.txt"
     if not readme_path.is_file():
         from app_main import ensure_bundled_files
