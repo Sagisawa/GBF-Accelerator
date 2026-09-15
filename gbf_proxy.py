@@ -553,12 +553,47 @@ def stop_proxy_thread():
             pass
     proxy_thread = None
 
+_log_listeners: list = []
+_log_history: collections.deque = collections.deque(maxlen=2000)
+_log_lock: threading.Lock = threading.Lock()
+
+def register_log_listener(callback):
+    """Register a listener callback(formatted_line: str, level: str) for live logs."""
+    with _log_lock:
+        if callback not in _log_listeners:
+            _log_listeners.append(callback)
+
+def unregister_log_listener(callback):
+    """Unregister a live log listener."""
+    with _log_lock:
+        if callback in _log_listeners:
+            _log_listeners.remove(callback)
+
+def get_recent_logs() -> list:
+    """Return a snapshot list of (formatted_line, level) tuples."""
+    with _log_lock:
+        return list(_log_history)
+
+def clear_recent_logs():
+    """Clear memory log history."""
+    with _log_lock:
+        _log_history.clear()
+
 def format_log(level: str, color_code: str, msg: str):
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] [{level}] {msg}"
+    with _log_lock:
+        _log_history.append((line, level))
+        listeners = list(_log_listeners)
+    for cb in listeners:
+        try:
+            cb(line, level)
+        except Exception:
+            pass
     # ANSI colored console log (safe for windowed GUI mode)
     try:
         if sys.stdout is not None:
-            ts = datetime.datetime.now().strftime("%H:%M:%S")
-            print(f"[{ts}] [{level}] {msg}", flush=True)
+            print(line, flush=True)
     except Exception:
         pass
 

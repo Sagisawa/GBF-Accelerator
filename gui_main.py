@@ -5,6 +5,8 @@ import threading
 import subprocess
 import urllib.parse
 import webbrowser
+import collections
+from typing import Optional, List, Tuple, Dict, Any
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -140,6 +142,7 @@ class GBFAcceleratorGUI:
         self.var_ram_max_mb = tk.StringVar(value=str(config_manager.config.get("ram_cache_max_mb", 256)))
         self.var_auto_update = tk.BooleanVar(value=config_manager.config.get("auto_check_update", True))
         self.update_info: Optional[UpdateInfo] = None
+        self.log_window: Optional["LogViewerWindow"] = None
 
         # Emoji icon cache (buttons attach icons via image+compound for exact centering)
         self._icon_cache: dict = {}
@@ -365,6 +368,9 @@ class GBFAcceleratorGUI:
 
         self.btn_latency = self._emoji_button(f_bottom, "📡", "延迟测试", self.run_latency_test)
         self.btn_latency.pack(side="left", padx=(0, 4))
+
+        self.btn_logs = self._emoji_button(f_bottom, "📜", "实时日志", self.show_log_window)
+        self.btn_logs.pack(side="left", padx=(0, 4))
 
         btn_tray = self._emoji_button(f_bottom, "⬇", "最小化到托盘", self.hide_to_tray)
         btn_tray.pack(side="right")
@@ -1721,12 +1727,322 @@ class GBFAcceleratorGUI:
     def toggle_proxy_from_tray(self):
         self.root.after(0, self.toggle_proxy)
 
+    def show_log_window(self):
+        if self.log_window is not None:
+            try:
+                if self.log_window.top.winfo_exists():
+                    self.log_window.top.deiconify()
+                    self.log_window.top.lift()
+                    self.log_window.top.focus_force()
+                    return
+            except Exception:
+                pass
+        self.log_window = LogViewerWindow(self)
+
     def quit_app(self):
+        if self.log_window is not None:
+            try:
+                self.log_window.on_close()
+            except Exception:
+                pass
+            self.log_window = None
         gbf_proxy.stop_proxy_thread()
         system_proxy.disable_pac_proxy()
         if self.tray_icon:
             self.tray_icon.stop()
         self.root.after(0, self.root.destroy)
+
+class LogViewerWindow:
+    """Non-modal, high-performance real-time proxy and network log viewer."""
+    def __init__(self, parent: GBFAcceleratorGUI):
+        self.parent = parent
+        self.top = tk.Toplevel(parent.root)
+        self.top.title("实时网络与转发日志 (Live Logs) - GBF 加速器")
+        try:
+            self.top.iconphoto(True, parent.window_icon)
+        except Exception:
+            pass
+
+        # Adaptive window geometry
+        sw = self.top.winfo_screenwidth()
+        sh = self.top.winfo_screenheight()
+        w = min(940, max(760, sw - 120))
+        h = min(560, max(420, sh - 160))
+        self.top.geometry(f"{w}x{h}")
+        self.top.minsize(640, 360)
+
+        # Position slightly offset from parent
+        try:
+            px = parent.root.winfo_x()
+            py = parent.root.winfo_y()
+            self.top.geometry(f"+{max(10, px + 40)}+{max(10, py + 40)}")
+        except Exception:
+            pass
+
+        self.top.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # Thread-safe log queue and storage
+        self._incoming_queue: collections.deque = collections.deque()
+        self._queue_lock: threading.Lock = threading.Lock()
+        self._all_records: List[Tuple[str, str]] = []
+        self._max_records: int = 2500
+        self._is_closed: bool = False
+        self._scheduled_job = None
+
+        self.var_auto_scroll = tk.BooleanVar(value=True)
+        self.var_filter_text = tk.StringVar(value="")
+        self.var_filter_cat = tk.StringVar(value="全部 (All)")
+        self.var_status = tk.StringVar(value="初始化中...")
+
+        self.setup_ui()
+        self.setup_tags()
+
+        # Load recent log history from gbf_proxy
+        history = gbf_proxy.get_recent_logs()
+        with self._queue_lock:
+            for line, lvl in history:
+                self._all_records.append((line, lvl))
+                self._incoming_queue.append((line, lvl))
+
+        # Register live listener
+        gbf_proxy.register_log_listener(self.on_live_log)
+
+        # Start background UI update loop
+        self._schedule_flush()
+
+    def setup_ui(self):
+        # 1. Top Toolbar
+        toolbar = ttk.Frame(self.top, padding="8 6 8 6")
+        toolbar.pack(fill="x", side="top")
+
+        ttk.Label(toolbar, text="搜索:").pack(side="left", padx=(0, 4))
+        self.entry_filter = ttk.Entry(toolbar, textvariable=self.var_filter_text, width=18, font=("Microsoft YaHei UI", 9))
+        self.entry_filter.pack(side="left", padx=(0, 8))
+        self.entry_filter.bind("<KeyRelease>", lambda e: self.reapply_filter())
+
+        ttk.Label(toolbar, text="类型:").pack(side="left", padx=(0, 4))
+        combo_cat = ttk.Combobox(toolbar, textvariable=self.var_filter_cat, values=[
+            "全部 (All)",
+            "仅战斗 API (BYPASS-API)",
+            "仅缓存命中 (CACHE)",
+            "仅素材拉取 (FETCH/PREFETCH)",
+            "仅重连与告警 (RETRY/ERROR)",
+        ], state="readonly", width=22, font=("Microsoft YaHei UI", 9))
+        combo_cat.pack(side="left", padx=(0, 10))
+        combo_cat.bind("<<ComboboxSelected>>", lambda e: self.reapply_filter())
+
+        chk_scroll = ttk.Checkbutton(toolbar, text="自动滚屏", variable=self.var_auto_scroll)
+        chk_scroll.pack(side="left", padx=(0, 8))
+
+        btn_copy = ttk.Button(toolbar, text="复制全部", width=9, command=self.copy_all)
+        btn_copy.pack(side="right", padx=(4, 0))
+
+        btn_clear = ttk.Button(toolbar, text="清屏", width=7, command=self.clear_display)
+        btn_clear.pack(side="right", padx=(4, 0))
+
+        # 2. Main Console Text with horizontal & vertical scrollbars
+        f_body = ttk.Frame(self.top)
+        f_body.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+
+        scroll_y = ttk.Scrollbar(f_body, orient="vertical")
+        scroll_y.pack(side="right", fill="y")
+        scroll_x = ttk.Scrollbar(f_body, orient="horizontal")
+        scroll_x.pack(side="bottom", fill="x")
+
+        self.txt_logs = tk.Text(
+            f_body,
+            bg="#181818",
+            fg="#cccccc",
+            insertbackground="#ffffff",
+            selectbackground="#264f78",
+            selectforeground="#ffffff",
+            font=("Consolas", 9),
+            wrap="none",
+            xscrollcommand=scroll_x.set,
+            yscrollcommand=scroll_y.set,
+            state="disabled",
+            relief="flat",
+        )
+        self.txt_logs.pack(side="left", fill="both", expand=True)
+        scroll_y.config(command=self.txt_logs.yview)
+        scroll_x.config(command=self.txt_logs.xview)
+
+        # 3. Bottom Status Bar
+        f_status = ttk.Frame(self.top, padding="8 2 8 4")
+        f_status.pack(fill="x", side="bottom")
+        self.lbl_status = ttk.Label(f_status, textvariable=self.var_status, style="Gray.TLabel")
+        self.lbl_status.pack(side="left")
+
+    def setup_tags(self):
+        self.txt_logs.tag_configure("ts", foreground="#6e7681")
+        self.txt_logs.tag_configure("lvl_api", foreground="#4ec9b0", font=("Consolas", 9, "bold"))
+        self.txt_logs.tag_configure("lvl_cache", foreground="#89d185")
+        self.txt_logs.tag_configure("lvl_fetch", foreground="#569cd6")
+        self.txt_logs.tag_configure("lvl_prefetch", foreground="#c586c0")
+        self.txt_logs.tag_configure("lvl_retry", foreground="#e5c07b", font=("Consolas", 9, "bold"))
+        self.txt_logs.tag_configure("lvl_err", foreground="#f14c4c", font=("Consolas", 9, "bold"))
+        self.txt_logs.tag_configure("lvl_conn", foreground="#9cdcfe")
+        self.txt_logs.tag_configure("reused", foreground="#50fa7b", font=("Consolas", 9, "bold"))
+        self.txt_logs.tag_configure("new_conn", foreground="#e5c07b")
+
+    def on_live_log(self, line: str, level: str):
+        if self._is_closed:
+            return
+        with self._queue_lock:
+            if len(self._all_records) >= self._max_records:
+                self._all_records.pop(0)
+            self._all_records.append((line, level))
+            self._incoming_queue.append((line, level))
+
+    def _schedule_flush(self):
+        if not self._is_closed:
+            self._flush_queue()
+            self._scheduled_job = self.top.after(60, self._schedule_flush)
+
+    def _flush_queue(self):
+        with self._queue_lock:
+            if not self._incoming_queue:
+                return
+            batch = list(self._incoming_queue)
+            self._incoming_queue.clear()
+
+        filter_txt = self.var_filter_text.get().strip().lower()
+        filter_cat = self.var_filter_cat.get()
+
+        to_insert = [rec for rec in batch if self._matches_filter(rec[0], rec[1], filter_txt, filter_cat)]
+        if not to_insert:
+            self._update_status_label()
+            return
+
+        self.txt_logs.configure(state="normal")
+        for line, lvl in to_insert:
+            self._render_line(line, lvl)
+
+        # Trim top lines in widget if too many
+        try:
+            num_lines = int(self.txt_logs.index("end-1c").split(".")[0])
+            if num_lines > self._max_records:
+                trim_end = f"{num_lines - self._max_records}.0"
+                self.txt_logs.delete("1.0", trim_end)
+        except Exception:
+            pass
+
+        if self.var_auto_scroll.get():
+            self.txt_logs.see("end")
+
+        self.txt_logs.configure(state="disabled")
+        self._update_status_label()
+
+    def _render_line(self, line: str, lvl: str):
+        end_idx = self.txt_logs.index("end-1c")
+        self.txt_logs.insert("end", line + "\n")
+        line_start = end_idx
+
+        # Tag timestamp [00:00:00]
+        if line.startswith("[") and "]" in line:
+            r1 = line.find("]")
+            self.txt_logs.tag_add("ts", line_start, f"{line_start} + {r1 + 1}c")
+
+            # Tag level [LEVEL]
+            l2 = line.find("[", r1 + 1)
+            r2 = line.find("]", l2) if l2 != -1 else -1
+            if l2 != -1 and r2 != -1:
+                lvl_tag = self._get_level_tag(lvl)
+                self.txt_logs.tag_add(lvl_tag, f"{line_start} + {l2}c", f"{line_start} + {r2 + 1}c")
+
+        # Highlight ', reused' or ', new'
+        reused_pos = line.find(", reused")
+        if reused_pos != -1:
+            self.txt_logs.tag_add("reused", f"{line_start} + {reused_pos}c", f"{line_start} + {reused_pos + 8}c")
+        new_pos = line.find(", new")
+        if new_pos != -1:
+            self.txt_logs.tag_add("new_conn", f"{line_start} + {new_pos}c", f"{line_start} + {new_pos + 5}c")
+
+    def _get_level_tag(self, lvl: str) -> str:
+        lvl_up = lvl.upper()
+        if "API" in lvl_up:
+            return "lvl_api"
+        if "CACHE" in lvl_up:
+            return "lvl_cache"
+        if "FETCH" in lvl_up:
+            return "lvl_fetch"
+        if "PREFETCH" in lvl_up:
+            return "lvl_prefetch"
+        if "RETRY" in lvl_up or "STALE" in lvl_up or "MOCK" in lvl_up:
+            return "lvl_retry"
+        if "ERR" in lvl_up or "TIMEOUT" in lvl_up or "BLOCK" in lvl_up:
+            return "lvl_err"
+        return "lvl_conn"
+
+    def _matches_filter(self, line: str, lvl: str, txt: str, cat: str) -> bool:
+        if txt and txt not in line.lower():
+            return False
+        if cat == "仅战斗 API (BYPASS-API)" and "BYPASS-API" not in lvl:
+            return False
+        if cat == "仅缓存命中 (CACHE)" and "CACHE" not in lvl:
+            return False
+        if cat == "仅素材拉取 (FETCH/PREFETCH)" and not any(k in lvl for k in ("FETCH", "PREFETCH")):
+            return False
+        if cat == "仅重连与告警 (RETRY/ERROR)" and not any(k in lvl for k in ("RETRY", "ERR", "TIMEOUT")):
+            return False
+        return True
+
+    def reapply_filter(self):
+        filter_txt = self.var_filter_text.get().strip().lower()
+        filter_cat = self.var_filter_cat.get()
+
+        self.txt_logs.configure(state="normal")
+        self.txt_logs.delete("1.0", "end")
+
+        with self._queue_lock:
+            records = list(self._all_records)
+
+        for line, lvl in records:
+            if self._matches_filter(line, lvl, filter_txt, filter_cat):
+                self._render_line(line, lvl)
+
+        if self.var_auto_scroll.get():
+            self.txt_logs.see("end")
+
+        self.txt_logs.configure(state="disabled")
+        self._update_status_label()
+
+    def _update_status_label(self):
+        total = len(self._all_records)
+        try:
+            num_displayed = int(self.txt_logs.index("end-1c").split(".")[0]) - 1
+            num_displayed = max(0, num_displayed)
+        except Exception:
+            num_displayed = 0
+        self.var_status.set(f"当前显示: {num_displayed} 行 / 历史记录: {total} 条 | 实时监听中 ●")
+
+    def clear_display(self):
+        self.txt_logs.configure(state="normal")
+        self.txt_logs.delete("1.0", "end")
+        self.txt_logs.configure(state="disabled")
+        self.var_status.set("显示已清空 (新日志将持续接收显示)")
+
+    def copy_all(self):
+        text = self.txt_logs.get("1.0", "end-1c")
+        if text:
+            self.top.clipboard_clear()
+            self.top.clipboard_append(text)
+            self.var_status.set(f"已复制当前显示的全部日志到剪贴板！({len(text):,} 字符)")
+
+    def on_close(self):
+        self._is_closed = True
+        gbf_proxy.unregister_log_listener(self.on_live_log)
+        if self._scheduled_job:
+            try:
+                self.top.after_cancel(self._scheduled_job)
+            except Exception:
+                pass
+        try:
+            self.top.destroy()
+        except Exception:
+            pass
+        if self.parent.log_window is self:
+            self.parent.log_window = None
 
 def main():
     root = tk.Tk()
