@@ -1,7 +1,7 @@
-# GBF-Accelerator 核心架构与安全底线规范 (AGENTS.md)
+# GBF-Accelerator 核心架构与安全治理规范 (AGENTS.md)
 
-> 本文件是所有参与此项目代码开发、重构、调优的 AI Agent 和人类开发者的**最高约束规范**。
-> 任何代码改动在被提议或提交前，必须逐条对照此规范自查。违反 P0 级原则的 PR/代码属于严重故障，必须立即无条件回滚。
+> 本文件是所有参与此项目代码开发、重构、调优的 AI Agent 和人类开发者的**最高约束规范与唯一事实来源 (Canonical Source of Truth)**。
+> 任何代码改动在被提议或提交前，必须逐条对照此规范自查。违反 P0 级原则或测试诚信法则的代码属于严重故障，必须立即无条件回滚。
 
 ---
 
@@ -15,30 +15,30 @@
 
 ---
 
-## P0 级：不可逾越的绝对安全红线 (Violations are Bugs)
+## P0 级：不可逾越的绝对安全红线 (Violations are Critical Bugs)
 
-### 1. 动态 API 绝对透明转发（Zero Business Logic Tampering）
+### 1. 业务语义绝对透明（Business Semantic Transparency）
 - **范围**：所有非静态资源请求，包括但不限于 `/rest/`、`/quest/`、`/party/`、`/user/`、`/deck/`、`/gacha/`、`/casino/`、`/mypage/` 等。
 - **规则**：
-  - 必须通过专用的 `api_client`（HTTP/1.1 Keep-Alive 池）原样转发。
-  - **严禁修改业务响应**：严禁篡改状态码、严禁篡改 JSON/文本正文、严禁修改业务 Header。
+  - 必须通过专用的 `api_client`（HTTP/1.1 Keep-Alive 池）进行端到端透明转发。
+  - **业务语义零干预**：除 HTTP 代理层依法/协议上必须处理的逐跳头（hop-by-hop，如 `Transfer-Encoding`, `Connection` 等）外，**严禁修改上游业务状态码、实体正文、Cookie 或端到端业务 Header**。
+  - **Content-Encoding 限制**：仅允许在代理底层库已经完成对应解压、且客户端若接收原头将无法正确解压的特定管道中，对 `Content-Encoding` 做必要的技术同步剔除；**且必须同时保证实体解压后的业务内容字节语义严格一致**。严禁将 Header 修改扩大化。
   - **严禁本地 Mock**：`MOCK_PATHS` 必须保持为空元组 `()`。严禁针对游戏接口构造本地虚假 200 响应。
-  - **严禁缓存动态 API**：动态接口的任何响应严禁写入本地缓存或内存缓存。
+  - **严禁缓存动态 API**：动态接口的任何响应严禁写入本地磁盘或内存缓存。
 
 ### 2. 官方心跳与错误上报绝对穿透
 - `/ob/r`（官方反作弊与心跳探测）和 `/rest/error/js`（前端错误上报）必须作为标准动态 API 100% 穿透至 Cygames 上游服务器。
-- 严禁在本地拦截或伪造此类探测包。
+- 严禁在本地拦截、丢弃或伪造此类探测包。
 
 ### 3. 双重约束安全重试机制（Dual-Constraint Safe Retry）
-- **POST/PUT/DELETE 零重试原则**：任何涉及游戏状态变更的写请求（攻击、使用技能、召唤、购买体力等），最大尝试次数必须严格为 1（`max_attempts = 1`），**绝对禁止自动重试**，彻底杜绝“技能双发 / 战斗逻辑错乱”。
+- **POST/PUT/DELETE 零重试原则**：任何涉及游戏状态变更的写请求（攻击、使用技能、召唤、购买体力等），最大尝试次数必须严格为 1（`max_attempts = 1`），**绝对禁止自动重试**，彻底杜绝“技能双发 / 状态不一致”。
 - **GET 重试双重限制**：
   1. 仅限预先审核过的只读幂等 GET 接口（`RETRYABLE_API_PATHS` 白名单）；
-  2. 仅在建立连接前遇到空闲 TCP 断开或传输层 Stale Connection 时，允许最多 1 次静默快速重连。
+  2. 仅在建立连接前遇到空闲 TCP 断开或传输层 Stale Connection（`ConnectError`, `RemoteProtocolError` 等）时，允许最多 1 次静默快速重连。
 
 ### 4. 响应头零指纹污染（Zero Header Pollution）
 - 严禁向客户端返回任何自定义代理标识头，包括但不限于 `X-Proxy-Cache`、`X-Cache-Source`、`X-Acceleration-*`。
 - 动态接口必须通过 `forward_upstream_response` 原样还原上游头部，严格多行保留每一条 `Set-Cookie`，禁止逗号折叠合并。
-- 仅允许剔除代理层必需的 hop-by-hop 传输头（如 `Content-Encoding` 避免客户端双重解压）。
 
 ### 5. 静态资源防篡改与缓存完整性（Byte-for-Byte Integrity）
 - 本地磁盘和内存缓存的静态资源（`.js`, `.css`, `.png`, 音频等）必须是上游 Akamai CDN 的原始字节流。
@@ -52,14 +52,16 @@
 ### 1. Prefetch（预加载）调度层平滑与主动避让
 - **后台异步**：Prefetch 必须完全在后台 worker 中执行，严禁侵入前台主请求管线。
 - **调度平滑（Pacing）**：
-  - 严禁在循环中硬编码机械性的 `sleep(ms)`；
-  - 必须使用调度器（Pacer / Rate Limiter）在任务之间进行适度错峰（15~35ms 随机抖动），削峰填谷，避免在切换副本瞬间打出脉冲式并发流量；
-  - 队列为空或低负载时应保持零额外延迟，不拖长正常冷启动加载。
+  - Prefetch 必须通过调度器（Scheduler / Pacer）实现任务平滑分发，**严禁在任务循环中硬编码机械性的 `sleep(ms)`**；
+  - 当前基线推荐目标为任务间 **15~35ms 随机抖动平滑**，削峰填谷，避免切换副本瞬间打出脉冲并发；
+  - 队列为空或低负载时保持零延迟，不拖长正常冷启动加载；
+  - **可验证演进**：未来对 Pacing 策略或区间的调整，必须附带基准测试（Benchmark）数据，证明不会在多场景下引发突发流量或加重 CDN 负担。
 - **动态避让**：当检测到前台有活动中的动态游戏 API（`ACTIVE_API_COUNT > 0`）时，Prefetch 必须主动挂起暂停，绝不挤占前台战斗网络的带宽与系统资源。
 
-### 2. 连接池保守水线（HTTP/2 Multiplexing）
+### 2. 连接池保守水线（Connection Pool Conservatism）
 - 静态素材客户端 `asset_client` 基于 HTTP/2 多路复用，单条 TCP 连接即可并发数十个 Stream。
-- 连接池上限 `asset_max_connections` 应维持在正常浏览器的保守水线（推荐 <= 32），禁止为了虚幻的理论峰值盲目设置成 100+ 等极端数值，避免异常 TCP 握手冲击 CDN。
+- **当前推荐基线**：`asset_max_connections <= 32`，`asset_max_keepalive <= 16`，维持在正常客户端网络的保守范围。
+- **可验证演进**：连接池上限并非绝对安全常数，而是性能安全平衡点。任何提升连接数上限的提议，**必须提供充分的基准测试报告**，证明其在主流网络环境下不会造成异常 TCP 握手风暴、连接抢占或前台 API 延迟退化。
 
 ---
 
@@ -76,13 +78,34 @@
 
 ---
 
-## 开发与验证流程硬性要求
+## 测试诚信法则（Test Integrity Guardrails）
 
-1. **测试驱动**：任何涉及代理、缓存、网络转发的改动，必须运行并通过自动化测试套件：
-   ```bash
-   # 运行核心代理与安全回归测试（全 54 项）
-   .\.venv\Scripts\python.exe test_proxy.py
-   .\.venv\Scripts\python.exe test_update_manager.py
-   ```
-2. **生命周期完整性**：改动 GUI 或线程模型时，必须验证进程退出生命周期，确保关闭托盘后没有任何孤儿线程遗留在后台。
-3. **用户知情**：对外发布 Release 时，保持“透明代理与稳定性维护”的中立客观叙事，不夸大、不制造焦虑、不使用“绝对”字眼。
+**严禁通过修改、删除、跳过或削弱现有测试断言来使测试通过！**
+- 遇到自动化测试失败时，必须深入排查生产代码的实现缺陷，而不是降低测试门槛。
+- 严禁把精确匹配断言（如 `assert resp.status_code == 200`）泛化为宽泛断言（如 `assert resp.status_code in (200, 500, 502)`）来掩盖真实故障。
+- 除非该测试用例已被技术论证与当前正式设计规范相冲突、且获得项目维护者明确批准，否则任何测试断言的修改均属于严重违规。
+
+---
+
+## AI 研发操作协议 (CHANGE PROTOCOL)
+
+所有 AI Agent 在接到修改需求时，必须严格按照以下五步流水线执行，禁止跳步：
+
+1. **现状确认 (Audit First)**：
+   - 修改前必须通过工具阅读并定位真实源码，确认现有实现（如调度逻辑、连接池设置、`ACTIVE_API_COUNT` 行为等）；
+   - 严禁基于“我认为项目是这样写的”盲目假设直接动手。
+2. **影响面与风险评估 (Risk & Scope Assessment)**：
+   - 对照本文档确认该改动涉及 P0、P1 还是 P2 范围；
+   - 检查方案是否触碰了“业务语义透明”或“禁止伪装”红线。
+3. **最小化代码改动 (Minimal Code Change)**：
+   - 仅修改解决问题所必需的最小代码块；
+   - 严禁随意格式化无关代码、删除重要注释或重写无关模块。
+4. **自动化全量测试 (Automated Test Suite)**：
+   - 改动后必须运行并通过全套回归测试：
+     ```powershell
+     .\.venv\Scripts\python.exe test_proxy.py
+     .\.venv\Scripts\python.exe test_update_manager.py
+     ```
+   - 验证 54 项测试全部通过（100% Pass）。
+5. **Diff 自检核对 (Self-Review via Diff)**：
+   - 运行 `git diff`，逐行审查所有变动行，确认未引入非预期的副作用和违反规范的代码。

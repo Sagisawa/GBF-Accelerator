@@ -1,13 +1,19 @@
 # Cursor Rules - GBF-Accelerator
 
-You must strictly adhere to the core architectural constraints defined in `AGENTS.md`:
+`AGENTS.md` is the CANONICAL SOURCE OF TRUTH for this repository.
+Before inspecting, designing, or editing code, you MUST read and strictly follow all constraints in `AGENTS.md`.
 
-- P0: Zero business logic tampering. Dynamic APIs (/rest/, /quest/, /party/, /user/, etc.) MUST be transparently forwarded via api_client.
-- P0: Zero mock paths (`MOCK_PATHS = ()`). Official heartbeat `/ob/r` and error logging `/rest/error/js` MUST reach upstream Cygames servers.
-- P0: Dual-constraint retry: POST/PUT/DELETE NEVER retried (max_attempts = 1). Only whitelist read-only GET on stale network disconnects can retry once.
-- P0: Zero proxy headers (`X-Proxy-*`, `X-Cache-*` are forbidden).
-- P0: Never tamper with cached JS/CSS bytes. JS quarantine must use structured empty function fingerprints.
-- P1: Prefetch must be background, rate-limited with jitter (15-35ms pacing), and yield when ACTIVE_API_COUNT > 0.
-- P1: Connection pool conservative sizing (asset_max_connections <= 32 with HTTP/2).
-- P2: NEVER add anti-detection spoofing (no random headers, no UA rotation, no TLS/JA3 spoofing). Keep it a clean, standard HTTP proxy.
-- Always run and pass `pytest test_proxy.py` after code modifications.
+Key Rules:
+1. Zero business logic tampering on dynamic APIs (passthrough only via api_client; zero mock paths).
+2. Official /ob/r and /rest/error/js must pass through to upstream Cygames servers untouched.
+3. POST/PUT/DELETE requests are NEVER retried (max_attempts = 1).
+4. No custom proxy headers (zero X-Proxy-* leakage).
+5. Never tamper with cached asset bytes.
+6. Prefetch must be non-blocking, paced, and yield to dynamic APIs.
+7. Connection pool conservatism (HTTP/2, baseline recommended <= 32).
+8. NEVER add anti-detection spoofing (no random headers, no UA rotation, no TLS/JA3 forgery).
+9. TEST INTEGRITY: NEVER weaken, skip, or alter existing test assertions to make tests pass.
+10. Follow the 5-step CHANGE PROTOCOL (Audit -> Assess -> Minimal Change -> Test -> Diff Review).
+
+Always run and verify:
+`.\.venv\Scripts\python.exe test_proxy.py`
