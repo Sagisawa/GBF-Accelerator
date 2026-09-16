@@ -246,6 +246,7 @@ PROXY_STATS = {
     # Granular request and cache telemetry (Commit 2)
     "foreground_asset_requests": 0,
     "prefetch_asset_requests": 0,
+    "prefetch_asset_successes": 0,
     "cache_ram_hit": 0,
     "cache_disk_hit": 0,
     "cache_miss": 0,
@@ -253,17 +254,20 @@ PROXY_STATS = {
     "api_retry_count": 0,
 }
 
-# Prefetch reuse tracking: bounded set of prewarmed asset keys (max 4096)
+# Prefetch reuse tracking: bounded LRU map of prewarmed asset keys (max 4096)
 _prewarmed_assets: collections.OrderedDict = collections.OrderedDict()
 _prewarmed_lock = threading.Lock()
 
 def record_prefetch_saved(url_path: str):
-    """Mark an asset as written by background prefetch worker."""
+    """Mark an asset as written by background prefetch worker with LRU touch."""
     clean = url_path.split("?")[0].lstrip("/\\").lower()
     with _prewarmed_lock:
-        _prewarmed_assets[clean] = time.time()
-        if len(_prewarmed_assets) > 4096:
-            _prewarmed_assets.popitem(last=False)
+        if clean in _prewarmed_assets:
+            _prewarmed_assets.move_to_end(clean)
+        else:
+            _prewarmed_assets[clean] = time.time()
+            if len(_prewarmed_assets) > 4096:
+                _prewarmed_assets.popitem(last=False)
 
 def check_and_record_prefetch_reused(url_path: str):
     """Check if a foreground cache hit was prewarmed by background prefetch."""
@@ -277,16 +281,20 @@ def get_telemetry_summary() -> Dict[str, Any]:
     """Return an explicit, cross-cutting telemetry summary of request distributions and prefetch reuse."""
     fg_reqs = PROXY_STATS.get("foreground_asset_requests", 0)
     pf_reqs = PROXY_STATS.get("prefetch_asset_requests", 0)
+    pf_succ = PROXY_STATS.get("prefetch_asset_successes", 0)
     pf_reused = PROXY_STATS.get("prefetch_reused", 0)
     reuse_rate = round((pf_reused / pf_reqs * 100.0), 1) if pf_reqs > 0 else 0.0
+    success_rate = round((pf_succ / pf_reqs * 100.0), 1) if pf_reqs > 0 else 0.0
     return {
         "foreground_asset_requests": fg_reqs,
         "prefetch_asset_requests": pf_reqs,
+        "prefetch_asset_successes": pf_succ,
         "cache_ram_hit": PROXY_STATS.get("cache_ram_hit", 0),
         "cache_disk_hit": PROXY_STATS.get("cache_disk_hit", 0),
         "cache_miss": PROXY_STATS.get("cache_miss", 0),
         "prefetch_reused": pf_reused,
         "prefetch_reuse_rate_pct": reuse_rate,
+        "prefetch_success_rate_pct": success_rate,
         "api_retry_count": PROXY_STATS.get("api_retry_count", 0),
     }
 
@@ -296,6 +304,7 @@ def reset_telemetry_stats():
         _prewarmed_assets.clear()
     PROXY_STATS["foreground_asset_requests"] = 0
     PROXY_STATS["prefetch_asset_requests"] = 0
+    PROXY_STATS["prefetch_asset_successes"] = 0
     PROXY_STATS["cache_ram_hit"] = 0
     PROXY_STATS["cache_disk_hit"] = 0
     PROXY_STATS["cache_miss"] = 0
@@ -646,6 +655,7 @@ async def prefetch_worker():
             PROXY_STATS["prefetch_asset_requests"] += 1
             resp = await request_asset("GET", url, headers=PREFETCH_HEADERS)
             if resp.status_code == 200 and resp.content:
+                PROXY_STATS["prefetch_asset_successes"] += 1
                 record_prefetch_saved(url_path)
                 await _bounded_save_cache(url_path, dict(resp.headers), resp.content)
                 format_log("PREFETCH", "35", f"Warmed (P{prio}) -> {target_host}{url_path} ({len(resp.content):,} B)")
