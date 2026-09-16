@@ -1842,11 +1842,23 @@ class GBFAcceleratorGUI:
 
         gbf_proxy.start_proxy_thread()
 
-        # Wait for actual socket bind success (up to 2 seconds)
-        is_ready = gbf_proxy.proxy_ready_event.wait(timeout=2.0)
+        # Wait for actual socket bind success (up to 5.0 seconds primary window)
+        is_ready = gbf_proxy.proxy_ready_event.wait(timeout=5.0)
         is_running = gbf_proxy.PROXY_STATS.get("is_running", False)
 
-        if is_ready and is_running:
+        # Grace convergence window: if not ready, no explicit error, and background
+        # thread is still actively initializing, provide a brief convergence window (0.8s)
+        # to avoid misclassifying slow startup / scheduler delay as a failure.
+        if not (is_ready and is_running):
+            last_err = gbf_proxy.PROXY_STATS.get("last_error", "")
+            thread_alive = gbf_proxy.proxy_thread and gbf_proxy.proxy_thread.is_alive()
+            if not last_err and thread_alive:
+                gbf_proxy.proxy_ready_event.wait(timeout=0.8)
+                is_running = gbf_proxy.PROXY_STATS.get("is_running", False)
+                is_ready = is_running or gbf_proxy.proxy_ready_event.is_set()
+
+        # Final state confirmation
+        if is_running or (is_ready and gbf_proxy.PROXY_STATS.get("is_running", False)):
             if self.var_auto_pac.get():
                 system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
 
@@ -1856,7 +1868,9 @@ class GBFAcceleratorGUI:
             if self.tray_icon:
                 self.tray_icon.icon = create_tray_icon_image(True)
         else:
-            err = gbf_proxy.PROXY_STATS.get("last_error", "端口绑定失败或超时")
+            err = gbf_proxy.PROXY_STATS.get("last_error") or "端口绑定失败或超时"
+            # Clean up background thread so state is consistently stopped
+            gbf_proxy.stop_proxy_thread()
             self.var_status_text.set(f"● 启动失败: {err[:20]}")
             self.lbl_status.configure(foreground="#dc3545")
             self.btn_toggle.configure(text="启动加速", bg="#28a745", activebackground="#218838")

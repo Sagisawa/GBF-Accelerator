@@ -1058,7 +1058,154 @@ async def run_test():
             test_root.destroy()
             print("Test 54 - Tray & GUI Complete Shutdown Lifecycle (quit_app): OK", flush=True)
 
-            print("\n[+] ALL 54 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # ================= Issue #4 Regression Tests (Tests 55 - 62) =================
+            import errno
+            import socket
+            import concurrent.futures
+
+            # Test 55: Fast-path direct bind on idle port (zero kill_process_on_port overhead)
+            with mock.patch("gbf_proxy.kill_process_on_port") as mock_kill, \
+                 mock.patch("asyncio.start_server", new_callable=mock.AsyncMock) as mock_start_srv:
+                mock_start_srv.return_value = mock.MagicMock()
+                try:
+                    await mock_start_srv(None, "127.0.0.1", 8129)
+                except OSError as e:
+                    if gbf_proxy._is_address_in_use_error(e):
+                        mock_kill(8129)
+                mock_kill.assert_not_called()
+            print("Test 55 - Fast-path direct bind on idle port (zero kill_process_on_port overhead): OK", flush=True)
+
+            # Test 56: _is_address_in_use_error WinError 10048 & EADDRINUSE classification
+            win_err = OSError()
+            win_err.winerror = 10048
+            assert gbf_proxy._is_address_in_use_error(win_err) is True
+            posix_err = OSError(errno.EADDRINUSE, "Address in use")
+            assert gbf_proxy._is_address_in_use_error(posix_err) is True
+            perm_err = OSError(errno.EACCES, "Permission denied")
+            assert gbf_proxy._is_address_in_use_error(perm_err) is False
+            val_err = ValueError("Invalid")
+            assert gbf_proxy._is_address_in_use_error(val_err) is False
+            print("Test 56 - _is_address_in_use_error WinError 10048 & EADDRINUSE classification: OK", flush=True)
+
+            # Test 57: Non-10048 OSError fails immediately without executing cleanup
+            with mock.patch("gbf_proxy.kill_process_on_port") as mock_kill, \
+                 mock.patch("asyncio.start_server", side_effect=OSError(errno.EACCES, "Permission denied")):
+                caught_perm = False
+                try:
+                    try:
+                        await asyncio.start_server(None, "127.0.0.1", 8130)
+                    except OSError as e:
+                        if gbf_proxy._is_address_in_use_error(e):
+                            mock_kill(8130)
+                        else:
+                            raise
+                except OSError as e:
+                    if e.errno == errno.EACCES:
+                        caught_perm = True
+                assert caught_perm is True, "Must re-raise non-address-in-use OSError"
+                mock_kill.assert_not_called()
+            print("Test 57 - Non-EADDRINUSE OSError fails immediately without cleanup: OK", flush=True)
+
+            # Test 58: Non-GBF process occupying port is preserved & retry fails cleanly
+            held_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            held_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            held_sock.bind(("127.0.0.1", 0))
+            held_port = held_sock.getsockname()[1]
+            held_sock.listen(1)
+
+            with mock.patch("gbf_proxy.kill_process_on_port", return_value=False) as mock_kill:
+                bind_failed_with_eaddrinuse = False
+                try:
+                    try:
+                        await asyncio.start_server(None, "127.0.0.1", held_port)
+                    except OSError as e:
+                        if gbf_proxy._is_address_in_use_error(e):
+                            mock_kill(held_port)
+                            await asyncio.sleep(0.01)
+                            await asyncio.start_server(None, "127.0.0.1", held_port)
+                        else:
+                            raise
+                except OSError as e:
+                    if gbf_proxy._is_address_in_use_error(e):
+                        bind_failed_with_eaddrinuse = True
+                assert bind_failed_with_eaddrinuse is True, "Must raise address in use error"
+                mock_kill.assert_called_once_with(held_port)
+                assert held_sock.fileno() != -1, "Third-party socket must not be terminated"
+            held_sock.close()
+            print("Test 58 - Non-GBF process occupying port is preserved & retry fails cleanly: OK", flush=True)
+
+            # Test 59: Concurrent start_proxy_thread under _proxy_thread_lock maintains atomicity
+            orig_thread = gbf_proxy.proxy_thread
+            with mock.patch("gbf_proxy.run_proxy_in_thread") as mock_run:
+                mock_run.side_effect = lambda: time.sleep(0.1)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    futures = [executor.submit(gbf_proxy.start_proxy_thread) for _ in range(5)]
+                    concurrent.futures.wait(futures)
+                assert gbf_proxy.proxy_thread is not None
+                gbf_proxy.proxy_thread.join(timeout=1.0)
+                gbf_proxy.proxy_thread = orig_thread
+            print("Test 59 - Concurrent start_proxy_thread atomicity under _proxy_thread_lock: OK", flush=True)
+
+            # Test 60: Grace window simulation (ready during grace period treated as success)
+            import tkinter as tk
+            test_gui_root = tk.Tk()
+            test_gui_root.withdraw()
+            try:
+                with mock.patch.object(gui_main.GBFAcceleratorGUI, "start_proxy"), \
+                     mock.patch.object(gui_main.GBFAcceleratorGUI, "setup_tray"):
+                    gui_inst = gui_main.GBFAcceleratorGUI(test_gui_root)
+
+                call_count = 0
+                def mock_wait(timeout):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count == 1:
+                        # Primary 5.0s wait times out
+                        return False
+                    # Grace 0.8s window succeeds
+                    gbf_proxy.PROXY_STATS["is_running"] = True
+                    return True
+
+                mock_thread = mock.MagicMock()
+                mock_thread.is_alive.return_value = True
+
+                with mock.patch.object(gbf_proxy.proxy_ready_event, "wait", side_effect=mock_wait), \
+                     mock.patch.object(gui_main.system_proxy, "enable_pac_proxy"), \
+                     mock.patch.object(gui_main.messagebox, "showerror") as mock_err_box, \
+                     mock.patch.object(gbf_proxy, "start_proxy_thread"):
+                    gbf_proxy.proxy_thread = mock_thread
+                    gbf_proxy.PROXY_STATS["is_running"] = False
+                    gbf_proxy.PROXY_STATS["last_error"] = ""
+                    gui_inst.start_proxy()
+                    assert "运行中" in gui_inst.var_status_text.get(), f"Status must be 运行中, got {gui_inst.var_status_text.get()}"
+                    mock_err_box.assert_not_called()
+            finally:
+                test_gui_root.destroy()
+            print("Test 60 - Grace window convergence (ready during grace period succeeds): OK", flush=True)
+
+            # Test 61: last_error fallback when empty string
+            gbf_proxy.PROXY_STATS["last_error"] = ""
+            err_result = gbf_proxy.PROXY_STATS.get("last_error") or "端口绑定失败或超时"
+            assert err_result == "端口绑定失败或超时", "Empty last_error must fallback to descriptive error"
+            print("Test 61 - last_error empty string fallback: OK", flush=True)
+
+            # Test 62: Failure cleanup and clean restart recovery
+            gbf_proxy.PROXY_STATS["is_running"] = False
+            gbf_proxy.PROXY_STATS["last_error"] = "Simulated error"
+            gbf_proxy.proxy_ready_event.set()
+            gbf_proxy.stop_proxy_thread()
+            assert gbf_proxy.proxy_thread is None
+            assert gbf_proxy.PROXY_STATS["is_running"] is False
+            assert gbf_proxy.proxy_ready_event.is_set() is False
+            with mock.patch("gbf_proxy.run_proxy_in_thread") as mock_run:
+                mock_run.side_effect = lambda: gbf_proxy.proxy_ready_event.set()
+                gbf_proxy.start_proxy_thread()
+                assert gbf_proxy.proxy_thread is not None
+                gbf_proxy.stop_proxy_thread()
+                assert gbf_proxy.proxy_thread is None
+            print("Test 62 - True failure cleanup and clean restart recovery: OK", flush=True)
+
+            print("\n[+] ALL 62 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import errno
 import functools
 import ipaddress
 import re
@@ -252,6 +253,17 @@ proxy_loop = None
 proxy_thread = None
 import threading
 proxy_ready_event = threading.Event()
+_proxy_thread_lock = threading.Lock()
+
+def _is_address_in_use_error(exc: Exception) -> bool:
+    """Return True if exc specifically indicates address/port already in use (WinError 10048 or EADDRINUSE)."""
+    if not isinstance(exc, OSError):
+        return False
+    if getattr(exc, "winerror", None) == 10048:
+        return True
+    if exc.errno == errno.EADDRINUSE:
+        return True
+    return False
 
 ACTIVE_API_COUNT = 0
 _inflight_fetches: Dict[str, asyncio.Future] = {}
@@ -522,44 +534,46 @@ def run_proxy_in_thread():
 
 def start_proxy_thread():
     global proxy_thread, ACTIVE_API_COUNT, save_semaphore
-    ACTIVE_API_COUNT = 0
-    _inflight_fetches.clear()
-    save_semaphore = None
-    proxy_ready_event.clear()
-    PROXY_STATS["last_error"] = ""
-    if proxy_thread and proxy_thread.is_alive():
-        return
-    proxy_thread = threading.Thread(target=run_proxy_in_thread, daemon=True)
-    proxy_thread.start()
+    with _proxy_thread_lock:
+        if proxy_thread and proxy_thread.is_alive():
+            return
+        ACTIVE_API_COUNT = 0
+        _inflight_fetches.clear()
+        save_semaphore = None
+        proxy_ready_event.clear()
+        PROXY_STATS["last_error"] = ""
+        proxy_thread = threading.Thread(target=run_proxy_in_thread, daemon=True)
+        proxy_thread.start()
 
 def stop_proxy_thread():
     global proxy_loop, proxy_server_instance, proxy_thread, ACTIVE_API_COUNT, save_semaphore
-    ACTIVE_API_COUNT = 0
-    _inflight_fetches.clear()
-    save_semaphore = None
-    PROXY_STATS["is_running"] = False
-    proxy_ready_event.clear()
-    if proxy_loop and proxy_loop.is_running():
-        try:
-            def request_shutdown():
-                # This callback runs on the proxy loop's own thread. Cancelling
-                # tasks from the GUI thread is not asyncio-thread-safe and can
-                # leave the old HTTP client alive during a routing switch.
-                if proxy_server_instance:
-                    proxy_server_instance.close()
-                current = asyncio.current_task()
-                for task in asyncio.all_tasks():
-                    if task is not current:
-                        task.cancel()
-            proxy_loop.call_soon_threadsafe(request_shutdown)
-        except Exception:
-            pass
-    if proxy_thread and proxy_thread.is_alive():
-        try:
-            proxy_thread.join(timeout=1.5)
-        except Exception:
-            pass
-    proxy_thread = None
+    with _proxy_thread_lock:
+        ACTIVE_API_COUNT = 0
+        _inflight_fetches.clear()
+        save_semaphore = None
+        PROXY_STATS["is_running"] = False
+        proxy_ready_event.clear()
+        if proxy_loop and proxy_loop.is_running():
+            try:
+                def request_shutdown():
+                    # This callback runs on the proxy loop's own thread. Cancelling
+                    # tasks from the GUI thread is not asyncio-thread-safe and can
+                    # leave the old HTTP client alive during a routing switch.
+                    if proxy_server_instance:
+                        proxy_server_instance.close()
+                    current = asyncio.current_task()
+                    for task in asyncio.all_tasks():
+                        if task is not current:
+                            task.cancel()
+                proxy_loop.call_soon_threadsafe(request_shutdown)
+            except Exception:
+                pass
+        if proxy_thread and proxy_thread.is_alive():
+            try:
+                proxy_thread.join(timeout=1.5)
+            except Exception:
+                pass
+        proxy_thread = None
 
 _log_listeners: list = []
 _log_history: collections.deque = collections.deque(maxlen=2000)
@@ -1573,9 +1587,6 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
             pass
 
 async def main():
-    if config_manager.config.get("clean_zombies", True):
-        kill_process_on_port(LISTEN_PORT)
-
     try:
         if sys.stdout is not None:
             print("=" * 65)
@@ -1599,11 +1610,27 @@ async def main():
     await init_http_client()
     ssl_context = get_server_ssl_context()
 
-    server = await asyncio.start_server(
-        lambda r, w: client_handler(r, w, ssl_context),
-        LISTEN_HOST,
-        LISTEN_PORT,
-    )
+    # Fast-path: bind directly without running netstat.
+    # Fall back to kill_process_on_port and retry once ONLY IF port is specifically
+    # in use (WinError 10048 / EADDRINUSE). Other OSErrors fail immediately.
+    try:
+        server = await asyncio.start_server(
+            lambda r, w: client_handler(r, w, ssl_context),
+            LISTEN_HOST,
+            LISTEN_PORT,
+        )
+    except OSError as e:
+        if _is_address_in_use_error(e) and config_manager.config.get("clean_zombies", True):
+            format_log("WARN", "33", f"端口 {LISTEN_PORT} 已被占用，正在检查并清理残留实例...")
+            kill_process_on_port(LISTEN_PORT)
+            await asyncio.sleep(0.1)
+            server = await asyncio.start_server(
+                lambda r, w: client_handler(r, w, ssl_context),
+                LISTEN_HOST,
+                LISTEN_PORT,
+            )
+        else:
+            raise
 
     global proxy_server_instance, prefetch_queue, prefetch_inflight
     proxy_server_instance = server
