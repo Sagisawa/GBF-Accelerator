@@ -147,7 +147,6 @@ class CacheManager:
                 "Content-Length": str(item_len),
                 "Access-Control-Allow-Origin": "*",
                 "ETag": etag,
-                "X-Proxy-Cache": "HIT",
             }
             if is_gzip:
                 saved_headers["Content-Encoding"] = "gzip"
@@ -278,6 +277,12 @@ class CacheManager:
             suffix = file_path.suffix.lower()
             content_type = MIME_FALLBACKS.get(suffix) or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
 
+        # Quarantine legacy tampered set-error-handler.js if detected
+        if clean_key.endswith("set-error-handler.js"):
+            if self._check_and_quarantine_tampered_js(file_path):
+                self._mark_missing(clean_key)
+                return None
+
         try:
             with open(file_path, "rb") as f:
                 data = f.read()
@@ -310,8 +315,6 @@ class CacheManager:
                 "Content-Length": str(len(data)),
                 "Access-Control-Allow-Origin": "*",
                 "ETag": etag,
-                "X-Proxy-Cache": "HIT",
-                "X-Cache-Source": "DISK",
             }
             self._apply_browser_cache_headers(headers, url_path)
 
@@ -842,7 +845,18 @@ class CacheManager:
                     except OSError:
                         continue
 
-                    # 1. Check 0-byte corrupt files
+                    # 1. Check for legacy tampered set-error-handler.js and quarantine it
+                    if fname.lower().endswith("set-error-handler.js"):
+                        if self._check_and_quarantine_tampered_js(fp):
+                            corrupted += 1
+                            try:
+                                rel_k = "/" + fp.relative_to(base).as_posix()
+                                cleaned_keys.append(rel_k.split("?")[0].lstrip("/"))
+                            except Exception:
+                                pass
+                            continue
+
+                    # 2. Check 0-byte corrupt files
                     is_bad = False
                     if st.st_size == 0:
                         is_bad = True
@@ -908,19 +922,44 @@ class CacheManager:
             "elapsed": elapsed,
         }
 
-    def patch_error_handler(self, data: bytes) -> bytes:
-        """Neuter disruptive alert() in set-error-handler.js without custom signatures."""
+    def _check_and_quarantine_tampered_js(self, file_path: Path) -> bool:
+        """Detect legacy tampered set-error-handler.js (containing void 0 replacement),
+        quarantine it to a backup file (.quarantine), and trigger safe re-fetch of upstream original.
+        """
+        if not file_path.is_file() or not file_path.name.endswith("set-error-handler.js"):
+            return False
         try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            if not data:
+                return False
             is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
-            import gzip
-            raw_text = gzip.decompress(data).decode("utf-8") if is_gzip else data.decode("utf-8")
-            target = "t&&alert(t),a&&window.location.reload()"
-            if target in raw_text:
-                raw_text = raw_text.replace(target, "void 0")
-                return gzip.compress(raw_text.encode("utf-8"), 6) if is_gzip else raw_text.encode("utf-8")
+            if is_gzip:
+                import gzip
+                raw_text = gzip.decompress(data).decode("utf-8", errors="ignore")
+            else:
+                raw_text = data.decode("utf-8", errors="ignore")
+
+            # Exact legacy patch fingerprint check:
+            # Original: function(t,a){t&&alert(t),a&&window.location.reload()}
+            # Patched:  function(t,a){void 0} where alert/reload logic was stripped
+            has_patch_context = bool(
+                re.search(r'function\s*\([a-zA-Z0-9_,\s]*\)\s*\{\s*void\s+0\s*\}', raw_text)
+                or ("void 0" in raw_text and "window.location.reload()" not in raw_text and "t&&alert(t)" not in raw_text)
+            )
+            has_error_handler_signature = ("error" in raw_text.lower() or "onerror" in raw_text.lower())
+
+            if has_patch_context and has_error_handler_signature and "t&&alert(t)" not in raw_text:
+                ts = int(time.time())
+                quarantine_target = file_path.with_name(f"{file_path.name}.quarantine.{ts}")
+                file_path.rename(quarantine_target)
+                ext_file = file_path.with_name(file_path.name + ".ext")
+                if ext_file.is_file():
+                    ext_file.rename(file_path.with_name(f"{file_path.name}.ext.quarantine.{ts}"))
+                return True
         except Exception:
             pass
-        return data
+        return False
 
     def build_response_headers(self, url_path: str, upstream_headers: Dict[str, str], data_len: int, data: bytes) -> Dict[str, str]:
         """Construct client HTTP headers for freshly downloaded assets before background disk save."""
@@ -938,7 +977,6 @@ class CacheManager:
             "Content-Length": str(data_len),
             "Access-Control-Allow-Origin": "*",
             "ETag": etag,
-            "X-Proxy-Cache": "MISS-CACHED",
         }
         is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
         if is_gzip:
@@ -971,11 +1009,6 @@ class CacheManager:
                 # Level 6: near-default ratio at a fraction of the CPU cost
                 data = gzip.compress(data, 6)
                 is_gzip = True
-
-            # Neuter disruptive alert() in set-error-handler.js
-            if url_path.endswith("set-error-handler.js"):
-                data = self.patch_error_handler(data)
-                is_gzip = len(data) >= 2 and data[0] == 0x1f and data[1] == 0x8b
 
             # Atomic file writing via temporary file and replace (without heavy fsync)
             pid = os.getpid()

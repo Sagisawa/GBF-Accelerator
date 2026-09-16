@@ -54,11 +54,21 @@ PASSTHROUGH_HOSTS = {
     "ws.game.granbluefantasy.jp",
 }
 
-# Endpoints to mock locally with 200 OK
-MOCK_PATHS = (
-    "/rest/error/js",
-    "/ob/r",
+DEFAULT_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 )
+
+# Prefetch HTTP headers: avoid default Python client identity, send minimal and semantically correct headers
+PREFETCH_HEADERS = {
+    "User-Agent": DEFAULT_BROWSER_UA,
+    "Accept": "*/*",
+}
+
+# ================= 架构硬约束 (v1.7.1 行为安全与透明化准则) =================
+# 1. 业务透明：不修改业务状态、响应正文和业务语义；仅执行代理协议所必需的 HTTP 头部规范化。
+# 2. 零 Mock 约束：任何新增的游戏接口规则必须默认原样透传；严禁引入未经专项架构评审的本地 Mock 或响应篡改逻辑。
+MOCK_PATHS: tuple = ()
 
 # Third-party telemetry, ad, and tracking domains to block/mock locally
 TELEMETRY_PATTERNS = (
@@ -476,7 +486,7 @@ async def prefetch_worker():
             if cache_manager.has_cache(url_path) or flight_key in _inflight_fetches:
                 continue
             url = f"https://{target_host}{url_path}"
-            resp = await request_asset("GET", url)
+            resp = await request_asset("GET", url, headers=PREFETCH_HEADERS)
             if resp.status_code == 200 and resp.content:
                 await _bounded_save_cache(url_path, dict(resp.headers), resp.content)
                 format_log("PREFETCH", "35", f"Warmed (P{prio}) -> {target_host}{url_path} ({len(resp.content):,} B)")
@@ -627,6 +637,7 @@ async def init_http_client():
         verify=verify_tls,
         timeout=api_timeout,
         limits=api_limits,
+        headers={"User-Agent": DEFAULT_BROWSER_UA},
         follow_redirects=False,
         trust_env=False,
         http1=True,
@@ -645,6 +656,7 @@ async def init_http_client():
         verify=verify_tls,
         timeout=asset_timeout,
         limits=asset_limits,
+        headers={"User-Agent": DEFAULT_BROWSER_UA},
         follow_redirects=False,
         trust_env=False,
         http1=True,
@@ -920,6 +932,8 @@ async def send_cached_response(
         k_lower = k.lower()
         if k_lower in ("content-length", "transfer-encoding", "connection"):
             continue
+        if k_lower.startswith(("x-proxy-", "x-cache-")):
+            continue
         if not keep_content_encoding and k_lower == "content-encoding":
             continue
         filtered_headers[k_lower] = v
@@ -1038,8 +1052,8 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 format_log("OPTIONS", "35", f"CORS Preflight Mock -> {target_host}{path}")
                 continue
 
-            # ---------------- Rule 2: Mock Endpoints ----------------
-            if target_host.endswith("granbluefantasy.jp") and path.startswith(MOCK_PATHS):
+            # ---------------- Rule 2: Mock Endpoints (Zero mock policy in v1.7.1) ----------------
+            if MOCK_PATHS and target_host.endswith("granbluefantasy.jp") and path.startswith(MOCK_PATHS):
                 mock_headers = {
                     "Content-Type": "application/json",
                     "Access-Control-Allow-Origin": "*",
@@ -1246,9 +1260,6 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
 
                     if resp.status_code == 200 and resp.content:
                         c_data = resp.content
-                        if path.endswith("set-error-handler.js"):
-                            c_data = cache_manager.patch_error_handler(c_data)
-
                         c_headers = cache_manager.build_response_headers(path, dict(resp.headers), len(c_data), c_data)
 
                         # Instantly register into RAM hot-cache (< 2µs) so subsequent requests immediately hit RAM

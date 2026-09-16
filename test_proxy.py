@@ -24,18 +24,19 @@ async def run_test():
             verify=ssl_ctx,
             timeout=10.0,
         ) as client:
-            # Test 1: Local Cache Hit
+            # Test 1: Local Cache Hit & Absence of X-Proxy Headers on Wire
             url_cache = "https://prd-game-a-granbluefantasy.akamaized.net/assets/1772717316/css/arousal/form.css"
             resp = await client.get(url_cache)
-            print(f"Test 1 - Cache Hit: status={resp.status_code}, X-Proxy-Cache={resp.headers.get('x-proxy-cache')}, bytes={len(resp.content)}")
+            print(f"Test 1 - Cache Hit (Zero Leakage): status={resp.status_code}, clean_headers={not any(k.lower().startswith('x-proxy-') for k in resp.headers)}, bytes={len(resp.content)}")
             assert resp.status_code == 200
-            assert resp.headers.get("x-proxy-cache") == "HIT"
+            assert "x-proxy-cache" not in resp.headers
+            assert not any(k.lower().startswith("x-proxy-") for k in resp.headers)
 
-            # Test 2: Mock 200 Endpoint
+            # Test 2: /rest/error/js Passthrough (Zero-Mock Policy)
             url_mock = "https://game.granbluefantasy.jp/rest/error/js"
             resp_mock = await client.get(url_mock)
-            print(f"Test 2 - Mock Endpoint: status={resp_mock.status_code}, json={resp_mock.json()}")
-            assert resp_mock.status_code == 200
+            print(f"Test 2 - /rest/error/js Passthrough: status={resp_mock.status_code}")
+            assert resp_mock.status_code in (200, 400, 404, 405)  # Genuine upstream response, never mocked
 
             # Test 3: OPTIONS Preflight Mock
             resp_opt = await client.options("https://game.granbluefantasy.jp/rest/multiraid/start.json")
@@ -60,7 +61,7 @@ async def run_test():
             print(f"Test 6 - CA SHA-256 Fingerprint: {fp}")
             assert len(fp.split(":")) == 32
 
-            # Test 7: Chunked Transfer-Encoding POST
+            # Test 7: Chunked Transfer-Encoding POST (Forwarded Upstream)
             async def chunked_stream():
                 yield b"part1_"
                 yield b"part2_"
@@ -71,8 +72,8 @@ async def run_test():
                 content=chunked_stream(),
                 headers={"transfer-encoding": "chunked"},
             )
-            print(f"Test 7 - Chunked POST handling: status={resp_chunked.status_code}, body={resp_chunked.json()}")
-            assert resp_chunked.status_code == 200
+            print(f"Test 7 - Chunked POST handling: status={resp_chunked.status_code}")
+            assert resp_chunked.status_code in (200, 400, 404, 405)
 
             # Test 8: Dynamic API CORS preservation (do not inject '*' into dynamic pages)
             print(f"Test 8 - Dynamic API CORS preservation: CORS header={resp_game.headers.get('access-control-allow-origin')}")
@@ -81,9 +82,10 @@ async def run_test():
             # Test 9: Cache Query String Normalization
             url_cache_q = "https://prd-game-a-granbluefantasy.akamaized.net/assets/1772717316/css/arousal/form.css?_t=999999999&debug=1"
             resp_q = await client.get(url_cache_q)
-            print(f"Test 9 - Cache Query Normalization: status={resp_q.status_code}, cache={resp_q.headers.get('x-proxy-cache')}")
+            print(f"Test 9 - Cache Query Normalization: status={resp_q.status_code}")
             assert resp_q.status_code == 200
-            assert resp_q.headers.get("x-proxy-cache") == "HIT"
+            assert "x-proxy-cache" not in resp_q.headers
+            assert not any(k.lower().startswith("x-proxy-") for k in resp_q.headers)
 
             # Test 10: Cache Integrity Verification (reject empty and HTML error pages for media)
             from cache_manager import cache_manager
@@ -125,7 +127,8 @@ async def run_test():
             resp_head = await client.head(url_cache)
             print(f"Test 13 - HEAD Request: status={resp_head.status_code}, content_len={len(resp_head.content)}, header_len={resp_head.headers.get('content-length')}")
             assert resp_head.status_code == 200
-            assert resp_head.headers.get("x-proxy-cache") == "HIT"
+            assert "x-proxy-cache" not in resp_head.headers
+            assert not any(k.lower().startswith("x-proxy-") for k in resp_head.headers)
             assert len(resp_head.content) == 0
             assert int(resp_head.headers.get("content-length", 0)) > 0
 
@@ -897,7 +900,151 @@ async def run_test():
                 gbf_proxy.request_api = orig_req_api
                 gbf_proxy.unregister_log_listener(timeout_log_listener)
 
-            print("\n[+] ALL 48 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # Test 49: /ob/r Heartbeat Passthrough (Never Mocked)
+            resp_obr = await client.get("https://game.granbluefantasy.jp/ob/r")
+            print(f"Test 49 - /ob/r Heartbeat Passthrough: status={resp_obr.status_code}", flush=True)
+            assert resp_obr.status_code in (200, 400, 404, 405)  # Genuine upstream response, never mocked
+
+            # Test 50: set-error-handler.js Byte-for-Byte Fidelity (No JS Tampering)
+            sample_js_bytes = b'function onError(t, a){ t&&alert(t),a&&window.location.reload(); }'
+            cache_manager.save_cache("/assets/test/set-error-handler.js", {"Content-Type": "application/javascript"}, sample_js_bytes)
+            saved_hit = cache_manager.get_disk_cache("/assets/test/set-error-handler.js")
+            assert saved_hit is not None
+            _, saved_data = saved_hit
+            assert saved_data == sample_js_bytes, "Saved set-error-handler.js must preserve exact original bytes without void 0 tampering"
+            assert b"void 0" not in saved_data
+            assert b"t&&alert(t)" in saved_data
+            clean_test_js = cache_manager._get_local_path("/assets/test/set-error-handler.js")
+            if clean_test_js:
+                clean_test_js.unlink(missing_ok=True)
+                clean_test_js.with_name(clean_test_js.name + ".ext").unlink(missing_ok=True)
+            print("Test 50 - set-error-handler.js Byte Fidelity (No Tampering): OK", flush=True)
+
+            # Test 51: Legacy Tampered JS Quarantine & Auto-Healing
+            import tempfile, shutil
+            from pathlib import Path
+            q_tmp_dir = Path(tempfile.mkdtemp())
+            try:
+                from cache_manager import CacheManager
+                q_cm = CacheManager(cache_base_dir=q_tmp_dir)
+                fake_tampered_bytes = b'function onError(t, a){ void 0; }'
+                test_target_file = q_tmp_dir / "set-error-handler.js"
+                with open(test_target_file, "wb") as f:
+                    f.write(fake_tampered_bytes)
+                ext_file = q_tmp_dir / "set-error-handler.js.ext"
+                with open(ext_file, "w") as f:
+                    f.write('{"ETag": "old"}')
+
+                # Verify quarantine triggers
+                is_quarantined = q_cm._check_and_quarantine_tampered_js(test_target_file)
+                assert is_quarantined is True, "Must quarantine tampered set-error-handler.js"
+                assert not test_target_file.exists(), "Original tampered file must be moved"
+                quarantined_files = list(q_tmp_dir.glob("set-error-handler.js.quarantine.*"))
+                assert len(quarantined_files) == 1, "Must find exactly one .quarantine backup file"
+                print("Test 51 - Legacy Tampered JS Quarantine & Auto-Healing: OK", flush=True)
+            finally:
+                shutil.rmtree(q_tmp_dir, ignore_errors=True)
+
+            # Test 52: Prefetch Headers Minimal & Compliant
+            assert "User-Agent" in gbf_proxy.PREFETCH_HEADERS
+            assert "python-httpx" not in gbf_proxy.PREFETCH_HEADERS["User-Agent"].lower()
+            assert "Mozilla/5.0" in gbf_proxy.PREFETCH_HEADERS["User-Agent"]
+            assert not any(k.lower().startswith("x-proxy-") for k in gbf_proxy.PREFETCH_HEADERS)
+            print("Test 52 - Prefetch Headers Minimal & Compliant: OK", flush=True)
+
+            # Test 53: Upstream Response Byte & Header Fidelity Regression (Zero Tampering & Zero Leakage)
+            raw_test_body = b'{"fidelity": "verified", "chars": "\xe3\x82\xb0\xe3\x83\xa9\xe3\x83\x96\xe3\x83\xab", "numbers": [1,2,3]}'
+            upstream_headers = [
+                (b"Content-Type", b"application/json; charset=utf-8"),
+                (b"ETag", b'"fidelity-test-etag-9988"'),
+                (b"Cache-Control", b"private, no-cache, no-store"),
+                (b"Last-Modified", b"Wed, 16 Sep 2026 08:00:00 GMT"),
+                (b"Set-Cookie", b"auth_token=abc1234; Path=/; Secure; HttpOnly"),
+                (b"Set-Cookie", b"user_pref=dark; Path=/"),
+            ]
+            mock_upstream_resp = httpx.Response(
+                status_code=200,
+                headers=upstream_headers,
+                content=raw_test_body,
+            )
+
+            class FidelityWriter:
+                def __init__(self):
+                    self.data = bytearray()
+                def write(self, d):
+                    self.data.extend(d)
+                async def drain(self):
+                    pass
+
+            fidelity_writer = FidelityWriter()
+            await gbf_proxy.forward_upstream_response(fidelity_writer, {}, mock_upstream_resp)
+            f_raw = bytes(fidelity_writer.data)
+            f_header_bytes, f_body_bytes = f_raw.split(b"\r\n\r\n", 1)
+
+            # 1. Byte-for-byte exact body match (Zero payload modification)
+            assert f_body_bytes == raw_test_body, "Forwarded body must strictly match upstream bytes"
+
+            # 2. Key business headers fidelity (Case-insensitive HTTP header check)
+            f_headers_str = f_header_bytes.decode("iso-8859-1")
+            f_headers_lower = {line.split(":", 1)[0].strip().lower(): line.split(":", 1)[1].strip() for line in f_headers_str.split("\r\n") if ":" in line}
+            assert f_headers_lower.get("content-type") == "application/json; charset=utf-8"
+            assert f_headers_lower.get("etag") == '"fidelity-test-etag-9988"'
+            assert f_headers_lower.get("cache-control") == "private, no-cache, no-store"
+            assert f_headers_lower.get("last-modified") == "Wed, 16 Sep 2026 08:00:00 GMT"
+
+            # 3. Multiple Set-Cookie preserved without comma-folding
+            assert "Set-Cookie: auth_token=abc1234; Path=/; Secure; HttpOnly" in f_headers_str
+            assert "Set-Cookie: user_pref=dark; Path=/" in f_headers_str
+
+            # 4. Zero proxy header leakage and safe Content-Encoding
+            assert "x-proxy" not in f_headers_str.lower(), "Forwarded response must never leak X-Proxy-* headers"
+            assert "content-encoding: gzip" not in f_headers_str.lower(), "Decompressed plain content must never retain gzip header"
+            print("Test 53 - Upstream Response Byte & Header Fidelity Regression: OK", flush=True)
+
+            # Test 54 - Tray & GUI Complete Shutdown Lifecycle (quit_app)
+            import unittest.mock as mock
+            import tkinter as tk
+            import gui_main
+
+            test_root = tk.Tk()
+            test_root.withdraw()
+            with mock.patch.object(gui_main.GBFAcceleratorGUI, "start_proxy"), \
+                 mock.patch.object(gui_main.GBFAcceleratorGUI, "setup_tray"):
+                test_gui = gui_main.GBFAcceleratorGUI(test_root)
+
+            mock_tray = mock.MagicMock()
+            test_gui.tray_icon = mock_tray
+            test_gui._stats_job = "mock_stats_job_id"
+
+            with mock.patch.object(test_root, "after_cancel") as mock_cancel, \
+                 mock.patch.object(test_root, "destroy") as mock_destroy, \
+                 mock.patch.object(gui_main.system_proxy, "disable_pac_proxy") as mock_disable_pac, \
+                 mock.patch.object(gui_main.gbf_proxy, "stop_proxy_thread") as mock_stop_proxy:
+
+                # 1. Verify pystray passes (icon, item) without raising TypeError
+                test_gui.show_from_tray("mock_icon", "mock_item")
+                test_gui.toggle_proxy_from_tray("mock_icon", "mock_item")
+
+                # 2. Call quit_app with pystray arguments
+                test_gui.quit_app("mock_icon", "mock_item", terminate_process=False)
+
+                # 3. Verify complete cleanup calls
+                assert test_gui._is_quitting is True, "Must mark app as quitting"
+                mock_tray.stop.assert_called_once()
+                assert test_gui.tray_icon is None, "Tray icon reference must be cleared"
+                mock_cancel.assert_called_once_with("mock_stats_job_id")
+                assert test_gui._stats_job is None, "Stats job reference must be None"
+                mock_disable_pac.assert_called_once()
+                mock_stop_proxy.assert_called_once()
+
+                # 4. Verify idempotency
+                test_gui.quit_app("mock_icon", "mock_item", terminate_process=False)
+                assert mock_tray.stop.call_count == 1, "Tray stop should not be called again"
+
+            test_root.destroy()
+            print("Test 54 - Tray & GUI Complete Shutdown Lifecycle (quit_app): OK", flush=True)
+
+            print("\n[+] ALL 54 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()

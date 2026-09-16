@@ -1959,16 +1959,27 @@ class GBFAcceleratorGUI:
             except Exception:
                 pass
 
-    def show_from_tray(self):
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
-        # Immediately refresh stats and resume loop upon showing
-        if getattr(self, "_stats_job", None) is None:
-            self.update_stats_loop()
+    def show_from_tray(self, *args):
+        def _show():
+            try:
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+                # Immediately refresh stats and resume loop upon showing
+                if getattr(self, "_stats_job", None) is None:
+                    self.update_stats_loop()
+            except Exception:
+                pass
+        try:
+            self.root.after(0, _show)
+        except Exception:
+            _show()
 
-    def toggle_proxy_from_tray(self):
-        self.root.after(0, self.toggle_proxy)
+    def toggle_proxy_from_tray(self, *args):
+        try:
+            self.root.after(0, self.toggle_proxy)
+        except Exception:
+            self.toggle_proxy()
 
     def show_log_window(self):
         if self.log_window is not None:
@@ -1982,15 +1993,70 @@ class GBFAcceleratorGUI:
                 pass
         self.log_window = LogViewerWindow(self)
 
-    def quit_app(self):
+    def quit_app(self, *args, terminate_process: bool = True, **kwargs):
+        """Cleanly and completely shut down proxy, tray icon, and all application processes."""
+        if getattr(self, "_is_quitting", False):
+            return
+        self._is_quitting = True
+
+        # 1. Close log viewer if open
         if self.log_window is not None:
             try:
                 self.log_window.on_close()
             except Exception:
                 pass
             self.log_window = None
-        gbf_proxy.stop_proxy_thread()
-        system_proxy.disable_pac_proxy()
+
+        # 2. Restore system network settings and stop proxy background threads
+        try:
+            system_proxy.disable_pac_proxy()
+        except Exception:
+            pass
+        try:
+            gbf_proxy.stop_proxy_thread()
+        except Exception:
+            pass
+
+        # 3. Cancel any pending Tk periodic timers
+        if getattr(self, "_stats_job", None):
+            try:
+                self.root.after_cancel(self._stats_job)
+            except Exception:
+                pass
+            self._stats_job = None
+
+        # 4. Stop tray icon (immediately removes icon from Windows notification tray)
+        tray = getattr(self, "tray_icon", None)
+        if tray is not None:
+            try:
+                tray.stop()
+            except Exception:
+                pass
+            self.tray_icon = None
+
+        # 5. Destroy Tkinter root window and break mainloop
+        def _destroy_root():
+            try:
+                self.root.quit()
+            except Exception:
+                pass
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+
+        try:
+            self.root.after(0, _destroy_root)
+        except Exception:
+            _destroy_root()
+
+        # 6. Safety watchdog: ensure process terminates completely
+        if terminate_process:
+            def _hard_exit():
+                time.sleep(0.3)
+                os._exit(0)
+
+            threading.Thread(target=_hard_exit, daemon=True).start()
 
 class LogViewerWindow:
     """Non-modal, high-performance real-time proxy and network log viewer."""

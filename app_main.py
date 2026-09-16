@@ -102,12 +102,7 @@ def get_pac_content(port: int = 8124, host: str = "127.0.0.1", *args, **kwargs) 
         shExpMatch(host, "*.game.mobage.jp") ||
         shExpMatch(host, "gbf.game.mobage.jp") ||
         shExpMatch(host, "*.mobage.jp") ||
-        shExpMatch(host, "mobage.jp") ||
-        shExpMatch(host, "rcv.a-i-ad.com") ||
-        shExpMatch(host, "*.smbeat.jp") ||
-        shExpMatch(host, "*.smrtbeat.com") ||
-        shExpMatch(host, "datadoghq-browser-agent") ||
-        shExpMatch(host, "*.datadoghq-browser-agent")
+        shExpMatch(host, "mobage.jp")
     ) {{
         return "PROXY {host}:{port}; DIRECT";
     }}
