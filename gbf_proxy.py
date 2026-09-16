@@ -1586,6 +1586,30 @@ async def client_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWri
         except Exception:
             pass
 
+async def _bind_listener_server(ssl_context: Optional[ssl.SSLContext] = None) -> asyncio.AbstractServer:
+    """Attempt direct socket bind on LISTEN_HOST:LISTEN_PORT.
+    If and only if address is in use (WinError 10048 / EADDRINUSE), fall back to
+    killing verified stale GBF_Accelerator instances and retry once.
+    """
+    try:
+        return await asyncio.start_server(
+            lambda r, w: client_handler(r, w, ssl_context),
+            LISTEN_HOST,
+            LISTEN_PORT,
+        )
+    except OSError as e:
+        if _is_address_in_use_error(e) and config_manager.config.get("clean_zombies", True):
+            format_log("WARN", "33", f"端口 {LISTEN_PORT} 已被占用，正在检查并清理残留实例...")
+            kill_process_on_port(LISTEN_PORT)
+            await asyncio.sleep(0.1)
+            return await asyncio.start_server(
+                lambda r, w: client_handler(r, w, ssl_context),
+                LISTEN_HOST,
+                LISTEN_PORT,
+            )
+        else:
+            raise
+
 async def main():
     try:
         if sys.stdout is not None:
@@ -1609,28 +1633,7 @@ async def main():
 
     await init_http_client()
     ssl_context = get_server_ssl_context()
-
-    # Fast-path: bind directly without running netstat.
-    # Fall back to kill_process_on_port and retry once ONLY IF port is specifically
-    # in use (WinError 10048 / EADDRINUSE). Other OSErrors fail immediately.
-    try:
-        server = await asyncio.start_server(
-            lambda r, w: client_handler(r, w, ssl_context),
-            LISTEN_HOST,
-            LISTEN_PORT,
-        )
-    except OSError as e:
-        if _is_address_in_use_error(e) and config_manager.config.get("clean_zombies", True):
-            format_log("WARN", "33", f"端口 {LISTEN_PORT} 已被占用，正在检查并清理残留实例...")
-            kill_process_on_port(LISTEN_PORT)
-            await asyncio.sleep(0.1)
-            server = await asyncio.start_server(
-                lambda r, w: client_handler(r, w, ssl_context),
-                LISTEN_HOST,
-                LISTEN_PORT,
-            )
-        else:
-            raise
+    server = await _bind_listener_server(ssl_context)
 
     global proxy_server_instance, prefetch_queue, prefetch_inflight
     proxy_server_instance = server

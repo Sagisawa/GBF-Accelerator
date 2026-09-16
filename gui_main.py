@@ -1855,10 +1855,9 @@ class GBFAcceleratorGUI:
             if not last_err and thread_alive:
                 gbf_proxy.proxy_ready_event.wait(timeout=0.8)
                 is_running = gbf_proxy.PROXY_STATS.get("is_running", False)
-                is_ready = is_running or gbf_proxy.proxy_ready_event.is_set()
 
         # Final state confirmation
-        if is_running or (is_ready and gbf_proxy.PROXY_STATS.get("is_running", False)):
+        if is_running:
             if self.var_auto_pac.get():
                 system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
 

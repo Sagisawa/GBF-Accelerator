@@ -1067,12 +1067,10 @@ async def run_test():
             with mock.patch("gbf_proxy.kill_process_on_port") as mock_kill, \
                  mock.patch("asyncio.start_server", new_callable=mock.AsyncMock) as mock_start_srv:
                 mock_start_srv.return_value = mock.MagicMock()
-                try:
-                    await mock_start_srv(None, "127.0.0.1", 8129)
-                except OSError as e:
-                    if gbf_proxy._is_address_in_use_error(e):
-                        mock_kill(8129)
+                server_inst = await gbf_proxy._bind_listener_server(ssl_context=None)
+                assert server_inst is not None
                 mock_kill.assert_not_called()
+                mock_start_srv.assert_called_once()
             print("Test 55 - Fast-path direct bind on idle port (zero kill_process_on_port overhead): OK", flush=True)
 
             # Test 56: _is_address_in_use_error WinError 10048 & EADDRINUSE classification
@@ -1092,13 +1090,7 @@ async def run_test():
                  mock.patch("asyncio.start_server", side_effect=OSError(errno.EACCES, "Permission denied")):
                 caught_perm = False
                 try:
-                    try:
-                        await asyncio.start_server(None, "127.0.0.1", 8130)
-                    except OSError as e:
-                        if gbf_proxy._is_address_in_use_error(e):
-                            mock_kill(8130)
-                        else:
-                            raise
+                    await gbf_proxy._bind_listener_server(ssl_context=None)
                 except OSError as e:
                     if e.errno == errno.EACCES:
                         caught_perm = True
@@ -1113,25 +1105,22 @@ async def run_test():
             held_port = held_sock.getsockname()[1]
             held_sock.listen(1)
 
-            with mock.patch("gbf_proxy.kill_process_on_port", return_value=False) as mock_kill:
-                bind_failed_with_eaddrinuse = False
-                try:
+            orig_port = gbf_proxy.LISTEN_PORT
+            gbf_proxy.LISTEN_PORT = held_port
+            try:
+                with mock.patch("gbf_proxy.kill_process_on_port", return_value=False) as mock_kill:
+                    bind_failed_with_eaddrinuse = False
                     try:
-                        await asyncio.start_server(None, "127.0.0.1", held_port)
+                        await gbf_proxy._bind_listener_server(ssl_context=None)
                     except OSError as e:
                         if gbf_proxy._is_address_in_use_error(e):
-                            mock_kill(held_port)
-                            await asyncio.sleep(0.01)
-                            await asyncio.start_server(None, "127.0.0.1", held_port)
-                        else:
-                            raise
-                except OSError as e:
-                    if gbf_proxy._is_address_in_use_error(e):
-                        bind_failed_with_eaddrinuse = True
-                assert bind_failed_with_eaddrinuse is True, "Must raise address in use error"
-                mock_kill.assert_called_once_with(held_port)
-                assert held_sock.fileno() != -1, "Third-party socket must not be terminated"
-            held_sock.close()
+                            bind_failed_with_eaddrinuse = True
+                    assert bind_failed_with_eaddrinuse is True, "Must raise address in use error"
+                    mock_kill.assert_called_once_with(held_port)
+                    assert held_sock.fileno() != -1, "Third-party socket must not be terminated"
+            finally:
+                gbf_proxy.LISTEN_PORT = orig_port
+                held_sock.close()
             print("Test 58 - Non-GBF process occupying port is preserved & retry fails cleanly: OK", flush=True)
 
             # Test 59: Concurrent start_proxy_thread under _proxy_thread_lock maintains atomicity
