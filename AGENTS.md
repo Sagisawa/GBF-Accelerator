@@ -106,6 +106,39 @@
      .\.venv\Scripts\python.exe test_proxy.py
      .\.venv\Scripts\python.exe test_update_manager.py
      ```
-   - 验证 54 项测试全部通过（100% Pass）。
+   - 验证 67 项代理测试与 8 项更新测试全部通过（100% Pass）。
 5. **Diff 自检核对 (Self-Review via Diff)**：
    - 运行 `git diff`，逐行审查所有变动行，确认未引入非预期的副作用和违反规范的代码。
+
+---
+
+## Git 提交与版本发布治理规范 (Commit & Release Standards)
+
+为了保证仓库历史记录整洁规范，并与 GitHub Release 展示格式严格区分，必须无条件遵循以下**双轨语言与格式规范**：
+
+### 1. Git Commit 必须 100% 使用英文 (Strict English Conventional Commits)
+- **绝对禁令**：Git Commit 的 Subject 和 Body **严禁包含任何中文字符**。
+- **命名规范**：遵循标准 Conventional Commits 格式：
+  - `feat(...)`: 新增功能
+  - `fix(...)`: 缺陷修复
+  - `perf(...)`: 性能优化
+  - `refactor(...)`: 代码重构
+  - `docs(...)`: 文档更新
+  - `release: vX.Y.Z - <short English summary>`: 版本发布提交
+- **范例对比**：
+  - ✅ 正确：`release: v1.7.2 - prioritize foreground assets, decouple prefetch discovery, and optimize startup warmup`
+  - ❌ 错误：`release: v1.7.2 - 前台素材优先调度、预加载解耦防卡顿与启动优化`
+
+### 2. GitHub Release 必须统一中文模板 (Chinese Release Presentation)
+- **Release 标题**：严格固定为 `vx.x.x - “主要功能/修复”` 中文格式：
+  - 范例：`v1.7.2 - 前台素材优先调度、预加载解耦防卡顿与启动优化`
+- **Release 说明**：保存在 `docs/releases/vX.Y.Z.md`，使用规范客观的中文 Markdown。
+- **发布压缩包**：严格命名为 `GBF_Accelerator_vX.Y.Z_GUI.zip`。
+
+### 3. 版本发布检查清单 (Release Checklist)
+每次发布版本前，必须严格核对以下 5 项，严禁将 Release 标题混淆复制给 Commit：
+1. `update_manager.py` 中的 `APP_VERSION = "X.Y.Z"`；
+2. `build_exe.py` 中的 `zip_path` 指向 `GBF_Accelerator_vX.Y.Z_GUI.zip`；
+3. `CHANGELOG.md` 与 `README.md` 包含对应版本的更新说明；
+4. **Git Commit 信息必须为纯英文**；
+5. **GitHub Release 标题必须为 `vX.Y.Z - 主要功能/修复`（中文）**。
