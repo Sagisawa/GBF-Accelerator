@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import datetime
+import re
 import threading
 import subprocess
 import urllib.parse
@@ -1989,9 +1991,6 @@ class GBFAcceleratorGUI:
             self.log_window = None
         gbf_proxy.stop_proxy_thread()
         system_proxy.disable_pac_proxy()
-        if self.tray_icon:
-            self.tray_icon.stop()
-        self.root.after(0, self.root.destroy)
 
 class LogViewerWindow:
     """Non-modal, high-performance real-time proxy and network log viewer."""
@@ -2005,32 +2004,43 @@ class LogViewerWindow:
             pass
 
         # Adaptive window geometry
+        # Adaptive window geometry (wide layout to ensure all toolbar buttons are fully visible)
         sw = self.top.winfo_screenwidth()
         sh = self.top.winfo_screenheight()
-        w = min(940, max(760, sw - 120))
-        h = min(560, max(420, sh - 160))
+        w = min(1280, max(1060, sw - 60))
+        h = min(720, max(520, sh - 100))
         self.top.geometry(f"{w}x{h}")
-        self.top.minsize(640, 360)
+        self.top.minsize(960, 400)
 
         # Position slightly offset from parent
         try:
             px = parent.root.winfo_x()
             py = parent.root.winfo_y()
-            self.top.geometry(f"+{max(10, px + 40)}+{max(10, py + 40)}")
+            self.top.geometry(f"+{max(10, px + 30)}+{max(10, py + 30)}")
         except Exception:
             pass
 
         self.top.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        # Thread-safe log queue and storage
+        # Thread-safe log queue and storage (worker thread only touches these pure Python queues)
         self._incoming_queue: collections.deque = collections.deque()
         self._queue_lock: threading.Lock = threading.Lock()
         self._all_records: collections.deque = collections.deque(maxlen=2500)
         self._max_records: int = 2500
         self._is_closed: bool = False
+        self._is_paused: bool = False
         self._scheduled_job = None
+        self._last_stats_tick: float = 0.0
+        self._context_line: str = ""
+        self._log_font_size: int = 9
 
         self.var_auto_scroll = tk.BooleanVar(value=True)
+        self.var_paused = tk.BooleanVar(value=False)
+        self.var_hide_connect = tk.BooleanVar(value=False)       # 默认显示全部连接，避免直接复制时缺失
+        self.var_compact_domain = tk.BooleanVar(value=False)     # 默认显示完整域名，不省略遮蔽
+        self.var_mute_assets = tk.BooleanVar(value=False)        # 默认显示素材
+        self.var_hide_mocks = tk.BooleanVar(value=False)         # 默认显示打点
+        self.var_align_format = tk.BooleanVar(value=True)        # 默认开启对齐排版
         self.var_filter_text = tk.StringVar(value="")
         self.var_filter_cat = tk.StringVar(value="全部 (All)")
         self.var_status = tk.StringVar(value="初始化中...")
@@ -2038,45 +2048,76 @@ class LogViewerWindow:
         self.setup_ui()
         self.setup_tags()
 
-        # Atomically register live listener and fetch existing history to eliminate race condition
+        # Keyboard shortcuts on top window
+        self.top.bind("<Control-f>", self._on_find)
+        self.top.bind("<Control-F>", self._on_find)
+        self.top.bind("<Escape>", self._on_escape)
+        self.top.bind("<space>", self._on_space)
+        self.top.bind("<Control-MouseWheel>", self._on_mousewheel_zoom)
+
+        # Atomically register live listener and fetch existing history snapshot
         history = gbf_proxy.register_log_listener_with_history(self.on_live_log)
         with self._queue_lock:
             for line, lvl in history:
                 self._all_records.append((line, lvl))
                 self._incoming_queue.append((line, lvl))
 
-        # Start background UI update loop
-        self._schedule_flush()
+        # Main GUI thread polling loop: NEVER call after() from worker threads
+        self._poll_update()
 
     def setup_ui(self):
         # 1. Top Toolbar
-        toolbar = ttk.Frame(self.top, padding="8 6 8 6")
+        toolbar = ttk.Frame(self.top, padding="6 5 6 5")
         toolbar.pack(fill="x", side="top")
 
-        ttk.Label(toolbar, text="搜索:").pack(side="left", padx=(0, 4))
-        self.entry_filter = ttk.Entry(toolbar, textvariable=self.var_filter_text, width=18, font=("Microsoft YaHei UI", 9))
-        self.entry_filter.pack(side="left", padx=(0, 8))
+        # Right-side action buttons: pack FIRST so they are ALWAYS visible at the right edge
+        btn_export = ttk.Button(toolbar, text="导出日志", width=8, command=self.export_logs)
+        btn_export.pack(side="right", padx=(2, 0))
+
+        btn_copy = ttk.Button(toolbar, text="复制全部", width=8, command=self.copy_all)
+        btn_copy.pack(side="right", padx=(2, 0))
+
+        btn_clear = ttk.Button(toolbar, text="清除显示", width=8, command=self.clear_display)
+        btn_clear.pack(side="right", padx=(2, 0))
+
+        self.btn_pause = ttk.Button(toolbar, text="⏸ 暂停", width=8, command=self.toggle_pause)
+        self.btn_pause.pack(side="right", padx=(2, 8))
+
+        # Left-side search and filters
+        ttk.Label(toolbar, text="搜索:").pack(side="left", padx=(0, 2))
+        self.entry_filter = ttk.Entry(toolbar, textvariable=self.var_filter_text, width=12, font=("Microsoft YaHei UI", 9))
+        self.entry_filter.pack(side="left", padx=(0, 6))
         self.entry_filter.bind("<KeyRelease>", lambda e: self.reapply_filter())
 
-        ttk.Label(toolbar, text="类型:").pack(side="left", padx=(0, 4))
+        ttk.Label(toolbar, text="类型:").pack(side="left", padx=(0, 2))
         combo_cat = ttk.Combobox(toolbar, textvariable=self.var_filter_cat, values=[
             "全部 (All)",
             "仅战斗 API (BYPASS-API)",
             "仅缓存命中 (CACHE)",
             "仅素材拉取 (FETCH/PREFETCH)",
+            "仅慢请求 (>200ms)",
             "仅重连与告警 (RETRY/ERROR)",
-        ], state="readonly", width=22, font=("Microsoft YaHei UI", 9))
-        combo_cat.pack(side="left", padx=(0, 10))
+        ], state="readonly", width=15, font=("Microsoft YaHei UI", 9))
+        combo_cat.pack(side="left", padx=(0, 6))
         combo_cat.bind("<<ComboboxSelected>>", lambda e: self.reapply_filter())
 
+        chk_conn = ttk.Checkbutton(toolbar, text="隐藏底层握手", variable=self.var_hide_connect, command=self.reapply_filter)
+        chk_conn.pack(side="left", padx=(0, 4))
+
+        chk_compact = ttk.Checkbutton(toolbar, text="简化域名", variable=self.var_compact_domain, command=self.reapply_filter)
+        chk_compact.pack(side="left", padx=(0, 4))
+
+        chk_mute = ttk.Checkbutton(toolbar, text="隐藏静态资源", variable=self.var_mute_assets, command=self.reapply_filter)
+        chk_mute.pack(side="left", padx=(0, 4))
+
+        chk_mock = ttk.Checkbutton(toolbar, text="隐藏数据上报", variable=self.var_hide_mocks, command=self.reapply_filter)
+        chk_mock.pack(side="left", padx=(0, 4))
+
+        chk_align = ttk.Checkbutton(toolbar, text="对齐排版", variable=self.var_align_format, command=self.reapply_filter)
+        chk_align.pack(side="left", padx=(0, 4))
+
         chk_scroll = ttk.Checkbutton(toolbar, text="自动滚屏", variable=self.var_auto_scroll)
-        chk_scroll.pack(side="left", padx=(0, 8))
-
-        btn_copy = ttk.Button(toolbar, text="复制全部", width=9, command=self.copy_all)
-        btn_copy.pack(side="right", padx=(4, 0))
-
-        btn_clear = ttk.Button(toolbar, text="清除显示", width=9, command=self.clear_display)
-        btn_clear.pack(side="right", padx=(4, 0))
+        chk_scroll.pack(side="left", padx=(0, 4))
 
         # 2. Main Console Text with horizontal & vertical scrollbars
         f_body = ttk.Frame(self.top)
@@ -2094,7 +2135,7 @@ class LogViewerWindow:
             insertbackground="#ffffff",
             selectbackground="#264f78",
             selectforeground="#ffffff",
-            font=("Consolas", 9),
+            font=("Consolas", self._log_font_size),
             wrap="none",
             xscrollcommand=scroll_x.set,
             yscrollcommand=scroll_y.set,
@@ -2105,75 +2146,175 @@ class LogViewerWindow:
         scroll_y.config(command=self.txt_logs.yview)
         scroll_x.config(command=self.txt_logs.xview)
 
+        # Right-click context menu
+        self.context_menu = tk.Menu(self.top, tearoff=0)
+        self.context_menu.add_command(label="📋 复制当前显示行", command=self._copy_selected_line)
+        self.context_menu.add_command(label="📜 复制原始完整记录 (含完整域名与参数)", command=self._copy_raw_line)
+        self.context_menu.add_command(label="🔗 复制完整 URL", command=self._copy_selected_url)
+        self.context_menu.add_command(label="🔍 仅筛选此路径", command=self._filter_selected_path)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="💾 导出全量排查诊断日志...", command=self.export_logs)
+        self.context_menu.add_command(label="📄 仅导出当前屏幕显示...", command=self.export_visible_logs)
+        self.context_menu.add_command(label="🧹 清除当前显示", command=self.clear_display)
+
+        self.txt_logs.bind("<Button-3>", self._on_right_click)
+        self.txt_logs.bind("<Control-f>", self._on_find)
+        self.txt_logs.bind("<Control-F>", self._on_find)
+        self.txt_logs.bind("<Escape>", self._on_escape)
+        self.txt_logs.bind("<space>", self._on_space)
+        self.txt_logs.bind("<Control-MouseWheel>", self._on_mousewheel_zoom)
+
         # 3. Bottom Status Bar
         f_status = ttk.Frame(self.top, padding="8 2 8 4")
         f_status.pack(fill="x", side="bottom")
         self.lbl_status = ttk.Label(f_status, textvariable=self.var_status, style="Gray.TLabel")
         self.lbl_status.pack(side="left")
 
+        self.lbl_hints = ttk.Label(f_status, text="Ctrl+F 搜索 | 空格 暂停 | Ctrl+滚轮 缩放", style="Gray.TLabel")
+        self.lbl_hints.pack(side="right")
+
     def setup_tags(self):
+        sz = self._log_font_size
+        # Row error background highlight (lowered to sit behind text and selection/search highlights)
+        self.txt_logs.tag_configure("row_err_bg", background="#381a1a")
+        self.txt_logs.tag_lower("row_err_bg")
+
+        # Level tags
         self.txt_logs.tag_configure("ts", foreground="#6e7681")
-        self.txt_logs.tag_configure("lvl_api", foreground="#4ec9b0", font=("Consolas", 9, "bold"))
+        self.txt_logs.tag_configure("lvl_api", foreground="#4ec9b0", font=("Consolas", sz, "bold"))
         self.txt_logs.tag_configure("lvl_cache", foreground="#89d185")
         self.txt_logs.tag_configure("lvl_fetch", foreground="#569cd6")
         self.txt_logs.tag_configure("lvl_prefetch", foreground="#c586c0")
-        self.txt_logs.tag_configure("lvl_retry", foreground="#e5c07b", font=("Consolas", 9, "bold"))
-        self.txt_logs.tag_configure("lvl_err", foreground="#f14c4c", font=("Consolas", 9, "bold"))
+        self.txt_logs.tag_configure("lvl_retry", foreground="#e5c07b", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("lvl_err", foreground="#f14c4c", font=("Consolas", sz, "bold"))
         self.txt_logs.tag_configure("lvl_conn", foreground="#9cdcfe")
-        self.txt_logs.tag_configure("reused", foreground="#50fa7b", font=("Consolas", 9, "bold"))
+        self.txt_logs.tag_configure("reused", foreground="#50fa7b", font=("Consolas", sz, "bold"))
         self.txt_logs.tag_configure("new_conn", foreground="#e5c07b")
 
+        # Method tags
+        self.txt_logs.tag_configure("method_post", foreground="#bd93f9", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("method_get", foreground="#569cd6")
+        self.txt_logs.tag_configure("method_other", foreground="#8be9fd")
+
+        # Status code tags
+        self.txt_logs.tag_configure("status_200", foreground="#89d185")
+        self.txt_logs.tag_configure("status_304", foreground="#8be9fd")
+        self.txt_logs.tag_configure("status_err", foreground="#f14c4c", font=("Consolas", sz, "bold"))
+
+        # Latency threshold tags
+        self.txt_logs.tag_configure("lat_fast", foreground="#50fa7b")
+        self.txt_logs.tag_configure("lat_normal", foreground="#cccccc")
+        self.txt_logs.tag_configure("lat_warn", foreground="#e5c07b", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("lat_slow", foreground="#ff6b6b", background="#401818", font=("Consolas", sz, "bold"))
+
+        # Host tag & URL styling
+        self.txt_logs.tag_configure("host_tag", foreground="#79c0ff")
+        self.txt_logs.tag_configure("url_path", foreground="#f0f6fc", font=("Consolas", sz))
+        self.txt_logs.tag_configure("url_query", foreground="#6e7681")
+        self.txt_logs.tag_configure("url_size", foreground="#8b949e")
+
+        # Search match highlight
+        self.txt_logs.tag_configure("search_match", background="#53441a", foreground="#ffffff")
+
+    def _set_font_size(self, size: int):
+        if size == self._log_font_size:
+            return
+        self._log_font_size = size
+        self.txt_logs.configure(font=("Consolas", size))
+        for tag in ("lvl_api", "lvl_retry", "lvl_err", "reused", "method_post", "status_err", "lat_warn", "lat_slow"):
+            self.txt_logs.tag_configure(tag, font=("Consolas", size, "bold"))
+        for tag in ("url_path",):
+            self.txt_logs.tag_configure(tag, font=("Consolas", size))
+        self.var_status.set(f"已调整控制台字号为: {size} pt")
+
+    def _on_mousewheel_zoom(self, event):
+        if event.delta > 0:
+            self._set_font_size(min(18, self._log_font_size + 1))
+        elif event.delta < 0:
+            self._set_font_size(max(8, self._log_font_size - 1))
+        return "break"
+
+    def _on_space(self, event):
+        if event.widget == self.entry_filter:
+            return
+        self.toggle_pause()
+        return "break"
+
+    def _on_find(self, _event=None):
+        self.entry_filter.focus_set()
+        self.entry_filter.select_range(0, tk.END)
+        self.entry_filter.icursor(tk.END)
+        return "break"
+
+    def _on_escape(self, _event=None):
+        if self.var_filter_text.get():
+            self.var_filter_text.set("")
+            self.reapply_filter()
+        self.txt_logs.focus_set()
+        return "break"
+
+
+    def toggle_pause(self):
+        self._is_paused = not self._is_paused
+        self.var_paused.set(self._is_paused)
+        if self._is_paused:
+            self.btn_pause.config(text="▶ 继续")
+        else:
+            self.btn_pause.config(text="⏸ 暂停")
+            self.reapply_filter()
+        self._update_status_label()
+
     def on_live_log(self, line: str, level: str):
+        """Thread-safe log sink: strictly NO Tkinter widget or Variable calls here."""
         if self._is_closed:
             return
-        should_schedule = False
         with self._queue_lock:
             self._all_records.append((line, level))
             self._incoming_queue.append((line, level))
-            if not self._is_closed and self._scheduled_job is None:
-                should_schedule = True
-                self._scheduled_job = True  # Marker before scheduling
 
-        if should_schedule:
-            try:
-                self._scheduled_job = self.top.after(60, self._schedule_flush)
-            except Exception:
-                with self._queue_lock:
-                    self._scheduled_job = None
-
-    def _schedule_flush(self):
+    def _poll_update(self):
+        """High-performance 50ms polling loop executing exclusively on the main GUI thread."""
         if self._is_closed:
             return
-        self._flush_queue()
-        with self._queue_lock:
-            if self._incoming_queue:
+        try:
+            self._flush_queue()
+            now = time.monotonic()
+            if now - self._last_stats_tick >= 1.0:
+                self._last_stats_tick = now
+                self._update_status_label()
+        except Exception:
+            pass
+        finally:
+            if not self._is_closed:
                 try:
-                    self._scheduled_job = self.top.after(60, self._schedule_flush)
+                    self._scheduled_job = self.top.after(50, self._poll_update)
                 except Exception:
                     self._scheduled_job = None
-            else:
-                self._scheduled_job = None
 
     def _flush_queue(self):
+        if self._is_paused:
+            return
+
         with self._queue_lock:
             if not self._incoming_queue:
                 return
-            batch = list(self._incoming_queue)
-            self._incoming_queue.clear()
+            # Bounded batching: render at most 60 lines per frame to prevent UI stutter during asset floods
+            batch = []
+            for _ in range(min(len(self._incoming_queue), 60)):
+                batch.append(self._incoming_queue.popleft())
 
         filter_txt = self.var_filter_text.get().strip().lower()
         filter_cat = self.var_filter_cat.get()
 
         to_insert = [rec for rec in batch if self._matches_filter(rec[0], rec[1], filter_txt, filter_cat)]
         if not to_insert:
-            self._update_status_label()
             return
 
         self.txt_logs.configure(state="normal")
         for line, lvl in to_insert:
             self._render_line(line, lvl)
 
-        # Trim top lines in widget if too many
+        # Trim top lines in widget if exceeding max capacity
         try:
             num_lines = int(self.txt_logs.index("end-1c").split(".")[0])
             if num_lines > self._max_records:
@@ -2186,32 +2327,272 @@ class LogViewerWindow:
             self.txt_logs.see("end")
 
         self.txt_logs.configure(state="disabled")
-        self._update_status_label()
 
-    def _render_line(self, line: str, lvl: str):
+    def _align_log_line(self, line: str, lvl: str) -> str:
+        line = line.rstrip("\r\n")
+        if not (line.startswith("[") and "]" in line):
+            return line
+        r1 = line.find("]")
+        ts = line[:r1+1]
+        rest = line[r1+1:].strip()
+        if not (rest.startswith("[") and "]" in rest):
+            return line
+        r2 = rest.find("]")
+        raw_lvl = rest[1:r2]
+        msg = rest[r2+1:].strip()
+
+        pad_lvl = f"[{raw_lvl:<11}]"
+        use_compact = self.var_compact_domain.get()
+
+        if "BYPASS-API" in raw_lvl:
+            # e.g.: 200 POST game.granbluefantasy.jp/rest/sound/quest_map_bgm?t=123 (168ms, HTTP/1.1, reused)
+            m = re.match(r"(\d+)\s+([A-Z]+)\s+([^\s\(]+)(?:\s+\((\d+)ms(?:,\s*[^,]+)?(?:,\s*(reused|new))?\))?", msg)
+            if m:
+                code, method, full_url, ms, reuse = m.groups()
+                ms_str = f"{int(ms):>4}ms" if ms else "   -ms"
+                reuse_tag = f"[{reuse:<6}]" if reuse else "[      ]"
+                if use_compact:
+                    if "game.granbluefantasy.jp" in full_url:
+                        host_tag = "[gbf  ]"
+                        path = full_url.split("game.granbluefantasy.jp", 1)[1]
+                        if not path.startswith("/"):
+                            path = "/" + path
+                    elif "akamaized.net" in full_url:
+                        host_tag = "[asset]"
+                        path = "/" + full_url.split("/", 1)[1] if "/" in full_url else full_url
+                    elif "mbga.jp" in full_url:
+                        host_tag = "[mbga ]"
+                        path = full_url.split("mbga.jp", 1)[1]
+                        if not path.startswith("/"):
+                            path = "/" + path
+                    else:
+                        if "/" in full_url:
+                            h, p = full_url.split("/", 1)
+                            host_tag = f"[{h[:5]:<5}]"
+                            path = "/" + p
+                        else:
+                            host_tag = "[other]"
+                            path = "/" + full_url
+                    return f"{ts} {pad_lvl} {method:<4} {code:<3} {ms_str} {reuse_tag} {host_tag} {path}"
+                else:
+                    return f"{ts} {pad_lvl} {method:<4} {code:<3} {ms_str} {reuse_tag} {full_url}"
+        elif "FETCH-ASSET" in raw_lvl:
+            # e.g.: 200 OK & STREAMED (132ms) -> /assets/...
+            m = re.match(r"200 OK & STREAMED \((\d+)ms\) -> (.+)", msg)
+            if m:
+                ms, path = m.groups()
+                ms_str = f"{int(ms):>4}ms" if ms else "   -ms"
+                if use_compact:
+                    return f"{ts} {pad_lvl} GET  200 {ms_str} [stream] [asset] {path}"
+                else:
+                    return f"{ts} {pad_lvl} GET  200 {ms_str} [stream] {path}"
+        elif "CACHE" in raw_lvl:
+            if "304 Not Modified" in msg:
+                m = re.search(r"-> (.+)", msg)
+                path = m.group(1) if m else msg
+                tag = "[hit304]" if "DISK" in raw_lvl else "[ram304]"
+                if use_compact:
+                    return f"{ts} {pad_lvl} GET  304    0ms {tag} [asset] {path}"
+                else:
+                    return f"{ts} {pad_lvl} GET  304    0ms {tag} {path}"
+            elif "HIT" in raw_lvl or "HIT" in msg:
+                m = re.search(r"HIT -> ([^\s\(]+)(.*)", msg)
+                if m:
+                    path, extra = m.groups()
+                    tag = "[disk  ]" if "DISK" in raw_lvl else "[ram   ]"
+                    if use_compact:
+                        return f"{ts} {pad_lvl} GET  200    0ms {tag} [asset] {path}{extra}"
+                    else:
+                        return f"{ts} {pad_lvl} GET  200    0ms {tag} {path}{extra}"
+            elif "COALESCED" in msg:
+                m = re.search(r"COALESCED -> ([^\s\(]+)(.*)", msg)
+                if m:
+                    path, extra = m.groups()
+                    if use_compact:
+                        return f"{ts} {pad_lvl} GET  200    0ms [flight] [asset] {path}{extra}"
+                    else:
+                        return f"{ts} {pad_lvl} GET  200    0ms [flight] {path}{extra}"
+        elif "MOCK-200" in raw_lvl:
+            m = re.match(r"Direct Mock -> (.+)", msg)
+            if m:
+                path = m.group(1)
+                if use_compact:
+                    return f"{ts} {pad_lvl} MOCK 200    0ms [mock  ] [gbf  ] {path}"
+                else:
+                    return f"{ts} {pad_lvl} MOCK 200    0ms [mock  ] {path}"
+        elif "OPTIONS" in raw_lvl:
+            m = re.search(r"-> (.+)", msg)
+            path = m.group(1) if m else msg
+            if use_compact:
+                return f"{ts} {pad_lvl} OPT  200    0ms [cors  ] [gbf  ] {path}"
+            else:
+                return f"{ts} {pad_lvl} OPT  200    0ms [cors  ] {path}"
+        elif "CONNECT" in raw_lvl:
+            # e.g.: [127.0.0.1] prd-game-a-granbluefantasy.akamaized.net:443 -> MITM
+            m = re.search(r"\[([^\]]+)\]\s+([^\s]+)\s+->\s+(\w+)", msg)
+            if m:
+                client_ip, target, action = m.groups()
+                action_tag = f"[{action.lower():<6}]"
+                proto = "TLS " if action == "MITM" else "TCP "
+                if use_compact:
+                    if "akamaized.net" in target:
+                        host_tag = "[asset]"
+                    elif "ws." in target:
+                        host_tag = "[ws   ]"
+                    elif "granbluefantasy.jp" in target:
+                        host_tag = "[gbf  ]"
+                    else:
+                        host_tag = "[other]"
+                    return f"{ts} {pad_lvl} {proto} ---    -ms {action_tag} {host_tag} {target}"
+                else:
+                    return f"{ts} {pad_lvl} {proto} ---    -ms {action_tag} {target}"
+        elif "BYPASS-TCP" in raw_lvl:
+            # e.g.: Tunneling ws.game.granbluefantasy.jp:11240 via upstream
+            target = msg.replace("Tunneling ", "").replace(" via upstream", "").strip()
+            if use_compact:
+                return f"{ts} {pad_lvl} TCP  ---    -ms [tunnel] [ws   ] {target}"
+            else:
+                return f"{ts} {pad_lvl} TCP  ---    -ms [tunnel] {target}"
+
+        return f"{ts} {pad_lvl} {msg}"
+
+    def _render_line(self, raw_line: str, lvl: str):
+        raw_line = raw_line.rstrip("\r\n")
+        is_aligned = self.var_align_format.get()
+        if is_aligned:
+            line = self._align_log_line(raw_line, lvl)
+        else:
+            line = raw_line
+
         end_idx = self.txt_logs.index("end-1c")
         self.txt_logs.insert("end", line + "\n")
         line_start = end_idx
 
-        # Tag timestamp [00:00:00]
-        if line.startswith("[") and "]" in line:
-            r1 = line.find("]")
-            self.txt_logs.tag_add("ts", line_start, f"{line_start} + {r1 + 1}c")
+        # Check error condition for full-row highlight
+        is_err_line = False
+        lvl_up = lvl.upper()
+        if any(k in lvl_up for k in ("ERR", "TIMEOUT", "BLOCK")):
+            is_err_line = True
 
-            # Tag level [LEVEL]
-            l2 = line.find("[", r1 + 1)
-            r2 = line.find("]", l2) if l2 != -1 else -1
-            if l2 != -1 and r2 != -1:
-                lvl_tag = self._get_level_tag(lvl)
-                self.txt_logs.tag_add(lvl_tag, f"{line_start} + {l2}c", f"{line_start} + {r2 + 1}c")
+        use_compact = self.var_compact_domain.get()
+        if is_aligned and line.startswith("[") and len(line) >= 34 and line[9:12] == "] [" and line[23:25] == "] ":
+            # 1. Timestamp (0..10)
+            self.txt_logs.tag_add("ts", line_start, f"{line_start} + 10c")
+            # 2. Level tag (11..24)
+            lvl_tag = self._get_level_tag(lvl)
+            self.txt_logs.tag_add(lvl_tag, f"{line_start} + 11c", f"{line_start} + 24c")
+            # 3. Method tag (25..29)
+            method_str = line[25:29].strip()
+            if method_str == "POST":
+                self.txt_logs.tag_add("method_post", f"{line_start} + 25c", f"{line_start} + 29c")
+            elif method_str == "GET":
+                self.txt_logs.tag_add("method_get", f"{line_start} + 25c", f"{line_start} + 29c")
+            else:
+                self.txt_logs.tag_add("method_other", f"{line_start} + 25c", f"{line_start} + 29c")
+            # 4. Status code (30..33)
+            code_str = line[30:33].strip()
+            if code_str == "200":
+                self.txt_logs.tag_add("status_200", f"{line_start} + 30c", f"{line_start} + 33c")
+            elif code_str == "304":
+                self.txt_logs.tag_add("status_304", f"{line_start} + 30c", f"{line_start} + 33c")
+            elif code_str.startswith("5") or code_str in ("400", "403", "404", "408"):
+                is_err_line = True
+                self.txt_logs.tag_add("status_err", f"{line_start} + 30c", f"{line_start} + 33c")
+            elif code_str in ("500", "502", "503", "504"):
+                is_err_line = True
+                self.txt_logs.tag_add("status_err", f"{line_start} + 30c", f"{line_start} + 33c")
 
-        # Highlight ', reused' or ', new'
-        reused_pos = line.find(", reused")
-        if reused_pos != -1:
-            self.txt_logs.tag_add("reused", f"{line_start} + {reused_pos}c", f"{line_start} + {reused_pos + 8}c")
-        new_pos = line.find(", new")
-        if new_pos != -1:
-            self.txt_logs.tag_add("new_conn", f"{line_start} + {new_pos}c", f"{line_start} + {new_pos + 5}c")
+            # 5. Dynamic token scanning for Latency, State, Host and URL
+            b_reuse = line.find("[", 34)
+            if b_reuse != -1:
+                # 5a. Latency threshold coloring (between index 34 and b_reuse)
+                lat_chunk = line[34:b_reuse].strip()
+                m_ms = re.search(r"(\d+)ms", lat_chunk)
+                if m_ms:
+                    lat = int(m_ms.group(1))
+                    if lat < 100:
+                        lat_tag = "lat_fast"
+                    elif lat < 250:
+                        lat_tag = "lat_normal"
+                    elif lat < 500:
+                        lat_tag = "lat_warn"
+                    else:
+                        lat_tag = "lat_slow"
+                    self.txt_logs.tag_add(lat_tag, f"{line_start} + 34c", f"{line_start} + {b_reuse-1}c")
+
+                # 5b. Reuse / state tag
+                b_reuse_end = line.find("]", b_reuse)
+                if b_reuse_end != -1:
+                    state_str = line[b_reuse+1:b_reuse_end].strip()
+                    if state_str == "reused":
+                        self.txt_logs.tag_add("reused", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
+                    elif state_str == "new":
+                        self.txt_logs.tag_add("new_conn", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
+                    elif state_str == "stream":
+                        self.txt_logs.tag_add("lvl_fetch", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
+                    elif state_str in ("hit304", "ram304"):
+                        self.txt_logs.tag_add("status_304", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
+                    elif state_str in ("disk", "ram"):
+                        self.txt_logs.tag_add("lvl_cache", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
+                    elif state_str in ("flight", "mitm", "tunnel"):
+                        self.txt_logs.tag_add("reused", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
+
+                    # 5c. Host tag & URL path/query/size
+                    rest = line[b_reuse_end+1:].strip()
+                    if use_compact and rest.startswith("["):
+                        b_host = line.find("[", b_reuse_end + 1)
+                        b_host_end = line.find("]", b_host)
+                        if b_host != -1 and b_host_end != -1:
+                            self.txt_logs.tag_add("host_tag", f"{line_start} + {b_host}c", f"{line_start} + {b_host_end+1}c")
+                            url_offset = b_host_end + 2
+                        else:
+                            url_offset = b_reuse_end + 2
+                    else:
+                        url_offset = b_reuse_end + 2
+
+                    if url_offset < len(line):
+                        url_str = line[url_offset:]
+                        q_pos = url_str.find("?")
+                        size_pos = url_str.rfind(" (")
+                        if q_pos != -1:
+                            self.txt_logs.tag_add("url_path", f"{line_start} + {url_offset}c", f"{line_start} + {url_offset + q_pos}c")
+                            q_end = size_pos if (size_pos != -1 and size_pos > q_pos) else len(url_str)
+                            self.txt_logs.tag_add("url_query", f"{line_start} + {url_offset + q_pos}c", f"{line_start} + {url_offset + q_end}c")
+                            if size_pos != -1 and size_pos > q_pos:
+                                self.txt_logs.tag_add("url_size", f"{line_start} + {url_offset + size_pos}c", f"{line_start} + {len(line)}c")
+                        else:
+                            path_end = size_pos if size_pos != -1 else len(url_str)
+                            self.txt_logs.tag_add("url_path", f"{line_start} + {url_offset}c", f"{line_start} + {url_offset + path_end}c")
+                            if size_pos != -1:
+                                self.txt_logs.tag_add("url_size", f"{line_start} + {url_offset + size_pos}c", f"{line_start} + {len(line)}c")
+        else:
+            # Fallback tagging for unstructured/system lines
+            if line.startswith("[") and "]" in line:
+                r1 = line.find("]")
+                self.txt_logs.tag_add("ts", line_start, f"{line_start} + {r1 + 1}c")
+                l2 = line.find("[", r1 + 1)
+                r2 = line.find("]", l2) if l2 != -1 else -1
+                if l2 != -1 and r2 != -1:
+                    lvl_tag = self._get_level_tag(lvl)
+                    self.txt_logs.tag_add(lvl_tag, f"{line_start} + {l2}c", f"{line_start} + {r2 + 1}c")
+            if any(k in line for k in (" 500 ", " 502 ", " 503 ", " 504 ", "TIMEOUT", "ERR", "BLOCK")):
+                is_err_line = True
+
+        # 6. Apply full row error background highlight if error detected
+        if is_err_line:
+            self.txt_logs.tag_add("row_err_bg", line_start, f"{line_start} lineend + 1c")
+
+        # 9. Search keyword match highlight
+        search_q = self.var_filter_text.get().strip().lower()
+        if search_q:
+            lower_line = line.lower()
+            idx = 0
+            while True:
+                pos = lower_line.find(search_q, idx)
+                if pos == -1:
+                    break
+                self.txt_logs.tag_add("search_match", f"{line_start} + {pos}c", f"{line_start} + {pos + len(search_q)}c")
+                idx = pos + len(search_q)
 
     def _get_level_tag(self, lvl: str) -> str:
         lvl_up = lvl.upper()
@@ -2230,8 +2611,19 @@ class LogViewerWindow:
         return "lvl_conn"
 
     def _matches_filter(self, line: str, lvl: str, txt: str, cat: str) -> bool:
+        # Checkbox: Hide connection/handshake noise
+        if self.var_hide_connect.get() and ("CONNECT" in lvl or "BYPASS-TCP" in lvl or "TLS" in lvl):
+            return False
+        # Checkbox: Mute assets
+        if self.var_mute_assets.get() and any(k in lvl for k in ("FETCH", "PREFETCH", "CACHE")):
+            return False
+        # Checkbox: Hide mocks
+        if self.var_hide_mocks.get() and ("MOCK" in lvl or "/ob/r" in line):
+            return False
+        # Text search
         if txt and txt not in line.lower():
             return False
+        # Category filter
         if cat == "仅战斗 API (BYPASS-API)" and "BYPASS-API" not in lvl:
             return False
         if cat == "仅缓存命中 (CACHE)" and "CACHE" not in lvl:
@@ -2240,6 +2632,10 @@ class LogViewerWindow:
             return False
         if cat == "仅重连与告警 (RETRY/ERROR)" and not any(k in lvl for k in ("RETRY", "ERR", "TIMEOUT")):
             return False
+        if cat == "仅慢请求 (>200ms)":
+            m = re.search(r"(\d+)\s*ms", line)
+            if not m or int(m.group(1)) < 200:
+                return False
         return True
 
     def reapply_filter(self):
@@ -2265,17 +2661,61 @@ class LogViewerWindow:
     def _update_status_label(self):
         total = len(self._all_records)
         try:
-            num_displayed = int(self.txt_logs.index("end-1c").split(".")[0]) - 1
-            num_displayed = max(0, num_displayed)
+            if self.txt_logs.compare("1.0", "==", "end-1c"):
+                num_displayed = 0
+            else:
+                num_displayed = int(self.txt_logs.index("end-2c").split(".")[0])
         except Exception:
             num_displayed = 0
-        self.var_status.set(f"当前显示: {num_displayed} 行 / 历史记录: {total} 条 | 实时监听中 ●")
+
+        # Telemetry metrics
+        p50_str = "--"
+        p95_str = "--"
+        reuse_str = "--"
+        retry_str = "0"
+        try:
+            if hasattr(gbf_proxy, "api_telemetry"):
+                t_stats = gbf_proxy.api_telemetry.get_stats()
+                pct = t_stats.get("percentiles", {})
+                if pct.get("count", 0) > 0:
+                    p50_str = f"{pct.get('p50', 0):.0f}ms"
+                    p95_str = f"{pct.get('p95', 0):.0f}ms"
+                    reuse_str = f"{t_stats.get('reuse_rate', 0):.1f}%"
+                    retry_str = str(t_stats.get("retry_count", 0))
+        except Exception:
+            pass
+
+        cache_str = "--"
+        try:
+            if hasattr(gbf_proxy, "PROXY_STATS"):
+                ps = gbf_proxy.PROXY_STATS
+                hits = ps.get("hits", 0)
+                dls = ps.get("downloads", 0)
+                if hits + dls > 0:
+                    cache_str = f"{hits / (hits + dls) * 100:.1f}%"
+        except Exception:
+            pass
+
+        status_flag = "⏸ 已暂停刷新" if self.var_paused.get() else "● 实时监听中"
+        parts = []
+        if p50_str != "--":
+            parts.append(f"⚡ API P50: {p50_str} (P95: {p95_str})")
+            parts.append(f"长连接复用: {reuse_str}")
+        if cache_str != "--":
+            parts.append(f"缓存命中: {cache_str}")
+        if retry_str != "0":
+            parts.append(f"重试: {retry_str}")
+        parts.append(f"当前显示: {num_displayed} 行 / 历史: {total} 条")
+        parts.append(status_flag)
+
+        self.var_status.set("  |  ".join(parts))
+
 
     def clear_display(self):
         self.txt_logs.configure(state="normal")
         self.txt_logs.delete("1.0", "end")
         self.txt_logs.configure(state="disabled")
-        self.var_status.set("显示已清空 (新日志将持续接收显示)")
+        self._update_status_label()
 
     def copy_all(self):
         text = self.txt_logs.get("1.0", "end-1c")
@@ -2283,6 +2723,171 @@ class LogViewerWindow:
             self.top.clipboard_clear()
             self.top.clipboard_append(text)
             self.var_status.set(f"已复制当前显示的全部日志到剪贴板！({len(text):,} 字符)")
+
+    def export_logs(self):
+        """Export full, raw diagnostic log with complete domains, query strings, and environment headers."""
+        with self._queue_lock:
+            records = list(self._all_records)
+        if not records:
+            messagebox.showinfo("提示", "当前没有可导出的日志记录。", parent=self.top)
+            return
+
+        default_name = f"gbf_diagnostic_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        file_path = filedialog.asksaveasfilename(
+            parent=self.top,
+            title="导出全量排查诊断日志 (Diagnostic Log)",
+            initialfile=default_name,
+            defaultextension=".log",
+            filetypes=[("Log Files", "*.log"), ("Text Files", "*.txt"), ("All Files", "*.*")]
+        )
+        if not file_path:
+            return
+
+        header = [
+            "# ==============================================================================",
+            "# GBF Accelerator Diagnostic Log (全量故障排查诊断日志)",
+            f"# Generated At: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"# Total Records: {len(records)}",
+        ]
+        try:
+            if hasattr(gbf_proxy, "api_telemetry"):
+                t_stats = gbf_proxy.api_telemetry.get_stats()
+                pct = t_stats.get("percentiles", {})
+                header.append(
+                    f"# Telemetry: P50={pct.get('p50', 0):.1f}ms, P95={pct.get('p95', 0):.1f}ms, "
+                    f"KeepAlive Reuse={t_stats.get('reuse_rate', 0):.1f}%, Retries={t_stats.get('retry_count', 0)}"
+                )
+        except Exception:
+            pass
+
+        try:
+            if hasattr(gbf_proxy, "PROXY_STATS"):
+                ps = gbf_proxy.PROXY_STATS
+                hits = ps.get("hits", 0)
+                dls = ps.get("downloads", 0)
+                cache_r = f"{hits / (hits + dls) * 100:.1f}%" if (hits + dls) > 0 else "0.0%"
+                header.append(
+                    f"# Proxy Stats: Hits={hits}, RAM Hits={ps.get('ram_hits', 0)}, Downloads={dls}, "
+                    f"APIs={ps.get('apis', 0)}, Cache Rate={cache_r}"
+                )
+        except Exception:
+            pass
+
+        header.append("# Notice: Contains complete raw URLs, query parameters and transport-level connection events.")
+        header.append("# ==============================================================================\n")
+
+        full_content = "\n".join(header) + "\n" + "\n".join(rec[0] for rec in records) + "\n"
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(full_content)
+            self.var_status.set(f"已导出全量诊断日志: {os.path.basename(file_path)} (共 {len(records)} 条原始记录)")
+            messagebox.showinfo(
+                "导出成功",
+                f"全量排查诊断日志已成功导出至：\n{file_path}\n\n该文件包含 100% 完整的原始域名、请求参数及底层连接握手，可直接发给开发者排查问题。",
+                parent=self.top
+            )
+        except Exception as e:
+            messagebox.showerror("导出失败", f"无法写入文件: {e}", parent=self.top)
+
+    def export_visible_logs(self):
+        """Export currently filtered view text as displayed on screen."""
+        text = self.txt_logs.get("1.0", "end-1c")
+        if not text.strip():
+            messagebox.showinfo("提示", "当前屏幕上没有可见日志。", parent=self.top)
+            return
+        default_name = f"gbf_view_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        file_path = filedialog.asksaveasfilename(
+            parent=self.top,
+            title="导出当前屏幕显示日志",
+            initialfile=default_name,
+            defaultextension=".log",
+            filetypes=[("Log Files", "*.log"), ("Text Files", "*.txt"), ("All Files", "*.*")]
+        )
+        if file_path:
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                self.var_status.set(f"已导出屏幕视图日志至: {os.path.basename(file_path)}")
+            except Exception as e:
+                messagebox.showerror("导出失败", f"无法写入文件: {e}", parent=self.top)
+
+    def _on_right_click(self, event):
+        try:
+            idx = self.txt_logs.index(f"@{event.x},{event.y}")
+            line_no = idx.split(".")[0]
+            self._context_line = self.txt_logs.get(f"{line_no}.0", f"{line_no}.end").strip()
+            if self._context_line:
+                self.context_menu.tk_popup(event.x_root, event.y_root)
+        except Exception:
+            pass
+
+    def _copy_selected_line(self):
+        if self._context_line:
+            self.top.clipboard_clear()
+            self.top.clipboard_append(self._context_line)
+            self.var_status.set("已复制当前显示行到剪贴板！")
+
+    def _copy_raw_line(self):
+        """Find the corresponding raw line from _all_records and copy to clipboard."""
+        if not self._context_line:
+            return
+        ts_match = re.match(r"^(\[\d{2}:\d{2}:\d{2}\])", self._context_line)
+        if ts_match:
+            ts = ts_match.group(1)
+            # Find in reversed _all_records
+            url = self._extract_url_from_line(self._context_line)
+            path_key = url.split("?")[0].replace("https://game.granbluefantasy.jp", "").replace("https://prd-game-a-granbluefantasy.akamaized.net", "")
+            with self._queue_lock:
+                for raw, _ in reversed(self._all_records):
+                    if raw.startswith(ts) and (not path_key or path_key in raw):
+                        self.top.clipboard_clear()
+                        self.top.clipboard_append(raw)
+                        self.var_status.set("已复制对应的原始排查日志记录！")
+                        return
+        self._copy_selected_line()
+
+    def _copy_selected_url(self):
+        if not self._context_line:
+            return
+        url = self._extract_url_from_line(self._context_line)
+        if url:
+            self.top.clipboard_clear()
+            self.top.clipboard_append(url)
+            self.var_status.set(f"已复制 URL: {url}")
+        else:
+            self._copy_selected_line()
+
+    def _filter_selected_path(self):
+        if not self._context_line:
+            return
+        url = self._extract_url_from_line(self._context_line)
+        if url:
+            clean = url.split("?")[0].strip()
+            clean_path = clean.replace("https://game.granbluefantasy.jp", "").replace("https://prd-game-a-granbluefantasy.akamaized.net", "")
+            self.var_filter_text.set(clean_path if clean_path else clean)
+            self.reapply_filter()
+
+    def _extract_url_from_line(self, line: str) -> str:
+        # Check compact host tags
+        m_gbf = re.search(r"\[gbf\s*\]\s+(/[^\s\)]+)", line)
+        if m_gbf:
+            return f"https://game.granbluefantasy.jp{m_gbf.group(1)}"
+        m_asset = re.search(r"\[asset\s*\]\s+(/[^\s\)]+)", line)
+        if m_asset:
+            return f"https://prd-game-a-granbluefantasy.akamaized.net{m_asset.group(1)}"
+        m_mbga = re.search(r"\[mbga\s*\]\s+(/[^\s\)]+)", line)
+        if m_mbga:
+            return f"https://gbf.game.mbga.jp{m_mbga.group(1)}"
+
+        m = re.search(r"(?:https?://[^\s]+|(?:game\.granbluefantasy\.jp|[a-zA-Z0-9\.\-]+akamaized\.net)?[/][^\s\)]+)", line)
+        if m:
+            found = m.group(0).rstrip(")")
+            if found.startswith("/"):
+                return f"https://game.granbluefantasy.jp{found}"
+            return found
+        if "->" in line:
+            return line.split("->")[-1].strip().split()[0]
+        return ""
 
     def on_close(self):
         self._is_closed = True
@@ -2293,6 +2898,7 @@ class LogViewerWindow:
             except Exception:
                 pass
         self._scheduled_job = None
+
         try:
             self.top.destroy()
         except Exception:

@@ -1609,7 +1609,7 @@ async def main():
     if config_manager.config.get("enable_ram_warmup", True):
         asyncio.get_running_loop().run_in_executor(None, cache_manager.warm_ram_cache)
 
-    format_log("READY", "32", f"代理服务已成功启动！等待 GBF 请求接入...\n")
+    format_log("READY", "32", "代理服务已成功启动！等待 GBF 请求接入...")
 
     try:
         async with server:
