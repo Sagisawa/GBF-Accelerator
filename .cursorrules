@@ -1,0 +1,13 @@
+# Cursor Rules - GBF-Accelerator
+
+You must strictly adhere to the core architectural constraints defined in `AGENTS.md`:
+
+- P0: Zero business logic tampering. Dynamic APIs (/rest/, /quest/, /party/, /user/, etc.) MUST be transparently forwarded via api_client.
+- P0: Zero mock paths (`MOCK_PATHS = ()`). Official heartbeat `/ob/r` and error logging `/rest/error/js` MUST reach upstream Cygames servers.
+- P0: Dual-constraint retry: POST/PUT/DELETE NEVER retried (max_attempts = 1). Only whitelist read-only GET on stale network disconnects can retry once.
+- P0: Zero proxy headers (`X-Proxy-*`, `X-Cache-*` are forbidden).
+- P0: Never tamper with cached JS/CSS bytes. JS quarantine must use structured empty function fingerprints.
+- P1: Prefetch must be background, rate-limited with jitter (15-35ms pacing), and yield when ACTIVE_API_COUNT > 0.
+- P1: Connection pool conservative sizing (asset_max_connections <= 32 with HTTP/2).
+- P2: NEVER add anti-detection spoofing (no random headers, no UA rotation, no TLS/JA3 spoofing). Keep it a clean, standard HTTP proxy.
+- Always run and pass `pytest test_proxy.py` after code modifications.
