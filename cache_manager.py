@@ -941,15 +941,20 @@ class CacheManager:
                 raw_text = data.decode("utf-8", errors="ignore")
 
             # Exact legacy patch fingerprint check:
-            # Original: function(t,a){t&&alert(t),a&&window.location.reload()}
-            # Patched:  function(t,a){void 0} where alert/reload logic was stripped
-            has_patch_context = bool(
-                re.search(r'function\s*\([a-zA-Z0-9_,\s]*\)\s*\{\s*void\s+0\s*\}', raw_text)
-                or ("void 0" in raw_text and "window.location.reload()" not in raw_text and "t&&alert(t)" not in raw_text)
+            # The historical 1.7.0 patch specifically replaced `t&&alert(t),a&&window.location.reload()`
+            # inside error callback functions with `void 0`, creating `function(t,a){void 0}`.
+            # We strictly match this exact hollowed-out function structure rather than loose "void 0"
+            # tokens to completely prevent false positives on legitimate modern JS minification (e.g. `x === void 0`).
+            has_hollowed_func_structure = bool(
+                re.search(
+                    r'(?:function(?:\s+[a-zA-Z0-9_]+)?\s*\([a-zA-Z0-9_,\s]*\)\s*|\([a-zA-Z0-9_,\s]*\)\s*=>\s*)\{\s*(?:void\s+0\s*;?|;?)\s*\}',
+                    raw_text
+                )
             )
             has_error_handler_signature = ("error" in raw_text.lower() or "onerror" in raw_text.lower())
+            is_missing_original_handlers = ("window.location.reload" not in raw_text and "alert(" not in raw_text)
 
-            if has_patch_context and has_error_handler_signature and "t&&alert(t)" not in raw_text:
+            if has_hollowed_func_structure and has_error_handler_signature and is_missing_original_handlers:
                 ts = int(time.time())
                 quarantine_target = file_path.with_name(f"{file_path.name}.quarantine.{ts}")
                 file_path.rename(quarantine_target)

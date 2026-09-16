@@ -935,12 +935,26 @@ async def run_test():
                 with open(ext_file, "w") as f:
                     f.write('{"ETag": "old"}')
 
-                # Verify quarantine triggers
+                # Verify quarantine triggers on tampered file
                 is_quarantined = q_cm._check_and_quarantine_tampered_js(test_target_file)
                 assert is_quarantined is True, "Must quarantine tampered set-error-handler.js"
                 assert not test_target_file.exists(), "Original tampered file must be moved"
                 quarantined_files = list(q_tmp_dir.glob("set-error-handler.js.quarantine.*"))
                 assert len(quarantined_files) == 1, "Must find exactly one .quarantine backup file"
+
+                # Verify negative case: legitimate modern minified JS using `void 0` (e.g. `x === void 0`) is NOT quarantined
+                legit_file = q_tmp_dir / "set-error-handler.js"
+                with open(legit_file, "wb") as f:
+                    f.write(b'function onError(t, a){ if (t === void 0) { console.error("error occurred", a); } }')
+                assert q_cm._check_and_quarantine_tampered_js(legit_file) is False, "Must NOT quarantine legitimate JS using void 0"
+                assert legit_file.is_file(), "Legitimate JS file must remain intact"
+
+                # Verify negative case: original official script with alert/reload is NOT quarantined
+                with open(legit_file, "wb") as f:
+                    f.write(b'function(t, a){ t && alert(t), a && window.location.reload() }')
+                assert q_cm._check_and_quarantine_tampered_js(legit_file) is False, "Must NOT quarantine original official script"
+                assert legit_file.is_file(), "Original script must remain intact"
+
                 print("Test 51 - Legacy Tampered JS Quarantine & Auto-Healing: OK", flush=True)
             finally:
                 shutil.rmtree(q_tmp_dir, ignore_errors=True)
