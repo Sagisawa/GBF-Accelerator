@@ -93,25 +93,37 @@ async def run_test():
             assert not cache_manager.save_cache("/assets/test/empty.png", {"content-type": "image/png"}, b"")
             print("Test 10 - Cache Integrity (rejected HTML error page & empty payload): OK")
 
-            # Test 11: Immutable Header Logic (only versioned assets get immutable when enabled)
+            # Test 11: Browser Cache Configuration Matrix (4-quadrant verification)
             from config_manager import config_manager
             orig_setting = config_manager.config.get("enable_browser_cache", True)
             try:
+                # Quadrant 1: Disabled + versioned -> MUST NOT inject any cache headers
                 config_manager.config["enable_browser_cache"] = False
-                headers_test_ver = {}
-                cache_manager._apply_browser_cache_headers(headers_test_ver, "/assets/1772717316/foo.js")
-                assert "immutable" not in headers_test_ver.get("Cache-Control", "")
+                h_dis_ver = {}
+                cache_manager._apply_browser_cache_headers(h_dis_ver, "/assets/1772717316/foo.js")
+                assert "Cache-Control" not in h_dis_ver, "Disabled browser cache must not inject Cache-Control for versioned assets"
+                assert "Expires" not in h_dis_ver, "Disabled browser cache must not inject Expires for versioned assets"
 
+                # Quadrant 2: Disabled + unversioned -> MUST NOT inject any cache headers
+                h_dis_unver = {}
+                cache_manager._apply_browser_cache_headers(h_dis_unver, "/manifest.json")
+                assert "Cache-Control" not in h_dis_unver, "Disabled browser cache must not inject Cache-Control for unversioned assets"
+                assert "Expires" not in h_dis_unver, "Disabled browser cache must not inject Expires for unversioned assets"
+
+                # Quadrant 3: Enabled + versioned -> MUST inject immutable and 2038 Expires
                 config_manager.config["enable_browser_cache"] = True
-                headers_ver_on = {}
-                cache_manager._apply_browser_cache_headers(headers_ver_on, "/assets/1772717316/foo.js")
-                assert "immutable" in headers_ver_on.get("Cache-Control", "")
+                h_en_ver = {}
+                cache_manager._apply_browser_cache_headers(h_en_ver, "/assets/1772717316/foo.js")
+                assert h_en_ver.get("Cache-Control") == "public, max-age=31536000, immutable"
+                assert "Expires" in h_en_ver
 
-                # Unversioned asset even when enabled should NEVER get immutable
-                headers_unver = {}
-                cache_manager._apply_browser_cache_headers(headers_unver, "/manifest.json")
-                assert "immutable" not in headers_unver.get("Cache-Control", "")
-                print("Test 11 - Immutable Header Logic: OK")
+                # Quadrant 4: Enabled + unversioned -> MUST inject standard short cache, NEVER immutable
+                h_en_unver = {}
+                cache_manager._apply_browser_cache_headers(h_en_unver, "/manifest.json")
+                assert h_en_unver.get("Cache-Control") == "public, max-age=3600"
+                assert "immutable" not in h_en_unver.get("Cache-Control", "")
+                assert "Expires" not in h_en_unver
+                print("Test 11 - Browser Cache Configuration 4-Quadrant Matrix: OK")
             finally:
                 config_manager.config["enable_browser_cache"] = orig_setting
 

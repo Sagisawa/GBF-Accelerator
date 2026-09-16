@@ -186,9 +186,11 @@ class CacheManager:
         Never inject immutable into unversioned assets to prevent serving stale assets after updates.
         """
         enable_browser_cache = config_manager.config.get("enable_browser_cache", True)
-        is_versioned = bool(re.search(r"/assets/\d+/", url_path) or re.search(r"/\d{8,}/", url_path))
+        if not enable_browser_cache:
+            return
 
-        if enable_browser_cache and is_versioned:
+        is_versioned = bool(re.search(r"/assets/\d+/", url_path) or re.search(r"/\d{8,}/", url_path))
+        if is_versioned:
             headers["Cache-Control"] = "public, max-age=31536000, immutable"
             headers["Expires"] = "Wed, 01 Jan 2038 00:00:00 GMT"
         else:
