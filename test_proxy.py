@@ -656,15 +656,25 @@ async def run_test():
                 assert test_call_counts["https://game.granbluefantasy.jp/rest/unknown/action.json"] == 1, \
                     "Unknown GET path must be attempted exactly 1 time (NEVER retried)"
 
-                # 3. Whitelist read-only GET (start.json): MUST RETRY EXACTLY ONCE on stale drop
-                whitelist_url = "https://game.granbluefantasy.jp/rest/multiraid/start.json?fail_stale=1"
-                resp, reused = await gbf_proxy.request_api("GET", whitelist_url, {}, path="/rest/multiraid/start.json")
+                # 3. Business initialization GET (start.json): MUST NEVER RETRY (ambiguous outcome)
+                start_url = "https://game.granbluefantasy.jp/rest/multiraid/start.json?fail_stale=1"
+                try:
+                    await gbf_proxy.request_api("GET", start_url, {}, path="/rest/multiraid/start.json")
+                    assert False, "start.json must raise exception and never retry"
+                except httpx.RemoteProtocolError:
+                    pass
+                assert test_call_counts["https://game.granbluefantasy.jp/rest/multiraid/start.json"] == 1, \
+                    "start.json must be attempted exactly 1 time (NEVER retried on ambiguous outcome)"
+
+                # 4. Whitelist read-only GET (condition.json): MUST RETRY EXACTLY ONCE on stale drop
+                whitelist_url = "https://game.granbluefantasy.jp/rest/multiraid/condition.json?fail_stale=1"
+                resp, reused = await gbf_proxy.request_api("GET", whitelist_url, {}, path="/rest/multiraid/condition.json")
                 assert resp.status_code == 200
                 assert resp.json().get("recovered") is True
-                assert test_call_counts["https://game.granbluefantasy.jp/rest/multiraid/start.json"] == 2, \
-                    "Whitelist start.json must be retried exactly once on connection-level drop"
+                assert test_call_counts["https://game.granbluefantasy.jp/rest/multiraid/condition.json"] == 2, \
+                    "Whitelist condition.json must be retried exactly once on connection-level drop"
                 assert gbf_proxy.api_telemetry.retry_count == 1, "Telemetry retry_count must record exactly 1 retry"
-                print("Test 44 - Strict Dual-Constraint Retry (POST never, unknown GET never, whitelist GET once): OK")
+                print("Test 44 - Strict Dual-Constraint Retry (POST never, unknown GET never, start.json never, whitelist GET once): OK")
             finally:
                 gbf_proxy.api_client.request = orig_api_req
 
@@ -741,7 +751,7 @@ async def run_test():
 
             mock_srv = await asyncio.start_server(handle_mock_http11, "127.0.0.1", 0)
             mock_port = mock_srv.sockets[0].getsockname()[1]
-            mock_url = f"http://127.0.0.1:{mock_port}/rest/multiraid/start.json"
+            mock_url = f"http://127.0.0.1:{mock_port}/rest/multiraid/condition.json"
 
             orig_proxy_api_client = gbf_proxy.api_client
             gbf_proxy.api_client = httpx.AsyncClient(
@@ -754,26 +764,26 @@ async def run_test():
 
             try:
                 # 1. First request -> new connection
-                resp_1, reused_1 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/start.json")
+                resp_1, reused_1 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/condition.json")
                 stream_act_1 = resp_1.extensions.get("network_stream")
                 assert stream_act_1 is not None, "HTTPX response must include network_stream"
                 assert reused_1 is False, "First request must negotiate a new connection"
 
                 # 2. Second request -> HTTPX reuses the same TCP stream
-                resp_2, reused_2 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/start.json")
+                resp_2, reused_2 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/condition.json")
                 stream_act_2 = resp_2.extensions.get("network_stream")
                 assert stream_act_2 is stream_act_1, "HTTPX connection pool must reuse identical underlying stream"
                 assert reused_2 is True, "Second request on existing socket must be recognized as reused"
 
                 # 3. Third request -> reuses again
-                resp_3, reused_3 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/start.json")
+                resp_3, reused_3 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/condition.json")
                 stream_act_3 = resp_3.extensions.get("network_stream")
                 assert stream_act_3 is stream_act_1
                 assert reused_3 is True
 
                 # 4. Server drops connection, testing real socket drop & stale retry recovery
                 should_server_drop = True
-                resp_4, reused_4 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/start.json")
+                resp_4, reused_4 = await gbf_proxy.request_api("GET", mock_url, {}, path="/rest/multiraid/condition.json")
                 stream_act_4 = resp_4.extensions.get("network_stream")
                 assert resp_4.status_code == 200
                 assert stream_act_4 is not stream_act_1, "Reconnected request must use a newly negotiated stream"

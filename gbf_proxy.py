@@ -223,10 +223,7 @@ api_telemetry = ApiTelemetry(enabled=bool(config_manager.config.get("enable_api_
 
 # Strict read-only idempotent whitelist: only these paths may be retried on connection-level drop
 RETRYABLE_API_PATHS = frozenset({
-    "/rest/multiraid/start.json",
     "/rest/multiraid/condition.json",
-    "/rest/raid/start.json",
-    "/rest/quest/start.json",
     "/rest/quest/stage_list",
     "/rest/party/deck_info",
 })
