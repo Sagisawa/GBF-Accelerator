@@ -605,13 +605,11 @@ async def prefetch_worker():
             prefetch_queue.task_done()
 
 def run_proxy_in_thread():
-    global proxy_loop, proxy_server_instance, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore, prefetch_discovery_queue, prefetch_discovery_inflight, prefetch_discovery_dropped
+    global proxy_loop, proxy_server_instance, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
     ACTIVE_API_COUNT = 0
     ACTIVE_FOREGROUND_ASSETS = 0
     _last_foreground_asset_ts = 0.0
     _inflight_fetches.clear()
-    prefetch_discovery_inflight.clear()
-    prefetch_discovery_dropped = 0
     save_semaphore = None
     proxy_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(proxy_loop)
@@ -628,14 +626,12 @@ def run_proxy_in_thread():
         ACTIVE_FOREGROUND_ASSETS = 0
         _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
-        prefetch_discovery_inflight.clear()
-        prefetch_discovery_dropped = 0
         save_semaphore = None
         PROXY_STATS["is_running"] = False
         proxy_ready_event.set()
 
 def start_proxy_thread():
-    global proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore, prefetch_discovery_queue, prefetch_discovery_inflight, prefetch_discovery_dropped
+    global proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
     with _proxy_thread_lock:
         if proxy_thread and proxy_thread.is_alive():
             return
@@ -643,8 +639,6 @@ def start_proxy_thread():
         ACTIVE_FOREGROUND_ASSETS = 0
         _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
-        prefetch_discovery_inflight.clear()
-        prefetch_discovery_dropped = 0
         save_semaphore = None
         proxy_ready_event.clear()
         PROXY_STATS["last_error"] = ""
@@ -652,14 +646,12 @@ def start_proxy_thread():
         proxy_thread.start()
 
 def stop_proxy_thread():
-    global proxy_loop, proxy_server_instance, proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore, prefetch_discovery_queue, prefetch_discovery_inflight, prefetch_discovery_dropped
+    global proxy_loop, proxy_server_instance, proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
     with _proxy_thread_lock:
         ACTIVE_API_COUNT = 0
         ACTIVE_FOREGROUND_ASSETS = 0
         _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
-        prefetch_discovery_inflight.clear()
-        prefetch_discovery_dropped = 0
         save_semaphore = None
         PROXY_STATS["is_running"] = False
         proxy_ready_event.clear()
@@ -671,6 +663,7 @@ def stop_proxy_thread():
                     # leave the old HTTP client alive during a routing switch.
                     if proxy_server_instance:
                         proxy_server_instance.close()
+                    prefetch_discovery_inflight.clear()
                     current = asyncio.current_task()
                     for task in asyncio.all_tasks():
                         if task is not current:
@@ -1774,6 +1767,7 @@ async def main():
         async with server:
             await server.serve_forever()
     finally:
+        prefetch_discovery_inflight.clear()
         PROXY_STATS["is_running"] = False
         proxy_ready_event.clear()
         await close_http_client()
