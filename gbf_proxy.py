@@ -243,15 +243,15 @@ PROXY_STATS = {
     "apis": 0,
     "is_running": False,
     "last_error": "",
-    # Granular request and cache telemetry (Commit 2)
-    "foreground_asset_requests": 0,
-    "prefetch_asset_requests": 0,
-    "prefetch_asset_successes": 0,
-    "cache_ram_hit": 0,
-    "cache_disk_hit": 0,
-    "cache_miss": 0,
-    "prefetch_reused": 0,
-    "api_retry_count": 0,
+    # Granular request and cache telemetry
+    "foreground_asset_requests": 0,  # Total foreground asset requests observed by proxy
+    "prefetch_asset_requests": 0,    # Total upstream GET requests attempted by prefetch worker
+    "prefetch_asset_successes": 0,   # Upstream prefetch fetches returning 200 OK with non-empty body
+    "cache_ram_hit": 0,              # Foreground hits served directly from RAM cache
+    "cache_disk_hit": 0,             # Foreground hits served from local SSD/disk cache
+    "cache_miss": 0,                 # Foreground misses fetched from upstream CDN
+    "prefetch_reused": 0,            # Proxy-observed foreground hits that matched prewarmed assets
+    "api_retry_count": 0,            # Dynamic API retry attempts triggered on read-only endpoints
 }
 
 # Prefetch reuse tracking: bounded LRU map of prewarmed asset keys (max 4096)
