@@ -598,7 +598,7 @@ class CacheManager:
             return _exists(self._get_local_path(clean_key[7:].lstrip("/")))
         return False
 
-    def warm_ram_cache(self, max_items: int = 6000) -> int:
+    def warm_ram_cache(self, max_items: Optional[int] = None) -> int:
         """Startup warmup: preload high-frequency static assets (active versions, core UI,
         fonts, navigation, common SE) into the RAM cache so initial requests of a session
         never hit the disk. Runs in a background executor thread, never on the request path.
@@ -606,6 +606,8 @@ class CacheManager:
         """
         if not config_manager.config.get("enable_ram_cache", True):
             return 0
+        if max_items is None:
+            max_items = int(config_manager.config.get("ram_warmup_max_items", 1500))
 
         t0 = time.perf_counter()
         max_ram = self._get_max_ram_bytes()

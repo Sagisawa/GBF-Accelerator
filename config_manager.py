@@ -33,6 +33,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "enable_auto_repair": True, # Auto-detect and clean 0-byte or corrupted cache files
     "enable_prefetch": True,   # Parse scene JS/JSON references and prefetch missing assets in background
     "enable_ram_warmup": True, # Preload small high-frequency files into RAM cache at startup
+    "ram_warmup_max_items": 1500, # Max assets to preload during startup RAM warmup (fast ~1.5s SSD window)
     "verify_upstream_tls": True, # Upstream TLS certificate verification for security
     "shimakaze_mode": False,   # ShimakazeGo optimization mode (relaxed timeout, retry, self-signed CA)
     "auto_check_update": True, # Automatically check for newer releases on startup
