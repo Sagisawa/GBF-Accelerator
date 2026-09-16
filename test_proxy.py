@@ -1465,7 +1465,186 @@ async def run_test():
                 gbf_proxy.prefetch_discovery_inflight.update(orig_disc_inflight)
             print("Test 67 - Prefetch Discovery Worker Exception Isolation & Cancellation Safety: OK", flush=True)
 
-            print("\n[+] ALL 67 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # ---------------- Test 68: Local Cache Independence From Upstream Availability ----------------
+            # Verifies that once an asset is cached locally, neither L1 (RAM) nor L2 (SSD) relies
+            # on upstream connectivity. If upstream becomes completely unavailable, local requests
+            # still succeed (200 OK, identical bytes) with zero upstream fetch calls.
+            if gbf_proxy.proxy_thread is None or not gbf_proxy.PROXY_STATS.get("is_running", False):
+                gbf_proxy.LISTEN_HOST = "127.0.0.1"
+                gbf_proxy.LISTEN_PORT = test_port
+                gbf_proxy.start_proxy_thread()
+                assert gbf_proxy.proxy_ready_event.wait(timeout=5.0), "Proxy failed to restart for Test 68"
+                await asyncio.sleep(0.3)
+
+            async with httpx.AsyncClient(
+                proxy=f"http://127.0.0.1:{test_port}",
+                verify=ssl_ctx,
+                timeout=10.0,
+            ) as e2e_client:
+                target_client = gbf_proxy.asset_client or gbf_proxy.http_client
+                real_request = target_client.request
+                test_asset_url = "https://prd-game-a-granbluefantasy.akamaized.net/assets/test/upstream_independence_test.png"
+                test_asset_path = "/assets/test/upstream_independence_test.png"
+                test_payload = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+
+                upstream_state = "alive"
+                upstream_call_count = 0
+
+                async def mock_upstream_independence(method, url, **kwargs):
+                    nonlocal upstream_call_count
+                    if "upstream_independence_test.png" in str(url):
+                        upstream_call_count += 1
+                        if upstream_state == "alive":
+                            return httpx.Response(
+                                200,
+                                headers={"content-type": "image/png", "etag": '"independence-test-v1"'},
+                                content=test_payload,
+                                request=httpx.Request(method, url),
+                            )
+                        else:
+                            raise httpx.ConnectError("Simulated upstream proxy offline / unreachable")
+                    return await real_request(method, url, **kwargs)
+
+                target_client.request = mock_upstream_independence
+                try:
+                    # Part A: Cold miss with upstream alive -> populates L1 RAM and L2 SSD
+                    resp_cold = await e2e_client.get(test_asset_url)
+                    assert resp_cold.status_code == 200
+                    assert resp_cold.content == test_payload
+                    assert upstream_call_count == 1, f"Expected 1 upstream fetch on cold miss, got {upstream_call_count}"
+
+                    # Wait briefly for bounded async disk write to complete
+                    for _ in range(20):
+                        if cache_manager.has_cache(test_asset_path):
+                            break
+                        await asyncio.sleep(0.05)
+                    assert cache_manager.has_cache(test_asset_path), "Asset must be persisted on disk"
+
+                    # Part B: Upstream becomes unavailable -> L1 (RAM) hit succeeds with 0 upstream calls
+                    upstream_state = "offline"
+                    upstream_call_count = 0
+                    resp_ram = await e2e_client.get(test_asset_url)
+                    assert resp_ram.status_code == 200
+                    assert resp_ram.content == test_payload
+                    assert upstream_call_count == 0, f"Expected 0 upstream calls on RAM hit, got {upstream_call_count}"
+
+                    # Part C: Evict RAM cache (force L2 SSD path) while upstream is still unavailable
+                    cache_manager.clear_ram_cache()
+                    assert cache_manager.get_ram_cache(test_asset_path) is None
+
+                    resp_ssd = await e2e_client.get(test_asset_url)
+                    assert resp_ssd.status_code == 200
+                    assert resp_ssd.content == test_payload
+                    assert upstream_call_count == 0, f"Expected 0 upstream calls on SSD hit, got {upstream_call_count}"
+
+                    print("Test 68 - Local Cache Independence (Cold -> RAM -> SSD with Upstream Offline): OK", flush=True)
+                finally:
+                    target_client.request = real_request
+                    p = cache_manager._get_local_path(test_asset_path)
+                    if p and p.exists():
+                        p.unlink(missing_ok=True)
+                    if p:
+                        ext_p = p.parent / (p.name + ".ext")
+                        if ext_p.exists():
+                            ext_p.unlink(missing_ok=True)
+                    cache_manager.clear_ram_cache()
+
+                # ---------------- Test 69: High-Concurrency SingleFlight Under Slow Upstream & Failure Recovery ----------------
+                target_client = gbf_proxy.asset_client or gbf_proxy.http_client
+                real_request = target_client.request
+                test_sf_concurrency_url = "https://prd-game-a-granbluefantasy.akamaized.net/assets/test/high_concurrency_sf_test.js"
+                test_sf_concurrency_path = "/assets/test/high_concurrency_sf_test.js"
+                test_sf_fail_url = "https://prd-game-a-granbluefantasy.akamaized.net/assets/test/sf_failure_recovery_test.js"
+                test_sf_fail_path = "/assets/test/sf_failure_recovery_test.js"
+
+                sf_concurrency_fetches = 0
+                sf_failure_fetches = 0
+                fail_mode = True
+
+                async def mock_sf_contract(method, url, **kwargs):
+                    nonlocal sf_concurrency_fetches, sf_failure_fetches
+                    str_url = str(url)
+                    if "high_concurrency_sf_test.js" in str_url:
+                        sf_concurrency_fetches += 1
+                        await asyncio.sleep(0.30)  # Slow upstream
+                        return httpx.Response(
+                            200,
+                            headers={"content-type": "application/javascript", "etag": '"sf-concurrency-test"'},
+                            content=b"console.log('30-concurrent-singleflight-verified');",
+                            request=httpx.Request(method, url),
+                        )
+                    if "sf_failure_recovery_test.js" in str_url:
+                        sf_failure_fetches += 1
+                        if fail_mode:
+                            await asyncio.sleep(0.10)
+                            raise httpx.ConnectError("Simulated upstream gateway drop during flight")
+                        else:
+                            return httpx.Response(
+                                200,
+                                headers={"content-type": "application/javascript", "etag": '"sf-recovered"'},
+                                content=b"console.log('recovery-success');",
+                                request=httpx.Request(method, url),
+                            )
+                    return await real_request(method, url, **kwargs)
+
+                target_client.request = mock_sf_contract
+                try:
+                    # --- Part A: 30 concurrent callers against slow upstream ---
+                    sf_key_a = f"prd-game-a-granbluefantasy.akamaized.net{test_sf_concurrency_path}"
+                    tasks_a = [e2e_client.get(test_sf_concurrency_url) for _ in range(30)]
+                    responses_a = await asyncio.wait_for(asyncio.gather(*tasks_a), timeout=6.0)
+
+                    assert sf_concurrency_fetches == 1, f"Expected exactly 1 upstream fetch for 30 concurrent requests, got {sf_concurrency_fetches}"
+                    expected_content_a = b"console.log('30-concurrent-singleflight-verified');"
+                    for r in responses_a:
+                        assert r.status_code == 200
+                        assert r.content == expected_content_a
+
+                    # Wait for bounded async save to finalize and remove flight_key
+                    for _ in range(20):
+                        if sf_key_a not in gbf_proxy._inflight_fetches:
+                            break
+                        await asyncio.sleep(0.05)
+                    assert sf_key_a not in gbf_proxy._inflight_fetches, "Inflight tracking entry must be removed after completion"
+
+                    # --- Part B: 5 concurrent callers when upstream fails -> deadlock freedom & inflight cleanup ---
+                    sf_key_b = f"prd-game-a-granbluefantasy.akamaized.net{test_sf_fail_path}"
+                    fail_mode = True
+                    tasks_b = [e2e_client.get(test_sf_fail_url) for _ in range(5)]
+                    responses_b = await asyncio.wait_for(asyncio.gather(*tasks_b), timeout=3.0)
+
+                    # All 5 callers must safely terminate without hanging
+                    for r in responses_b:
+                        assert r.status_code in (502, 504), f"Expected gateway error on upstream failure, got {r.status_code}"
+
+                    # Inflight entry must be cleaned up
+                    assert sf_key_b not in gbf_proxy._inflight_fetches, "Inflight key must be cleared after failure"
+
+                    # --- Part C: Subsequent request after recovery must retry normally and succeed ---
+                    fail_mode = False
+                    resp_retry = await e2e_client.get(test_sf_fail_url)
+                    assert resp_retry.status_code == 200
+                    assert resp_retry.content == b"console.log('recovery-success');"
+                    for _ in range(20):
+                        if sf_key_b not in gbf_proxy._inflight_fetches:
+                            break
+                        await asyncio.sleep(0.05)
+                    assert sf_key_b not in gbf_proxy._inflight_fetches, "Inflight key must be cleared after recovered fetch completes"
+
+                    print("Test 69 - High-Concurrency SingleFlight & Failure Recovery Contract: OK", flush=True)
+                finally:
+                    target_client.request = real_request
+                    for p_str in (test_sf_concurrency_path, test_sf_fail_path):
+                        p = cache_manager._get_local_path(p_str)
+                        if p and p.exists():
+                            p.unlink(missing_ok=True)
+                        if p:
+                            ext_p = p.parent / (p.name + ".ext")
+                            if ext_p.exists():
+                                ext_p.unlink(missing_ok=True)
+                    cache_manager.clear_ram_cache()
+
+            print("\n[+] ALL 69 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()

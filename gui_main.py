@@ -436,9 +436,9 @@ class GBFAcceleratorGUI:
 
         self.lbl_shimakaze_hint = ttk.Label(
             card_settings,
-            text="⚠️ 提示：使用岛风GO时，请务必在岛风GO主界面关闭【使用远端缓存】功能，避免双重反代冲突！",
+            text="提示：本软件架构升级后，日常使用可按需开启岛风GO【使用远端缓存】（可显著加快初次冷启动下载速度）；若遇游戏维护更新后新素材显示异常，在主界面点击【清理缓存】或临时关闭远端缓存即可。",
             style="Gray.TLabel",
-            foreground="#d9534f",
+            foreground="#1971c2",
             wraplength=560,
         )
         self.update_upstream_controls()
@@ -1310,7 +1310,7 @@ class GBFAcceleratorGUI:
             if "8099" in active and not self.var_shimakaze_mode.get():
                 if messagebox.askyesno(
                     "岛风GO 适配建议",
-                    "检测到上游代理为岛风GO (8099)。\n\n是否立即启用【岛风GO 兼容优化模式】？\n\n（将自动放宽超时、启用断线自愈重试、适配自签证书；请记得在岛风GO主界面关闭远端缓存）",
+                    "检测到上游代理为岛风GO (8099)。\n\n是否立即启用【岛风GO 兼容优化模式】？\n\n（将自动放宽超时、启用断线自愈重试、适配自签证书；日常可按需开启远端缓存加速首刷）",
                 ):
                     self.var_shimakaze_mode.set(True)
                     config_manager.config["shimakaze_mode"] = True
