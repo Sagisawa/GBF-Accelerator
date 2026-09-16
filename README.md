@@ -9,12 +9,16 @@
 
 通过将游戏静态资源（立绘、音频、战斗动画、脚本）本地化缓存至 SSD / 内存中，减少静态资源的跨海重复下载，降低重复加载延迟与流量消耗；同时透明联动 Clash / v2rayN 等上游代理，核心游戏 API（抽卡、编队、结算、多人战等）原样转发、不做修改。
 
-> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.7.1_GUI.zip`，解压即用，无需配置 Python 环境。各版本改动参见 [CHANGELOG.md](CHANGELOG.md)。
+> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.7.2_GUI.zip`，解压即用，无需配置 Python 环境。各版本改动参见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
 ## 主要功能
 
+- **前台素材优先调度与 QoS 避让 (v1.7.2)**：
+  - 动态监测前台活动请求，当前台拉取战斗与首屏素材时，后台 Prefetch 立即主动暂停并让道；
+  - 预加载发现流水线与前台请求彻底解耦，多达 120 次磁盘检查卸载至后台工作线程池，主事件循环 0 阻塞；
+  - 启动阶段内存预热调优至 1500 项，启动扫描时间减少约 75%，开箱即用极速就绪。
 - **动态 API / 静态素材双通道物理隔离 (Dual-Client)**：
   - **动态 API 通道 (`api_client`)**：针对 `game.granbluefantasy.jp` 专设独立 HTTP/1.1 连接池，避免协议降级开销与队头排队。
   - **静态素材通道 (`asset_client`)**：针对 Akamai CDN 启用 HTTP/2 多路复用并发通道。

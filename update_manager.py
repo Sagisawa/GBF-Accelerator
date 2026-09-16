@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Callable
 import httpx
 
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 GITHUB_REPO = "Sagisawa/GBF-Accelerator"
 RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
