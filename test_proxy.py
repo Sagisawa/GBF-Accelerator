@@ -1652,9 +1652,43 @@ async def run_test():
                             ext_p = p.parent / (p.name + ".ext")
                             if ext_p.exists():
                                 ext_p.unlink(missing_ok=True)
-                    cache_manager.clear_ram_cache()
+                # ---------------- Test 70: Granular Request/Cache Telemetry & Prefetch Reuse Tracking ----------------
+                gbf_proxy.reset_telemetry_stats()
+                test_pf_url = "https://prd-game-a-granbluefantasy.akamaized.net/assets/test/telemetry_pf_reused.png"
+                test_pf_path = "/assets/test/telemetry_pf_reused.png"
+                test_pf_data = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtelemetry-reused"
+                
+                # Part A: Simulate prefetch downloading and warming an asset
+                gbf_proxy.PROXY_STATS["prefetch_asset_requests"] += 1
+                gbf_proxy.record_prefetch_saved(test_pf_path)
+                cache_manager.store_ram_cache(test_pf_path, {"Content-Type": "image/png"}, test_pf_data)
 
-            print("\n[+] ALL 69 TESTS PASSED SUCCESSFULLY!", flush=True)
+                # Part B: Foreground request hits the prewarmed asset
+                resp_fg1 = await e2e_client.get(test_pf_url)
+                assert resp_fg1.status_code == 200
+                assert resp_fg1.content == test_pf_data
+                assert gbf_proxy.PROXY_STATS["foreground_asset_requests"] == 1
+                assert gbf_proxy.PROXY_STATS["cache_ram_hit"] == 1
+                assert gbf_proxy.PROXY_STATS["prefetch_reused"] == 1, "First foreground hit must be recognized as prefetch_reused"
+
+                # Part C: Subsequent foreground request hits RAM again, but does not double-count prefetch_reused
+                resp_fg2 = await e2e_client.get(test_pf_url)
+                assert resp_fg2.status_code == 200
+                assert gbf_proxy.PROXY_STATS["foreground_asset_requests"] == 2
+                assert gbf_proxy.PROXY_STATS["cache_ram_hit"] == 2
+                assert gbf_proxy.PROXY_STATS["prefetch_reused"] == 1, "Repeated foreground hits must not inflate prefetch_reused"
+
+                # Part D: Check summary dictionary
+                summary = gbf_proxy.get_telemetry_summary()
+                assert summary["foreground_asset_requests"] == 2
+                assert summary["prefetch_asset_requests"] == 1
+                assert summary["prefetch_reused"] == 1
+                assert summary["prefetch_reuse_rate_pct"] == 100.0
+
+                cache_manager.clear_ram_cache()
+                print("Test 70 - Granular Request/Cache Telemetry & Prefetch Reuse Tracking: OK", flush=True)
+
+            print("\n[+] ALL 70 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()

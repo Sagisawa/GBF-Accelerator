@@ -235,7 +235,7 @@ api_client: Optional[httpx.AsyncClient] = None
 asset_client: Optional[httpx.AsyncClient] = None
 http_client: Optional[httpx.AsyncClient] = None  # Backward-compatible alias
 
-# Real-time statistics dictionary for GUI
+# Real-time statistics dictionary for GUI & Telemetry
 PROXY_STATS = {
     "hits": 0,
     "ram_hits": 0,
@@ -243,7 +243,64 @@ PROXY_STATS = {
     "apis": 0,
     "is_running": False,
     "last_error": "",
+    # Granular request and cache telemetry (Commit 2)
+    "foreground_asset_requests": 0,
+    "prefetch_asset_requests": 0,
+    "cache_ram_hit": 0,
+    "cache_disk_hit": 0,
+    "cache_miss": 0,
+    "prefetch_reused": 0,
+    "api_retry_count": 0,
 }
+
+# Prefetch reuse tracking: bounded set of prewarmed asset keys (max 4096)
+_prewarmed_assets: collections.OrderedDict = collections.OrderedDict()
+_prewarmed_lock = threading.Lock()
+
+def record_prefetch_saved(url_path: str):
+    """Mark an asset as written by background prefetch worker."""
+    clean = url_path.split("?")[0].lstrip("/\\").lower()
+    with _prewarmed_lock:
+        _prewarmed_assets[clean] = time.time()
+        if len(_prewarmed_assets) > 4096:
+            _prewarmed_assets.popitem(last=False)
+
+def check_and_record_prefetch_reused(url_path: str):
+    """Check if a foreground cache hit was prewarmed by background prefetch."""
+    clean = url_path.split("?")[0].lstrip("/\\").lower()
+    with _prewarmed_lock:
+        if clean in _prewarmed_assets:
+            del _prewarmed_assets[clean]
+            PROXY_STATS["prefetch_reused"] += 1
+
+def get_telemetry_summary() -> Dict[str, Any]:
+    """Return an explicit, cross-cutting telemetry summary of request distributions and prefetch reuse."""
+    fg_reqs = PROXY_STATS.get("foreground_asset_requests", 0)
+    pf_reqs = PROXY_STATS.get("prefetch_asset_requests", 0)
+    pf_reused = PROXY_STATS.get("prefetch_reused", 0)
+    reuse_rate = round((pf_reused / pf_reqs * 100.0), 1) if pf_reqs > 0 else 0.0
+    return {
+        "foreground_asset_requests": fg_reqs,
+        "prefetch_asset_requests": pf_reqs,
+        "cache_ram_hit": PROXY_STATS.get("cache_ram_hit", 0),
+        "cache_disk_hit": PROXY_STATS.get("cache_disk_hit", 0),
+        "cache_miss": PROXY_STATS.get("cache_miss", 0),
+        "prefetch_reused": pf_reused,
+        "prefetch_reuse_rate_pct": reuse_rate,
+        "api_retry_count": PROXY_STATS.get("api_retry_count", 0),
+    }
+
+def reset_telemetry_stats():
+    """Reset granular telemetry counters for baseline measurements."""
+    with _prewarmed_lock:
+        _prewarmed_assets.clear()
+    PROXY_STATS["foreground_asset_requests"] = 0
+    PROXY_STATS["prefetch_asset_requests"] = 0
+    PROXY_STATS["cache_ram_hit"] = 0
+    PROXY_STATS["cache_disk_hit"] = 0
+    PROXY_STATS["cache_miss"] = 0
+    PROXY_STATS["prefetch_reused"] = 0
+    PROXY_STATS["api_retry_count"] = 0
 
 proxy_server_instance = None
 proxy_loop = None
@@ -586,8 +643,10 @@ async def prefetch_worker():
             if cache_manager.has_cache(url_path) or flight_key in _inflight_fetches:
                 continue
             url = f"https://{target_host}{url_path}"
+            PROXY_STATS["prefetch_asset_requests"] += 1
             resp = await request_asset("GET", url, headers=PREFETCH_HEADERS)
             if resp.status_code == 200 and resp.content:
+                record_prefetch_saved(url_path)
                 await _bounded_save_cache(url_path, dict(resp.headers), resp.content)
                 format_log("PREFETCH", "35", f"Warmed (P{prio}) -> {target_host}{url_path} ({len(resp.content):,} B)")
                 if prefetch_queue.qsize() > 0:
@@ -823,6 +882,7 @@ async def request_api(
             return resp, reused
         except (httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError) as e:
             if attempt + 1 < max_attempts:
+                PROXY_STATS["api_retry_count"] += 1
                 format_log("STALE-RETRY", "33", f"Stale connection on read-only {clean_path} ({e.__class__.__name__}), fast-reconnecting (1/1)...")
                 continue
             api_telemetry.record(
@@ -1198,6 +1258,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
             )
 
             if is_static:
+                PROXY_STATS["foreground_asset_requests"] += 1
                 is_head = (method.upper() == "HEAD")
                 loop = asyncio.get_running_loop()
                 req_etag = headers.get("if-none-match", "")
@@ -1222,6 +1283,8 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                     PROXY_STATS["hits"] += 1
                     PROXY_STATS["ram_hits"] += 1
+                    PROXY_STATS["cache_ram_hit"] += 1
+                    check_and_record_prefetch_reused(path)
                     format_log("CACHE-RAM", "32", f"HIT -> {path} ({len(c_data):,} B)")
                     if not is_head:
                         maybe_enqueue_prefetch(target_host, path, c_data)
@@ -1237,6 +1300,10 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             PROXY_STATS["hits"] += 1
                             if peek_is_ram:
                                 PROXY_STATS["ram_hits"] += 1
+                                PROXY_STATS["cache_ram_hit"] += 1
+                            else:
+                                PROXY_STATS["cache_disk_hit"] += 1
+                            check_and_record_prefetch_reused(path)
                             format_log(f"CACHE-{'RAM' if peek_is_ram else 'DISK'}", "32", f"304 Not Modified (meta) -> {path}")
                             continue
 
@@ -1256,11 +1323,15 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         }
                         await send_cached_response(writer, 304, "Not Modified", not_mod_headers, b"", is_head=is_head)
                         PROXY_STATS["hits"] += 1
+                        PROXY_STATS["cache_disk_hit"] += 1
+                        check_and_record_prefetch_reused(path)
                         format_log("CACHE-DISK", "32", f"304 Not Modified -> {path}")
                         continue
 
                     await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                     PROXY_STATS["hits"] += 1
+                    PROXY_STATS["cache_disk_hit"] += 1
+                    check_and_record_prefetch_reused(path)
                     format_log("CACHE-DISK", "32", f"HIT ({t_disk_ms:.1f}ms) -> {path} ({len(c_data):,} B)")
                     if not is_head:
                         maybe_enqueue_prefetch(target_host, path, c_data)
@@ -1280,6 +1351,8 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         c_headers, c_data = shared_hit
                         await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                         PROXY_STATS["hits"] += 1
+                        PROXY_STATS["cache_ram_hit"] += 1
+                        check_and_record_prefetch_reused(path)
                         format_log("CACHE-FLIGHT", "32", f"COALESCED -> {path} ({len(c_data):,} B)")
                         if not is_head:
                             maybe_enqueue_prefetch(target_host, path, c_data)
@@ -1291,6 +1364,8 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         c_headers, c_data = cache_hit
                         await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                         PROXY_STATS["hits"] += 1
+                        PROXY_STATS["cache_disk_hit"] += 1
+                        check_and_record_prefetch_reused(path)
                         format_log("CACHE-DISK", "32", f"HIT -> {path} ({len(c_data):,} B)")
                         continue
 
@@ -1389,6 +1464,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         # Respond-first: deliver asset to browser immediately without waiting for disk I/O
                         await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                         PROXY_STATS["downloads"] += 1
+                        PROXY_STATS["cache_miss"] += 1
                         format_log("FETCH-ASSET", "34", f"200 OK & STREAMED ({elapsed_ms}ms) -> {path}")
 
                         # Save-async: persist in background executor thread with backpressure;
