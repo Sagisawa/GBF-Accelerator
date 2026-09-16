@@ -266,6 +266,14 @@ def _is_address_in_use_error(exc: Exception) -> bool:
     return False
 
 ACTIVE_API_COUNT = 0
+ACTIVE_FOREGROUND_ASSETS = 0
+_last_foreground_asset_ts = 0.0
+
+# Tuning parameter: Short grace period (seconds) after foreground asset completion.
+# Prevents immediate prefetch resumption while the browser may still be issuing follow-up first-screen requests.
+PREFETCH_FOREGROUND_COOLDOWN = 0.10
+PREFETCH_YIELD_MAX = 1.5
+
 _inflight_fetches: Dict[str, asyncio.Future] = {}
 SAVE_CONCURRENCY_LIMIT = 16
 save_semaphore: Optional[asyncio.Semaphore] = None
@@ -280,6 +288,21 @@ class _ActiveApiTracker:
     def __exit__(self, exc_type, exc_val, exc_tb):
         global ACTIVE_API_COUNT
         ACTIVE_API_COUNT = max(0, ACTIVE_API_COUNT - 1)
+        return False
+
+class _ActiveForegroundAssetTracker:
+    """Lifecycle-safe context manager to accurately track in-flight upstream network fetches for foreground browser requests."""
+    __slots__ = ()
+    def __enter__(self):
+        global ACTIVE_FOREGROUND_ASSETS
+        ACTIVE_FOREGROUND_ASSETS += 1
+        return self
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        global ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts
+        ACTIVE_FOREGROUND_ASSETS -= 1
+        if ACTIVE_FOREGROUND_ASSETS < 0:
+            ACTIVE_FOREGROUND_ASSETS = 0
+        _last_foreground_asset_ts = time.perf_counter()
         return False
 
 async def _bounded_save_cache(url_path: str, headers: Dict[str, str], data: bytes, flight_key: Optional[str] = None):
@@ -489,10 +512,22 @@ async def prefetch_worker():
     while True:
         prio, seq, target_host, url_path = await prefetch_queue.get()
         try:
-            # Yield to active in-flight game API requests to avoid contending for bandwidth (max 1.5s cap)
+            # Yield to active in-flight game API requests and foreground browser asset fetches
             yield_start = time.perf_counter()
-            while ACTIVE_API_COUNT > 0 and (time.perf_counter() - yield_start) < 1.5:
+            fg_yielded = False
+            while (
+                ACTIVE_API_COUNT > 0
+                or ACTIVE_FOREGROUND_ASSETS > 0
+                or (time.perf_counter() - _last_foreground_asset_ts) < PREFETCH_FOREGROUND_COOLDOWN
+            ) and (time.perf_counter() - yield_start) < PREFETCH_YIELD_MAX:
+                if not fg_yielded and ACTIVE_FOREGROUND_ASSETS > 0:
+                    format_log("PREFETCH-QOS", "35", f"Paused prefetch (reason=foreground_asset): prioritizing {ACTIVE_FOREGROUND_ASSETS} active fetch(es)")
+                    fg_yielded = True
                 await asyncio.sleep(0.05)
+
+            if fg_yielded:
+                resume_ms = int((time.perf_counter() - yield_start) * 1000)
+                format_log("PREFETCH-QOS", "35", f"Resumed prefetch (reason=foreground_asset) after {resume_ms}ms cooldown")
 
             flight_key = f"{target_host}{url_path}"
             if cache_manager.has_cache(url_path) or flight_key in _inflight_fetches:
@@ -502,6 +537,9 @@ async def prefetch_worker():
             if resp.status_code == 200 and resp.content:
                 await _bounded_save_cache(url_path, dict(resp.headers), resp.content)
                 format_log("PREFETCH", "35", f"Warmed (P{prio}) -> {target_host}{url_path} ({len(resp.content):,} B)")
+                if prefetch_queue.qsize() > 0:
+                    import random
+                    await asyncio.sleep(random.uniform(0.015, 0.035))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -511,8 +549,10 @@ async def prefetch_worker():
             prefetch_queue.task_done()
 
 def run_proxy_in_thread():
-    global proxy_loop, proxy_server_instance, ACTIVE_API_COUNT, save_semaphore
+    global proxy_loop, proxy_server_instance, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
     ACTIVE_API_COUNT = 0
+    ACTIVE_FOREGROUND_ASSETS = 0
+    _last_foreground_asset_ts = 0.0
     _inflight_fetches.clear()
     save_semaphore = None
     proxy_loop = asyncio.new_event_loop()
@@ -527,17 +567,21 @@ def run_proxy_in_thread():
         proxy_ready_event.set()
     finally:
         ACTIVE_API_COUNT = 0
+        ACTIVE_FOREGROUND_ASSETS = 0
+        _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
         save_semaphore = None
         PROXY_STATS["is_running"] = False
         proxy_ready_event.set()
 
 def start_proxy_thread():
-    global proxy_thread, ACTIVE_API_COUNT, save_semaphore
+    global proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
     with _proxy_thread_lock:
         if proxy_thread and proxy_thread.is_alive():
             return
         ACTIVE_API_COUNT = 0
+        ACTIVE_FOREGROUND_ASSETS = 0
+        _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
         save_semaphore = None
         proxy_ready_event.clear()
@@ -546,9 +590,11 @@ def start_proxy_thread():
         proxy_thread.start()
 
 def stop_proxy_thread():
-    global proxy_loop, proxy_server_instance, proxy_thread, ACTIVE_API_COUNT, save_semaphore
+    global proxy_loop, proxy_server_instance, proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
     with _proxy_thread_lock:
         ACTIVE_API_COUNT = 0
+        ACTIVE_FOREGROUND_ASSETS = 0
+        _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
         save_semaphore = None
         PROXY_STATS["is_running"] = False
@@ -570,10 +616,11 @@ def stop_proxy_thread():
                 pass
         if proxy_thread and proxy_thread.is_alive():
             try:
-                proxy_thread.join(timeout=1.5)
+                proxy_thread.join(timeout=3.0)
             except Exception:
                 pass
         proxy_thread = None
+        proxy_ready_event.clear()
 
 _log_listeners: list = []
 _log_history: collections.deque = collections.deque(maxlen=2000)
@@ -1204,54 +1251,55 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     clean_headers = {k: v for k, v in headers.items() if k not in ("host", "content-length", "if-modified-since", "if-none-match")}
                     resp = None
                     max_attempts = 2 if SHIMAKAZE_MODE and method.upper() in ("GET", "HEAD") else 1
-                    for attempt in range(max_attempts):
-                        try:
-                            resp = await request_asset(method, url, headers=clean_headers, content=body)
-                            break
-                        except httpx.TimeoutException as e:
-                            if attempt + 1 < max_attempts:
-                                format_log("RETRY", "33", f"Asset timeout ({e.__class__.__name__}), auto-retrying (1/1) -> {url}")
-                                continue
-                            fb = await loop.run_in_executor(None, cache_manager.get_fallback_cache, path)
-                            if fb is not None:
-                                c_headers, c_data = fb
-                                if is_flight_leader and not flight_fut.done():
-                                    flight_fut.set_result((c_headers, c_data))
-                                await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
-                                PROXY_STATS["hits"] += 1
-                                fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
-                                format_log("FALLBACK", "33", f"Timeout ({e.__class__.__name__}) -> Served fallback cache ({fb_src}) -> {path}")
-                                if not is_head:
-                                    asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                    with _ActiveForegroundAssetTracker():
+                        for attempt in range(max_attempts):
+                            try:
+                                resp = await request_asset(method, url, headers=clean_headers, content=body)
+                                break
+                            except httpx.TimeoutException as e:
+                                if attempt + 1 < max_attempts:
+                                    format_log("RETRY", "33", f"Asset timeout ({e.__class__.__name__}), auto-retrying (1/1) -> {url}")
+                                    continue
+                                fb = await loop.run_in_executor(None, cache_manager.get_fallback_cache, path)
+                                if fb is not None:
+                                    c_headers, c_data = fb
+                                    if is_flight_leader and not flight_fut.done():
+                                        flight_fut.set_result((c_headers, c_data))
+                                    await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                                    PROXY_STATS["hits"] += 1
+                                    fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
+                                    format_log("FALLBACK", "33", f"Timeout ({e.__class__.__name__}) -> Served fallback cache ({fb_src}) -> {path}")
+                                    if not is_head:
+                                        asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                                    resp = None
+                                    break
+                                format_log("TIMEOUT", "31", f"Timeout fetching asset ({e.__class__.__name__}) -> {url}")
+                                err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
+                                await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                                 resp = None
                                 break
-                            format_log("TIMEOUT", "31", f"Timeout fetching asset ({e.__class__.__name__}) -> {url}")
-                            err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
-                            await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                            resp = None
-                            break
-                        except Exception as e:
-                            if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
-                                format_log("RETRY", "33", f"Asset fetch error, auto-retrying (1/1) -> {url}: {e}")
-                                continue
-                            fb = await loop.run_in_executor(None, cache_manager.get_fallback_cache, path)
-                            if fb is not None:
-                                c_headers, c_data = fb
-                                if is_flight_leader and not flight_fut.done():
-                                    flight_fut.set_result((c_headers, c_data))
-                                await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
-                                PROXY_STATS["hits"] += 1
-                                fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
-                                format_log("FALLBACK", "33", f"Fetch error ({e}) -> Served fallback cache ({fb_src}) -> {path}")
-                                if not is_head:
-                                    asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                            except Exception as e:
+                                if attempt + 1 < max_attempts and isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
+                                    format_log("RETRY", "33", f"Asset fetch error, auto-retrying (1/1) -> {url}: {e}")
+                                    continue
+                                fb = await loop.run_in_executor(None, cache_manager.get_fallback_cache, path)
+                                if fb is not None:
+                                    c_headers, c_data = fb
+                                    if is_flight_leader and not flight_fut.done():
+                                        flight_fut.set_result((c_headers, c_data))
+                                    await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
+                                    PROXY_STATS["hits"] += 1
+                                    fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
+                                    format_log("FALLBACK", "33", f"Fetch error ({e}) -> Served fallback cache ({fb_src}) -> {path}")
+                                    if not is_head:
+                                        asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                                    resp = None
+                                    break
+                                format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
+                                err_body = b'{"error": "Bad Gateway", "code": 502}'
+                                await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                                 resp = None
                                 break
-                            format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
-                            err_body = b'{"error": "Bad Gateway", "code": 502}'
-                            await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
-                            resp = None
-                            break
 
                     if resp is None:
                         continue

@@ -1136,6 +1136,7 @@ async def run_test():
             print("Test 59 - Concurrent start_proxy_thread atomicity under _proxy_thread_lock: OK", flush=True)
 
             # Test 60: Grace window simulation (ready during grace period treated as success)
+            orig_proxy_thread_60 = gbf_proxy.proxy_thread
             import tkinter as tk
             test_gui_root = tk.Tk()
             test_gui_root.withdraw()
@@ -1170,6 +1171,7 @@ async def run_test():
                     mock_err_box.assert_not_called()
             finally:
                 test_gui_root.destroy()
+                gbf_proxy.proxy_thread = orig_proxy_thread_60
             print("Test 60 - Grace window convergence (ready during grace period succeeds): OK", flush=True)
 
             # Test 61: last_error fallback when empty string
@@ -1194,7 +1196,164 @@ async def run_test():
                 assert gbf_proxy.proxy_thread is None
             print("Test 62 - True failure cleanup and clean restart recovery: OK", flush=True)
 
-            print("\n[+] ALL 62 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # Test 63: _ActiveForegroundAssetTracker lifecycle, invariants & exception safety
+            gbf_proxy.ACTIVE_FOREGROUND_ASSETS = 0
+            gbf_proxy._last_foreground_asset_ts = 0.0
+            with gbf_proxy._ActiveForegroundAssetTracker():
+                assert gbf_proxy.ACTIVE_FOREGROUND_ASSETS == 1, "Counter must increment to 1 on enter"
+                with gbf_proxy._ActiveForegroundAssetTracker():
+                    assert gbf_proxy.ACTIVE_FOREGROUND_ASSETS == 2, "Nested counter must increment to 2"
+                assert gbf_proxy.ACTIVE_FOREGROUND_ASSETS == 1, "Nested exit must decrement counter back to 1"
+            assert gbf_proxy.ACTIVE_FOREGROUND_ASSETS == 0, "Counter must be 0 after outer exit"
+            assert gbf_proxy._last_foreground_asset_ts > 0.0, "_last_foreground_asset_ts must be updated"
+
+            # Invariant under exception
+            ts_before = gbf_proxy._last_foreground_asset_ts
+            try:
+                with gbf_proxy._ActiveForegroundAssetTracker():
+                    assert gbf_proxy.ACTIVE_FOREGROUND_ASSETS == 1
+                    raise RuntimeError("Simulated network failure")
+            except RuntimeError:
+                pass
+            assert gbf_proxy.ACTIVE_FOREGROUND_ASSETS == 0, "Counter must decrement even when exception raised"
+            assert gbf_proxy._last_foreground_asset_ts >= ts_before, "Timestamp must update on exception exit"
+            print("Test 63 - _ActiveForegroundAssetTracker lifecycle invariants & exception safety: OK", flush=True)
+
+            # Test 64: Real time-window Prefetch QoS pause & resumption
+            orig_queue = gbf_proxy.prefetch_queue
+            orig_inflight = set(gbf_proxy.prefetch_inflight)
+            orig_sem = gbf_proxy.save_semaphore
+            if gbf_proxy.save_semaphore is None:
+                gbf_proxy.save_semaphore = asyncio.Semaphore(16)
+            gbf_proxy.prefetch_queue = asyncio.PriorityQueue()
+            gbf_proxy.prefetch_inflight.clear()
+
+            gbf_proxy.ACTIVE_API_COUNT = 0
+            gbf_proxy.ACTIVE_FOREGROUND_ASSETS = 1
+            gbf_proxy._last_foreground_asset_ts = 0.0
+
+            qos_logs = []
+            def qos_log_listener(line, level):
+                if "[PREFETCH-QOS]" in line:
+                    qos_logs.append(line)
+            gbf_proxy.register_log_listener(qos_log_listener)
+
+            mock_fetch_count = 0
+            async def dummy_request_asset(*args, **kwargs):
+                nonlocal mock_fetch_count
+                mock_fetch_count += 1
+                mock_resp = mock.MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.content = b"fake-data"
+                mock_resp.headers = {"content-type": "image/png"}
+                return mock_resp
+
+            # Enqueue a test prefetch item
+            await gbf_proxy.prefetch_queue.put((1, 1, "prd-game-a-granbluefantasy.akamaized.net", "/test_qos_item.png"))
+
+            with mock.patch("gbf_proxy.request_asset", side_effect=dummy_request_asset), \
+                 mock.patch("gbf_proxy._bounded_save_cache"):
+                worker_task = asyncio.create_task(gbf_proxy.prefetch_worker())
+                try:
+                    # While ACTIVE_FOREGROUND_ASSETS == 1, worker must yield and NEVER call request_asset
+                    await asyncio.sleep(0.15)
+                    assert mock_fetch_count == 0, f"Prefetch must be paused during active foreground asset, got {mock_fetch_count} calls"
+
+                    # Finish foreground asset -> enters cooldown
+                    gbf_proxy.ACTIVE_FOREGROUND_ASSETS = 0
+                    gbf_proxy._last_foreground_asset_ts = time.perf_counter()
+
+                    # Within cooldown (< 0.10s), worker must STILL be yielding
+                    await asyncio.sleep(0.04)
+                    assert mock_fetch_count == 0, "Prefetch must remain paused during foreground cooldown window"
+
+                    # After cooldown expires, worker should resume and process the item
+                    await asyncio.sleep(0.12)
+                    assert mock_fetch_count == 1, f"Prefetch must resume after cooldown expired, got {mock_fetch_count}"
+
+                    # Verify QoS log messages
+                    assert any("Paused prefetch (reason=foreground_asset)" in l for l in qos_logs), f"Expected pause log, got: {qos_logs}"
+                    assert any("Resumed prefetch (reason=foreground_asset)" in l for l in qos_logs), f"Expected resume log, got: {qos_logs}"
+                finally:
+                    worker_task.cancel()
+                    try:
+                        await worker_task
+                    except asyncio.CancelledError:
+                        pass
+                    gbf_proxy.unregister_log_listener(qos_log_listener)
+                    gbf_proxy.prefetch_queue = orig_queue
+                    gbf_proxy.prefetch_inflight.clear()
+                    gbf_proxy.prefetch_inflight.update(orig_inflight)
+                    gbf_proxy.save_semaphore = orig_sem
+            print("Test 64 - Real time-window Prefetch QoS pause & resumption: OK", flush=True)
+
+            # Test 65: Continuous foreground requests (A -> 50ms -> B) full timeline zero-leakage test
+            orig_queue = gbf_proxy.prefetch_queue
+            orig_inflight = set(gbf_proxy.prefetch_inflight)
+            orig_sem = gbf_proxy.save_semaphore
+            if gbf_proxy.save_semaphore is None:
+                gbf_proxy.save_semaphore = asyncio.Semaphore(16)
+            gbf_proxy.prefetch_queue = asyncio.PriorityQueue()
+            gbf_proxy.prefetch_inflight.clear()
+
+            gbf_proxy.ACTIVE_API_COUNT = 0
+            gbf_proxy.ACTIVE_FOREGROUND_ASSETS = 0
+            gbf_proxy._last_foreground_asset_ts = 0.0
+
+            continuous_calls = 0
+            async def continuous_request_asset(*args, **kwargs):
+                nonlocal continuous_calls
+                continuous_calls += 1
+                mock_resp = mock.MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.content = b"fake-data-2"
+                mock_resp.headers = {"content-type": "image/png"}
+                return mock_resp
+
+            await gbf_proxy.prefetch_queue.put((1, 2, "prd-game-a-granbluefantasy.akamaized.net", "/test_continuous.png"))
+
+            with mock.patch("gbf_proxy.request_asset", side_effect=continuous_request_asset), \
+                 mock.patch("gbf_proxy._bounded_save_cache"):
+                worker_task = asyncio.create_task(gbf_proxy.prefetch_worker())
+                try:
+                    # 1. Foreground request A active
+                    gbf_proxy.ACTIVE_FOREGROUND_ASSETS = 1
+                    await asyncio.sleep(0.05)
+                    assert continuous_calls == 0, "Timeline stage 1: Request A active -> prefetch must be 0"
+
+                    # 2. Request A completes -> enters cooldown
+                    gbf_proxy.ACTIVE_FOREGROUND_ASSETS = 0
+                    gbf_proxy._last_foreground_asset_ts = time.perf_counter()
+                    await asyncio.sleep(0.05)  # 50ms into 100ms cooldown
+                    assert continuous_calls == 0, "Timeline stage 2: Request A cooldown -> prefetch must be 0"
+
+                    # 3. Request B arrives during A's cooldown
+                    gbf_proxy.ACTIVE_FOREGROUND_ASSETS = 1
+                    await asyncio.sleep(0.05)
+                    assert continuous_calls == 0, "Timeline stage 3: Request B active -> prefetch must be 0"
+
+                    # 4. Request B completes -> enters B's cooldown
+                    gbf_proxy.ACTIVE_FOREGROUND_ASSETS = 0
+                    gbf_proxy._last_foreground_asset_ts = time.perf_counter()
+                    await asyncio.sleep(0.05)  # 50ms into B's cooldown
+                    assert continuous_calls == 0, "Timeline stage 4: Request B cooldown -> prefetch must be 0"
+
+                    # 5. B's cooldown finishes (> 100ms total from B finish)
+                    await asyncio.sleep(0.12)
+                    assert continuous_calls == 1, f"Timeline stage 5: Full cooldown elapsed -> prefetch must execute, got {continuous_calls}"
+                finally:
+                    worker_task.cancel()
+                    try:
+                        await worker_task
+                    except asyncio.CancelledError:
+                        pass
+                    gbf_proxy.prefetch_queue = orig_queue
+                    gbf_proxy.prefetch_inflight.clear()
+                    gbf_proxy.prefetch_inflight.update(orig_inflight)
+                    gbf_proxy.save_semaphore = orig_sem
+            print("Test 65 - Continuous foreground requests (A -> 50ms -> B) timeline zero-leakage test: OK", flush=True)
+
+            print("\n[+] ALL 65 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()
