@@ -1353,7 +1353,119 @@ async def run_test():
                     gbf_proxy.save_semaphore = orig_sem
             print("Test 65 - Continuous foreground requests (A -> 50ms -> B) timeline zero-leakage test: OK", flush=True)
 
-            print("\n[+] ALL 65 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # ---------------- Test 66: Prefetch Discovery Queue Bounded Backpressure & Deduplication & Executor Offload ----------------
+            orig_disc_queue = gbf_proxy.prefetch_discovery_queue
+            orig_disc_inflight = set(gbf_proxy.prefetch_discovery_inflight)
+            orig_disc_dropped = gbf_proxy.prefetch_discovery_dropped
+            orig_pref_queue = gbf_proxy.prefetch_queue
+            orig_pref_inflight = set(gbf_proxy.prefetch_inflight)
+
+            gbf_proxy.prefetch_discovery_queue = asyncio.Queue(maxsize=gbf_proxy.PREFETCH_DISCOVERY_QUEUE_MAX)
+            gbf_proxy.prefetch_discovery_inflight.clear()
+            gbf_proxy.prefetch_discovery_dropped = 0
+            gbf_proxy.prefetch_queue = asyncio.PriorityQueue()
+            gbf_proxy.prefetch_inflight.clear()
+
+            try:
+                # 1. Deduplication with host case-insensitivity & query stripping
+                gbf_proxy.maybe_enqueue_prefetch("prd-game-a-granbluefantasy.akamaized.net", "/assets/app.js?v=1", b"var x = 1;")
+                gbf_proxy.maybe_enqueue_prefetch("PRD-GAME-A-GRANBLUEFANTASY.AKAMAIZED.NET", "/assets/app.js?v=2", b"var x = 2;")
+                assert gbf_proxy.prefetch_discovery_queue.qsize() == 1, "Duplicate JS submission with varying query/case must only queue once"
+                expected_key = "prd-game-a-granbluefantasy.akamaized.net/assets/app.js"
+                assert expected_key in gbf_proxy.prefetch_discovery_inflight, f"Inflight set must contain normalized key {expected_key}"
+
+                # 2. Bounded backpressure (QueueFull handling)
+                # Fill up remaining slots in queue (capacity 32, 1 slot already occupied -> fill 31)
+                for i in range(gbf_proxy.PREFETCH_DISCOVERY_QUEUE_MAX - 1):
+                    gbf_proxy.maybe_enqueue_prefetch("prd-game-a-granbluefantasy.akamaized.net", f"/assets/file_{i}.js", b"var x = 0;")
+                assert gbf_proxy.prefetch_discovery_queue.qsize() == gbf_proxy.PREFETCH_DISCOVERY_QUEUE_MAX
+                assert gbf_proxy.prefetch_discovery_dropped == 0
+
+                # Saturated: 33rd distinct submission should be gracefully dropped without raising
+                overflow_path = "/assets/overflow.js"
+                overflow_key = f"prd-game-a-granbluefantasy.akamaized.net{overflow_path}"
+                gbf_proxy.maybe_enqueue_prefetch("prd-game-a-granbluefantasy.akamaized.net", overflow_path, b"var overflow = 1;")
+                assert gbf_proxy.prefetch_discovery_dropped == 1, "Dropped counter must increment on QueueFull"
+                assert overflow_key not in gbf_proxy.prefetch_discovery_inflight, "Dropped job key must not linger in inflight set"
+
+                # 3. Offload execution via discovery worker
+                # Clear queue and add a test manifest with static asset references
+                while not gbf_proxy.prefetch_discovery_queue.empty():
+                    try:
+                        gbf_proxy.prefetch_discovery_queue.get_nowait()
+                        gbf_proxy.prefetch_discovery_queue.task_done()
+                    except (asyncio.QueueEmpty, ValueError):
+                        break
+                gbf_proxy.prefetch_discovery_inflight.clear()
+
+                js_content = b'var assets = ["assets/img/test_disc_icon.png", "assets/sound/test_disc_bgm.mp3"];'
+                gbf_proxy.maybe_enqueue_prefetch("prd-game-a-granbluefantasy.akamaized.net", "/assets/manifest.js", js_content)
+                assert gbf_proxy.prefetch_discovery_queue.qsize() == 1
+
+                disc_worker = asyncio.create_task(gbf_proxy.prefetch_discovery_worker())
+                try:
+                    await asyncio.wait_for(gbf_proxy.prefetch_discovery_queue.join(), timeout=3.0)
+                    # Verify discovery worker offloaded regex + cache check and populated prefetch_queue
+                    assert gbf_proxy.prefetch_queue.qsize() >= 1, f"Discovery worker should have enqueued references into prefetch_queue, got {gbf_proxy.prefetch_queue.qsize()}"
+                    assert len(gbf_proxy.prefetch_discovery_inflight) == 0, "Discovery inflight set must be empty after job completes"
+                finally:
+                    disc_worker.cancel()
+                    try:
+                        await disc_worker
+                    except asyncio.CancelledError:
+                        pass
+            finally:
+                gbf_proxy.prefetch_discovery_queue = orig_disc_queue
+                gbf_proxy.prefetch_discovery_inflight.clear()
+                gbf_proxy.prefetch_discovery_inflight.update(orig_disc_inflight)
+                gbf_proxy.prefetch_discovery_dropped = orig_disc_dropped
+                gbf_proxy.prefetch_queue = orig_pref_queue
+                gbf_proxy.prefetch_inflight.clear()
+                gbf_proxy.prefetch_inflight.update(orig_pref_inflight)
+            print("Test 66 - Prefetch Discovery Queue Bounded Backpressure & Deduplication & Executor Offload: OK", flush=True)
+
+            # ---------------- Test 67: Prefetch Discovery Worker Exception Isolation & Cancellation Safety ----------------
+            orig_disc_queue = gbf_proxy.prefetch_discovery_queue
+            orig_disc_inflight = set(gbf_proxy.prefetch_discovery_inflight)
+            gbf_proxy.prefetch_discovery_queue = asyncio.Queue(maxsize=gbf_proxy.PREFETCH_DISCOVERY_QUEUE_MAX)
+            gbf_proxy.prefetch_discovery_inflight.clear()
+
+            try:
+                # Put a job into the queue
+                test_key = "prd-game-a-granbluefantasy.akamaized.net/assets/error_test.js"
+                gbf_proxy.prefetch_discovery_inflight.add(test_key)
+                gbf_proxy.prefetch_discovery_queue.put_nowait((
+                    "prd-game-a-granbluefantasy.akamaized.net",
+                    "/assets/error_test.js",
+                    b"var test = 1;",
+                    test_key
+                ))
+
+                # Mock _extract_and_filter_prefetch_refs to throw
+                orig_extract_func = gbf_proxy._extract_and_filter_prefetch_refs
+                def mocked_extract_fail(*args, **kwargs):
+                    raise RuntimeError("Simulated discovery worker failure")
+                gbf_proxy._extract_and_filter_prefetch_refs = mocked_extract_fail
+
+                disc_worker = asyncio.create_task(gbf_proxy.prefetch_discovery_worker())
+                try:
+                    await asyncio.wait_for(gbf_proxy.prefetch_discovery_queue.join(), timeout=3.0)
+                    assert not disc_worker.done(), "Discovery worker must survive runtime exceptions in loop"
+                    assert test_key not in gbf_proxy.prefetch_discovery_inflight, "Discovery inflight key must be cleaned up even on exception"
+                finally:
+                    gbf_proxy._extract_and_filter_prefetch_refs = orig_extract_func
+                    disc_worker.cancel()
+                    try:
+                        await disc_worker
+                    except asyncio.CancelledError:
+                        pass
+            finally:
+                gbf_proxy.prefetch_discovery_queue = orig_disc_queue
+                gbf_proxy.prefetch_discovery_inflight.clear()
+                gbf_proxy.prefetch_discovery_inflight.update(orig_disc_inflight)
+            print("Test 67 - Prefetch Discovery Worker Exception Isolation & Cancellation Safety: OK", flush=True)
+
+            print("\n[+] ALL 67 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -380,6 +380,11 @@ prefetch_queue: Optional[asyncio.PriorityQueue] = None
 prefetch_inflight: set = set()
 _prefetch_seq: int = 0
 
+PREFETCH_DISCOVERY_QUEUE_MAX = 32
+prefetch_discovery_queue: Optional[asyncio.Queue] = None
+prefetch_discovery_inflight: set = set()
+prefetch_discovery_dropped: int = 0
+
 def _get_prefetch_priority(url_path: str) -> int:
     """Classify assets into priority bands for background prefetching:
     P1 (Highest): Render-blocking code & styles (.js, .css, .json manifest)
@@ -474,38 +479,89 @@ def extract_asset_refs(url_path: str, data: bytes, default_host: str = "") -> li
 
     return refs
 
-async def maybe_enqueue_prefetch(target_host: str, url_path: str, data: bytes):
-    """Queue missing assets referenced by a freshly served JS/JSON for background warmup."""
-    global _prefetch_seq
-    if not config_manager.config.get("enable_prefetch", True) or prefetch_queue is None:
+def _extract_and_filter_prefetch_refs(url_path: str, data: bytes, default_host: str = "") -> Tuple[list, float, float]:
+    """Extract asset references and filter out items already cached locally.
+    Runs entirely in an executor worker thread to protect the asyncio event loop from disk I/O.
+    Returns: (missing_refs, t_extract_ms, t_check_ms)
+    """
+    t0 = time.perf_counter()
+    refs = extract_asset_refs(url_path, data, default_host)
+    t_extract_ms = (time.perf_counter() - t0) * 1000.0
+
+    t1 = time.perf_counter()
+    missing_refs = []
+    for host, ref in refs:
+        if not cache_manager.has_cache(ref):
+            missing_refs.append((host, ref))
+    t_check_ms = (time.perf_counter() - t1) * 1000.0
+
+    return missing_refs, t_extract_ms, t_check_ms
+
+def maybe_enqueue_prefetch(target_host: str, url_path: str, data: bytes):
+    """Submit a freshly served JS/JSON to the background discovery queue (purely non-blocking).
+    Applies strict host normalization and query stripping to deduplicate in-flight discovery.
+    If the bounded discovery queue is saturated, drops the job without delaying foreground requests.
+    """
+    global prefetch_discovery_dropped
+    if not config_manager.config.get("enable_prefetch", True) or prefetch_discovery_queue is None:
         return
-    clean = url_path.split("?")[0].lower()
-    if not (clean.endswith(".js") or clean.endswith(".json")):
+    if not data or len(data) < 2:
         return
-    if not (_is_gbf_akamai_host(target_host) or _is_domain_or_subdomain(target_host, "granbluefantasy.jp")):
+    clean_path = url_path.split("?")[0].lower()
+    if not (clean_path.endswith(".js") or clean_path.endswith(".json")):
         return
-    if prefetch_queue.qsize() >= PREFETCH_QUEUE_MAX:
-        return
-    try:
-        refs = await asyncio.get_running_loop().run_in_executor(None, extract_asset_refs, url_path, data, target_host)
-    except Exception:
+    norm_host = (target_host or "").rstrip(".").lower()
+    if not (_is_gbf_akamai_host(norm_host) or _is_domain_or_subdomain(norm_host, "granbluefantasy.jp")):
         return
 
-    enqueued = 0
-    for host, ref in refs:
-        effective_host = host or target_host
-        if prefetch_queue.qsize() >= PREFETCH_QUEUE_MAX:
-            break
-        key = f"{effective_host}{ref}"
-        if key in prefetch_inflight or cache_manager.has_cache(ref):
-            continue
-        prefetch_inflight.add(key)
-        _prefetch_seq += 1
-        prio = _get_prefetch_priority(ref)
-        prefetch_queue.put_nowait((prio, _prefetch_seq, effective_host, ref))
-        enqueued += 1
-    if enqueued:
-        format_log("PREFETCH-Q", "35", f"Queued {enqueued} referenced assets (prioritized) from {url_path}")
+    discovery_key = f"{norm_host}{clean_path}"
+    if discovery_key in prefetch_discovery_inflight:
+        return
+
+    prefetch_discovery_inflight.add(discovery_key)
+    try:
+        prefetch_discovery_queue.put_nowait((norm_host, url_path, data, discovery_key))
+    except asyncio.QueueFull:
+        prefetch_discovery_inflight.discard(discovery_key)
+        prefetch_discovery_dropped += 1
+        format_log("PREFETCH-Q", "33", f"Discovery queue full ({PREFETCH_DISCOVERY_QUEUE_MAX}), dropped discovery for {clean_path} (total dropped={prefetch_discovery_dropped})")
+
+async def prefetch_discovery_worker():
+    """Background worker: pull candidates from prefetch_discovery_queue, run offloaded
+    extraction and disk checks in the executor, and enqueue missing assets into prefetch_queue.
+    """
+    global _prefetch_seq
+    while True:
+        norm_host, url_path, data, discovery_key = await prefetch_discovery_queue.get()
+        try:
+            loop = asyncio.get_running_loop()
+            missing_refs, t_extract_ms, t_check_ms = await loop.run_in_executor(
+                None, _extract_and_filter_prefetch_refs, url_path, data, norm_host
+            )
+            enqueued = 0
+            if prefetch_queue is not None:
+                for host, ref in missing_refs:
+                    effective_host = host or norm_host
+                    if prefetch_queue.qsize() >= PREFETCH_QUEUE_MAX:
+                        break
+                    key = f"{effective_host}{ref}"
+                    if key in prefetch_inflight:
+                        continue
+                    prefetch_inflight.add(key)
+                    _prefetch_seq += 1
+                    prio = _get_prefetch_priority(ref)
+                    prefetch_queue.put_nowait((prio, _prefetch_seq, effective_host, ref))
+                    enqueued += 1
+            if enqueued:
+                format_log("PREFETCH-Q", "35", f"Queued {enqueued} referenced assets (extract={t_extract_ms:.1f}ms, check={t_check_ms:.1f}ms) from {url_path}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            format_log("WARN", "33", f"Prefetch discovery error on {url_path}: {e}")
+        finally:
+            prefetch_discovery_inflight.discard(discovery_key)
+            prefetch_discovery_queue.task_done()
+
 
 async def prefetch_worker():
     """Background worker: fetch queued assets via the upstream pool and save them to cache."""
@@ -549,11 +605,13 @@ async def prefetch_worker():
             prefetch_queue.task_done()
 
 def run_proxy_in_thread():
-    global proxy_loop, proxy_server_instance, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
+    global proxy_loop, proxy_server_instance, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore, prefetch_discovery_queue, prefetch_discovery_inflight, prefetch_discovery_dropped
     ACTIVE_API_COUNT = 0
     ACTIVE_FOREGROUND_ASSETS = 0
     _last_foreground_asset_ts = 0.0
     _inflight_fetches.clear()
+    prefetch_discovery_inflight.clear()
+    prefetch_discovery_dropped = 0
     save_semaphore = None
     proxy_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(proxy_loop)
@@ -570,12 +628,14 @@ def run_proxy_in_thread():
         ACTIVE_FOREGROUND_ASSETS = 0
         _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
+        prefetch_discovery_inflight.clear()
+        prefetch_discovery_dropped = 0
         save_semaphore = None
         PROXY_STATS["is_running"] = False
         proxy_ready_event.set()
 
 def start_proxy_thread():
-    global proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
+    global proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore, prefetch_discovery_queue, prefetch_discovery_inflight, prefetch_discovery_dropped
     with _proxy_thread_lock:
         if proxy_thread and proxy_thread.is_alive():
             return
@@ -583,6 +643,8 @@ def start_proxy_thread():
         ACTIVE_FOREGROUND_ASSETS = 0
         _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
+        prefetch_discovery_inflight.clear()
+        prefetch_discovery_dropped = 0
         save_semaphore = None
         proxy_ready_event.clear()
         PROXY_STATS["last_error"] = ""
@@ -590,12 +652,14 @@ def start_proxy_thread():
         proxy_thread.start()
 
 def stop_proxy_thread():
-    global proxy_loop, proxy_server_instance, proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore
+    global proxy_loop, proxy_server_instance, proxy_thread, ACTIVE_API_COUNT, ACTIVE_FOREGROUND_ASSETS, _last_foreground_asset_ts, save_semaphore, prefetch_discovery_queue, prefetch_discovery_inflight, prefetch_discovery_dropped
     with _proxy_thread_lock:
         ACTIVE_API_COUNT = 0
         ACTIVE_FOREGROUND_ASSETS = 0
         _last_foreground_asset_ts = 0.0
         _inflight_fetches.clear()
+        prefetch_discovery_inflight.clear()
+        prefetch_discovery_dropped = 0
         save_semaphore = None
         PROXY_STATS["is_running"] = False
         proxy_ready_event.clear()
@@ -1170,7 +1234,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     PROXY_STATS["ram_hits"] += 1
                     format_log("CACHE-RAM", "32", f"HIT -> {path} ({len(c_data):,} B)")
                     if not is_head:
-                        await maybe_enqueue_prefetch(target_host, path, c_data)
+                        maybe_enqueue_prefetch(target_host, path, c_data)
                     continue
 
                 # 2. Fast 304 path for disk cache: answer revalidations from metadata only (.ext sidecar)
@@ -1187,7 +1251,9 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             continue
 
                 # 3. Disk cache read (in executor so slow disk I/O never blocks the event loop)
+                t_disk_start = time.perf_counter()
                 cache_hit = await loop.run_in_executor(None, cache_manager.get_disk_cache, path)
+                t_disk_ms = (time.perf_counter() - t_disk_start) * 1000.0
                 if cache_hit:
                     c_headers, c_data = cache_hit
                     # Fallback 304 check
@@ -1205,9 +1271,9 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
 
                     await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                     PROXY_STATS["hits"] += 1
-                    format_log("CACHE-DISK", "32", f"HIT -> {path} ({len(c_data):,} B)")
+                    format_log("CACHE-DISK", "32", f"HIT ({t_disk_ms:.1f}ms) -> {path} ({len(c_data):,} B)")
                     if not is_head:
-                        await maybe_enqueue_prefetch(target_host, path, c_data)
+                        maybe_enqueue_prefetch(target_host, path, c_data)
                     continue
 
                 # SingleFlight: Coalesce concurrent cache-miss requests for the identical asset
@@ -1226,7 +1292,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         PROXY_STATS["hits"] += 1
                         format_log("CACHE-FLIGHT", "32", f"COALESCED -> {path} ({len(c_data):,} B)")
                         if not is_head:
-                            await maybe_enqueue_prefetch(target_host, path, c_data)
+                            maybe_enqueue_prefetch(target_host, path, c_data)
                         continue
 
                     # If the flight leader failed, check if another task successfully populated cache
@@ -1270,7 +1336,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                                     fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
                                     format_log("FALLBACK", "33", f"Timeout ({e.__class__.__name__}) -> Served fallback cache ({fb_src}) -> {path}")
                                     if not is_head:
-                                        asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                                        maybe_enqueue_prefetch(target_host, path, c_data)
                                     resp = None
                                     break
                                 format_log("TIMEOUT", "31", f"Timeout fetching asset ({e.__class__.__name__}) -> {url}")
@@ -1292,7 +1358,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                                     fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
                                     format_log("FALLBACK", "33", f"Fetch error ({e}) -> Served fallback cache ({fb_src}) -> {path}")
                                     if not is_head:
-                                        asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                                        maybe_enqueue_prefetch(target_host, path, c_data)
                                     resp = None
                                     break
                                 format_log("ERROR", "31", f"Error fetching asset -> {url}: {e}")
@@ -1317,7 +1383,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
                             format_log("FALLBACK", "33", f"Upstream {resp.status_code} -> Served fallback cache ({fb_src}) -> {path}")
                             if not is_head:
-                                asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
+                                maybe_enqueue_prefetch(target_host, path, c_data)
                             continue
 
                     if resp.status_code == 200 and resp.content:
@@ -1344,7 +1410,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                             asyncio.create_task(_bounded_save_cache(path, dict(resp.headers), c_data))
 
                         if not is_head:
-                            await maybe_enqueue_prefetch(target_host, path, c_data)
+                            maybe_enqueue_prefetch(target_host, path, c_data)
                         continue
 
                     # Fallback if non-200 or unable to cache
@@ -1683,16 +1749,20 @@ async def main():
     ssl_context = get_server_ssl_context()
     server = await _bind_listener_server(ssl_context)
 
-    global proxy_server_instance, prefetch_queue, prefetch_inflight
+    global proxy_server_instance, prefetch_queue, prefetch_inflight, prefetch_discovery_queue, prefetch_discovery_inflight, prefetch_discovery_dropped
     proxy_server_instance = server
     PROXY_STATS["is_running"] = True
     PROXY_STATS["last_error"] = ""
     proxy_ready_event.set()
 
-    # Prefetch workers + startup RAM warmup: both stay off the request path.
-    # stop_proxy_thread cancels all tasks on this loop, which also retires the workers.
+    # Prefetch workers + discovery worker + startup RAM warmup: all stay completely off the request path.
+    # stop_proxy_thread cancels all tasks on this loop, which also cleanly retires all workers.
     prefetch_queue = asyncio.PriorityQueue()
     prefetch_inflight = set()
+    prefetch_discovery_queue = asyncio.Queue(maxsize=PREFETCH_DISCOVERY_QUEUE_MAX)
+    prefetch_discovery_inflight = set()
+    prefetch_discovery_dropped = 0
+    asyncio.create_task(prefetch_discovery_worker())
     for _ in range(PREFETCH_WORKERS):
         asyncio.create_task(prefetch_worker())
     if config_manager.config.get("enable_ram_warmup", True):
