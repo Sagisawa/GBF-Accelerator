@@ -1700,7 +1700,117 @@ async def run_test():
                 cache_manager.clear_ram_cache()
                 print("Test 70 - Granular Request/Cache Telemetry & Prefetch Reuse Tracking: OK", flush=True)
 
-            print("\n[+] ALL 70 TESTS PASSED SUCCESSFULLY!", flush=True)
+                # ---------------- Test 71: Dynamic API Transparency & Zero-Side-Effect Contract ----------------
+                orig_api_req = gbf_proxy.api_client.request
+                captured_upstream_calls = []
+                gbf_proxy.reset_telemetry_stats()
+
+                # Clean any prefetch queues
+                while not gbf_proxy.prefetch_queue.empty():
+                    try:
+                        gbf_proxy.prefetch_queue.get_nowait()
+                    except Exception:
+                        break
+                while not gbf_proxy.prefetch_discovery_queue.empty():
+                    try:
+                        gbf_proxy.prefetch_discovery_queue.get_nowait()
+                    except Exception:
+                        break
+
+                async def mock_transparency_api(method, url, headers=None, content=b"", **kwargs):
+                    captured_upstream_calls.append({
+                        "method": method,
+                        "url": str(url),
+                        "headers": dict(headers or {}),
+                        "content": content,
+                    })
+                    url_str = str(url)
+                    # Case 1: normal POST start.json -> returns 200 with multi-cookie and game headers
+                    if method == "POST" and "multiraid/start.json" in url_str:
+                        return httpx.Response(
+                            200,
+                            headers=[
+                                ("content-type", "application/json"),
+                                ("x-game-version", "1.7.3"),
+                                ("set-cookie", "session_id=sess_abc123; Path=/; HttpOnly"),
+                                ("set-cookie", "auth_token=tok_xyz987; Path=/; Secure"),
+                            ],
+                            content=b'{"result":"battle_started","turn":1}',
+                            request=httpx.Request(method, url),
+                        )
+                    # Case 2: failing GET start.json -> raises ReadError (should NOT retry)
+                    elif method == "GET" and "multiraid/start.json" in url_str:
+                        raise httpx.ReadError("Simulated stale mid-stream reset on start.json")
+                    # Case 3: failing POST action -> raises RemoteProtocolError (should NOT retry)
+                    elif method == "POST" and "ability_result.json" in url_str:
+                        raise httpx.RemoteProtocolError("Simulated upstream disconnect during skill cast")
+                    return httpx.Response(200, json={"ok": True}, request=httpx.Request(method, url))
+
+                gbf_proxy.api_client.request = mock_transparency_api
+                try:
+                    # Part A: POST start.json transparency, zero-cache, zero-prefetch, header & multi-cookie preservation
+                    post_url = "https://game.granbluefantasy.jp/rest/multiraid/start.json"
+                    post_headers = {
+                        "Cookie": "player_id=12345; user_env=chrome",
+                        "Origin": "https://game.granbluefantasy.jp",
+                        "Referer": "https://game.granbluefantasy.jp/",
+                        "X-Requested-With": "XMLHttpRequest",
+                    }
+                    post_payload = b'{"raid_id":"30011"}'
+                    resp_post = await e2e_client.post(post_url, headers=post_headers, content=post_payload)
+
+                    assert resp_post.status_code == 200
+                    assert resp_post.content == b'{"result":"battle_started","turn":1}'
+                    assert len(captured_upstream_calls) == 1
+                    call_a = captured_upstream_calls[0]
+                    assert call_a["method"] == "POST"
+                    assert call_a["content"] == post_payload
+                    assert call_a["headers"].get("cookie") == "player_id=12345; user_env=chrome"
+                    assert call_a["headers"].get("origin") == "https://game.granbluefantasy.jp"
+                    assert call_a["headers"].get("referer") == "https://game.granbluefantasy.jp/"
+                    assert call_a["headers"].get("x-requested-with") == "XMLHttpRequest"
+                    assert not any(k.lower().startswith("x-proxy-") for k in call_a["headers"])
+
+                    # Client response headers check: multi-cookie preserved, x-game-version preserved, no x-proxy-*
+                    client_cookies = resp_post.headers.get_list("set-cookie")
+                    assert any("session_id=sess_abc123" in c for c in client_cookies), f"Cookies missing session_id: {client_cookies}"
+                    assert any("auth_token=tok_xyz987" in c for c in client_cookies), f"Cookies missing auth_token: {client_cookies}"
+                    assert resp_post.headers.get("x-game-version") == "1.7.3"
+                    assert not any(k.lower().startswith("x-proxy-") for k in resp_post.headers)
+                    assert resp_post.headers.get("access-control-allow-origin") != "*", "Dynamic API must never have wildcard CORS injected"
+
+                    # Zero cache check
+                    assert not cache_manager.has_cache("/rest/multiraid/start.json")
+                    assert cache_manager.get_ram_cache("/rest/multiraid/start.json") is None
+
+                    # Zero prefetch enqueue check
+                    assert gbf_proxy.prefetch_queue.empty()
+                    assert gbf_proxy.prefetch_discovery_queue.empty()
+
+                    # Part B: GET start.json on ReadError -> MUST NOT retry (max_attempts = 1)
+                    captured_upstream_calls.clear()
+                    retry_count_before = gbf_proxy.PROXY_STATS["api_retry_count"]
+                    get_start_url = "https://game.granbluefantasy.jp/rest/multiraid/start.json"
+                    resp_get_fail = await e2e_client.get(get_start_url)
+                    assert resp_get_fail.status_code == 502, f"Expected 502 Bad Gateway on ReadError, got {resp_get_fail.status_code}"
+                    assert len(captured_upstream_calls) == 1, f"GET start.json must make strictly 1 attempt, got {len(captured_upstream_calls)}"
+                    assert gbf_proxy.PROXY_STATS["api_retry_count"] == retry_count_before, "api_retry_count must not increment for start.json"
+                    assert not cache_manager.has_cache("/rest/multiraid/start.json")
+
+                    # Part C: POST action on RemoteProtocolError -> MUST NOT retry (max_attempts = 1)
+                    captured_upstream_calls.clear()
+                    post_action_url = "https://game.granbluefantasy.jp/rest/raid/ability_result.json"
+                    resp_post_fail = await e2e_client.post(post_action_url, content=b'{"ability_id":1}')
+                    assert resp_post_fail.status_code == 502, f"Expected 502 on POST fail, got {resp_post_fail.status_code}"
+                    assert len(captured_upstream_calls) == 1, f"POST action must make strictly 1 attempt, got {len(captured_upstream_calls)}"
+                    assert gbf_proxy.PROXY_STATS["api_retry_count"] == retry_count_before, "api_retry_count must not increment for POST"
+                    assert not cache_manager.has_cache("/rest/raid/ability_result.json")
+
+                    print("Test 71 - Dynamic API Transparency & Zero-Side-Effect Contract (POST/start.json zero retry, zero cache, zero prefetch enqueue, header preservation): OK", flush=True)
+                finally:
+                    gbf_proxy.api_client.request = orig_api_req
+
+            print("\n[+] ALL 71 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()
