@@ -285,6 +285,7 @@ def get_telemetry_summary() -> Dict[str, Any]:
     pf_reused = PROXY_STATS.get("prefetch_reused", 0)
     reuse_rate = round((pf_reused / pf_reqs * 100.0), 1) if pf_reqs > 0 else 0.0
     success_rate = round((pf_succ / pf_reqs * 100.0), 1) if pf_reqs > 0 else 0.0
+    reuse_of_success = round((pf_reused / pf_succ * 100.0), 1) if pf_succ > 0 else 0.0
     return {
         "foreground_asset_requests": fg_reqs,
         "prefetch_asset_requests": pf_reqs,
@@ -295,6 +296,7 @@ def get_telemetry_summary() -> Dict[str, Any]:
         "prefetch_reused": pf_reused,
         "prefetch_reuse_rate_pct": reuse_rate,
         "prefetch_success_rate_pct": success_rate,
+        "prefetch_reuse_of_success_pct": reuse_of_success,
         "api_retry_count": PROXY_STATS.get("api_retry_count", 0),
     }
 

@@ -1747,6 +1747,7 @@ async def run_test():
                     assert summary["prefetch_reused"] == 1
                     assert summary["prefetch_reuse_rate_pct"] == 100.0
                     assert summary["prefetch_success_rate_pct"] == 100.0
+                    assert summary["prefetch_reuse_of_success_pct"] == 100.0
 
                     print("Test 70 - Granular Request/Cache Telemetry & Prefetch Worker Pipeline: OK", flush=True)
                 finally:
