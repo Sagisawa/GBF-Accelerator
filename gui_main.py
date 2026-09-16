@@ -6,6 +6,7 @@ import subprocess
 import urllib.parse
 import webbrowser
 import collections
+import zipfile
 from typing import Optional, List, Tuple, Dict, Any
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -687,13 +688,209 @@ class GBFAcceleratorGUI:
         f_btns = ttk.Frame(content)
         f_btns.pack(side="bottom", fill="x", pady=(10, 0))
 
-        def open_download():
-            webbrowser.open(target_url)
-            dialog.destroy()
+        # Progress bar container (sits directly above f_btns)
+        f_progress = ttk.Frame(content)
+        f_progress.pack(side="bottom", fill="x", pady=(6, 2), before=f_btns)
+        f_progress.pack_forget()  # Hidden until download begins
 
-        btn_dl = tk.Button(
+        var_prog_text = tk.StringVar(value="准备下载...")
+        lbl_prog = ttk.Label(f_progress, textvariable=var_prog_text, style="Normal.TLabel")
+        lbl_prog.pack(anchor="w", pady=(0, 4))
+
+        pb_download = ttk.Progressbar(f_progress, mode="determinate", maximum=100, value=0)
+        pb_download.pack(fill="x")
+
+        download_url = info.download_url
+        download_state = {
+            "is_downloading": False,
+            "cancel_event": None,
+            "saved_path": None,
+        }
+
+        def open_browser():
+            webbrowser.open(target_url)
+
+        def copy_link():
+            dialog.clipboard_clear()
+            dialog.clipboard_append(target_url)
+            messagebox.showinfo("已复制", "下载链接已复制到剪贴板！", parent=dialog)
+
+        def open_download_folder():
+            saved = download_state.get("saved_path")
+            if saved and saved.is_file():
+                try:
+                    subprocess.Popen(["explorer", f"/select,{str(saved)}"])
+                except Exception:
+                    try:
+                        os.startfile(str(saved.parent))
+                    except Exception:
+                        pass
+            else:
+                default_dir = update_manager.get_default_download_dir()
+                os.startfile(str(default_dir))
+
+        def open_download_file():
+            saved = download_state.get("saved_path")
+            if saved and saved.is_file():
+                try:
+                    os.startfile(str(saved))
+                except Exception as e:
+                    messagebox.showerror("打开失败", f"无法直接打开文件：\n{e}", parent=dialog)
+            else:
+                messagebox.showwarning("提示", "未找到已下载的文件", parent=dialog)
+
+        def on_close_dialog():
+            if download_state["is_downloading"]:
+                if messagebox.askyesno("取消下载", "当前正在下载更新包，是否取消下载并关闭？", parent=dialog):
+                    ev = download_state.get("cancel_event")
+                    if ev:
+                        ev.set()
+                    dialog.destroy()
+            else:
+                dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", on_close_dialog)
+
+        btn_browser = None
+
+        def start_download():
+            if not download_url:
+                open_browser()
+                return
+
+            download_dir = update_manager.get_default_download_dir()
+            filename = update_manager.get_asset_filename(download_url, fallback_version=info.latest_version)
+            dest_file = download_dir / filename
+
+            if dest_file.is_file() and zipfile.is_zipfile(dest_file):
+                if messagebox.askyesno(
+                    "更新包已存在",
+                    f"检测到 Downloads 目录已存在完整更新包：\n{dest_file.name}\n\n是否直接使用现有安装包？\n（点击【否】将重新下载）",
+                    parent=dialog
+                ):
+                    on_download_finished(True, "文件已存在", dest_file)
+                    return
+
+            download_state["is_downloading"] = True
+            cancel_ev = threading.Event()
+            download_state["cancel_event"] = cancel_ev
+            download_state["saved_path"] = None
+
+            # Hide open-file button from any previous state
+            btn_open_file.pack_forget()
+
+            # Show progress bar
+            f_progress.pack(side="bottom", fill="x", pady=(6, 2), before=f_btns)
+            pb_download.configure(mode="determinate", value=0)
+            var_prog_text.set("正在连接下载节点...")
+
+            # Update buttons state
+            btn_action.configure(
+                text=" 取消下载",
+                image=self.get_icon("⏹️"),
+                bg="#6c757d",
+                activebackground="#5a6268",
+                command=cancel_download,
+            )
+            btn_close.configure(state="disabled")
+            if btn_browser:
+                btn_browser.configure(state="disabled")
+
+            up = None if self.var_direct_mode.get() else gbf_proxy.UPSTREAM_PROXY
+            last_ui_update = [0.0]
+
+            def progress_cb(downloaded: int, total: int, speed: float):
+                now = time.perf_counter()
+                if now - last_ui_update[0] >= 0.12 or (total > 0 and downloaded >= total):
+                    last_ui_update[0] = now
+                    try:
+                        if dialog.winfo_exists():
+                            dialog.after(0, update_ui_progress, downloaded, total, speed)
+                    except Exception:
+                        pass
+
+            def update_ui_progress(downloaded: int, total: int, speed: float):
+                if not dialog.winfo_exists() or not download_state["is_downloading"]:
+                    return
+                dl_mb = downloaded / (1024 * 1024)
+                speed_str = f"{speed / (1024 * 1024):.1f} MB/s" if speed >= 1024 * 1024 else f"{speed / 1024:.0f} KB/s"
+                if total > 0:
+                    tot_mb = total / (1024 * 1024)
+                    pct = min(100.0, (downloaded / total) * 100)
+                    pb_download.configure(value=pct)
+                    var_prog_text.set(f"已下载 {dl_mb:.1f} MB / {tot_mb:.1f} MB ({pct:.1f}%)  |  速度: {speed_str}")
+                else:
+                    pb_download.configure(mode="indeterminate")
+                    var_prog_text.set(f"已下载 {dl_mb:.1f} MB  |  速度: {speed_str}")
+
+            def on_download_finished(ok: bool, msg: str, result_path: Optional[Path]):
+                download_state["is_downloading"] = False
+                if not dialog.winfo_exists():
+                    return
+                btn_close.configure(text="关闭", state="normal")
+
+                if ok and result_path:
+                    download_state["saved_path"] = result_path
+                    pb_download.configure(mode="determinate", value=100)
+                    var_prog_text.set(f"✅ 下载完成！已保存至 Downloads 目录：{result_path.name}")
+                    if btn_browser:
+                        btn_browser.pack_forget()
+                    btn_action.configure(
+                        text=" 打开所在文件夹",
+                        image=self.get_icon("📁"),
+                        bg="#007bff",
+                        activebackground="#0069d9",
+                        command=open_download_folder,
+                    )
+                    btn_open_file.pack(side="right", padx=(0, 6), before=btn_action)
+                else:
+                    pb_download.configure(mode="determinate", value=0)
+                    btn_open_file.pack_forget()
+                    if btn_browser and download_url:
+                        btn_browser.configure(state="normal")
+                        btn_browser.pack(side="right", padx=(0, 6), before=btn_action)
+                    if "取消" in msg:
+                        var_prog_text.set("下载已取消。")
+                    else:
+                        var_prog_text.set(f"❌ {msg}")
+                    btn_action.configure(
+                        text=" 立即下载更新",
+                        image=self.get_icon("🚀"),
+                        bg="#28a745",
+                        activebackground="#218838",
+                        command=start_download,
+                    )
+
+            def worker():
+                ok, msg, path = update_manager.download_release_asset(
+                    url=download_url,
+                    dest_path=dest_file,
+                    upstream_proxy=up,
+                    progress_cb=progress_cb,
+                    cancel_event=cancel_ev,
+                )
+                try:
+                    if dialog.winfo_exists():
+                        dialog.after(0, on_download_finished, ok, msg, path)
+                except Exception:
+                    pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def cancel_download():
+            ev = download_state.get("cancel_event")
+            if ev:
+                ev.set()
+            var_prog_text.set("正在取消下载...")
+            btn_action.configure(state="disabled")
+            dialog.after(500, lambda: btn_action.configure(state="normal") if dialog.winfo_exists() else None)
+
+        action_text = " 立即下载更新" if download_url else " 前往 GitHub Releases"
+        action_cmd = start_download if download_url else open_browser
+
+        btn_action = tk.Button(
             f_btns,
-            text=" 前往 GitHub Releases 下载更新",
+            text=action_text,
             image=self.get_icon("🚀"),
             compound="left",
             bg="#28a745",
@@ -705,17 +902,34 @@ class GBFAcceleratorGUI:
             padx=14,
             pady=6,
             cursor="hand2",
-            command=open_download,
+            command=action_cmd,
         )
-        btn_dl.pack(side="right")
+        btn_action.pack(side="right")
+
+        btn_open_file = tk.Button(
+            f_btns,
+            text=" 打开所在文件",
+            image=self.get_icon("📦"),
+            compound="left",
+            bg="#28a745",
+            fg="#ffffff",
+            activebackground="#218838",
+            activeforeground="#ffffff",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            relief="flat",
+            padx=12,
+            pady=6,
+            cursor="hand2",
+            command=open_download_file,
+        )
+        # Not packed initially, only packed upon download completion
+
+        if download_url:
+            btn_browser = ttk.Button(f_btns, text="浏览器下载", command=open_browser)
+            btn_browser.pack(side="right", padx=(0, 6))
 
         btn_close = ttk.Button(f_btns, text="稍后再说", command=dialog.destroy)
-        btn_close.pack(side="right", padx=(0, 8))
-
-        def copy_link():
-            dialog.clipboard_clear()
-            dialog.clipboard_append(target_url)
-            messagebox.showinfo("已复制", "下载链接已复制到剪贴板！", parent=dialog)
+        btn_close.pack(side="right", padx=(0, 6))
 
         btn_copy = ttk.Button(f_btns, text="复制下载链接", command=copy_link)
         btn_copy.pack(side="left")

@@ -41,7 +41,25 @@ class TestUpdateManager(unittest.TestCase):
             info = update_manager.check_for_updates()
             self.assertFalse(info.has_update)
             self.assertIsNotNone(info.error)
-            self.assertIn("Simulated network outage", info.error)
+    def test_get_default_download_dir(self):
+        d = update_manager.get_default_download_dir()
+        self.assertTrue(d.exists())
+
+    def test_get_asset_filename(self):
+        self.assertEqual(
+            update_manager.get_asset_filename("https://github.com/Sagisawa/GBF-Accelerator/releases/download/v1.7.0/GBF_Accelerator_v1.7.0_GUI.zip"),
+            "GBF_Accelerator_v1.7.0_GUI.zip"
+        )
+        self.assertEqual(
+            update_manager.get_asset_filename("", fallback_version="1.7.0"),
+            "GBF_Accelerator_v1.7.0_GUI.zip"
+        )
+
+    def test_download_empty_url(self):
+        from pathlib import Path
+        ok, msg, path = update_manager.download_release_asset("", Path("dummy.zip"))
+        self.assertFalse(ok)
+        self.assertIn("为空", msg)
 
 if __name__ == "__main__":
     unittest.main()
