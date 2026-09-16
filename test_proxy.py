@@ -744,7 +744,8 @@ async def run_test():
             gbf_proxy.api_client = httpx.AsyncClient(
                 limits=httpx.Limits(max_connections=4, max_keepalive_connections=4, keepalive_expiry=10.0),
                 http1=True,
-                http2=False
+                http2=False,
+                trust_env=False
             )
             gbf_proxy.api_telemetry.reset()
 
@@ -859,7 +860,48 @@ async def run_test():
                 gbf_proxy.save_semaphore = orig_sem
                 cleanup_test_47()
 
-            print("\n[+] ALL 47 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # Test 48: Dynamic API Timeout Observability (Specific TimeoutException Subclass & Elapsed ms)
+            orig_req_api = gbf_proxy.request_api
+            captured_timeout_logs = []
+            def timeout_log_listener(line, level):
+                if "[TIMEOUT]" in line:
+                    captured_timeout_logs.append(line)
+
+            gbf_proxy.register_log_listener(timeout_log_listener)
+            try:
+                # 1. Verify ReadTimeout subclass recording and 504 status
+                async def mock_timeout_read(*args, **kwargs):
+                    await asyncio.sleep(0.02)
+                    raise httpx.ReadTimeout("Mock server read timed out")
+
+                gbf_proxy.request_api = mock_timeout_read
+                resp_to_1 = await client.post("https://game.granbluefantasy.jp/rest/multiraid/ability_result.json", json={"ability_id": 1})
+                assert resp_to_1.status_code == 504
+                assert resp_to_1.json() == {"error": "Upstream API Gateway Timeout", "code": 504}
+                assert any("ReadTimeout" in l and "API Gateway Timeout" in l and "ms)" in l for l in captured_timeout_logs), "Log must record ReadTimeout subclass and elapsed ms"
+
+                # 2. Verify ConnectTimeout subclass recording and 504 status
+                async def mock_timeout_connect(*args, **kwargs):
+                    await asyncio.sleep(0.01)
+                    raise httpx.ConnectTimeout("Mock connect to upstream timed out")
+
+                gbf_proxy.request_api = mock_timeout_connect
+                captured_timeout_logs.clear()
+                resp_to_2 = await client.post("https://game.granbluefantasy.jp/rest/multiraid/normal_attack_result.json", json={})
+                assert resp_to_2.status_code == 504
+                assert resp_to_2.json() == {"error": "Upstream API Gateway Timeout", "code": 504}
+                assert any("ConnectTimeout" in l and "API Gateway Timeout" in l and "ms)" in l for l in captured_timeout_logs), "Log must record ConnectTimeout subclass and elapsed ms"
+
+                print("Test 48 - Dynamic API Timeout Observability (ReadTimeout/ConnectTimeout & Elapsed ms): OK", flush=True)
+            finally:
+                gbf_proxy.request_api = orig_req_api
+                gbf_proxy.unregister_log_listener(timeout_log_listener)
+
+            print("\n[+] ALL 48 TESTS PASSED SUCCESSFULLY!", flush=True)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
     finally:
         gbf_proxy.stop_proxy_thread()
         import os, sys

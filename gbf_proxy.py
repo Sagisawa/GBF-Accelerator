@@ -1180,9 +1180,9 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                         try:
                             resp = await request_asset(method, url, headers=clean_headers, content=body)
                             break
-                        except httpx.TimeoutException:
+                        except httpx.TimeoutException as e:
                             if attempt + 1 < max_attempts:
-                                format_log("RETRY", "33", f"Asset timeout, auto-retrying (1/1) -> {url}")
+                                format_log("RETRY", "33", f"Asset timeout ({e.__class__.__name__}), auto-retrying (1/1) -> {url}")
                                 continue
                             fb = await loop.run_in_executor(None, cache_manager.get_fallback_cache, path)
                             if fb is not None:
@@ -1192,12 +1192,12 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                                 await send_cached_response(writer, 200, "OK", c_headers, c_data, keep_content_encoding=True, is_head=is_head)
                                 PROXY_STATS["hits"] += 1
                                 fb_src = c_headers.get("X-Proxy-Fallback", "STALE")
-                                format_log("FALLBACK", "33", f"Timeout -> Served fallback cache ({fb_src}) -> {path}")
+                                format_log("FALLBACK", "33", f"Timeout ({e.__class__.__name__}) -> Served fallback cache ({fb_src}) -> {path}")
                                 if not is_head:
                                     asyncio.create_task(maybe_enqueue_prefetch(target_host, path, b""))
                                 resp = None
                                 break
-                            format_log("TIMEOUT", "31", f"Timeout fetching asset -> {url}")
+                            format_log("TIMEOUT", "31", f"Timeout fetching asset ({e.__class__.__name__}) -> {url}")
                             err_body = b'{"error": "Upstream Gateway Timeout", "code": 504}'
                             await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                             resp = None
@@ -1294,13 +1294,15 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 reused = False
                 try:
                     resp, reused = await request_api(method, url, headers=clean_headers, content=body, path=path)
-                except httpx.TimeoutException:
-                    format_log("TIMEOUT", "31", f"API Gateway Timeout -> {method} {path}")
+                except httpx.TimeoutException as e:
+                    elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+                    format_log("TIMEOUT", "31", f"API Gateway Timeout ({e.__class__.__name__}, {elapsed_ms}ms) -> {method} {path}")
                     err_body = b'{"error": "Upstream API Gateway Timeout", "code": 504}'
                     await send_cached_response(writer, 504, "Gateway Timeout", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                     resp = None
                 except Exception as e:
-                    format_log("API-ERR", "31", f"API Forward Error -> {method} {path}: {e}")
+                    elapsed_ms = int((time.perf_counter() - start_t) * 1000)
+                    format_log("API-ERR", "31", f"API Forward Error ({e.__class__.__name__}, {elapsed_ms}ms) -> {method} {path}: {e}")
                     err_body = b'{"error": "Bad Gateway", "code": 502}'
                     await send_cached_response(writer, 502, "Bad Gateway", {"Content-Type": "application/json"}, err_body, is_head=is_head)
                     resp = None
