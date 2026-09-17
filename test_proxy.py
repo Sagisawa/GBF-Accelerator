@@ -1,5 +1,7 @@
 import asyncio
 import httpx
+import os
+import stat
 import sys
 import time
 
@@ -19,11 +21,35 @@ async def run_test():
         import certifi, ssl
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         ssl_ctx.load_verify_locations(cafile="d:/acgpower/gbf_speed_proxy/certs/ca.crt")
+        # Fixture self-healing: ensure assets/1772717316/css/arousal/form.css exists so dev test suite never fails if run on a pruned cache
+        from cache_manager import cache_manager
+        fixture_path = cache_manager._get_local_path("/assets/1772717316/css/arousal/form.css")
+        if fixture_path and not fixture_path.is_file():
+            fixture_path.parent.mkdir(parents=True, exist_ok=True)
+            import gzip, hashlib, json
+            dummy_css = gzip.compress(b"/* fixture self-healing */\n.form { display: block; }\n")
+            with open(fixture_path, "wb") as f:
+                f.write(dummy_css)
+            fixture_ext = fixture_path.with_name(fixture_path.name + ".ext")
+            if not fixture_ext.is_file():
+                meta = {
+                    "LastModified": "Tue, 21 Oct 2025 19:24:12 GMT",
+                    "ETag": '"1761074652-fdf4b045714bdf1a74755289173faaf5"',
+                    "at": int(time.time()),
+                    "md5": hashlib.md5(dummy_css).hexdigest(),
+                    "ce": "gzip",
+                    "ct": "text/css; charset=UTF-8",
+                    "v": 1,
+                }
+                with open(fixture_ext, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
+
         async with httpx.AsyncClient(
             proxy=f"http://127.0.0.1:{test_port}",
             verify=ssl_ctx,
             timeout=10.0,
         ) as client:
+
             # Test 1: Local Cache Hit & Absence of X-Proxy Headers on Wire
             url_cache = "https://prd-game-a-granbluefantasy.akamaized.net/assets/1772717316/css/arousal/form.css"
             resp = await client.get(url_cache)
@@ -2019,14 +2045,199 @@ async def run_test():
 
             print("Test 72 - Windows System Proxy Conflict Detection & User Notification Contract: OK", flush=True)
 
-            print("\n[+] ALL 72 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # Test 73: Historical Version Cache Slimming & Safety Contract
+            import tempfile
+            import threading
+            from pathlib import Path
+            from cache_manager import CacheManager
+            with tempfile.TemporaryDirectory() as sandbox_dir:
+                sb_path = Path(sandbox_dir)
+                mgr = CacheManager(cache_base_dir=sb_path)
+
+                # 1. Populate mock asset tree
+                # Global media that must NEVER be deleted
+                img_file = sb_path / "assets" / "img" / "sp" / "ui" / "btn.png"
+                img_file.parent.mkdir(parents=True, exist_ok=True)
+                img_file.write_bytes(b"\x89PNG\r\n\x1a\nfake_png_data")
+
+                snd_file = sb_path / "assets" / "sound" / "se" / "btn.mp3"
+                snd_file.parent.mkdir(parents=True, exist_ok=True)
+                snd_file.write_bytes(b"fake_mp3_data")
+
+                font_file = sb_path / "assets" / "font" / "icon.woff2"
+                font_file.parent.mkdir(parents=True, exist_ok=True)
+                font_file.write_bytes(b"fake_woff2")
+
+                misc_dir_file = sb_path / "assets" / "common_pack" / "data.json"
+                misc_dir_file.parent.mkdir(parents=True, exist_ok=True)
+                misc_dir_file.write_text('{"ok": 1}')
+
+                # Non-standard folders that must NEVER be treated as numeric version dirs
+                non_std_dir1 = sb_path / "assets" / "1001_backup"
+                non_std_dir1.mkdir(parents=True, exist_ok=True)
+                (non_std_dir1 / "data.txt").write_text("backup")
+
+                non_std_dir2 = sb_path / "assets" / "v1013"
+                non_std_dir2.mkdir(parents=True, exist_ok=True)
+                (non_std_dir2 / "data.txt").write_text("v1013")
+
+                # Populate 12 numeric version directories under assets/ (1001 to 1012)
+                for v in range(1001, 1013):
+                    v_dir = sb_path / "assets" / str(v) / "js"
+                    v_dir.mkdir(parents=True, exist_ok=True)
+                    (v_dir / "app.js").write_bytes(b"console.log('version " + str(v).encode() + b"');")
+                    (v_dir / "app.js.ext").write_text('{"ct": "application/javascript"}')
+
+                # Windows read-only file test: simulate a cache file marked read-only inside stale version 1002
+                ro_file = sb_path / "assets" / "1002" / "js" / "readonly.js"
+                ro_file.write_bytes(b"readonly_code")
+                os.chmod(ro_file, stat.S_IREAD)
+
+                # Populate 6 numeric version directories under assets_en/ (2001 to 2006)
+                for v in range(2001, 2007):
+                    v_dir_en = sb_path / "assets_en" / str(v) / "js"
+                    v_dir_en.mkdir(parents=True, exist_ok=True)
+                    (v_dir_en / "en.js").write_bytes(b"console.log('en " + str(v).encode() + b"');")
+
+                # Populate RAM cache with a mix of stale and retained keys
+                mgr.store_ram_cache("/assets/1001/js/app.js", {"content-type": "application/javascript"}, b"console.log('1001');")
+                mgr.store_ram_cache("/assets/1012/js/app.js", {"content-type": "application/javascript"}, b"console.log('1012');")
+                mgr.store_ram_cache("/assets/img/sp/ui/btn.png", {"content-type": "image/png"}, b"\x89PNG\r\n\x1a\nfake_png_data")
+                mgr._mark_missing("assets/1001/js/missing.js")
+                mgr._mark_missing("assets/1012/js/missing.js")
+
+                # Prime version dirs cache
+                v_dirs_cached = mgr._get_version_dirs("assets")
+                assert len(v_dirs_cached) == 12
+
+                # Step 1: Pre-check contract
+                stale_dirs_8 = mgr.get_stale_version_dirs(keep_count=8)
+                # assets has 12 versions -> 4 stale (1001..1004)
+                # assets_en has 6 versions -> 0 stale (6 <= 8)
+                assert len(stale_dirs_8) == 4
+                assert [d.name for d in stale_dirs_8] == ["1004", "1003", "1002", "1001"]
+
+                # Step 2: Parameter clamping guard (keep_count=0 must clamp to >= 1, None/string handling)
+                stale_dirs_0 = mgr.get_stale_version_dirs(keep_count=0)
+                # keep_count clamped to 1 -> leaves 1 in assets (1012), leaves 1 in assets_en (2006)
+                assert len(stale_dirs_0) == 11 + 5
+                assert len(mgr.get_stale_version_dirs(keep_count=None)) == 4
+                assert len(mgr.get_stale_version_dirs(keep_count="8")) == 4
+
+                # Step 3: Cancellation contract
+                cancel_evt = threading.Event()
+                cancel_evt.set()  # Cancel immediately before execution
+                res_cancel = mgr.prune_stale_version_cache(keep_count=8, cancel_event=cancel_evt)
+                assert res_cancel["cancelled"] is True
+                assert res_cancel["pruned_dirs"] == 0
+
+                # Step 4: Full execution contract with progress tracking
+                progress_records = []
+                def on_test_progress(cur, total, dname, fcount, bcount):
+                    progress_records.append((cur, total, dname, fcount, bcount))
+
+                res = mgr.prune_stale_version_cache(keep_count=8, progress_callback=on_test_progress)
+                assert res["cancelled"] is False
+                assert res["scanned_dirs"] == 18  # 12 in assets + 6 in assets_en
+                assert res["pruned_dirs"] == 4   # 4 in assets
+                assert res["retained_dirs"] == 14 # 8 in assets + 6 in assets_en
+                assert res["deleted_files"] == 9  # 4 * (app.js + app.js.ext) + 1 readonly.js = 9 files
+                assert res["freed_bytes"] > 0
+                assert res["freed_mb"] >= 0.0
+                assert len(progress_records) > 0
+
+                # Verify on-disk invariant
+                # Stale versions deleted (including read-only file inside 1002)
+                for v in range(1001, 1005):
+                    assert not (sb_path / "assets" / str(v)).exists(), f"Stale version {v} should be deleted"
+                # Retained versions preserved
+                for v in range(1005, 1013):
+                    assert (sb_path / "assets" / str(v) / "js" / "app.js").is_file(), f"Retained version {v} must exist"
+                # All assets_en preserved
+                for v in range(2001, 2007):
+                    assert (sb_path / "assets_en" / str(v) / "js" / "en.js").is_file()
+
+                # Global assets and non-standard directories strictly preserved
+                assert img_file.is_file()
+                assert snd_file.is_file()
+                assert font_file.is_file()
+                assert misc_dir_file.is_file()
+                assert (non_std_dir1 / "data.txt").is_file()
+                assert (non_std_dir2 / "data.txt").is_file()
+
+                # Verify Cache Coherence
+                # 1001 evicted from RAM, 1012 and global image retained
+                assert mgr.get_ram_cache("/assets/1001/js/app.js") is None
+                assert mgr.get_ram_cache("/assets/1012/js/app.js") is not None
+                assert mgr.get_ram_cache("/assets/img/sp/ui/btn.png") is not None
+                assert "assets/1001/js/missing.js" not in mgr._known_missing
+                assert "assets/1012/js/missing.js" in mgr._known_missing
+
+                # Version dirs cache invalidated and refreshes accurately
+                refreshed_v_dirs = mgr._get_version_dirs("assets")
+                assert len(refreshed_v_dirs) == 8
+                assert refreshed_v_dirs[0] == "1012"
+                assert refreshed_v_dirs[-1] == "1005"
+
+                # Step 5: Idempotent second run
+                res_idempotent = mgr.prune_stale_version_cache(keep_count=8)
+                assert res_idempotent["pruned_dirs"] == 0
+                assert res_idempotent["deleted_files"] == 0
+                assert res_idempotent["freed_bytes"] == 0
+
+            # Step 6: GUI integration contract with Tkinter mock
+            test_gui_root_73 = tk.Tk()
+            test_gui_root_73.withdraw()
+            try:
+                with mock.patch.object(gui_main.GBFAcceleratorGUI, "start_proxy"), \
+                     mock.patch.object(gui_main.GBFAcceleratorGUI, "setup_tray"):
+                    gui_73 = gui_main.GBFAcceleratorGUI(test_gui_root_73)
+
+                # 6a. Stale dirs == 0 -> prompts info dialog, no worker thread
+                with mock.patch.object(cache_manager, "get_stale_version_dirs", return_value=[]), \
+                     mock.patch.object(gui_main.messagebox, "showinfo") as mock_info, \
+                     mock.patch.object(gui_main.messagebox, "askyesno") as mock_ask:
+                    gui_73.run_cache_slimming()
+                    mock_info.assert_called_once()
+                    mock_ask.assert_not_called()
+                    assert gui_73._is_slimming_cache is False
+
+                # 6b. Stale dirs > 0, User clicks No -> askyesno called, but no worker
+                fake_stale = [Path("assets/1001"), Path("assets/1002")]
+                with mock.patch.object(cache_manager, "get_stale_version_dirs", return_value=fake_stale), \
+                     mock.patch.object(gui_main.messagebox, "askyesno", return_value=False) as mock_ask, \
+                     mock.patch.object(threading, "Thread") as mock_thread:
+                    gui_73.run_cache_slimming()
+                    mock_ask.assert_called_once()
+                    assert "2 个历史旧版本" in mock_ask.call_args[0][1]
+                    mock_thread.assert_not_called()
+                    assert gui_73._is_slimming_cache is False
+
+                # 6c. Mutual exclusion: while auditing, slimming is rejected
+                gui_73._is_auditing_cache = True
+                with mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_73.run_cache_slimming()
+                    mock_warn.assert_called_once()
+                gui_73._is_auditing_cache = False
+
+                # 6d. Mutual exclusion: while slimming, auditing is rejected
+                gui_73._is_slimming_cache = True
+                with mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_73.run_cache_audit()
+                    mock_warn.assert_called_once()
+                gui_73._is_slimming_cache = False
+            finally:
+                test_gui_root_73.destroy()
+
+            print("Test 73 - Historical Version Cache Slimming Contract: OK", flush=True)
+
+            print("\n[+] ALL 73 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()
         sys.exit(1)
     finally:
         gbf_proxy.stop_proxy_thread()
-        import os, sys
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)
