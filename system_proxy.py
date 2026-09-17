@@ -46,9 +46,53 @@ def is_pac_proxy_enabled(port: Optional[int] = None) -> bool:
     url = get_current_pac_url()
     if not url:
         return False
+    url_lower = url.lower()
     if port is not None:
-        return f":{port}/proxy.pac" in url
-    return "/proxy.pac" in url and ("127.0.0.1" in url or "localhost" in url)
+        return f":{port}/proxy.pac" in url_lower and ("127.0.0.1" in url_lower or "localhost" in url_lower)
+    return "/proxy.pac" in url_lower and ("127.0.0.1" in url_lower or "localhost" in url_lower)
+
+def check_proxy_conflict(port: Optional[int] = None) -> Optional[str]:
+    """Check if an external system proxy or external PAC script is configured in Windows.
+    Returns a descriptive string of the conflict source if detected, or None if clear.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        conflicts = []
+        pac_url = get_current_pac_url()
+        external_pac = None
+        if pac_url and not is_pac_proxy_enabled(port):
+            external_pac = pac_url
+        elif _original_pac_url and ("/proxy.pac" not in _original_pac_url.lower() or ("127.0.0.1" not in _original_pac_url.lower() and "localhost" not in _original_pac_url.lower())):
+            external_pac = _original_pac_url
+
+        if external_pac:
+            conflicts.append(f"外部 PAC 脚本 ({external_pac})")
+
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS_KEY, 0, winreg.KEY_READ) as key:
+                try:
+                    proxy_enable, _ = winreg.QueryValueEx(key, "ProxyEnable")
+                except FileNotFoundError:
+                    proxy_enable = 0
+                if proxy_enable == 1 or str(proxy_enable).strip() == "1":
+                    try:
+                        proxy_server, _ = winreg.QueryValueEx(key, "ProxyServer")
+                    except FileNotFoundError:
+                        proxy_server = ""
+                    proxy_server_str = str(proxy_server).strip() if proxy_server else ""
+                    if proxy_server_str:
+                        conflicts.append(f"手动系统代理 ({proxy_server_str})")
+                    else:
+                        conflicts.append("手动系统代理")
+        except FileNotFoundError:
+            pass
+
+        if conflicts:
+            return "、".join(conflicts)
+    except Exception:
+        pass
+    return None
 
 def enable_pac_proxy(pac_url: str = "http://127.0.0.1:8124/proxy.pac") -> bool:
     """Enable Windows system PAC proxy pointing to local accelerator server."""

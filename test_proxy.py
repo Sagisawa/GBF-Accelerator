@@ -1876,7 +1876,150 @@ async def run_test():
                 finally:
                     gbf_proxy.api_client.request = orig_api_req
 
-            print("\n[+] ALL 71 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # ---------------- Test 72: Windows System Proxy Conflict Detection & User Notification Contract ----------------
+            import system_proxy
+            import gui_main
+            import tkinter as tk
+            import unittest.mock as mock
+
+            # 1. Non-Windows platform returns None
+            with mock.patch.object(system_proxy.sys, "platform", "linux"):
+                assert system_proxy.check_proxy_conflict(8124) is None, "Non-windows must return None"
+
+            class MockRegistryKey:
+                def __init__(self, values):
+                    self.values = values
+                def __enter__(self):
+                    return self
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    pass
+
+            def create_mock_reg(values):
+                def mock_query(key, name):
+                    if name in values:
+                        return values[name], 1
+                    raise FileNotFoundError(f"Value {name} not found")
+                return MockRegistryKey(values), mock_query
+
+            # 2. Clean state: no PAC, ProxyEnable = 0
+            mock_k_clean, mock_q_clean = create_mock_reg({"ProxyEnable": 0})
+            with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                 mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                 mock.patch.object(system_proxy, "get_current_pac_url", return_value=None):
+                assert system_proxy.check_proxy_conflict(8124) is None, "Clean registry must return None"
+
+            # 3. Clean state: registry key missing entirely
+            with mock.patch.object(system_proxy.winreg, "OpenKey", side_effect=FileNotFoundError), \
+                 mock.patch.object(system_proxy, "get_current_pac_url", return_value=None):
+                assert system_proxy.check_proxy_conflict(8124) is None, "Missing registry key must return None"
+
+            # 4. Our own PAC enabled with no manual proxy: clean
+            with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                 mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                 mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://127.0.0.1:8124/proxy.pac"):
+                assert system_proxy.check_proxy_conflict(8124) is None, "Our own PAC must not trigger conflict"
+
+            # 5. External PAC enabled: detected
+            with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                 mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                 mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://example.com/corp.pac"):
+                res_pac = system_proxy.check_proxy_conflict(8124)
+                assert res_pac == "外部 PAC 脚本 (http://example.com/corp.pac)", f"Expected external PAC conflict, got {res_pac}"
+
+            # 5b. External PAC on same port (8124) but external host: must still be detected
+            with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                 mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                 mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://corp-pac.com:8124/proxy.pac"):
+                res_col = system_proxy.check_proxy_conflict(8124)
+                assert res_col == "外部 PAC 脚本 (http://corp-pac.com:8124/proxy.pac)", f"Expected port collision PAC detected, got {res_col}"
+
+            # 5c. External PAC replaced on startup preserved in _original_pac_url: must be detected
+            orig_saved = system_proxy._original_pac_url
+            try:
+                system_proxy._original_pac_url = "http://example.com/company.pac"
+                with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                     mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://127.0.0.1:8124/proxy.pac"):
+                    res_orig = system_proxy.check_proxy_conflict(8124)
+                    assert res_orig == "外部 PAC 脚本 (http://example.com/company.pac)", f"Expected _original_pac_url detected, got {res_orig}"
+            finally:
+                system_proxy._original_pac_url = orig_saved
+
+            # 6. Manual system proxy enabled with host:port
+            mock_k_manual, mock_q_manual = create_mock_reg({"ProxyEnable": 1, "ProxyServer": "127.0.0.1:7897"})
+            with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_manual), \
+                 mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_manual), \
+                 mock.patch.object(system_proxy, "get_current_pac_url", return_value=None):
+                res_manual = system_proxy.check_proxy_conflict(8124)
+                assert res_manual == "手动系统代理 (127.0.0.1:7897)", f"Expected manual proxy conflict with port, got {res_manual}"
+
+            # 7. Manual system proxy enabled without ProxyServer string
+            mock_k_nopool, mock_q_nopool = create_mock_reg({"ProxyEnable": 1})
+            with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_nopool), \
+                 mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_nopool), \
+                 mock.patch.object(system_proxy, "get_current_pac_url", return_value=None):
+                res_nopool = system_proxy.check_proxy_conflict(8124)
+                assert res_nopool == "手动系统代理", f"Expected manual proxy conflict without port, got {res_nopool}"
+
+            # 8. Both external PAC and manual proxy enabled simultaneously
+            with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_manual), \
+                 mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_manual), \
+                 mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://example.com/corp.pac"):
+                res_both = system_proxy.check_proxy_conflict(8124)
+                assert "外部 PAC 脚本 (http://example.com/corp.pac)" in res_both
+                assert "手动系统代理 (127.0.0.1:7897)" in res_both
+
+            # 9. GUI conflict detection & notification integration
+            test_gui_root_72 = tk.Tk()
+            test_gui_root_72.withdraw()
+            try:
+                with mock.patch.object(gui_main.GBFAcceleratorGUI, "start_proxy"), \
+                     mock.patch.object(gui_main.GBFAcceleratorGUI, "setup_tray"):
+                    gui_72 = gui_main.GBFAcceleratorGUI(test_gui_root_72)
+
+                # Guard: var_auto_pac is False -> no prompt
+                gui_72.var_auto_pac.set(False)
+                with mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_72.check_and_prompt_proxy_conflict(force=True)
+                    mock_warn.assert_not_called()
+                assert gui_72._proxy_conflict_prompted is False
+
+                # Guard: not viewable and not force -> no prompt
+                gui_72.var_auto_pac.set(True)
+                with mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_72.check_and_prompt_proxy_conflict(force=False)
+                    mock_warn.assert_not_called()
+                assert gui_72._proxy_conflict_prompted is False
+
+                # Force check with conflict detected -> prompts warning
+                with mock.patch.object(system_proxy, "check_proxy_conflict", return_value="手动系统代理 (127.0.0.1:7897)"), \
+                     mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_72.check_and_prompt_proxy_conflict(force=True)
+                    mock_warn.assert_called_once()
+                    assert "检测到外部代理配置" in mock_warn.call_args[0][0]
+                    assert "手动系统代理 (127.0.0.1:7897)" in mock_warn.call_args[0][1]
+                    assert gui_72._proxy_conflict_prompted is True
+
+                    # Second non-forced check when already prompted -> does not prompt again
+                    mock_warn.reset_mock()
+                    gui_72.check_and_prompt_proxy_conflict(force=False)
+                    mock_warn.assert_not_called()
+
+                # toggle_sys_proxy_setting triggering conflict check with safe mocks
+                with mock.patch.object(gui_72, "check_and_prompt_proxy_conflict") as mock_prompt, \
+                     mock.patch.object(gui_main.system_proxy, "enable_pac_proxy") as mock_enable_pac, \
+                     mock.patch.object(gui_main.system_proxy, "disable_pac_proxy"), \
+                     mock.patch.object(gui_main.config_manager, "save_config"):
+                    gui_72.var_auto_pac.set(True)
+                    gui_72.toggle_sys_proxy_setting()
+                    mock_prompt.assert_called_once_with(force=True)
+                    mock_enable_pac.assert_called_once()
+            finally:
+                test_gui_root_72.destroy()
+
+            print("Test 72 - Windows System Proxy Conflict Detection & User Notification Contract: OK", flush=True)
+
+            print("\n[+] ALL 72 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()

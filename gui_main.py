@@ -146,6 +146,7 @@ class GBFAcceleratorGUI:
         self.var_auto_update = tk.BooleanVar(value=config_manager.config.get("auto_check_update", True))
         self.update_info: Optional[UpdateInfo] = None
         self.log_window: Optional["LogViewerWindow"] = None
+        self._proxy_conflict_prompted = False
 
         # Emoji icon cache (buttons attach icons via image+compound for exact centering)
         self._icon_cache: dict = {}
@@ -182,6 +183,7 @@ class GBFAcceleratorGUI:
         # Check CA status and detect legacy leaked cert
         self.update_ca_status()
         self.root.after(500, self.check_and_prompt_ca_state)
+        self.root.after(600, self.check_and_prompt_proxy_conflict)
 
         # Ensure helper files
         from app_main import ensure_bundled_files
@@ -1120,6 +1122,42 @@ class GBFAcceleratorGUI:
             ):
                 self.install_ca()
 
+    def check_and_prompt_proxy_conflict(self, force: bool = False):
+        """Check for external Windows system proxy / PAC conflicts and notify user."""
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+
+        if not self.var_auto_pac.get():
+            return
+        if not force:
+            try:
+                if START_MINIMIZED or not self.root.winfo_viewable():
+                    return
+            except Exception:
+                return
+            if self._proxy_conflict_prompted:
+                return
+
+        port = getattr(gbf_proxy, "LISTEN_PORT", 8124)
+        conflict = system_proxy.check_proxy_conflict(port)
+        if not conflict:
+            return
+
+        self._proxy_conflict_prompted = True
+        messagebox.showwarning(
+            "检测到外部代理配置",
+            f"检测到系统当前存在外部代理配置：\n\n"
+            f"• 当前设置：{conflict}\n\n"
+            "技术说明：\n"
+            "1. 本加速器使用 Windows 自动配置脚本 (PAC) 进行游戏域名定向分流。\n"
+            "2. Windows 网络栈 (WinINet) 中若同时开启全局手动代理，部分浏览器或网络组件可能会优先通过手动代理转发，导致加速器 PAC 分流未能按预期生效。\n\n"
+            "建议方案：\n"
+            "如需搭配第三方代理软件使用，建议在第三方软件中关闭其“系统代理”开关，并在本加速器界面的【上游代理】中填入对应本地端口，由加速器统一分流并转发上游。",
+        )
+
     def clear_cache_dialog(self):
         current_dir = Path(self.var_cache_dir.get()).resolve()
         if not messagebox.askyesno(
@@ -1592,6 +1630,8 @@ class GBFAcceleratorGUI:
                 system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
             else:
                 system_proxy.disable_pac_proxy()
+        if enabled:
+            self.check_and_prompt_proxy_conflict(force=True)
 
     def toggle_startup_setting(self):
         enabled = self.var_auto_start.get()
