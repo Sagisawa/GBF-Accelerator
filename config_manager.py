@@ -55,6 +55,7 @@ KNOWN_ACGPOWER_PATHS = [
 
 PROBE_PROXY_PORTS = [
     (7897, "Clash Verge (Mixed Port)"),
+    (7891, "Clash Verge / Mihomo (Mixed Port)"),
     (7890, "Clash Default (HTTP)"),
     (10808, "v2rayN (HTTP)"),
     (10809, "v2rayN (SOCKS/HTTP)"),
@@ -157,6 +158,12 @@ def normalize_cache_dir(path: Any) -> Path:
     # Case D: Check if any general subfolder has assets
     if (p / "cache" / "gbf" / "https").is_dir():
         return (p / "cache" / "gbf" / "https").resolve()
+
+    # Case E: Mac ACGPower structure (cache/gbf/assets) without 'https' subfolder
+    if (p / "cache" / "gbf" / "assets").is_dir():
+        return (p / "cache" / "gbf").resolve()
+    if (p / "gbf" / "assets").is_dir() or (p.name.lower() == "cache" and (p / "gbf" / "assets").is_dir()):
+        return (p / "gbf").resolve()
 
     return p
 
@@ -263,14 +270,28 @@ def auto_detect_acgpower_cache() -> Optional[Path]:
         except Exception:
             pass
 
-    # Fallback to standard known paths if drive enumeration was empty
-    if not candidate_roots:
-        candidate_roots = [
-            Path(r"D:\acgpower"),
-            Path(r"C:\acgpower"),
-            Path(r"E:\acgpower"),
-            Path(r"F:\acgpower"),
-        ]
+        # Fallback to standard known paths if drive enumeration was empty
+        if not candidate_roots:
+            candidate_roots = [
+                Path(r"D:\acgpower"),
+                Path(r"C:\acgpower"),
+                Path(r"E:\acgpower"),
+                Path(r"F:\acgpower"),
+            ]
+    elif sys.platform == "darwin":
+        mac_downloads = Path.home() / "Downloads"
+        for sub in (
+            "ACGPOWER-MAC-2",
+            "acgpower",
+            "ACGPower",
+            "ACGPOWER-MAC",
+        ):
+            if (mac_downloads / sub).is_dir():
+                candidate_roots.append(mac_downloads / sub)
+            if (Path.home() / sub).is_dir():
+                candidate_roots.append(Path.home() / sub)
+        if (Path.home() / "Library" / "Application Support" / "GBF-Accelerator" / "cache").is_dir():
+            candidate_roots.append(Path.home() / "Library" / "Application Support" / "GBF-Accelerator" / "cache")
 
     for root in candidate_roots:
         if root.is_dir():
@@ -309,49 +330,68 @@ def _extract_cert_from_registry_blob(blob: bytes):
             return None
 
 def find_installed_gbf_ca_thumbprints() -> Dict[str, str]:
-    """Find all installed GBF-related Root CA certificates in CurrentUser / LocalMachine Root stores.
+    """Find all installed GBF-related Root CA certificates in CurrentUser / LocalMachine / Keychain Root stores.
     Returns a mapping of thumbprint (uppercase hex) -> description/subject.
     """
-    if sys.platform != "win32":
-        return {}
     found: Dict[str, str] = {}
     gbf_keywords = ["gbf", "granblue", "granbluefantasy"]
 
-    try:
-        import winreg
-        for hive, hive_name in [(winreg.HKEY_CURRENT_USER, "当前用户"), (winreg.HKEY_LOCAL_MACHINE, "本地计算机")]:
-            try:
-                reg_path = r"Software\Microsoft\SystemCertificates\Root\Certificates"
-                with winreg.OpenKey(hive, reg_path) as root_k:
-                    i = 0
-                    while True:
-                        try:
-                            sub_key_name = winreg.EnumKey(root_k, i)
-                            i += 1
-                            thumb = sub_key_name.strip().upper()
-
-                            if thumb == LEGACY_LEAKED_CA_SHA1.upper():
-                                found[thumb] = f"GBF Speed CA (已废弃公开证书, {hive_name})"
-                                continue
-
+    if sys.platform == "win32":
+        try:
+            import winreg
+            for hive, hive_name in [(winreg.HKEY_CURRENT_USER, "当前用户"), (winreg.HKEY_LOCAL_MACHINE, "本地计算机")]:
+                try:
+                    reg_path = r"Software\Microsoft\SystemCertificates\Root\Certificates"
+                    with winreg.OpenKey(hive, reg_path) as root_k:
+                        i = 0
+                        while True:
                             try:
-                                with winreg.OpenKey(root_k, sub_key_name) as sub_k:
-                                    blob, _ = winreg.QueryValueEx(sub_k, "Blob")
-                                    cert = _extract_cert_from_registry_blob(blob)
-                                    if cert:
-                                        subj_str = cert.subject.rfc4514_string()
-                                        issuer_str = cert.issuer.rfc4514_string()
-                                        combined = (subj_str + " " + issuer_str).lower()
-                                        if any(k in combined for k in gbf_keywords):
-                                            found[thumb] = f"{subj_str} ({hive_name})"
-                            except Exception:
-                                pass
-                        except OSError:
-                            break
-            except Exception:
-                pass
-    except Exception:
-        pass
+                                sub_key_name = winreg.EnumKey(root_k, i)
+                                i += 1
+                                thumb = sub_key_name.strip().upper()
+
+                                if thumb == LEGACY_LEAKED_CA_SHA1.upper():
+                                    found[thumb] = f"GBF Speed CA (已废弃公开证书, {hive_name})"
+                                    continue
+
+                                try:
+                                    with winreg.OpenKey(root_k, sub_key_name) as sub_k:
+                                        blob, _ = winreg.QueryValueEx(sub_k, "Blob")
+                                        cert = _extract_cert_from_registry_blob(blob)
+                                        if cert:
+                                            subj_str = cert.subject.rfc4514_string()
+                                            issuer_str = cert.issuer.rfc4514_string()
+                                            combined = (subj_str + " " + issuer_str).lower()
+                                            if any(k in combined for k in gbf_keywords):
+                                                found[thumb] = f"{subj_str} ({hive_name})"
+                                except Exception:
+                                    pass
+                            except OSError:
+                                break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    elif sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["security", "find-certificate", "-a", "-c", "GBF", "-Z"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            )
+            if res.returncode == 0:
+                current_sha1 = None
+                for line in res.stdout.splitlines():
+                    if "SHA-1 hash:" in line:
+                        current_sha1 = line.split(":", 1)[1].strip().upper()
+                    elif ("alis" in line or "labl" in line) and current_sha1:
+                        val = line.split("=", 1)[1].strip().strip('"')
+                        found[current_sha1] = val
+                        current_sha1 = None
+        except Exception:
+            pass
 
     # Also check local ca.crt if present
     ca_crt_path = get_base_dir() / "certs" / "ca.crt"
@@ -369,71 +409,77 @@ def find_installed_gbf_ca_thumbprints() -> Dict[str, str]:
     return found
 
 def _remove_cert_by_thumbprint(thumbprint: str) -> bool:
-    """Remove a certificate from CurrentUser / LocalMachine Root store by SHA1 thumbprint.
-    Deletes registry entry and invokes certutil with -f as secondary cleanup.
-    """
-    if sys.platform != "win32":
-        return False
+    """Remove a certificate from system Root store by SHA1 thumbprint."""
     clean_thumb = thumbprint.strip().replace(" ", "").upper()
     removed = False
 
-    # 1. Delete from HKCU SystemCertificates\Root\Certificates
-    try:
-        import winreg
-        reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{clean_thumb}"
-        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, reg_path)
-        removed = True
-    except FileNotFoundError:
-        pass
-    except Exception:
-        pass
-
-    # 2. Also attempt deletion from HKLM if user has admin privileges
-    try:
-        import winreg
-        reg_path_lm = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{clean_thumb}"
-        winreg.DeleteKey(winreg.HKEY_LOCAL_MACHINE, reg_path_lm)
-        removed = True
-    except Exception:
-        pass
-
-    # 3. Secondary cleanup: certutil -f -user -delstore Root <thumbprint>
-    # Provide input=b"y\r\n" and timeout=3 to avoid interactive hang
-    try:
-        res = subprocess.run(
-            ["certutil", "-f", "-user", "-delstore", "Root", clean_thumb],
-            input=b"y\r\n",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=3,
-        )
-        if res.returncode == 0:
+    if sys.platform == "win32":
+        # 1. Delete from HKCU SystemCertificates\Root\Certificates
+        try:
+            import winreg
+            reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{clean_thumb}"
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, reg_path)
             removed = True
-    except Exception:
-        pass
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
 
-    # Also certutil machine store if admin
-    try:
-        res_lm = subprocess.run(
-            ["certutil", "-f", "-delstore", "Root", clean_thumb],
-            input=b"y\r\n",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=3,
-        )
-        if res_lm.returncode == 0:
+        # 2. Also attempt deletion from HKLM if user has admin privileges
+        try:
+            import winreg
+            reg_path_lm = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{clean_thumb}"
+            winreg.DeleteKey(winreg.HKEY_LOCAL_MACHINE, reg_path_lm)
             removed = True
-    except Exception:
-        pass
+        except Exception:
+            pass
+
+        # 3. Secondary cleanup: certutil -f -user -delstore Root <thumbprint>
+        try:
+            res = subprocess.run(
+                ["certutil", "-f", "-user", "-delstore", "Root", clean_thumb],
+                input=b"y\r\n",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=3,
+            )
+            if res.returncode == 0:
+                removed = True
+        except Exception:
+            pass
+
+        # Also certutil machine store if admin
+        try:
+            res_lm = subprocess.run(
+                ["certutil", "-f", "-delstore", "Root", clean_thumb],
+                input=b"y\r\n",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=3,
+            )
+            if res_lm.returncode == 0:
+                removed = True
+        except Exception:
+            pass
+    elif sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["security", "delete-certificate", "-Z", clean_thumb, "-t"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                removed = True
+        except Exception:
+            pass
 
     return removed
 
 def is_ca_installed() -> bool:
-    """Check if the current unique Root CA (from certs/ca.crt) is installed in CurrentUser / LocalMachine Root store.
+    """Check if the current unique Root CA (from certs/ca.crt) is installed in system Root store.
     Strictly verifies by SHA-1 hash of the local certificate to prevent mismatch with legacy/other certs.
     """
-    if sys.platform != "win32":
-        return True
     ca_crt_path = get_base_dir() / "certs" / "ca.crt"
     if not ca_crt_path.is_file():
         return False
@@ -444,12 +490,55 @@ def is_ca_installed() -> bool:
         cert = x509.load_pem_x509_certificate(cert_data)
         sha1 = cert.fingerprint(hashes.SHA1()).hex().upper()
 
-        # Fast path: check Windows Registry HKCU / HKLM (instant, 0ms)
+        if sys.platform == "win32":
+            # Fast path: check Windows Registry HKCU / HKLM (instant, 0ms)
+            try:
+                import winreg
+                for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                    try:
+                        reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{sha1}"
+                        with winreg.OpenKey(hive, reg_path):
+                            return True
+                    except OSError:
+                        pass
+            except Exception:
+                pass
+
+            # Fallback: check via certutil -user -verifystore
+            res = subprocess.run(
+                ["certutil", "-user", "-verifystore", "Root", sha1],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=3,
+            )
+            return res.returncode == 0
+        elif sys.platform == "darwin":
+            res = subprocess.run(
+                ["security", "find-certificate", "-a", "-c", "GBF Local Accelerator Root CA", "-Z"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            )
+            if res.returncode == 0:
+                out_upper = res.stdout.upper().replace(" ", "")
+                if sha1 in out_upper:
+                    return True
+                return "GBF Local Accelerator Root CA" in res.stdout
+            return False
+        return True
+    except Exception:
+        return False
+
+def check_legacy_leaked_ca_installed() -> bool:
+    """Check whether the old public leaked CA ('GBF Speed CA') is present in Root store."""
+    if sys.platform == "win32":
+        # Check registry first
         try:
             import winreg
             for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
                 try:
-                    reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{sha1}"
+                    reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{LEGACY_LEAKED_CA_SHA1.upper()}"
                     with winreg.OpenKey(hive, reg_path):
                         return True
                 except OSError:
@@ -457,100 +546,112 @@ def is_ca_installed() -> bool:
         except Exception:
             pass
 
-        # Fallback: check via certutil -user -verifystore
-        res = subprocess.run(
-            ["certutil", "-user", "-verifystore", "Root", sha1],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=3,
-        )
-        return res.returncode == 0
-    except Exception:
-        return False
-
-def check_legacy_leaked_ca_installed() -> bool:
-    """Check whether the old public leaked CA ('GBF Speed CA') is present in Root store."""
-    if sys.platform != "win32":
-        return False
-    # Check registry first
-    try:
-        import winreg
-        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-            try:
-                reg_path = rf"Software\Microsoft\SystemCertificates\Root\Certificates\{LEGACY_LEAKED_CA_SHA1.upper()}"
-                with winreg.OpenKey(hive, reg_path):
-                    return True
-            except OSError:
-                pass
-    except Exception:
-        pass
-
-    try:
-        res = subprocess.run(
-            ["certutil", "-user", "-verifystore", "Root", LEGACY_LEAKED_CA_SHA1],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=3,
-        )
-        if res.returncode == 0:
-            return True
-        res_name = subprocess.run(
-            ["certutil", "-user", "-verifystore", "Root", "GBF Speed CA"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=3,
-        )
-        return res_name.returncode == 0
-    except Exception:
-        return False
-
-def clean_legacy_leaked_ca() -> bool:
-    """Remove the old leaked CA certificate from Root store."""
-    if sys.platform != "win32":
-        return True
-    cleaned = False
-    if _remove_cert_by_thumbprint(LEGACY_LEAKED_CA_SHA1):
-        cleaned = True
-    try:
-        chk = subprocess.run(
-            ["certutil", "-user", "-verifystore", "Root", "GBF Speed CA"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=3,
-        )
-        if chk.returncode == 0:
+        try:
             res = subprocess.run(
-                ["certutil", "-f", "-user", "-delstore", "Root", "GBF Speed CA"],
-                input=b"y\r\n",
+                ["certutil", "-user", "-verifystore", "Root", LEGACY_LEAKED_CA_SHA1],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 timeout=3,
             )
             if res.returncode == 0:
-                cleaned = True
-    except Exception:
-        pass
-    return cleaned
+                return True
+            res_name = subprocess.run(
+                ["certutil", "-user", "-verifystore", "Root", "GBF Speed CA"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=3,
+            )
+            return res_name.returncode == 0
+        except Exception:
+            return False
+    elif sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["security", "find-certificate", "-c", "GBF Speed CA"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            )
+            return res.returncode == 0
+        except Exception:
+            return False
+    return False
+
+def clean_legacy_leaked_ca() -> bool:
+    """Remove the old leaked CA certificate from Root store."""
+    if sys.platform == "win32":
+        cleaned = False
+        if _remove_cert_by_thumbprint(LEGACY_LEAKED_CA_SHA1):
+            cleaned = True
+        try:
+            chk = subprocess.run(
+                ["certutil", "-user", "-verifystore", "Root", "GBF Speed CA"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=3,
+            )
+            if chk.returncode == 0:
+                res = subprocess.run(
+                    ["certutil", "-f", "-user", "-delstore", "Root", "GBF Speed CA"],
+                    input=b"y\r\n",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=3,
+                )
+                if res.returncode == 0:
+                    cleaned = True
+        except Exception:
+            pass
+        return cleaned
+    elif sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["security", "delete-certificate", "-c", "GBF Speed CA", "-t"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            return res.returncode == 0
+        except Exception:
+            return False
+    return True
 
 def install_ca_certificate(ca_path: Path) -> bool:
-    """Install Root CA into CurrentUser Root store."""
+    """Install Root CA into User / CurrentUser Root store."""
     if not ca_path.is_file():
         return False
-    try:
-        res = subprocess.run(
-            ["certutil", "-addstore", "-user", "Root", str(ca_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10,
-        )
-        return res.returncode == 0
-    except Exception:
-        return False
+    if sys.platform == "win32":
+        try:
+            res = subprocess.run(
+                ["certutil", "-addstore", "-user", "Root", str(ca_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+            return res.returncode == 0
+        except Exception:
+            return False
+    elif sys.platform == "darwin":
+        try:
+            keychain = Path.home() / "Library" / "Keychains" / "login.keychain-db"
+            if not keychain.exists():
+                keychain = Path.home() / "Library" / "Keychains" / "login.keychain"
+            res = subprocess.run(
+                ["security", "add-trusted-cert", "-r", "trustRoot", "-k", str(keychain), str(ca_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+            )
+            return res.returncode == 0
+        except Exception:
+            return False
+    return False
 
 def uninstall_ca_certificate() -> Tuple[bool, str]:
-    """Uninstall and remove all GBF Root CAs from CurrentUser / LocalMachine Root store."""
-    if sys.platform != "win32":
-        return False, "非 Windows 系统无需卸载"
+    """Uninstall and remove all GBF Root CAs from Root store."""
+    if sys.platform not in ("win32", "darwin"):
+        return False, "非 Windows/macOS 系统无需卸载"
     
     messages = []
     targets = find_installed_gbf_ca_thumbprints()
@@ -572,6 +673,18 @@ def uninstall_ca_certificate() -> Tuple[bool, str]:
         targets[LEGACY_LEAKED_CA_SHA1.upper()] = "GBF Speed CA (旧版公开泄露证书)"
 
     if not targets:
+        if sys.platform == "darwin":
+            try:
+                r = subprocess.run(
+                    ["security", "delete-certificate", "-c", "GBF Local Accelerator Root CA", "-t"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                if r.returncode == 0:
+                    return True, "已成功从钥匙串中注销 GBF 根证书"
+            except Exception:
+                pass
         return False, "未在系统中找到已安装的 GBF 根证书"
 
     success = False
@@ -585,7 +698,7 @@ def uninstall_ca_certificate() -> Tuple[bool, str]:
 
     if success:
         return True, "\n".join(messages)
-    return False, "注销证书失败，若证书安装在系统级存储区，请以管理员身份运行本程序或在 certmgr.msc 中手动删除"
+    return False, "注销证书失败，若证书安装在系统级存储区，请在证书管理工具中手动删除"
 
 def check_upstream_connectivity(upstream_url: str) -> Tuple[bool, str]:
     """Test TCP connectivity to the upstream proxy server."""
@@ -604,52 +717,93 @@ def check_upstream_connectivity(upstream_url: str) -> Tuple[bool, str]:
 
 def kill_process_on_port(port: int) -> bool:
     """Safely terminate previous GBF_Accelerator instances listening on port.
-    Guarantees exact port boundary matching and strictly inspects process identity without relying on wmic.
+    Guarantees exact port boundary matching and strictly inspects process identity.
     """
-    if sys.platform != "win32":
-        return False
     if port in (7890, 7897, 10808, 10809, 80, 443):
         return False
-    try:
-        output = subprocess.check_output("netstat -aon", shell=True, encoding="gbk", errors="replace", timeout=3)
-        # Match exact local address and port boundary: e.g. "  TCP    127.0.0.1:8124    0.0.0.0:0   LISTENING   12345"
-        port_pattern = re.compile(rf":{port}\s+.*LISTENING\s+(\d+)", re.IGNORECASE)
-        pids = set()
-        for line in output.splitlines():
-            m = port_pattern.search(line)
-            if m:
-                pids.add(m.group(1))
 
-        current_pid = str(os.getpid())
-        for pid in pids:
-            if not pid.isdigit() or pid in ("0", "4", current_pid):
-                continue
-            proc_info = subprocess.check_output(f'tasklist /FI "PID eq {pid}" /FO CSV /NH', shell=True, encoding="gbk", errors="replace", timeout=3).strip()
-            
-            should_kill = False
-            if "GBF_Accelerator" in proc_info:
-                should_kill = True
-            elif "python" in proc_info.lower():
-                # Inspect command line via modern PowerShell CIM (compatible with Win10 and Win11 24H2+)
+    if sys.platform == "win32":
+        try:
+            output = subprocess.check_output("netstat -aon", shell=True, encoding="gbk", errors="replace", timeout=3)
+            port_pattern = re.compile(rf":{port}\s+.*LISTENING\s+(\d+)", re.IGNORECASE)
+            pids = set()
+            for line in output.splitlines():
+                m = port_pattern.search(line)
+                if m:
+                    pids.add(m.group(1))
+
+            current_pid = str(os.getpid())
+            for pid in pids:
+                if not pid.isdigit() or pid in ("0", "4", current_pid):
+                    continue
+                proc_info = subprocess.check_output(f'tasklist /FI "PID eq {pid}" /FO CSV /NH', shell=True, encoding="gbk", errors="replace", timeout=3).strip()
+                
+                should_kill = False
+                if "GBF_Accelerator" in proc_info:
+                    should_kill = True
+                elif "python" in proc_info.lower():
+                    try:
+                        cmd_out = subprocess.check_output(
+                            ["powershell", "-NoProfile", "-Command", f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
+                            encoding="gbk",
+                            errors="replace",
+                            timeout=4,
+                        )
+                        if any(target in cmd_out for target in ("gbf_proxy", "app_main", "GBFAccelerator")):
+                            should_kill = True
+                    except Exception:
+                        pass
+
+                if should_kill:
+                    subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                else:
+                    return False
+            return True
+        except Exception:
+            return False
+    else:
+        # macOS / POSIX
+        try:
+            res = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=3,
+            )
+            if res.returncode != 0 or not res.stdout.strip():
+                return True
+            current_pid = os.getpid()
+            for pid_str in res.stdout.splitlines():
+                pid_str = pid_str.strip()
+                if not pid_str.isdigit():
+                    continue
+                pid = int(pid_str)
+                if pid in (0, 1, current_pid):
+                    continue
                 try:
-                    cmd_out = subprocess.check_output(
-                        ["powershell", "-NoProfile", "-Command", f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
-                        encoding="gbk",
-                        errors="replace",
-                        timeout=4,
+                    ps_out = subprocess.check_output(
+                        ["ps", "-p", str(pid), "-o", "command="],
+                        text=True,
+                        stderr=subprocess.DEVNULL,
+                        timeout=2,
                     )
-                    if any(target in cmd_out for target in ("gbf_proxy", "app_main", "GBFAccelerator")):
-                        should_kill = True
+                    if any(target in ps_out for target in ("gbf_proxy", "app_main", "gui_main", "GBF_Accelerator")):
+                        import signal
+                        os.kill(pid, signal.SIGTERM)
+                        import time
+                        time.sleep(0.1)
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                    else:
+                        return False
                 except Exception:
                     pass
-
-            if should_kill:
-                subprocess.run(f"taskkill /F /PID {pid}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
-            else:
-                return False
-        return True
-    except Exception:
-        return False
+            return True
+        except Exception:
+            return False
 
 class ConfigManager:
     def __init__(self):

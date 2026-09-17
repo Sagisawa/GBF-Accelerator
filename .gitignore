@@ -1,4 +1,4 @@
-﻿# Python cache & virtualenv
+# Python cache & virtualenv
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,6 +15,7 @@ release/
 # Local user configurations & certs generated at runtime
 certs/
 config.json
+cache/
 *.log
 stdout.log
 stderr.log

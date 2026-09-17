@@ -54,6 +54,29 @@ import update_manager
 from update_manager import APP_VERSION, UpdateInfo
 
 START_MINIMIZED = "--minimized" in sys.argv
+MONO_FONT = "Menlo" if sys.platform == "darwin" else "Consolas"
+
+def open_path(path: Any, select: bool = False):
+    """Cross-platform helper to open a file or directory in file manager / default app."""
+    try:
+        p = Path(path).resolve()
+        if sys.platform == "win32":
+            if select and p.is_file():
+                try:
+                    subprocess.Popen(["explorer", f"/select,{str(p)}"])
+                    return
+                except Exception:
+                    pass
+            os.startfile(str(p))
+        elif sys.platform == "darwin":
+            if select and p.is_file():
+                subprocess.Popen(["open", "-R", str(p)])
+            else:
+                subprocess.Popen(["open", str(p)])
+        else:
+            subprocess.Popen(["xdg-open", str(p)])
+    except Exception:
+        pass
 
 def create_tray_icon_image(is_running: bool = True) -> Image.Image:
     """Generate a clean lightning bolt icon for system tray."""
@@ -107,6 +130,190 @@ def render_emoji_image(emoji: str, size: int = 15):
     except Exception:
         return None
 
+# Native macOS window minimization and menu bar integration state
+_MAC_MAIN_NSWINDOW = None
+_MAC_GUI_INSTANCE = None
+_MAC_TK_CATEGORY_INSTALLED = False
+_MAC_STATUS_BAR_MANAGER = None
+
+def _is_main_mac_window(ns_window) -> bool:
+    global _MAC_MAIN_NSWINDOW, _MAC_GUI_INSTANCE
+    if not ns_window or not _MAC_GUI_INSTANCE or not hasattr(_MAC_GUI_INSTANCE, "root"):
+        return False
+    try:
+        if _MAC_MAIN_NSWINDOW is not None:
+            if ns_window == _MAC_MAIN_NSWINDOW or ns_window.windowNumber() == _MAC_MAIN_NSWINDOW.windowNumber():
+                return True
+        main_title = _MAC_GUI_INSTANCE.root.title()
+        if main_title and ns_window.title() == main_title:
+            _MAC_MAIN_NSWINDOW = ns_window
+            return True
+    except Exception:
+        pass
+    return False
+
+def _ensure_mac_tk_category():
+    """Dynamically register an Objective-C Category on TKWindow to intercept minimize events.
+    Prevents the main window from shrinking into the macOS Dock while redirecting
+    it directly to hide into the menu bar status item. Subwindows (e.g. LogViewer)
+    retain standard minimization behavior.
+    """
+    global _MAC_TK_CATEGORY_INSTALLED
+    if _MAC_TK_CATEGORY_INSTALLED or sys.platform != "darwin":
+        return
+    try:
+        import AppKit
+        import objc
+        TKWindowClass = AppKit.NSClassFromString("TKWindow")
+        if not TKWindowClass:
+            return
+
+        class TKWindow(objc.Category(TKWindowClass)):
+            def performMiniaturize_(self, sender):
+                if _is_main_mac_window(self):
+                    if _MAC_GUI_INSTANCE and hasattr(_MAC_GUI_INSTANCE, "root"):
+                        _MAC_GUI_INSTANCE.root.after(10, lambda: _MAC_GUI_INSTANCE.hide_to_tray(notify=False))
+                    return
+                try:
+                    objc.super(TKWindow, self).performMiniaturize_(sender)
+                except Exception:
+                    pass
+
+            def miniaturize_(self, sender):
+                if _is_main_mac_window(self):
+                    if _MAC_GUI_INSTANCE and hasattr(_MAC_GUI_INSTANCE, "root"):
+                        _MAC_GUI_INSTANCE.root.after(10, lambda: _MAC_GUI_INSTANCE.hide_to_tray(notify=False))
+                    return
+                try:
+                    objc.super(TKWindow, self).miniaturize_(sender)
+                except Exception:
+                    pass
+
+        _MAC_TK_CATEGORY_INSTALLED = True
+    except Exception:
+        pass
+
+class MacStatusBarManager:
+    """Native macOS Menu Bar Status Item integration via PyObjC AppKit.
+    Integrates directly with the main Cocoa event loop on the main thread,
+    attaching a native NSMenu to NSStatusItem to ensure 100% thread safety
+    and crash-free operation across Python 3.14 / macOS Sequoia.
+    """
+    def __init__(self, gui: "GBFAcceleratorGUI"):
+        global _MAC_STATUS_BAR_MANAGER
+        _MAC_STATUS_BAR_MANAGER = self
+        self.gui = gui
+        self.status_item = None
+        self._current_is_running: bool = False
+        self.setup_menu_bar()
+
+    def setup_menu_bar(self):
+        try:
+            import AppKit
+            import objc
+            status_bar = AppKit.NSStatusBar.systemStatusBar()
+            self.status_item = status_bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
+
+            gui_ref = self.gui
+
+            # Context menu actions (decoupled from Cocoa tracking loop via root.after)
+            class MacMenuActions(AppKit.NSObject):
+                @objc.IBAction
+                def toggleWindow_(self, sender):
+                    gui_ref.root.after(50, gui_ref.toggle_from_tray)
+
+                @objc.IBAction
+                def toggleProxy_(self, sender):
+                    gui_ref.root.after(50, gui_ref.toggle_proxy_from_tray)
+
+                @objc.IBAction
+                def openCache_(self, sender):
+                    gui_ref.root.after(50, gui_ref.open_cache_folder)
+
+                @objc.IBAction
+                def quitApp_(self, sender):
+                    gui_ref.root.after(50, gui_ref.quit_app)
+
+            self.menu_actions = MacMenuActions.alloc().init()
+            self.menu = AppKit.NSMenu.alloc().init()
+
+            item_show = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("显示 / 隐藏主界面", "toggleWindow:", "")
+            item_show.setTarget_(self.menu_actions)
+            self.menu.addItem_(item_show)
+
+            item_toggle = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("启动 / 暂停加速", "toggleProxy:", "")
+            item_toggle.setTarget_(self.menu_actions)
+            self.menu.addItem_(item_toggle)
+
+            item_cache = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("打开缓存目录", "openCache:", "")
+            item_cache.setTarget_(self.menu_actions)
+            self.menu.addItem_(item_cache)
+
+            self.menu.addItem_(AppKit.NSMenuItem.separatorItem())
+
+            item_quit = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("彻底退出", "quitApp:", "")
+            item_quit.setTarget_(self.menu_actions)
+            self.menu.addItem_(item_quit)
+
+            # Native macOS menu bar integration: attach menu directly to status item
+            self.status_item.setMenu_(self.menu)
+
+            self.update_icon(gbf_proxy.PROXY_STATS.get("is_running", False))
+        except Exception:
+            self.status_item = None
+
+    def update_icon(self, is_running: bool):
+        self._current_is_running = is_running
+        if not self.status_item:
+            return
+        try:
+            import AppKit
+            import io
+            img = create_tray_icon_image(is_running)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            ns_data = AppKit.NSData.dataWithBytes_length_(buf.getvalue(), len(buf.getvalue()))
+            ns_img = AppKit.NSImage.alloc().initWithData_(ns_data)
+            ns_img.setSize_(AppKit.NSMakeSize(18, 18))
+
+            btn = self.status_item.button()
+            btn.setImage_(ns_img)
+            status_text = "加速中" if is_running else "已暂停"
+            btn.setToolTip_(f"GBF 加速代理 [{status_text}] (端口 {gbf_proxy.LISTEN_PORT})\n点击打开快捷操作菜单")
+        except Exception:
+            pass
+
+    @property
+    def icon(self):
+        return None
+
+    @icon.setter
+    def icon(self, val):
+        self.update_icon(gbf_proxy.PROXY_STATS.get("is_running", False))
+
+    def notify(self, message: str, title: str = "GBF 加速代理"):
+        try:
+            msg_clean = message.replace("\\", "\\\\").replace('"', '\\"')
+            title_clean = title.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.Popen([
+                "osascript", "-e",
+                f'display notification "{msg_clean}" with title "{title_clean}"'
+            ])
+        except Exception:
+            pass
+
+    def stop(self):
+        global _MAC_STATUS_BAR_MANAGER
+        if _MAC_STATUS_BAR_MANAGER is self:
+            _MAC_STATUS_BAR_MANAGER = None
+        if self.status_item:
+            try:
+                import AppKit
+                AppKit.NSStatusBar.systemStatusBar().removeStatusItem_(self.status_item)
+            except Exception:
+                pass
+            self.status_item = None
+
 class GBFAcceleratorGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -155,18 +362,18 @@ class GBFAcceleratorGUI:
         self.build_ui()
         self.update_shimakaze_controls()
 
-        # Auto-fit window size to the real layout: measure the width Tk actually
-        # needs after construction (bottom action bar, fingerprint line, etc.)
-        # instead of guessing, so nothing on the right edge ever gets clipped.
+        # Auto-fit window size to the real layout: responsive geometry suitable for
+        # macOS 13" laptops (1440x900, 1280x800) as well as larger desktop displays.
         self.root.update_idletasks()
+        screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        req_w = int(self.root.winfo_reqwidth())
-        req_h = int(self.root.winfo_reqheight())
-        win_w = max(720, req_w + 24)
-        target_h = max(960, req_h + 50)
-        win_h = min(target_h, screen_h - 80) if screen_h > 800 else target_h
+        win_w = max(740, min(800, screen_w - 40))
+        if screen_h <= 900:
+            win_h = max(560, min(680, screen_h - 120))
+        else:
+            win_h = max(640, min(840, screen_h - 160))
         self.root.geometry(f"{win_w}x{win_h}")
-        self.root.minsize(win_w, min(800, win_h))
+        self.root.minsize(700, 420)
 
         # Center window after layout is constructed
         self.center_window()
@@ -178,6 +385,16 @@ class GBFAcceleratorGUI:
         # Window events
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.root.bind("<Map>", self._on_window_map)
+        self.root.bind("<MouseWheel>", self._on_main_mousewheel, add="+")
+        self.root.bind("<Button-4>", self._on_main_mousewheel, add="+")
+        self.root.bind("<Button-5>", self._on_main_mousewheel, add="+")
+        if sys.platform == "darwin":
+            try:
+                self.root.createcommand("::tk::mac::ReopenApplication", self.show_from_tray)
+                self.root.createcommand("::tk::mac::Quit", self.quit_app)
+            except Exception:
+                pass
+            self.setup_mac_window_buttons()
 
         # Check CA status and detect legacy leaked cert
         self.update_ca_status()
@@ -209,6 +426,35 @@ class GBFAcceleratorGUI:
         y = max(0, (hs // 2) - (h // 2) - 30)
         self.root.geometry(f"+{x}+{y}")
 
+    def setup_mac_window_buttons(self):
+        """Intercept the macOS standard yellow minimize button to hide directly to menu bar."""
+        if sys.platform != "darwin":
+            return
+        global _MAC_MAIN_NSWINDOW, _MAC_GUI_INSTANCE
+        _MAC_GUI_INSTANCE = self
+        _ensure_mac_tk_category()
+
+        try:
+            import AppKit
+
+            def _hook_window():
+                global _MAC_MAIN_NSWINDOW
+                try:
+                    main_title = self.root.title()
+                    for w in AppKit.NSApp.windows():
+                        if w.className() == "TKWindow" and w.title() == main_title:
+                            _MAC_MAIN_NSWINDOW = w
+                            break
+                except Exception:
+                    pass
+
+            self.root.update_idletasks()
+            _hook_window()
+            self.root.after(50, _hook_window)
+            self.root.after(300, _hook_window)
+        except Exception:
+            pass
+
     def setup_styles(self):
         style = ttk.Style(self.root)
         available = style.theme_names()
@@ -218,6 +464,9 @@ class GBFAcceleratorGUI:
             style.theme_use("winnative")
         else:
             style.theme_use("clam")
+            # In clam theme, TButton defaults to width=-11 (min 11 chars wide)
+            # which excessively widens buttons on macOS and Linux. Reset to natural width.
+            style.configure("TButton", width=0, padding="4 2")
 
         # Backgrounds
         self.root.configure(bg="#f4f6f9")
@@ -237,9 +486,61 @@ class GBFAcceleratorGUI:
         style.configure("Gray.TLabel", font=("Microsoft YaHei UI", 8), background="#ffffff", foreground="#888888")
 
         # Buttons
-        style.configure("Primary.TButton", font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("Success.TButton", font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("Danger.TButton", font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure(
+            "Primary.TButton",
+            background="#007bff",
+            foreground="#ffffff",
+            font=("Microsoft YaHei UI", 9, "bold"),
+            borderwidth=0,
+            padding="12 5",
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", "#0069d9"), ("pressed", "#0069d9")],
+            foreground=[("active", "#ffffff")],
+        )
+
+        style.configure(
+            "Success.TButton",
+            background="#28a745",
+            foreground="#ffffff",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            borderwidth=0,
+            padding="14 6",
+        )
+        style.map(
+            "Success.TButton",
+            background=[("active", "#218838"), ("pressed", "#218838")],
+            foreground=[("active", "#ffffff")],
+        )
+
+        style.configure(
+            "Danger.TButton",
+            background="#dc3545",
+            foreground="#ffffff",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            borderwidth=0,
+            padding="14 6",
+        )
+        style.map(
+            "Danger.TButton",
+            background=[("active", "#bd2130"), ("pressed", "#bd2130")],
+            foreground=[("active", "#ffffff")],
+        )
+
+        style.configure(
+            "Warning.TButton",
+            background="#ffc107",
+            foreground="#212529",
+            font=("Microsoft YaHei UI", 8, "bold"),
+            borderwidth=0,
+            padding="6 2",
+        )
+        style.map(
+            "Warning.TButton",
+            background=[("active", "#e0a800"), ("pressed", "#e0a800")],
+            foreground=[("active", "#212529")],
+        )
 
     def get_icon(self, emoji: str):
         """Cached PhotoImage for an emoji glyph, sized to match the 9pt UI font."""
@@ -266,6 +567,8 @@ class GBFAcceleratorGUI:
         if icon is not None:
             return ttk.Button(parent, text=f" {text}", image=icon, compound="left",
                               command=command, style=style)
+        if emoji and sys.platform == "darwin":
+            return ttk.Button(parent, text=f"{emoji} {text}", command=command, style=style)
         return ttk.Button(parent, text=text, command=command, style=style)
 
     def build_ui(self):
@@ -286,40 +589,58 @@ class GBFAcceleratorGUI:
         self.lbl_ver.pack(side="left", padx=(6, 0), pady=(3, 0))
 
         # Dynamic update badge button (hidden until update is detected)
-        self.btn_update_badge = tk.Button(
-            h_title_box,
-            text=" 发现新版",
-            image=self.get_icon("🔥"),
-            compound="left",
-            bg="#ffc107",
-            fg="#212529",
-            activebackground="#e0a800",
-            activeforeground="#212529",
-            font=("Microsoft YaHei UI", 8, "bold"),
-            relief="flat",
-            padx=6,
-            pady=1,
-            cursor="hand2",
-            command=self.on_click_update_badge,
-        )
+        if sys.platform == "darwin":
+            self.btn_update_badge = ttk.Button(
+                h_title_box,
+                text=" 发现新版",
+                image=self.get_icon("🔥"),
+                compound="left",
+                style="Warning.TButton",
+                command=self.on_click_update_badge,
+            )
+        else:
+            self.btn_update_badge = tk.Button(
+                h_title_box,
+                text=" 发现新版",
+                image=self.get_icon("🔥"),
+                compound="left",
+                bg="#ffc107",
+                fg="#212529",
+                activebackground="#e0a800",
+                activeforeground="#212529",
+                font=("Microsoft YaHei UI", 8, "bold"),
+                relief="flat",
+                padx=6,
+                pady=1,
+                cursor="hand2",
+                command=self.on_click_update_badge,
+            )
 
         self.lbl_status = ttk.Label(h_left, textvariable=self.var_status_text, style="Subtitle.TLabel")
         self.lbl_status.pack(anchor="w", pady=(2, 0))
 
-        self.btn_toggle = tk.Button(
-            card_header,
-            text="停止加速",
-            bg="#dc3545",
-            fg="#ffffff",
-            activebackground="#bd2130",
-            activeforeground="#ffffff",
-            font=("Microsoft YaHei UI", 10, "bold"),
-            relief="flat",
-            padx=16,
-            pady=5,
-            cursor="hand2",
-            command=self.toggle_proxy,
-        )
+        if sys.platform == "darwin":
+            self.btn_toggle = ttk.Button(
+                card_header,
+                text="停止加速",
+                style="Danger.TButton",
+                command=self.toggle_proxy,
+            )
+        else:
+            self.btn_toggle = tk.Button(
+                card_header,
+                text="停止加速",
+                bg="#dc3545",
+                fg="#ffffff",
+                activebackground="#bd2130",
+                activeforeground="#ffffff",
+                font=("Microsoft YaHei UI", 10, "bold"),
+                relief="flat",
+                padx=16,
+                pady=5,
+                cursor="hand2",
+                command=self.toggle_proxy,
+            )
         self.btn_toggle.pack(side="right")
 
         # ---------------- 2. Real-time Stats Card ----------------
@@ -358,32 +679,67 @@ class GBFAcceleratorGUI:
         f_bottom.pack(side="bottom", fill="x", pady=(8, 0))
 
         btn_open_folder = self._emoji_button(f_bottom, "📂", "缓存目录", self.open_cache_folder)
-        btn_open_folder.pack(side="left", padx=(0, 4))
+        btn_open_folder.pack(side="left", padx=(0, 3))
 
         btn_clear_cache = self._emoji_button(f_bottom, "🗑️", "清空缓存", self.clear_cache_dialog)
-        btn_clear_cache.pack(side="left", padx=(0, 4))
+        btn_clear_cache.pack(side="left", padx=(0, 3))
 
         btn_proxy_guide = self._emoji_button(f_bottom, "🌐", "分流说明", self.show_guide)
-        btn_proxy_guide.pack(side="left", padx=(0, 4))
+        btn_proxy_guide.pack(side="left", padx=(0, 3))
 
         btn_github = self._emoji_button(f_bottom, "⭐", "GitHub", self.open_github)
-        btn_github.pack(side="left", padx=(0, 4))
+        btn_github.pack(side="left", padx=(0, 3))
 
         self.btn_check_update = self._emoji_button(f_bottom, "🔄", "检查更新", self.manual_check_update)
-        self.btn_check_update.pack(side="left", padx=(0, 4))
+        self.btn_check_update.pack(side="left", padx=(0, 3))
 
         self.btn_latency = self._emoji_button(f_bottom, "📡", "延迟测试", self.run_latency_test)
-        self.btn_latency.pack(side="left", padx=(0, 4))
+        self.btn_latency.pack(side="left", padx=(0, 3))
 
         self.btn_logs = self._emoji_button(f_bottom, "📜", "实时日志", self.show_log_window)
-        self.btn_logs.pack(side="left", padx=(0, 4))
+        self.btn_logs.pack(side="left", padx=(0, 3))
 
-        btn_tray = self._emoji_button(f_bottom, "⬇", "最小化到托盘", self.hide_to_tray)
+        tray_btn_text = "最小化到后台" if sys.platform == "darwin" else "最小化到托盘"
+        btn_tray = self._emoji_button(f_bottom, "⬇", tray_btn_text, self.hide_to_tray)
         btn_tray.pack(side="right")
 
-        # ---------------- 4. Settings Card ----------------
-        card_settings = ttk.Frame(main_container, style="Card.TFrame", padding="14 10 14 10")
-        card_settings.pack(fill="both", expand=True)
+        # ---------------- 4. Scrollable Settings Card ----------------
+        # Wrap settings inside a Canvas with vertical Scrollbar so on smaller displays
+        # (e.g. 13" MacBook Air 1440x900 or 1280x800), the settings area scrolls smoothly
+        # and bottom action buttons are never pushed off or clipped.
+        scroll_card = ttk.Frame(main_container, style="Card.TFrame")
+        scroll_card.pack(fill="both", expand=True)
+
+        self.canvas_settings = tk.Canvas(
+            scroll_card,
+            bg="#ffffff",
+            borderwidth=0,
+            highlightthickness=0,
+            yscrollincrement=10,
+        )
+        self.sb_settings = ttk.Scrollbar(scroll_card, orient="vertical", command=self.canvas_settings.yview)
+        self.canvas_settings.configure(yscrollcommand=self.sb_settings.set)
+
+        card_settings = ttk.Frame(self.canvas_settings, style="Card.TFrame", padding="14 10 14 10")
+        self.card_settings_frame = card_settings
+        self.canvas_settings_window = self.canvas_settings.create_window(
+            (0, 0), window=card_settings, anchor="nw"
+        )
+
+        def _on_settings_frame_configure(event):
+            self.canvas_settings.configure(scrollregion=self.canvas_settings.bbox("all"))
+
+        card_settings.bind("<Configure>", _on_settings_frame_configure)
+
+        def _on_settings_canvas_configure(event):
+            self.canvas_settings.itemconfig(self.canvas_settings_window, width=event.width)
+            if hasattr(self, "lbl_shimakaze_hint"):
+                self.lbl_shimakaze_hint.configure(wraplength=max(480, event.width - 30))
+
+        self.canvas_settings.bind("<Configure>", _on_settings_canvas_configure)
+
+        self.canvas_settings.pack(side="left", fill="both", expand=True)
+        self.sb_settings.pack(side="right", fill="y")
 
         ttk.Label(card_settings, text="配置选项", style="Title.TLabel").pack(anchor="w", pady=(0, 6))
 
@@ -392,7 +748,7 @@ class GBFAcceleratorGUI:
         f_dir = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_dir.pack(fill="x", pady=(2, 6))
 
-        self.entry_dir = ttk.Entry(f_dir, textvariable=self.var_cache_dir, font=("Consolas", 9))
+        self.entry_dir = ttk.Entry(f_dir, textvariable=self.var_cache_dir, font=(MONO_FONT, 9))
         self.entry_dir.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         btn_browse = ttk.Button(f_dir, text="浏览...", width=8, command=self.browse_cache_dir)
@@ -409,7 +765,7 @@ class GBFAcceleratorGUI:
         f_up = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_up.pack(fill="x", pady=(2, 6))
 
-        self.entry_up = ttk.Entry(f_up, textvariable=self.var_upstream, font=("Consolas", 9))
+        self.entry_up = ttk.Entry(f_up, textvariable=self.var_upstream, font=(MONO_FONT, 9))
         self.entry_up.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         self.btn_confirm_upstream = ttk.Button(f_up, text="确认", width=8, command=self.confirm_upstream)
@@ -448,7 +804,7 @@ class GBFAcceleratorGUI:
         f_port = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_port.pack(fill="x", pady=(2, 6))
 
-        self.entry_port = ttk.Entry(f_port, textvariable=self.var_listen_port, font=("Consolas", 9), width=10)
+        self.entry_port = ttk.Entry(f_port, textvariable=self.var_listen_port, font=(MONO_FONT, 9), width=10)
         self.entry_port.pack(side="left", padx=(0, 6))
 
         btn_reset_port = ttk.Button(f_port, text="恢复默认 (8124)", width=14, command=self.reset_port_default)
@@ -502,15 +858,16 @@ class GBFAcceleratorGUI:
         f_ca_fp = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_ca_fp.pack(fill="x", pady=(1, 4))
         ttk.Label(f_ca_fp, text="SHA-256 指纹：", style="Gray.TLabel").pack(side="left")
-        self.lbl_ca_fp = ttk.Label(f_ca_fp, textvariable=self.var_ca_fp, style="Gray.TLabel", font=("Consolas", 8))
+        self.lbl_ca_fp = ttk.Label(f_ca_fp, textvariable=self.var_ca_fp, style="Gray.TLabel", font=(MONO_FONT, 8))
         self.lbl_ca_fp.pack(side="left")
 
         # Field 5: Windows System PAC Automation
         f_sys_proxy = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_sys_proxy.pack(fill="x", pady=(4, 2))
+        pac_cb_text = "自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）" if sys.platform == "win32" else "自动配置 macOS 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）"
         chk_pac = ttk.Checkbutton(
             f_sys_proxy,
-            text="自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）",
+            text=pac_cb_text,
             variable=self.var_auto_pac,
             command=self.toggle_sys_proxy_setting,
         )
@@ -554,7 +911,7 @@ class GBFAcceleratorGUI:
         f_ram_mb = ttk.Frame(f_perf, style="CardInner.TFrame")
         f_ram_mb.pack(anchor="w", pady=(0, 2))
         ttk.Label(f_ram_mb, text="内存缓存上限 (MB):", style="Normal.TLabel").pack(side="left")
-        self.entry_ram_mb = ttk.Entry(f_ram_mb, textvariable=self.var_ram_max_mb, width=8, font=("Consolas", 9))
+        self.entry_ram_mb = ttk.Entry(f_ram_mb, textvariable=self.var_ram_max_mb, width=8, font=(MONO_FONT, 9))
         self.entry_ram_mb.pack(side="left", padx=(6, 6))
         self.btn_apply_ram = ttk.Button(f_ram_mb, text="应用", width=6, command=self.apply_ram_max_mb)
         self.btn_apply_ram.pack(side="left")
@@ -592,6 +949,39 @@ class GBFAcceleratorGUI:
             command=self.toggle_perf_settings,
         )
         chk_warm.pack(anchor="w", pady=2)
+
+    def _on_main_mousewheel(self, event):
+        """Smooth mousewheel and trackpad scrolling for settings canvas."""
+        try:
+            if not hasattr(self, "canvas_settings") or not hasattr(self, "card_settings_frame"):
+                return
+            x, y = self.canvas_settings.winfo_pointerxy()
+            w = self.canvas_settings.winfo_containing(x, y)
+            is_inside = False
+            while w:
+                if w == self.canvas_settings or w == self.card_settings_frame:
+                    is_inside = True
+                    break
+                w = getattr(w, "master", None)
+            if not is_inside:
+                return
+
+            if sys.platform == "darwin":
+                delta = getattr(event, "delta", 0)
+                if abs(delta) < 1 and delta != 0:
+                    step = -1 if delta > 0 else 1
+                else:
+                    step = int(-1 * round(delta))
+                self.canvas_settings.yview_scroll(step, "units")
+            elif sys.platform == "win32":
+                self.canvas_settings.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            else:
+                if getattr(event, "num", None) == 4:
+                    self.canvas_settings.yview_scroll(-1, "units")
+                elif getattr(event, "num", None) == 5:
+                    self.canvas_settings.yview_scroll(1, "units")
+        except Exception:
+            pass
 
     # ================= Functional Methods =================
     def update_ca_status(self):
@@ -720,22 +1110,16 @@ class GBFAcceleratorGUI:
         def open_download_folder():
             saved = download_state.get("saved_path")
             if saved and saved.is_file():
-                try:
-                    subprocess.Popen(["explorer", f"/select,{str(saved)}"])
-                except Exception:
-                    try:
-                        os.startfile(str(saved.parent))
-                    except Exception:
-                        pass
+                open_path(saved, select=True)
             else:
                 default_dir = update_manager.get_default_download_dir()
-                os.startfile(str(default_dir))
+                open_path(default_dir)
 
         def open_download_file():
             saved = download_state.get("saved_path")
             if saved and saved.is_file():
                 try:
-                    os.startfile(str(saved))
+                    open_path(saved)
                 except Exception as e:
                     messagebox.showerror("打开失败", f"无法直接打开文件：\n{e}", parent=dialog)
             else:
@@ -755,20 +1139,38 @@ class GBFAcceleratorGUI:
 
         btn_browser = None
 
+        def set_btn_action_ui(mode: str, text: str, emoji_name: str, cmd):
+            icon = self.get_icon(emoji_name)
+            btn_txt = f" {text}" if icon else (f"{emoji_name} {text}" if sys.platform == "darwin" and emoji_name else text)
+            if sys.platform == "darwin":
+                style_name = "Success.TButton" if mode == "success" else ("Primary.TButton" if mode == "primary" else "TButton")
+                btn_action.configure(text=btn_txt, image=icon or "", compound="left" if icon else "none", style=style_name, command=cmd)
+            else:
+                color_map = {
+                    "success": ("#28a745", "#218838"),
+                    "primary": ("#007bff", "#0069d9"),
+                    "secondary": ("#6c757d", "#5a6268"),
+                }
+                bg_col, act_col = color_map.get(mode, ("#28a745", "#218838"))
+                btn_action.configure(text=btn_txt, image=icon or "", compound="left" if icon else "none", bg=bg_col, activebackground=act_col, command=cmd)
+
         def start_download():
             if not download_url:
                 open_browser()
                 return
 
-            download_dir = update_manager.get_default_download_dir()
-            filename = update_manager.get_asset_filename(download_url, fallback_version=info.latest_version)
-            dest_file = download_dir / filename
+            if download_state["is_downloading"]:
+                return
 
-            if dest_file.is_file() and zipfile.is_zipfile(dest_file):
+            dest_dir = update_manager.get_default_download_dir()
+            filename = update_manager.get_asset_filename(download_url, fallback_version=info.latest_version)
+            dest_file = dest_dir / filename
+
+            if dest_file.is_file():
                 if messagebox.askyesno(
-                    "更新包已存在",
-                    f"检测到 Downloads 目录已存在完整更新包：\n{dest_file.name}\n\n是否直接使用现有安装包？\n（点击【否】将重新下载）",
-                    parent=dialog
+                    "文件已存在",
+                    f"检测到安装包已下载在以下路径：\n{dest_file}\n\n是否直接打开所在目录？\n（点击【否】将重新下载覆盖）",
+                    parent=dialog,
                 ):
                     on_download_finished(True, "文件已存在", dest_file)
                     return
@@ -787,13 +1189,7 @@ class GBFAcceleratorGUI:
             var_prog_text.set("正在连接下载节点...")
 
             # Update buttons state
-            btn_action.configure(
-                text=" 取消下载",
-                image=self.get_icon("⏹️"),
-                bg="#6c757d",
-                activebackground="#5a6268",
-                command=cancel_download,
-            )
+            set_btn_action_ui("secondary", "取消下载", "⏹️", cancel_download)
             btn_close.configure(state="disabled")
             if btn_browser:
                 btn_browser.configure(state="disabled")
@@ -837,13 +1233,7 @@ class GBFAcceleratorGUI:
                     var_prog_text.set(f"✅ 下载完成！已保存至 Downloads 目录：{result_path.name}")
                     if btn_browser:
                         btn_browser.pack_forget()
-                    btn_action.configure(
-                        text=" 打开所在文件夹",
-                        image=self.get_icon("📁"),
-                        bg="#007bff",
-                        activebackground="#0069d9",
-                        command=open_download_folder,
-                    )
+                    set_btn_action_ui("primary", "打开所在文件夹", "📁", open_download_folder)
                     btn_open_file.pack(side="right", padx=(0, 6), before=btn_action)
                 else:
                     pb_download.configure(mode="determinate", value=0)
@@ -855,13 +1245,7 @@ class GBFAcceleratorGUI:
                         var_prog_text.set("下载已取消。")
                     else:
                         var_prog_text.set(f"❌ {msg}")
-                    btn_action.configure(
-                        text=" 立即下载更新",
-                        image=self.get_icon("🚀"),
-                        bg="#28a745",
-                        activebackground="#218838",
-                        command=start_download,
-                    )
+                    set_btn_action_ui("success", "立即下载更新", "🚀", start_download)
 
             def worker():
                 ok, msg, path = update_manager.download_release_asset(
@@ -890,40 +1274,60 @@ class GBFAcceleratorGUI:
         action_text = " 立即下载更新" if download_url else " 前往 GitHub Releases"
         action_cmd = start_download if download_url else open_browser
 
-        btn_action = tk.Button(
-            f_btns,
-            text=action_text,
-            image=self.get_icon("🚀"),
-            compound="left",
-            bg="#28a745",
-            fg="#ffffff",
-            activebackground="#218838",
-            activeforeground="#ffffff",
-            font=("Microsoft YaHei UI", 9, "bold"),
-            relief="flat",
-            padx=14,
-            pady=6,
-            cursor="hand2",
-            command=action_cmd,
-        )
+        if sys.platform == "darwin":
+            btn_action = ttk.Button(
+                f_btns,
+                text=f" {action_text}" if self.get_icon("🚀") else f"🚀 {action_text}",
+                image=self.get_icon("🚀") or "",
+                compound="left" if self.get_icon("🚀") else "none",
+                style="Success.TButton",
+                command=action_cmd,
+            )
+        else:
+            btn_action = tk.Button(
+                f_btns,
+                text=action_text,
+                image=self.get_icon("🚀"),
+                compound="left",
+                bg="#28a745",
+                fg="#ffffff",
+                activebackground="#218838",
+                activeforeground="#ffffff",
+                font=("Microsoft YaHei UI", 9, "bold"),
+                relief="flat",
+                padx=14,
+                pady=6,
+                cursor="hand2",
+                command=action_cmd,
+            )
         btn_action.pack(side="right")
 
-        btn_open_file = tk.Button(
-            f_btns,
-            text=" 打开所在文件",
-            image=self.get_icon("📦"),
-            compound="left",
-            bg="#28a745",
-            fg="#ffffff",
-            activebackground="#218838",
-            activeforeground="#ffffff",
-            font=("Microsoft YaHei UI", 9, "bold"),
-            relief="flat",
-            padx=12,
-            pady=6,
-            cursor="hand2",
-            command=open_download_file,
-        )
+        if sys.platform == "darwin":
+            btn_open_file = ttk.Button(
+                f_btns,
+                text=f" 打开所在文件" if self.get_icon("📦") else "📦 打开所在文件",
+                image=self.get_icon("📦") or "",
+                compound="left" if self.get_icon("📦") else "none",
+                style="Success.TButton",
+                command=open_download_file,
+            )
+        else:
+            btn_open_file = tk.Button(
+                f_btns,
+                text=" 打开所在文件",
+                image=self.get_icon("📦"),
+                compound="left",
+                bg="#28a745",
+                fg="#ffffff",
+                activebackground="#218838",
+                activeforeground="#ffffff",
+                font=("Microsoft YaHei UI", 9, "bold"),
+                relief="flat",
+                padx=12,
+                pady=6,
+                cursor="hand2",
+                command=open_download_file,
+            )
         # Not packed initially, only packed upon download completion
 
         if download_url:
@@ -1064,12 +1468,36 @@ class GBFAcceleratorGUI:
         if check_legacy_leaked_ca_installed():
             clean_legacy_leaked_ca()
         if is_ca_installed():
-            messagebox.showinfo("根证书提示", "本机专属根证书已在系统的【受信任的根证书颁发机构】中，正常工作中！")
+            if sys.platform == "darwin":
+                messagebox.showinfo(
+                    "根证书提示",
+                    "本机专属根证书已在系统钥匙串受信任列表中！\n\n"
+                    "【若 Chrome 仍提示证书不受信任】：\n"
+                    "请在 Chrome 界面按快捷键 Cmd + Q 彻底退出浏览器，然后重新打开 Chrome 即可生效！\n\n"
+                    "（Chrome 会将首次证书验证失败的结果缓存在内存中，直到彻底退出重启才会重新读取 macOS 钥匙串）",
+                )
+            else:
+                messagebox.showinfo("根证书提示", "本机专属根证书已在系统的【受信任的根证书颁发机构】中，正常工作中！")
             return
 
-        messagebox.showinfo("安装指引", "即将调起 Windows 证书导入向导，若弹出系统安全提示框，请点击【是 (Y)】允许信任。")
+        if sys.platform == "darwin":
+            messagebox.showinfo(
+                "安装根证书指引",
+                "即将通过 macOS 钥匙串安装根证书。\n\n"
+                "• 若弹出系统授权提示，请输入 Mac 密码允许信任；\n"
+                "• 安装完成后，请彻底退出浏览器（按 Cmd+Q 退出 Chrome）并重新打开生效！",
+            )
+        else:
+            messagebox.showinfo("安装指引", "即将调起 Windows 证书导入向导，若弹出系统安全提示框，请点击【是 (Y)】允许信任。")
         install_ca_certificate(CA_CERT_PATH)
         self.update_ca_status()
+        if sys.platform == "darwin":
+            messagebox.showinfo(
+                "安装完成",
+                "根证书已配置完成！\n\n"
+                "【重要生效步骤】：\n"
+                "请务必【完全退出 Chrome 浏览器】（在 Chrome 中按快捷键 Cmd + Q），然后重新打开 Chrome 访问游戏即可正常进入！",
+            )
 
     def uninstall_ca(self):
         installed = find_installed_gbf_ca_thumbprints()
@@ -1778,15 +2206,28 @@ class GBFAcceleratorGUI:
     def open_cache_folder(self):
         p = Path(self.var_cache_dir.get()).resolve()
         p.mkdir(parents=True, exist_ok=True)
-        os.startfile(str(p))
+        open_path(p)
 
     def show_guide(self):
         base_dir = get_base_dir()
         readme = base_dir / "使用说明.txt"
         if readme.is_file():
-            os.startfile(str(readme))
+            open_path(readme)
         else:
-            messagebox.showinfo("分流指引", "请使用 ZeroOmega / SwitchyOmega 导入同目录下的 SwitchyOmega_GBF.bak，或直接勾选【自动配置 Windows 系统 PAC 代理】实现免插件分流。")
+            messagebox.showinfo("分流指引", "请使用 ZeroOmega / SwitchyOmega 导入同目录下的 SwitchyOmega_GBF.bak，或直接勾选【自动配置系统 PAC 代理】实现免插件分流。")
+
+    def set_toggle_button_state(self, is_running: bool):
+        """Update toggle button text and color across platforms."""
+        if sys.platform == "darwin":
+            if is_running:
+                self.btn_toggle.configure(text="停止加速", style="Danger.TButton")
+            else:
+                self.btn_toggle.configure(text="启动加速", style="Success.TButton")
+        else:
+            if is_running:
+                self.btn_toggle.configure(text="停止加速", bg="#dc3545", activebackground="#bd2130")
+            else:
+                self.btn_toggle.configure(text="启动加速", bg="#28a745", activebackground="#218838")
 
     def toggle_proxy(self):
         if gbf_proxy.PROXY_STATS["is_running"]:
@@ -1863,7 +2304,7 @@ class GBFAcceleratorGUI:
 
             self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT})")
             self.lbl_status.configure(foreground="#28a745")
-            self.btn_toggle.configure(text="停止加速", bg="#dc3545", activebackground="#bd2130")
+            self.set_toggle_button_state(True)
             if self.tray_icon:
                 self.tray_icon.icon = create_tray_icon_image(True)
         else:
@@ -1872,7 +2313,7 @@ class GBFAcceleratorGUI:
             gbf_proxy.stop_proxy_thread()
             self.var_status_text.set(f"● 启动失败: {err[:20]}")
             self.lbl_status.configure(foreground="#dc3545")
-            self.btn_toggle.configure(text="启动加速", bg="#28a745", activebackground="#218838")
+            self.set_toggle_button_state(False)
             if self.tray_icon:
                 self.tray_icon.icon = create_tray_icon_image(False)
             messagebox.showerror("启动失败", f"代理服务无法在端口 {port} 启动：\n{err}\n\n请尝试更换端口或检查是否有其他程序占用。")
@@ -1883,7 +2324,7 @@ class GBFAcceleratorGUI:
             system_proxy.disable_pac_proxy()
         self.var_status_text.set("● 服务已停止")
         self.lbl_status.configure(foreground="#6c757d")
-        self.btn_toggle.configure(text="启动加速", bg="#28a745", activebackground="#218838")
+        self.set_toggle_button_state(False)
         if self.tray_icon:
             self.tray_icon.icon = create_tray_icon_image(False)
 
@@ -1923,13 +2364,13 @@ class GBFAcceleratorGUI:
         last_error = gbf_proxy.PROXY_STATS.get("last_error", "")
 
         if is_running and "停止" not in self.btn_toggle.cget("text"):
-            self.btn_toggle.configure(text="停止加速", bg="#dc3545", activebackground="#bd2130")
+            self.set_toggle_button_state(True)
             self.var_status_text.set(f"● 运行中 (监听端口 {gbf_proxy.LISTEN_PORT})")
             self.lbl_status.configure(foreground="#28a745")
             if self.tray_icon:
                 self.tray_icon.icon = create_tray_icon_image(True)
         elif not is_running and "启动" not in self.btn_toggle.cget("text"):
-            self.btn_toggle.configure(text="启动加速", bg="#28a745", activebackground="#218838")
+            self.set_toggle_button_state(False)
             if last_error:
                 self.var_status_text.set(f"● 异常停止: {last_error[:25]}")
                 self.lbl_status.configure(foreground="#dc3545")
@@ -1942,51 +2383,91 @@ class GBFAcceleratorGUI:
         # Schedule next update
         self._stats_job = self.root.after(800, self.update_stats_loop)
 
-    # ================= System Tray =================
+    # ================= System Tray / Menu Bar =================
     def setup_tray(self):
-        icon_img = create_tray_icon_image(True)
-        menu = pystray.Menu(
-            pystray.MenuItem("显示主界面", self.show_from_tray, default=True),
-            pystray.MenuItem("启动 / 暂停加速", self.toggle_proxy_from_tray),
-            pystray.MenuItem("打开缓存目录", lambda: self.open_cache_folder()),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("彻底退出", self.quit_app),
-        )
-        self.tray_icon = pystray.Icon("GBF_Speed_Proxy", icon_img, f"GBF 加速代理 (端口 {gbf_proxy.LISTEN_PORT})", menu)
-        # Run tray in separate background thread
-        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        if sys.platform == "darwin":
+            self.tray_icon = MacStatusBarManager(self)
+            return
+
+        try:
+            icon_img = create_tray_icon_image(True)
+            menu = pystray.Menu(
+                pystray.MenuItem("显示主界面", self.show_from_tray, default=True),
+                pystray.MenuItem("启动 / 暂停加速", self.toggle_proxy_from_tray),
+                pystray.MenuItem("打开缓存目录", lambda: self.open_cache_folder()),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("彻底退出", self.quit_app),
+            )
+            self.tray_icon = pystray.Icon("GBF_Speed_Proxy", icon_img, f"GBF 加速代理 (端口 {gbf_proxy.LISTEN_PORT})", menu)
+            # Run tray in separate background thread
+            threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        except Exception:
+            self.tray_icon = None
 
     def hide_to_tray(self, notify=True):
-        self.root.withdraw()
-        # Cancel running stats timer so CPU stays at absolute 0.0% in background
-        if getattr(self, "_stats_job", None):
-            try:
-                self.root.after_cancel(self._stats_job)
-            except Exception:
-                pass
-            self._stats_job = None
-        if notify:
-            try:
-                if self.tray_icon:
-                    self.tray_icon.notify("GBF 加速代理已最小化到系统托盘，正在后台运行。", "GBF 加速代理")
-            except Exception:
-                pass
+        if self.tray_icon or sys.platform == "darwin":
+            self.root.withdraw()
+            if sys.platform == "darwin":
+                try:
+                    import AppKit
+                    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+                        AppKit.NSApplicationActivationPolicyAccessory
+                    )
+                except Exception:
+                    pass
+            # Cancel running stats timer so CPU stays at absolute 0.0% in background
+            if getattr(self, "_stats_job", None):
+                try:
+                    self.root.after_cancel(self._stats_job)
+                except Exception:
+                    pass
+                self._stats_job = None
+            if notify and self.tray_icon:
+                try:
+                    msg = "GBF 加速代理已最小化到顶部菜单栏，正在后台运行。" if sys.platform == "darwin" else "GBF 加速代理已最小化到系统托盘，正在后台运行。"
+                    self.tray_icon.notify(msg, "GBF 加速代理")
+                except Exception:
+                    pass
+        else:
+            self.root.iconify()
+
+    def toggle_from_tray(self, *args):
+        """Toggle main window between hidden in menu bar and visible in foreground."""
+        try:
+            if self.root.state() in ("withdrawn", "iconic"):
+                self.show_from_tray()
+            else:
+                self.hide_to_tray(notify=False)
+        except Exception:
+            self.show_from_tray()
 
     def show_from_tray(self, *args):
-        def _show():
-            try:
-                self.root.deiconify()
-                self.root.lift()
-                self.root.focus_force()
-                # Immediately refresh stats and resume loop upon showing
-                if getattr(self, "_stats_job", None) is None:
-                    self.update_stats_loop()
-            except Exception:
-                pass
         try:
-            self.root.after(0, _show)
+            if sys.platform == "darwin":
+                try:
+                    import AppKit
+                    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+                        AppKit.NSApplicationActivationPolicyRegular
+                    )
+                except Exception:
+                    pass
+            self.root.deiconify()
+            self.root.lift()
+            if sys.platform == "darwin":
+                try:
+                    import AppKit
+                    AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+                    self.setup_mac_window_buttons()
+                except Exception:
+                    pass
+            self.root.attributes("-topmost", True)
+            self.root.after_idle(self.root.attributes, "-topmost", False)
+            self.root.focus_force()
+            # Immediately refresh stats and resume loop upon showing
+            if getattr(self, "_stats_job", None) is None:
+                self.update_stats_loop()
         except Exception:
-            _show()
+            pass
 
     def toggle_proxy_from_tray(self, *args):
         try:
@@ -2111,7 +2592,7 @@ class LogViewerWindow:
         self._scheduled_job = None
         self._last_stats_tick: float = 0.0
         self._context_line: str = ""
-        self._log_font_size: int = 9
+        self._log_font_size: int = 10 if sys.platform == "darwin" else 9
 
         self.var_auto_scroll = tk.BooleanVar(value=True)
         self.var_paused = tk.BooleanVar(value=False)
@@ -2214,7 +2695,7 @@ class LogViewerWindow:
             insertbackground="#ffffff",
             selectbackground="#264f78",
             selectforeground="#ffffff",
-            font=("Consolas", self._log_font_size),
+            font=(MONO_FONT, self._log_font_size),
             wrap="none",
             xscrollcommand=scroll_x.set,
             yscrollcommand=scroll_y.set,
@@ -2260,35 +2741,35 @@ class LogViewerWindow:
 
         # Level tags
         self.txt_logs.tag_configure("ts", foreground="#6e7681")
-        self.txt_logs.tag_configure("lvl_api", foreground="#4ec9b0", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("lvl_api", foreground="#4ec9b0", font=(MONO_FONT, sz, "bold"))
         self.txt_logs.tag_configure("lvl_cache", foreground="#89d185")
         self.txt_logs.tag_configure("lvl_fetch", foreground="#569cd6")
         self.txt_logs.tag_configure("lvl_prefetch", foreground="#c586c0")
-        self.txt_logs.tag_configure("lvl_retry", foreground="#e5c07b", font=("Consolas", sz, "bold"))
-        self.txt_logs.tag_configure("lvl_err", foreground="#f14c4c", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("lvl_retry", foreground="#e5c07b", font=(MONO_FONT, sz, "bold"))
+        self.txt_logs.tag_configure("lvl_err", foreground="#f14c4c", font=(MONO_FONT, sz, "bold"))
         self.txt_logs.tag_configure("lvl_conn", foreground="#9cdcfe")
-        self.txt_logs.tag_configure("reused", foreground="#50fa7b", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("reused", foreground="#50fa7b", font=(MONO_FONT, sz, "bold"))
         self.txt_logs.tag_configure("new_conn", foreground="#e5c07b")
 
         # Method tags
-        self.txt_logs.tag_configure("method_post", foreground="#bd93f9", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("method_post", foreground="#bd93f9", font=(MONO_FONT, sz, "bold"))
         self.txt_logs.tag_configure("method_get", foreground="#569cd6")
         self.txt_logs.tag_configure("method_other", foreground="#8be9fd")
 
         # Status code tags
         self.txt_logs.tag_configure("status_200", foreground="#89d185")
         self.txt_logs.tag_configure("status_304", foreground="#8be9fd")
-        self.txt_logs.tag_configure("status_err", foreground="#f14c4c", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("status_err", foreground="#f14c4c", font=(MONO_FONT, sz, "bold"))
 
         # Latency threshold tags
         self.txt_logs.tag_configure("lat_fast", foreground="#50fa7b")
         self.txt_logs.tag_configure("lat_normal", foreground="#cccccc")
-        self.txt_logs.tag_configure("lat_warn", foreground="#e5c07b", font=("Consolas", sz, "bold"))
-        self.txt_logs.tag_configure("lat_slow", foreground="#ff6b6b", background="#401818", font=("Consolas", sz, "bold"))
+        self.txt_logs.tag_configure("lat_warn", foreground="#e5c07b", font=(MONO_FONT, sz, "bold"))
+        self.txt_logs.tag_configure("lat_slow", foreground="#ff6b6b", background="#401818", font=(MONO_FONT, sz, "bold"))
 
         # Host tag & URL styling
         self.txt_logs.tag_configure("host_tag", foreground="#79c0ff")
-        self.txt_logs.tag_configure("url_path", foreground="#f0f6fc", font=("Consolas", sz))
+        self.txt_logs.tag_configure("url_path", foreground="#f0f6fc", font=(MONO_FONT, sz))
         self.txt_logs.tag_configure("url_query", foreground="#6e7681")
         self.txt_logs.tag_configure("url_size", foreground="#8b949e")
 
@@ -2299,11 +2780,11 @@ class LogViewerWindow:
         if size == self._log_font_size:
             return
         self._log_font_size = size
-        self.txt_logs.configure(font=("Consolas", size))
+        self.txt_logs.configure(font=(MONO_FONT, size))
         for tag in ("lvl_api", "lvl_retry", "lvl_err", "reused", "method_post", "status_err", "lat_warn", "lat_slow"):
-            self.txt_logs.tag_configure(tag, font=("Consolas", size, "bold"))
+            self.txt_logs.tag_configure(tag, font=(MONO_FONT, size, "bold"))
         for tag in ("url_path",):
-            self.txt_logs.tag_configure(tag, font=("Consolas", size))
+            self.txt_logs.tag_configure(tag, font=(MONO_FONT, size))
         self.var_status.set(f"已调整控制台字号为: {size} pt")
 
     def _on_mousewheel_zoom(self, event):
@@ -2420,7 +2901,7 @@ class LogViewerWindow:
         raw_lvl = rest[1:r2]
         msg = rest[r2+1:].strip()
 
-        pad_lvl = f"[{raw_lvl:<11}]"
+        pad_lvl = f"[{raw_lvl:<12}]"
         use_compact = self.var_compact_domain.get()
 
         if "BYPASS-API" in raw_lvl:
@@ -2466,31 +2947,53 @@ class LogViewerWindow:
                 else:
                     return f"{ts} {pad_lvl} GET  200 {ms_str} [stream] {path}"
         elif "CACHE" in raw_lvl:
+            tag = "[disk  ]" if "DISK" in raw_lvl else ("[flight]" if "FLIGHT" in raw_lvl else "[ram   ]")
             if "304 Not Modified" in msg:
-                m = re.search(r"-> (.+)", msg)
+                m = re.search(r"->\s+(.+)", msg)
                 path = m.group(1) if m else msg
-                tag = "[hit304]" if "DISK" in raw_lvl else "[ram304]"
+                sub_tag = "[hit304]" if "DISK" in raw_lvl else "[ram304]"
                 if use_compact:
-                    return f"{ts} {pad_lvl} GET  304    0ms {tag} [asset] {path}"
+                    return f"{ts} {pad_lvl} GET  304    0ms {sub_tag} [asset] {path}"
                 else:
-                    return f"{ts} {pad_lvl} GET  304    0ms {tag} {path}"
+                    return f"{ts} {pad_lvl} GET  304    0ms {sub_tag} {path}"
             elif "HIT" in raw_lvl or "HIT" in msg:
-                m = re.search(r"HIT -> ([^\s\(]+)(.*)", msg)
+                m = re.search(r"HIT(?:\s+\((\d+(?:\.\d+)?)ms\))?\s+->\s+([^\s\(]+)(.*)", msg)
                 if m:
-                    path, extra = m.groups()
-                    tag = "[disk  ]" if "DISK" in raw_lvl else "[ram   ]"
+                    ms_val, path, extra = m.groups()
+                    ms_int = int(round(float(ms_val))) if ms_val else 0
+                    ms_str = f"{ms_int:>4}ms"
                     if use_compact:
-                        return f"{ts} {pad_lvl} GET  200    0ms {tag} [asset] {path}{extra}"
+                        return f"{ts} {pad_lvl} GET  200 {ms_str} {tag} [asset] {path}{extra}"
                     else:
-                        return f"{ts} {pad_lvl} GET  200    0ms {tag} {path}{extra}"
+                        return f"{ts} {pad_lvl} GET  200 {ms_str} {tag} {path}{extra}"
             elif "COALESCED" in msg:
-                m = re.search(r"COALESCED -> ([^\s\(]+)(.*)", msg)
+                m = re.search(r"COALESCED\s+->\s+([^\s\(]+)(.*)", msg)
                 if m:
                     path, extra = m.groups()
                     if use_compact:
                         return f"{ts} {pad_lvl} GET  200    0ms [flight] [asset] {path}{extra}"
                     else:
                         return f"{ts} {pad_lvl} GET  200    0ms [flight] {path}{extra}"
+        elif "PREFETCH" == raw_lvl.strip():
+            # e.g.: Warmed (P1) -> prd-game-a-granbluefantasy.akamaized.net/assets/... (12,345 B)
+            m = re.match(r"Warmed \(P(\d+)\)\s+->\s+([^\s\(]+)(.*)", msg)
+            if m:
+                prio, full_url, extra = m.groups()
+                prio_tag = f"[pf-p{prio:<2}]"
+                if use_compact:
+                    path = "/" + full_url.split("/", 1)[1] if "/" in full_url else full_url
+                    return f"{ts} {pad_lvl} GET  200    -ms {prio_tag} [asset] {path}{extra}"
+                else:
+                    return f"{ts} {pad_lvl} GET  200    -ms {prio_tag} {full_url}{extra}"
+        elif "FALLBACK" in raw_lvl:
+            m = re.search(r"Served fallback cache \(([^)]+)\)\s*->\s*(.+)", msg)
+            if m:
+                fb_src, path = m.groups()
+                tag = "[f-ram ]" if "RAM" in fb_src.upper() else "[f-disk]"
+                if use_compact:
+                    return f"{ts} {pad_lvl} GET  200    0ms {tag} [asset] {path}"
+                else:
+                    return f"{ts} {pad_lvl} GET  200    0ms {tag} {path}"
         elif "MOCK-200" in raw_lvl:
             m = re.match(r"Direct Mock -> (.+)", msg)
             if m:
@@ -2508,7 +3011,7 @@ class LogViewerWindow:
                 return f"{ts} {pad_lvl} OPT  200    0ms [cors  ] {path}"
         elif "CONNECT" in raw_lvl:
             # e.g.: [127.0.0.1] prd-game-a-granbluefantasy.akamaized.net:443 -> MITM
-            m = re.search(r"\[([^\]]+)\]\s+([^\s]+)\s+->\s+(\w+)", msg)
+            m = re.search(r"(?:\[([^\]]+)\]\s+)?([^\s]+)\s+->\s+(\w+)", msg)
             if m:
                 client_ip, target, action = m.groups()
                 action_tag = f"[{action.lower():<6}]"
@@ -2554,38 +3057,42 @@ class LogViewerWindow:
             is_err_line = True
 
         use_compact = self.var_compact_domain.get()
-        if is_aligned and line.startswith("[") and len(line) >= 34 and line[9:12] == "] [" and line[23:25] == "] ":
-            # 1. Timestamp (0..10)
-            self.txt_logs.tag_add("ts", line_start, f"{line_start} + 10c")
-            # 2. Level tag (11..24)
+        r1 = line.find("]")
+        r2 = line.find("]", r1 + 1) if r1 != -1 else -1
+        if is_aligned and r1 == 9 and r2 != -1 and line.startswith("[") and line[r1:r1+3] == "] [" and line[r2:r2+2] == "] ":
+            # 1. Timestamp (0..r1+1)
+            self.txt_logs.tag_add("ts", line_start, f"{line_start} + {r1 + 1}c")
+            # 2. Level tag (r1+2..r2+1)
             lvl_tag = self._get_level_tag(lvl)
-            self.txt_logs.tag_add(lvl_tag, f"{line_start} + 11c", f"{line_start} + 24c")
-            # 3. Method tag (25..29)
-            method_str = line[25:29].strip()
+            self.txt_logs.tag_add(lvl_tag, f"{line_start} + {r1 + 2}c", f"{line_start} + {r2 + 1}c")
+            # 3. Method tag (r2+2..r2+6)
+            m_start = r2 + 2
+            method_str = line[m_start:m_start+4].strip()
             if method_str == "POST":
-                self.txt_logs.tag_add("method_post", f"{line_start} + 25c", f"{line_start} + 29c")
+                self.txt_logs.tag_add("method_post", f"{line_start} + {m_start}c", f"{line_start} + {m_start+4}c")
             elif method_str == "GET":
-                self.txt_logs.tag_add("method_get", f"{line_start} + 25c", f"{line_start} + 29c")
+                self.txt_logs.tag_add("method_get", f"{line_start} + {m_start}c", f"{line_start} + {m_start+4}c")
             else:
-                self.txt_logs.tag_add("method_other", f"{line_start} + 25c", f"{line_start} + 29c")
-            # 4. Status code (30..33)
-            code_str = line[30:33].strip()
+                self.txt_logs.tag_add("method_other", f"{line_start} + {m_start}c", f"{line_start} + {m_start+4}c")
+            # 4. Status code (m_start+5..m_start+8)
+            c_start = m_start + 5
+            code_str = line[c_start:c_start+3].strip()
             if code_str == "200":
-                self.txt_logs.tag_add("status_200", f"{line_start} + 30c", f"{line_start} + 33c")
+                self.txt_logs.tag_add("status_200", f"{line_start} + {c_start}c", f"{line_start} + {c_start+3}c")
             elif code_str == "304":
-                self.txt_logs.tag_add("status_304", f"{line_start} + 30c", f"{line_start} + 33c")
+                self.txt_logs.tag_add("status_304", f"{line_start} + {c_start}c", f"{line_start} + {c_start+3}c")
             elif code_str.startswith("5") or code_str in ("400", "403", "404", "408"):
                 is_err_line = True
-                self.txt_logs.tag_add("status_err", f"{line_start} + 30c", f"{line_start} + 33c")
+                self.txt_logs.tag_add("status_err", f"{line_start} + {c_start}c", f"{line_start} + {c_start+3}c")
             elif code_str in ("500", "502", "503", "504"):
                 is_err_line = True
-                self.txt_logs.tag_add("status_err", f"{line_start} + 30c", f"{line_start} + 33c")
+                self.txt_logs.tag_add("status_err", f"{line_start} + {c_start}c", f"{line_start} + {c_start+3}c")
 
             # 5. Dynamic token scanning for Latency, State, Host and URL
-            b_reuse = line.find("[", 34)
+            b_reuse = line.find("[", c_start + 4)
             if b_reuse != -1:
-                # 5a. Latency threshold coloring (between index 34 and b_reuse)
-                lat_chunk = line[34:b_reuse].strip()
+                # 5a. Latency threshold coloring (between c_start+4 and b_reuse)
+                lat_chunk = line[c_start+4:b_reuse].strip()
                 m_ms = re.search(r"(\d+)ms", lat_chunk)
                 if m_ms:
                     lat = int(m_ms.group(1))
@@ -2597,7 +3104,7 @@ class LogViewerWindow:
                         lat_tag = "lat_warn"
                     else:
                         lat_tag = "lat_slow"
-                    self.txt_logs.tag_add(lat_tag, f"{line_start} + 34c", f"{line_start} + {b_reuse-1}c")
+                    self.txt_logs.tag_add(lat_tag, f"{line_start} + {c_start+4}c", f"{line_start} + {b_reuse-1}c")
 
                 # 5b. Reuse / state tag
                 b_reuse_end = line.find("]", b_reuse)
@@ -2611,8 +3118,10 @@ class LogViewerWindow:
                         self.txt_logs.tag_add("lvl_fetch", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
                     elif state_str in ("hit304", "ram304"):
                         self.txt_logs.tag_add("status_304", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
-                    elif state_str in ("disk", "ram"):
+                    elif state_str in ("disk", "ram", "f-disk", "f-ram"):
                         self.txt_logs.tag_add("lvl_cache", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
+                    elif state_str.startswith("pf") or state_str.startswith("warm"):
+                        self.txt_logs.tag_add("lvl_prefetch", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
                     elif state_str in ("flight", "mitm", "tunnel"):
                         self.txt_logs.tag_add("reused", f"{line_start} + {b_reuse}c", f"{line_start} + {b_reuse_end+1}c")
 

@@ -17,8 +17,20 @@ async def run_test():
     try:
         print(f"[*] Testing GBF Speed Proxy using AsyncClient on port {test_port}...")
         import certifi, ssl
+        from cert_manager import CA_CERT_PATH, ensure_ca
+        ensure_ca()
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-        ssl_ctx.load_verify_locations(cafile="d:/acgpower/gbf_speed_proxy/certs/ca.crt")
+        ssl_ctx.load_verify_locations(cafile=str(CA_CERT_PATH))
+        # Ensure test fixture exists in cache for Test 1 & Test 9 (Cache Hit verification)
+        from cache_manager import cache_manager
+        test_css_key = "/assets/1772717316/css/arousal/form.css"
+        if not cache_manager.has_cache(test_css_key):
+            cache_manager.save_cache(
+                test_css_key,
+                {"content-type": "text/css; charset=UTF-8", "ETag": '"1772717316-form"'},
+                b"/* gbf test form.css */",
+            )
+
         async with httpx.AsyncClient(
             proxy=f"http://127.0.0.1:{test_port}",
             verify=ssl_ctx,
@@ -248,6 +260,13 @@ async def run_test():
             print("Test 22 - Instant RAM Cache Hot-Path Store: OK")
 
             # Test 23: End-to-End Concurrent SingleFlight Coalescing
+            _p_sf = cache_manager._get_local_path("/assets/test/concurrent_singleflight_test.js")
+            if _p_sf and _p_sf.exists():
+                _p_sf.unlink()
+            if _p_sf and (_p_sf.parent / (_p_sf.name + ".ext")).exists():
+                (_p_sf.parent / (_p_sf.name + ".ext")).unlink()
+            cache_manager.clear_ram_cache()
+
             target_client = gbf_proxy.asset_client if getattr(gbf_proxy, "asset_client", None) else gbf_proxy.http_client
             real_request = target_client.request
             sf_call_count = 0
@@ -810,6 +829,11 @@ async def run_test():
             finally:
                 await gbf_proxy.api_client.aclose()
                 gbf_proxy.api_client = orig_proxy_api_client
+                for w in active_server_writers:
+                    try:
+                        w.close()
+                    except Exception:
+                        pass
                 mock_srv.close()
                 await mock_srv.wait_closed()
 
@@ -852,8 +876,7 @@ async def run_test():
                 )
 
             gbf_proxy.request_asset = mock_prefetch_asset_fetch
-            if gbf_proxy.save_semaphore is None:
-                gbf_proxy.save_semaphore = asyncio.Semaphore(16)
+            gbf_proxy.save_semaphore = asyncio.Semaphore(16)
             gbf_proxy.prefetch_queue = asyncio.PriorityQueue()
             gbf_proxy.prefetch_inflight.clear()
 
