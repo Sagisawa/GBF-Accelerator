@@ -1,5 +1,7 @@
 import asyncio
 import httpx
+import os
+import stat
 import sys
 import time
 
@@ -21,21 +23,35 @@ async def run_test():
         ensure_ca()
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         ssl_ctx.load_verify_locations(cafile=str(CA_CERT_PATH))
-        # Ensure test fixture exists in cache for Test 1 & Test 9 (Cache Hit verification)
+        # Fixture self-healing: ensure assets/1772717316/css/arousal/form.css exists so dev test suite never fails if run on a pruned cache
         from cache_manager import cache_manager
-        test_css_key = "/assets/1772717316/css/arousal/form.css"
-        if not cache_manager.has_cache(test_css_key):
-            cache_manager.save_cache(
-                test_css_key,
-                {"content-type": "text/css; charset=UTF-8", "ETag": '"1772717316-form"'},
-                b"/* gbf test form.css */",
-            )
+        fixture_path = cache_manager._get_local_path("/assets/1772717316/css/arousal/form.css")
+        if fixture_path and not fixture_path.is_file():
+            fixture_path.parent.mkdir(parents=True, exist_ok=True)
+            import gzip, hashlib, json
+            dummy_css = gzip.compress(b"/* fixture self-healing */\n.form { display: block; }\n")
+            with open(fixture_path, "wb") as f:
+                f.write(dummy_css)
+            fixture_ext = fixture_path.with_name(fixture_path.name + ".ext")
+            if not fixture_ext.is_file():
+                meta = {
+                    "LastModified": "Tue, 21 Oct 2025 19:24:12 GMT",
+                    "ETag": '"1761074652-fdf4b045714bdf1a74755289173faaf5"',
+                    "at": int(time.time()),
+                    "md5": hashlib.md5(dummy_css).hexdigest(),
+                    "ce": "gzip",
+                    "ct": "text/css; charset=UTF-8",
+                    "v": 1,
+                }
+                with open(fixture_ext, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, indent=2)
 
         async with httpx.AsyncClient(
             proxy=f"http://127.0.0.1:{test_port}",
             verify=ssl_ctx,
             timeout=10.0,
         ) as client:
+
             # Test 1: Local Cache Hit & Absence of X-Proxy Headers on Wire
             url_cache = "https://prd-game-a-granbluefantasy.akamaized.net/assets/1772717316/css/arousal/form.css"
             resp = await client.get(url_cache)
@@ -1899,14 +1915,344 @@ async def run_test():
                 finally:
                     gbf_proxy.api_client.request = orig_api_req
 
-            print("\n[+] ALL 71 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # ---------------- Test 72: Windows System Proxy Conflict Detection & User Notification Contract ----------------
+            import system_proxy
+            import gui_main
+            import tkinter as tk
+            import unittest.mock as mock
+
+            # 1. Non-Windows platform returns None
+            with mock.patch.object(system_proxy.sys, "platform", "linux"):
+                assert system_proxy.check_proxy_conflict(8124) is None, "Non-windows must return None"
+
+            class MockRegistryKey:
+                def __init__(self, values):
+                    self.values = values
+                def __enter__(self):
+                    return self
+                def __exit__(self, exc_type, exc_val, exc_tb):
+                    pass
+
+            def create_mock_reg(values):
+                def mock_query(key, name):
+                    if name in values:
+                        return values[name], 1
+                    raise FileNotFoundError(f"Value {name} not found")
+                return MockRegistryKey(values), mock_query
+
+            # 2-8. Windows-specific registry simulation
+            with mock.patch.object(system_proxy.sys, "platform", "win32"):
+                # 2. Clean state: no PAC, ProxyEnable = 0
+                mock_k_clean, mock_q_clean = create_mock_reg({"ProxyEnable": 0})
+                with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                     mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value=None):
+                    assert system_proxy.check_proxy_conflict(8124) is None, "Clean registry must return None"
+
+                # 3. Clean state: registry key missing entirely
+                with mock.patch.object(system_proxy.winreg, "OpenKey", side_effect=FileNotFoundError), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value=None):
+                    assert system_proxy.check_proxy_conflict(8124) is None, "Missing registry key must return None"
+
+                # 4. Our own PAC enabled with no manual proxy: clean
+                with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                     mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://127.0.0.1:8124/proxy.pac"):
+                    assert system_proxy.check_proxy_conflict(8124) is None, "Our own PAC must not trigger conflict"
+
+                # 5. External PAC enabled: detected
+                with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                     mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://example.com/corp.pac"):
+                    res_pac = system_proxy.check_proxy_conflict(8124)
+                    assert res_pac == "外部 PAC 脚本 (http://example.com/corp.pac)", f"Expected external PAC conflict, got {res_pac}"
+
+                # 5b. External PAC on same port (8124) but external host: must still be detected
+                with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                     mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://corp-pac.com:8124/proxy.pac"):
+                    res_col = system_proxy.check_proxy_conflict(8124)
+                    assert res_col == "外部 PAC 脚本 (http://corp-pac.com:8124/proxy.pac)", f"Expected port collision PAC detected, got {res_col}"
+
+                # 5c. External PAC replaced on startup preserved in _original_pac_url: must be detected
+                orig_saved = system_proxy._original_pac_url
+                try:
+                    system_proxy._original_pac_url = "http://example.com/company.pac"
+                    with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_clean), \
+                         mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_clean), \
+                         mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://127.0.0.1:8124/proxy.pac"):
+                        res_orig = system_proxy.check_proxy_conflict(8124)
+                        assert res_orig == "外部 PAC 脚本 (http://example.com/company.pac)", f"Expected _original_pac_url detected, got {res_orig}"
+                finally:
+                    system_proxy._original_pac_url = orig_saved
+
+                # 6. Manual system proxy enabled with host:port
+                mock_k_manual, mock_q_manual = create_mock_reg({"ProxyEnable": 1, "ProxyServer": "127.0.0.1:7897"})
+                with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_manual), \
+                     mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_manual), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value=None):
+                    res_manual = system_proxy.check_proxy_conflict(8124)
+                    assert res_manual == "手动系统代理 (127.0.0.1:7897)", f"Expected manual proxy conflict with port, got {res_manual}"
+
+                # 7. Manual system proxy enabled without ProxyServer string
+                mock_k_nopool, mock_q_nopool = create_mock_reg({"ProxyEnable": 1})
+                with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_nopool), \
+                     mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_nopool), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value=None):
+                    res_nopool = system_proxy.check_proxy_conflict(8124)
+                    assert res_nopool == "手动系统代理", f"Expected manual proxy conflict without port, got {res_nopool}"
+
+                # 8. Both external PAC and manual proxy enabled simultaneously
+                with mock.patch.object(system_proxy.winreg, "OpenKey", return_value=mock_k_manual), \
+                     mock.patch.object(system_proxy.winreg, "QueryValueEx", side_effect=mock_q_manual), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://example.com/corp.pac"):
+                    res_both = system_proxy.check_proxy_conflict(8124)
+                    assert "外部 PAC 脚本 (http://example.com/corp.pac)" in res_both
+                    assert "手动系统代理 (127.0.0.1:7897)" in res_both
+
+            # 9. GUI conflict detection & notification integration
+            test_gui_root_72 = tk.Tk()
+            test_gui_root_72.withdraw()
+            try:
+                with mock.patch.object(gui_main.GBFAcceleratorGUI, "start_proxy"), \
+                     mock.patch.object(gui_main.GBFAcceleratorGUI, "setup_tray"):
+                    gui_72 = gui_main.GBFAcceleratorGUI(test_gui_root_72)
+
+                # Guard: var_auto_pac is False -> no prompt
+                gui_72.var_auto_pac.set(False)
+                with mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_72.check_and_prompt_proxy_conflict(force=True)
+                    mock_warn.assert_not_called()
+                assert gui_72._proxy_conflict_prompted is False
+
+                # Guard: not viewable and not force -> no prompt
+                gui_72.var_auto_pac.set(True)
+                with mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_72.check_and_prompt_proxy_conflict(force=False)
+                    mock_warn.assert_not_called()
+                assert gui_72._proxy_conflict_prompted is False
+
+                # Force check with conflict detected -> prompts warning
+                with mock.patch.object(system_proxy, "check_proxy_conflict", return_value="手动系统代理 (127.0.0.1:7897)"), \
+                     mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_72.check_and_prompt_proxy_conflict(force=True)
+                    mock_warn.assert_called_once()
+                    assert "检测到外部代理配置" in mock_warn.call_args[0][0]
+                    assert "手动系统代理 (127.0.0.1:7897)" in mock_warn.call_args[0][1]
+                    assert gui_72._proxy_conflict_prompted is True
+
+                    # Second non-forced check when already prompted -> does not prompt again
+                    mock_warn.reset_mock()
+                    gui_72.check_and_prompt_proxy_conflict(force=False)
+                    mock_warn.assert_not_called()
+
+                # toggle_sys_proxy_setting triggering conflict check with safe mocks
+                with mock.patch.object(gui_72, "check_and_prompt_proxy_conflict") as mock_prompt, \
+                     mock.patch.object(gui_main.system_proxy, "enable_pac_proxy") as mock_enable_pac, \
+                     mock.patch.object(gui_main.system_proxy, "disable_pac_proxy"), \
+                     mock.patch.object(gui_main.config_manager, "save_config"):
+                    gui_72.var_auto_pac.set(True)
+                    gui_72.toggle_sys_proxy_setting()
+                    mock_prompt.assert_called_once_with(force=True)
+                    mock_enable_pac.assert_called_once()
+            finally:
+                test_gui_root_72.destroy()
+
+            print("Test 72 - Windows System Proxy Conflict Detection & User Notification Contract: OK", flush=True)
+
+            # Test 73: Historical Version Cache Slimming & Safety Contract
+            import tempfile
+            import threading
+            from pathlib import Path
+            from cache_manager import CacheManager
+            with tempfile.TemporaryDirectory() as sandbox_dir:
+                sb_path = Path(sandbox_dir)
+                mgr = CacheManager(cache_base_dir=sb_path)
+
+                # 1. Populate mock asset tree
+                # Global media that must NEVER be deleted
+                img_file = sb_path / "assets" / "img" / "sp" / "ui" / "btn.png"
+                img_file.parent.mkdir(parents=True, exist_ok=True)
+                img_file.write_bytes(b"\x89PNG\r\n\x1a\nfake_png_data")
+
+                snd_file = sb_path / "assets" / "sound" / "se" / "btn.mp3"
+                snd_file.parent.mkdir(parents=True, exist_ok=True)
+                snd_file.write_bytes(b"fake_mp3_data")
+
+                font_file = sb_path / "assets" / "font" / "icon.woff2"
+                font_file.parent.mkdir(parents=True, exist_ok=True)
+                font_file.write_bytes(b"fake_woff2")
+
+                misc_dir_file = sb_path / "assets" / "common_pack" / "data.json"
+                misc_dir_file.parent.mkdir(parents=True, exist_ok=True)
+                misc_dir_file.write_text('{"ok": 1}')
+
+                # Non-standard folders that must NEVER be treated as numeric version dirs
+                non_std_dir1 = sb_path / "assets" / "1001_backup"
+                non_std_dir1.mkdir(parents=True, exist_ok=True)
+                (non_std_dir1 / "data.txt").write_text("backup")
+
+                non_std_dir2 = sb_path / "assets" / "v1013"
+                non_std_dir2.mkdir(parents=True, exist_ok=True)
+                (non_std_dir2 / "data.txt").write_text("v1013")
+
+                # Populate 12 numeric version directories under assets/ (1001 to 1012)
+                for v in range(1001, 1013):
+                    v_dir = sb_path / "assets" / str(v) / "js"
+                    v_dir.mkdir(parents=True, exist_ok=True)
+                    (v_dir / "app.js").write_bytes(b"console.log('version " + str(v).encode() + b"');")
+                    (v_dir / "app.js.ext").write_text('{"ct": "application/javascript"}')
+
+                # Windows read-only file test: simulate a cache file marked read-only inside stale version 1002
+                ro_file = sb_path / "assets" / "1002" / "js" / "readonly.js"
+                ro_file.write_bytes(b"readonly_code")
+                os.chmod(ro_file, stat.S_IREAD)
+
+                # Populate 6 numeric version directories under assets_en/ (2001 to 2006)
+                for v in range(2001, 2007):
+                    v_dir_en = sb_path / "assets_en" / str(v) / "js"
+                    v_dir_en.mkdir(parents=True, exist_ok=True)
+                    (v_dir_en / "en.js").write_bytes(b"console.log('en " + str(v).encode() + b"');")
+
+                # Populate RAM cache with a mix of stale and retained keys
+                mgr.store_ram_cache("/assets/1001/js/app.js", {"content-type": "application/javascript"}, b"console.log('1001');")
+                mgr.store_ram_cache("/assets/1012/js/app.js", {"content-type": "application/javascript"}, b"console.log('1012');")
+                mgr.store_ram_cache("/assets/img/sp/ui/btn.png", {"content-type": "image/png"}, b"\x89PNG\r\n\x1a\nfake_png_data")
+                mgr._mark_missing("assets/1001/js/missing.js")
+                mgr._mark_missing("assets/1012/js/missing.js")
+
+                # Prime version dirs cache
+                v_dirs_cached = mgr._get_version_dirs("assets")
+                assert len(v_dirs_cached) == 12
+
+                # Step 1: Pre-check contract
+                stale_dirs_8 = mgr.get_stale_version_dirs(keep_count=8)
+                # assets has 12 versions -> 4 stale (1001..1004)
+                # assets_en has 6 versions -> 0 stale (6 <= 8)
+                assert len(stale_dirs_8) == 4
+                assert [d.name for d in stale_dirs_8] == ["1004", "1003", "1002", "1001"]
+
+                # Step 2: Parameter clamping guard (keep_count=0 must clamp to >= 1, None/string handling)
+                stale_dirs_0 = mgr.get_stale_version_dirs(keep_count=0)
+                # keep_count clamped to 1 -> leaves 1 in assets (1012), leaves 1 in assets_en (2006)
+                assert len(stale_dirs_0) == 11 + 5
+                assert len(mgr.get_stale_version_dirs(keep_count=None)) == 4
+                assert len(mgr.get_stale_version_dirs(keep_count="8")) == 4
+
+                # Step 3: Cancellation contract
+                cancel_evt = threading.Event()
+                cancel_evt.set()  # Cancel immediately before execution
+                res_cancel = mgr.prune_stale_version_cache(keep_count=8, cancel_event=cancel_evt)
+                assert res_cancel["cancelled"] is True
+                assert res_cancel["pruned_dirs"] == 0
+
+                # Step 4: Full execution contract with progress tracking
+                progress_records = []
+                def on_test_progress(cur, total, dname, fcount, bcount):
+                    progress_records.append((cur, total, dname, fcount, bcount))
+
+                res = mgr.prune_stale_version_cache(keep_count=8, progress_callback=on_test_progress)
+                assert res["cancelled"] is False
+                assert res["scanned_dirs"] == 18  # 12 in assets + 6 in assets_en
+                assert res["pruned_dirs"] == 4   # 4 in assets
+                assert res["retained_dirs"] == 14 # 8 in assets + 6 in assets_en
+                assert res["deleted_files"] == 9  # 4 * (app.js + app.js.ext) + 1 readonly.js = 9 files
+                assert res["freed_bytes"] > 0
+                assert res["freed_mb"] >= 0.0
+                assert len(progress_records) > 0
+
+                # Verify on-disk invariant
+                # Stale versions deleted (including read-only file inside 1002)
+                for v in range(1001, 1005):
+                    assert not (sb_path / "assets" / str(v)).exists(), f"Stale version {v} should be deleted"
+                # Retained versions preserved
+                for v in range(1005, 1013):
+                    assert (sb_path / "assets" / str(v) / "js" / "app.js").is_file(), f"Retained version {v} must exist"
+                # All assets_en preserved
+                for v in range(2001, 2007):
+                    assert (sb_path / "assets_en" / str(v) / "js" / "en.js").is_file()
+
+                # Global assets and non-standard directories strictly preserved
+                assert img_file.is_file()
+                assert snd_file.is_file()
+                assert font_file.is_file()
+                assert misc_dir_file.is_file()
+                assert (non_std_dir1 / "data.txt").is_file()
+                assert (non_std_dir2 / "data.txt").is_file()
+
+                # Verify Cache Coherence
+                # 1001 evicted from RAM, 1012 and global image retained
+                assert mgr.get_ram_cache("/assets/1001/js/app.js") is None
+                assert mgr.get_ram_cache("/assets/1012/js/app.js") is not None
+                assert mgr.get_ram_cache("/assets/img/sp/ui/btn.png") is not None
+                assert "assets/1001/js/missing.js" not in mgr._known_missing
+                assert "assets/1012/js/missing.js" in mgr._known_missing
+
+                # Version dirs cache invalidated and refreshes accurately
+                refreshed_v_dirs = mgr._get_version_dirs("assets")
+                assert len(refreshed_v_dirs) == 8
+                assert refreshed_v_dirs[0] == "1012"
+                assert refreshed_v_dirs[-1] == "1005"
+
+                # Step 5: Idempotent second run
+                res_idempotent = mgr.prune_stale_version_cache(keep_count=8)
+                assert res_idempotent["pruned_dirs"] == 0
+                assert res_idempotent["deleted_files"] == 0
+                assert res_idempotent["freed_bytes"] == 0
+
+            # Step 6: GUI integration contract with Tkinter mock
+            test_gui_root_73 = tk.Tk()
+            test_gui_root_73.withdraw()
+            try:
+                with mock.patch.object(gui_main.GBFAcceleratorGUI, "start_proxy"), \
+                     mock.patch.object(gui_main.GBFAcceleratorGUI, "setup_tray"):
+                    gui_73 = gui_main.GBFAcceleratorGUI(test_gui_root_73)
+
+                # 6a. Stale dirs == 0 -> prompts info dialog, no worker thread
+                with mock.patch.object(cache_manager, "get_stale_version_dirs", return_value=[]), \
+                     mock.patch.object(gui_main.messagebox, "showinfo") as mock_info, \
+                     mock.patch.object(gui_main.messagebox, "askyesno") as mock_ask:
+                    gui_73.run_cache_slimming()
+                    mock_info.assert_called_once()
+                    mock_ask.assert_not_called()
+                    assert gui_73._is_slimming_cache is False
+
+                # 6b. Stale dirs > 0, User clicks No -> askyesno called, but no worker
+                fake_stale = [Path("assets/1001"), Path("assets/1002")]
+                with mock.patch.object(cache_manager, "get_stale_version_dirs", return_value=fake_stale), \
+                     mock.patch.object(gui_main.messagebox, "askyesno", return_value=False) as mock_ask, \
+                     mock.patch.object(threading, "Thread") as mock_thread:
+                    gui_73.run_cache_slimming()
+                    mock_ask.assert_called_once()
+                    assert "2 个历史旧版本" in mock_ask.call_args[0][1]
+                    mock_thread.assert_not_called()
+                    assert gui_73._is_slimming_cache is False
+
+                # 6c. Mutual exclusion: while auditing, slimming is rejected
+                gui_73._is_auditing_cache = True
+                with mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_73.run_cache_slimming()
+                    mock_warn.assert_called_once()
+                gui_73._is_auditing_cache = False
+
+                # 6d. Mutual exclusion: while slimming, auditing is rejected
+                gui_73._is_slimming_cache = True
+                with mock.patch.object(gui_main.messagebox, "showwarning") as mock_warn:
+                    gui_73.run_cache_audit()
+                    mock_warn.assert_called_once()
+                gui_73._is_slimming_cache = False
+            finally:
+                test_gui_root_73.destroy()
+
+            print("Test 73 - Historical Version Cache Slimming Contract: OK", flush=True)
+
+            print("\n[+] ALL 73 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()
         sys.exit(1)
     finally:
         gbf_proxy.stop_proxy_thread()
-        import os, sys
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)

@@ -151,25 +151,68 @@ def ensure_bundled_files():
             except Exception:
                 pass
 
+def _print_unix_setup_instructions():
+    """Print one-time CA-trust + browser-proxy setup instructions for macOS / Linux."""
+    ca_path = get_base_dir() / "certs" / "ca.crt"
+    ca_path_str = str(ca_path)
+    listen_port = config_manager.get_listen_port()
+    proxy_url = f"http://127.0.0.1:{listen_port}"
+
+    print()
+    print("=" * 65)
+    print("   macOS / Linux (nogui) 一次性配置指引")
+    print("=" * 65)
+    print()
+    print(f"[1] 浏览器 HTTP/HTTPS 代理设置为：")
+    print(f"      {proxy_url}")
+    print("    (Chrome / Edge: 设置 → 系统 → 打开代理设置 → 手动配置代理；")
+    print("     Firefox: 设置 → 网络设置 → 手动配置代理 → HTTP/HTTPS 填同一地址)")
+    print()
+    print("[2] 信任根证书（一次性，二选一）：")
+    print()
+    print("    macOS (系统级，影响所有浏览器):")
+    print(f"      sudo security add-trusted-cert -d -r trustRoot \\")
+    print(f"          -k /Library/Keychains/System.keychain {ca_path_str}")
+    print()
+    print("    macOS (仅当前用户 Safari / Chrome, 不需要 sudo):")
+    print(f"      security add-trusted-cert -r trustRoot \\")
+    print(f"          -k ~/Library/Keychains/login.keychain-db {ca_path_str}")
+    print()
+    print("    Linux (Debian / Ubuntu 系统级):")
+    print(f"      sudo cp {ca_path_str} /usr/local/share/ca-certificates/gbf-accelerator.crt")
+    print("      sudo update-ca-certificates")
+    print()
+    print("    Linux (仅 Firefox / Chrome 当前用户, 不需要 sudo):")
+    print(f"      certutil -A -n GBF-Accelerator -t C,C \\")
+    print(f"          -i {ca_path_str} -d sql:$HOME/.pki/nssdb")
+    print()
+    print("=" * 65)
+    print()
+
 def check_ca_setup():
-    """Verify and prompt to install Root CA if missing."""
+    """Verify and prompt to install Root CA. Windows: real install; unix: print instructions."""
     ensure_ca()
-    if is_ca_installed():
-        print("   [+] 根证书状态: [已信任] (HTTPS 缓存已就绪)")
+    if sys.platform == "win32":
+        if is_ca_installed():
+            print("   [+] 根证书状态: [已信任] (HTTPS 缓存已就绪)")
+            return
+
+        print("\n" + "!" * 65)
+        print("   [!] 检测到本机尚未安装加速根证书！")
+        print("       本加速器需信任根证书才能解密并缓存 Akamai 静态资源。")
+        print("       正在自动调用系统证书管理器为你安装...")
+        print("       >>> 稍后弹出的 Windows 安全警告窗口中，请点击【是 (Y)】<<<")
+        print("!" * 65 + "\n")
+
+        success = install_ca_certificate(CA_CERT_PATH)
+        if is_ca_installed():
+            print("   [+] 根证书安装成功并已受信！\n")
+        else:
+            print(f"   [!] 证书未自动安装，你也可以双击运行 certs/ca.crt 手动安装到【受信任的根证书颁发机构】。\n")
         return
 
-    print("\n" + "!" * 65)
-    print("   [!] 检测到本机尚未安装加速根证书！")
-    print("       本加速器需信任根证书才能解密并缓存 Akamai 静态资源。")
-    print("       正在自动调用系统证书管理器为你安装...")
-    print("       >>> 稍后弹出的 Windows 安全警告窗口中，请点击【是 (Y)】<<<")
-    print("!" * 65 + "\n")
-
-    success = install_ca_certificate(CA_CERT_PATH)
-    if is_ca_installed():
-        print("   [+] 根证书安装成功并已受信！\n")
-    else:
-        print(f"   [!] 证书未自动安装，你也可以双击运行 certs/ca.crt 手动安装到【受信任的根证书颁发机构】。\n")
+    # macOS / Linux: cert is generated on disk; user must trust it manually.
+    print("   [*] 根证书已生成到 certs/ca.crt（macOS / Linux 需手动信任，见下方启动说明）。")
 
 def main():
     base_dir = get_base_dir()
@@ -195,6 +238,8 @@ def main():
     print(f"   [+] 上游代理服务: {upstream}")
 
     # Step 4: Run Proxy Server
+    if sys.platform != "win32":
+        _print_unix_setup_instructions()
     print("   --------------------------------------------------------------")
     try:
         asyncio.run(gbf_proxy.main())

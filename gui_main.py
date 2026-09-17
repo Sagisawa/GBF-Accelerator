@@ -353,6 +353,9 @@ class GBFAcceleratorGUI:
         self.var_auto_update = tk.BooleanVar(value=config_manager.config.get("auto_check_update", True))
         self.update_info: Optional[UpdateInfo] = None
         self.log_window: Optional["LogViewerWindow"] = None
+        self._proxy_conflict_prompted = False
+        self._is_auditing_cache = False
+        self._is_slimming_cache = False
 
         # Emoji icon cache (buttons attach icons via image+compound for exact centering)
         self._icon_cache: dict = {}
@@ -399,6 +402,7 @@ class GBFAcceleratorGUI:
         # Check CA status and detect legacy leaked cert
         self.update_ca_status()
         self.root.after(500, self.check_and_prompt_ca_state)
+        self.root.after(600, self.check_and_prompt_proxy_conflict)
 
         # Ensure helper files
         from app_main import ensure_bundled_files
@@ -758,7 +762,10 @@ class GBFAcceleratorGUI:
         btn_acgp.pack(side="left", padx=(0, 4))
 
         self.btn_audit_cache = self._emoji_button(f_dir, "🩺", "一键体检缓存", self.run_cache_audit)
-        self.btn_audit_cache.pack(side="left")
+        self.btn_audit_cache.pack(side="left", padx=(0, 4))
+
+        self.btn_prune_cache = self._emoji_button(f_dir, "🧹", "缓存安全瘦身", self.run_cache_slimming)
+        self.btn_prune_cache.pack(side="left")
 
         # Field 2: Upstream Proxy
         ttk.Label(card_settings, text="上游网络代理（Clash Verge / Clash / V2ray / 岛风GO 等）：", style="Normal.TLabel").pack(anchor="w")
@@ -1548,7 +1555,47 @@ class GBFAcceleratorGUI:
             ):
                 self.install_ca()
 
+    def check_and_prompt_proxy_conflict(self, force: bool = False):
+        """Check for external Windows system proxy / PAC conflicts and notify user."""
+        try:
+            if not self.root.winfo_exists():
+                return
+        except Exception:
+            return
+
+        if not self.var_auto_pac.get():
+            return
+        if not force:
+            try:
+                if START_MINIMIZED or not self.root.winfo_viewable():
+                    return
+            except Exception:
+                return
+            if self._proxy_conflict_prompted:
+                return
+
+        port = getattr(gbf_proxy, "LISTEN_PORT", 8124)
+        conflict = system_proxy.check_proxy_conflict(port)
+        if not conflict:
+            return
+
+        self._proxy_conflict_prompted = True
+        messagebox.showwarning(
+            "检测到外部代理配置",
+            f"检测到系统当前存在外部代理配置：\n\n"
+            f"• 当前设置：{conflict}\n\n"
+            "技术说明：\n"
+            "1. 本加速器使用 Windows 自动配置脚本 (PAC) 进行游戏域名定向分流。\n"
+            "2. Windows 网络栈 (WinINet) 中若同时开启全局手动代理，部分浏览器或网络组件可能会优先通过手动代理转发，导致加速器 PAC 分流未能按预期生效。\n\n"
+            "建议方案：\n"
+            "如需搭配第三方代理软件使用，建议在第三方软件中关闭其“系统代理”开关，并在本加速器界面的【上游代理】中填入对应本地端口，由加速器统一分流并转发上游。",
+        )
+
     def clear_cache_dialog(self):
+        if getattr(self, "_is_slimming_cache", False) or getattr(self, "_is_auditing_cache", False):
+            messagebox.showwarning("提示", "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成...")
+            return
+
         current_dir = Path(self.var_cache_dir.get()).resolve()
         if not messagebox.askyesno(
             "清空本地缓存确认",
@@ -1566,6 +1613,10 @@ class GBFAcceleratorGUI:
         messagebox.showinfo("清空完成", f"本地缓存已清空！\n已删除 {deleted} 个文件，释放 {mb:.1f} MB 磁盘空间。")
 
     def browse_cache_dir(self):
+        if getattr(self, "_is_slimming_cache", False) or getattr(self, "_is_auditing_cache", False):
+            messagebox.showwarning("提示", "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成...")
+            return
+
         chosen = filedialog.askdirectory(title="选择 GBF 本地缓存保存目录", initialdir=self.var_cache_dir.get())
         if chosen:
             p = Path(chosen).resolve()
@@ -1588,6 +1639,10 @@ class GBFAcceleratorGUI:
                 messagebox.showinfo("缓存设置", f"缓存目录已成功更改为：\n{norm_p}{restart_tip}")
 
     def detect_acgp(self):
+        if getattr(self, "_is_slimming_cache", False) or getattr(self, "_is_auditing_cache", False):
+            messagebox.showwarning("提示", "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成...")
+            return
+
         found = auto_detect_acgpower_cache()
         if found:
             self.var_cache_dir.set(str(found))
@@ -1610,8 +1665,8 @@ class GBFAcceleratorGUI:
 
     def run_cache_audit(self):
         """Perform full format integrity health check and auto-repair on local cache."""
-        if getattr(self, "_is_auditing_cache", False):
-            messagebox.showwarning("提示", "缓存体检正在进行中，请稍候...")
+        if getattr(self, "_is_auditing_cache", False) or getattr(self, "_is_slimming_cache", False):
+            messagebox.showwarning("提示", "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成...")
             return
 
         if not messagebox.askyesno(
@@ -1627,6 +1682,8 @@ class GBFAcceleratorGUI:
 
         self._is_auditing_cache = True
         self.btn_audit_cache.configure(state="disabled")
+        if hasattr(self, "btn_prune_cache"):
+            self.btn_prune_cache.configure(state="disabled")
 
         # Modal progress dialog
         dlg = tk.Toplevel(self.root)
@@ -1656,9 +1713,13 @@ class GBFAcceleratorGUI:
 
         def worker():
             def on_progress(scanned: int, corrupted: int):
-                self.root.after(0, lambda: var_progress_text.set(
-                    f"已扫描素材：{scanned:,} 个  |  已修复异常：{corrupted:,} 个"
-                ))
+                def _update(s=scanned, c=corrupted):
+                    try:
+                        if dlg.winfo_exists():
+                            var_progress_text.set(f"已扫描素材：{s:,} 个  |  已修复异常：{c:,} 个")
+                    except Exception:
+                        pass
+                self.root.after(0, _update)
 
             try:
                 res = cache_manager.audit_and_repair_cache(progress_callback=on_progress)
@@ -1666,10 +1727,16 @@ class GBFAcceleratorGUI:
                 res = {"error": str(e)}
 
             def on_done():
-                pb.stop()
-                dlg.destroy()
+                try:
+                    pb.stop()
+                    if dlg.winfo_exists():
+                        dlg.destroy()
+                except Exception:
+                    pass
                 self._is_auditing_cache = False
                 self.btn_audit_cache.configure(state="normal")
+                if hasattr(self, "btn_prune_cache"):
+                    self.btn_prune_cache.configure(state="normal")
 
                 if "error" in res:
                     messagebox.showerror("体检失败", f"体检过程中发生错误：\n{res['error']}")
@@ -1699,6 +1766,161 @@ class GBFAcceleratorGUI:
                         f"本地所有图片、音频与动画文件均符合官方规范，未发现任何损坏。"
                     )
                 messagebox.showinfo("缓存体检结果", msg)
+
+            self.root.after(0, on_done)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+
+    def run_cache_slimming(self):
+        """Safely prune historical version directories beyond the newest 8 versions,
+        preserving all images, audio, and global assets 100% untouched.
+        """
+        if getattr(self, "_is_slimming_cache", False) or getattr(self, "_is_auditing_cache", False):
+            messagebox.showwarning("提示", "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成...")
+            return
+
+        # Light-weight pre-check (<10ms scan of top-level version directory names)
+        stale_dirs = cache_manager.get_stale_version_dirs(keep_count=8)
+        if not stale_dirs:
+            messagebox.showinfo(
+                "缓存安全瘦身",
+                "当前本地缓存结构非常健康！\n\n"
+                "未检测到超过保留阈值（最新 8 个大更新版本）的历史废弃版本目录，无需清理。"
+            )
+            return
+
+        total_stale_count = len(stale_dirs)
+        confirm_msg = (
+            f"检测到本地缓存中存在 {total_stale_count} 个历史旧版本目录（已保留最新的 8 个版本）。\n\n"
+            "• 为什么这些缓存没用了：\n"
+            "  这是游戏历次大更新后淘汰的历史废弃代码包，包含大量陈旧 JS/CSS，白占几十万碎片文件与磁盘空间。\n\n"
+            "• 立绘与语音全部完好保留：\n"
+            "  瘦身仅针对历史版本代码包（assets/<version_id>/），绝不触碰所有角色立绘、召唤石、剧情插图和语音音频（assets/img/, assets/sound/ 等全局公共素材 100% 完整保留）。\n\n"
+            "• 自动补齐保底：\n"
+            "  即便未来偶尔需要加载极罕见的历史代码，代理也会在后台自动即时拉取补齐，零使用风险。\n\n"
+            f"是否立即开始安全瘦身（清理这 {total_stale_count} 个历史废弃版本）？"
+        )
+        if not messagebox.askyesno("缓存安全瘦身", confirm_msg):
+            return
+
+        self._is_slimming_cache = True
+        self.btn_prune_cache.configure(state="disabled")
+        if hasattr(self, "btn_audit_cache"):
+            self.btn_audit_cache.configure(state="disabled")
+
+        # Modal progress dialog
+        dlg = tk.Toplevel(self.root)
+        dlg.title("正在进行缓存安全瘦身...")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        frame = ttk.Frame(dlg, padding="20 16 20 16")
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text="🧹 正在清理历史废弃版本代码包（立绘与语音绝不触碰）...",
+            font=("Microsoft YaHei UI", 10, "bold")
+        ).pack(anchor="w", pady=(0, 6))
+
+        var_status_text = tk.StringVar(value="正在准备清理历史版本目录...")
+        lbl_status = ttk.Label(frame, textvariable=var_status_text, style="Normal.TLabel")
+        lbl_status.pack(anchor="w", pady=(0, 4))
+
+        var_stats_text = tk.StringVar(value="已清理文件：0 个  |  已释放空间：0.0 MB")
+        lbl_stats = ttk.Label(frame, textvariable=var_stats_text, style="Normal.TLabel")
+        lbl_stats.pack(anchor="w", pady=(0, 10))
+
+        pb = ttk.Progressbar(frame, mode="determinate", maximum=max(1, total_stale_count), value=0, length=380)
+        pb.pack(fill="x", pady=(0, 12))
+
+        cancel_event = threading.Event()
+
+        def on_cancel():
+            if not cancel_event.is_set():
+                cancel_event.set()
+                btn_cancel.configure(state="disabled", text="正在中止...")
+
+        dlg.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        btn_box = ttk.Frame(frame)
+        btn_box.pack(fill="x")
+        btn_cancel = ttk.Button(btn_box, text="中止", width=10, command=on_cancel)
+        btn_cancel.pack(side="right")
+
+        dlg.update_idletasks()
+        pw, ph = self.root.winfo_width(), self.root.winfo_height()
+        px, py = self.root.winfo_rootx(), self.root.winfo_rooty()
+        dw, dh = dlg.winfo_width(), dlg.winfo_height()
+        dlg.geometry(f"+{px + max(0, (pw - dw) // 2)}+{py + max(0, (ph - dh) // 2)}")
+
+        def worker():
+            def on_progress(cur_idx: int, total_dirs: int, cur_dir: str, deleted_files: int, freed_bytes: int):
+                freed_mb = freed_bytes / (1024 * 1024)
+                def _update(c=cur_idx, t=total_dirs, d=cur_dir, f=deleted_files, mb=freed_mb):
+                    try:
+                        if dlg.winfo_exists():
+                            pb.configure(value=c)
+                            var_status_text.set(f"正在清理第 {c}/{t} 个版本目录：{d}")
+                            var_stats_text.set(f"已清理碎片文件：{f:,} 个  |  已释放空间：{mb:.1f} MB")
+                    except Exception:
+                        pass
+                self.root.after(0, _update)
+
+            try:
+                res = cache_manager.prune_stale_version_cache(
+                    keep_count=8,
+                    progress_callback=on_progress,
+                    cancel_event=cancel_event,
+                )
+            except Exception as e:
+                res = {"error": str(e)}
+
+            def on_done():
+                try:
+                    if dlg.winfo_exists():
+                        dlg.destroy()
+                except Exception:
+                    pass
+                self._is_slimming_cache = False
+                self.btn_prune_cache.configure(state="normal")
+                if hasattr(self, "btn_audit_cache"):
+                    self.btn_audit_cache.configure(state="normal")
+
+                if "error" in res:
+                    messagebox.showerror("瘦身失败", f"缓存瘦身过程中发生错误：\n{res['error']}")
+                    return
+
+                deleted_files = res.get("deleted_files", 0)
+                freed_mb = res.get("freed_mb", 0.0)
+                pruned_dirs = res.get("pruned_dirs", 0)
+                retained_dirs = res.get("retained_dirs", 0)
+                elapsed = res.get("elapsed", 0.0)
+                was_cancelled = res.get("cancelled", False)
+
+                if was_cancelled:
+                    msg = (
+                        f"⚠️ 缓存安全瘦身已中止！\n\n"
+                        f"📁 已清理版本目录：{pruned_dirs} 个\n"
+                        f"🗑️ 已删除废弃文件：{deleted_files:,} 个\n"
+                        f"💾 已释放磁盘空间：{freed_mb} MB\n"
+                        f"⏱️ 耗时：{elapsed} 秒\n\n"
+                        f"未完成部分已安全停止，所有角色立绘、声音与正常游戏功能均完好不受影响。"
+                    )
+                    messagebox.showinfo("缓存瘦身已中止", msg)
+                else:
+                    msg = (
+                        f"🎉 缓存安全瘦身完成！\n\n"
+                        f"📁 清理历史废弃版本：{pruned_dirs} 个\n"
+                        f"📦 保留最新健康版本：{retained_dirs} 个\n"
+                        f"🗑️ 删除废弃代码文件：{deleted_files:,} 个\n"
+                        f"💾 释放磁盘存储空间：{freed_mb} MB\n"
+                        f"⏱️ 耗时：{elapsed} 秒\n\n"
+                        f"所有角色立绘、音频与公共素材均完好保留，大幅降低了小文件碎片数量。"
+                    )
+                    messagebox.showinfo("缓存安全瘦身结果", msg)
 
             self.root.after(0, on_done)
 
@@ -2020,6 +2242,8 @@ class GBFAcceleratorGUI:
                 system_proxy.enable_pac_proxy(f"http://127.0.0.1:{gbf_proxy.LISTEN_PORT}/proxy.pac")
             else:
                 system_proxy.disable_pac_proxy()
+        if enabled:
+            self.check_and_prompt_proxy_conflict(force=True)
 
     def toggle_startup_setting(self):
         enabled = self.var_auto_start.get()
