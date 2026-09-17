@@ -365,18 +365,28 @@ class GBFAcceleratorGUI:
         self.build_ui()
         self.update_shimakaze_controls()
 
-        # Auto-fit window size to the real layout: responsive geometry suitable for
-        # macOS 13" laptops (1440x900, 1280x800) as well as larger desktop displays.
+        # Auto-fit window size to the real layout:
+        # On macOS, use responsive geometry suitable for 13" laptops (1440x900, 1280x800).
+        # On Windows, measure exact req_h to auto-fit all items without clipping or scrollbars.
         self.root.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        win_w = max(740, min(800, screen_w - 40))
-        if screen_h <= 900:
-            win_h = max(560, min(680, screen_h - 120))
+        if sys.platform == "darwin":
+            win_w = max(740, min(800, screen_w - 40))
+            if screen_h <= 900:
+                win_h = max(560, min(680, screen_h - 120))
+            else:
+                win_h = max(640, min(840, screen_h - 160))
+            self.root.geometry(f"{win_w}x{win_h}")
+            self.root.minsize(700, 420)
         else:
-            win_h = max(640, min(840, screen_h - 160))
-        self.root.geometry(f"{win_w}x{win_h}")
-        self.root.minsize(700, 420)
+            req_w = int(self.root.winfo_reqwidth())
+            req_h = int(self.root.winfo_reqheight())
+            win_w = max(720, req_w + 24)
+            target_h = max(960, req_h + 50)
+            win_h = min(target_h, screen_h - 80) if screen_h > 800 else target_h
+            self.root.geometry(f"{win_w}x{win_h}")
+            self.root.minsize(win_w, min(800, win_h))
 
         # Center window after layout is constructed
         self.center_window()
@@ -388,10 +398,10 @@ class GBFAcceleratorGUI:
         # Window events
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.root.bind("<Map>", self._on_window_map)
-        self.root.bind("<MouseWheel>", self._on_main_mousewheel, add="+")
-        self.root.bind("<Button-4>", self._on_main_mousewheel, add="+")
-        self.root.bind("<Button-5>", self._on_main_mousewheel, add="+")
         if sys.platform == "darwin":
+            self.root.bind("<MouseWheel>", self._on_main_mousewheel, add="+")
+            self.root.bind("<Button-4>", self._on_main_mousewheel, add="+")
+            self.root.bind("<Button-5>", self._on_main_mousewheel, add="+")
             try:
                 self.root.createcommand("::tk::mac::ReopenApplication", self.show_from_tray)
                 self.root.createcommand("::tk::mac::Quit", self.quit_app)
@@ -707,43 +717,46 @@ class GBFAcceleratorGUI:
         btn_tray = self._emoji_button(f_bottom, "⬇", tray_btn_text, self.hide_to_tray)
         btn_tray.pack(side="right")
 
-        # ---------------- 4. Scrollable Settings Card ----------------
-        # Wrap settings inside a Canvas with vertical Scrollbar so on smaller displays
-        # (e.g. 13" MacBook Air 1440x900 or 1280x800), the settings area scrolls smoothly
-        # and bottom action buttons are never pushed off or clipped.
-        scroll_card = ttk.Frame(main_container, style="Card.TFrame")
-        scroll_card.pack(fill="both", expand=True)
+        # ---------------- 4. Settings Card ----------------
+        if sys.platform == "darwin":
+            # Wrap settings inside a Canvas with vertical Scrollbar on macOS small displays (13" laptops)
+            scroll_card = ttk.Frame(main_container, style="Card.TFrame")
+            scroll_card.pack(fill="both", expand=True)
 
-        self.canvas_settings = tk.Canvas(
-            scroll_card,
-            bg="#ffffff",
-            borderwidth=0,
-            highlightthickness=0,
-            yscrollincrement=10,
-        )
-        self.sb_settings = ttk.Scrollbar(scroll_card, orient="vertical", command=self.canvas_settings.yview)
-        self.canvas_settings.configure(yscrollcommand=self.sb_settings.set)
+            self.canvas_settings = tk.Canvas(
+                scroll_card,
+                bg="#ffffff",
+                borderwidth=0,
+                highlightthickness=0,
+                yscrollincrement=10,
+            )
+            self.sb_settings = ttk.Scrollbar(scroll_card, orient="vertical", command=self.canvas_settings.yview)
+            self.canvas_settings.configure(yscrollcommand=self.sb_settings.set)
 
-        card_settings = ttk.Frame(self.canvas_settings, style="Card.TFrame", padding="14 10 14 10")
-        self.card_settings_frame = card_settings
-        self.canvas_settings_window = self.canvas_settings.create_window(
-            (0, 0), window=card_settings, anchor="nw"
-        )
+            card_settings = ttk.Frame(self.canvas_settings, style="Card.TFrame", padding="14 10 14 10")
+            self.card_settings_frame = card_settings
+            self.canvas_settings_window = self.canvas_settings.create_window(
+                (0, 0), window=card_settings, anchor="nw"
+            )
 
-        def _on_settings_frame_configure(event):
-            self.canvas_settings.configure(scrollregion=self.canvas_settings.bbox("all"))
+            def _on_settings_frame_configure(event):
+                self.canvas_settings.configure(scrollregion=self.canvas_settings.bbox("all"))
 
-        card_settings.bind("<Configure>", _on_settings_frame_configure)
+            card_settings.bind("<Configure>", _on_settings_frame_configure)
 
-        def _on_settings_canvas_configure(event):
-            self.canvas_settings.itemconfig(self.canvas_settings_window, width=event.width)
-            if hasattr(self, "lbl_shimakaze_hint"):
-                self.lbl_shimakaze_hint.configure(wraplength=max(480, event.width - 30))
+            def _on_settings_canvas_configure(event):
+                self.canvas_settings.itemconfig(self.canvas_settings_window, width=event.width)
+                if hasattr(self, "lbl_shimakaze_hint"):
+                    self.lbl_shimakaze_hint.configure(wraplength=max(480, event.width - 30))
 
-        self.canvas_settings.bind("<Configure>", _on_settings_canvas_configure)
+            self.canvas_settings.bind("<Configure>", _on_settings_canvas_configure)
 
-        self.canvas_settings.pack(side="left", fill="both", expand=True)
-        self.sb_settings.pack(side="right", fill="y")
+            self.canvas_settings.pack(side="left", fill="both", expand=True)
+            self.sb_settings.pack(side="right", fill="y")
+        else:
+            # On Windows, keep clean native card layout with no Canvas or Scrollbar (100% matches main)
+            card_settings = ttk.Frame(main_container, style="Card.TFrame", padding="14 10 14 10")
+            card_settings.pack(fill="both", expand=True)
 
         ttk.Label(card_settings, text="配置选项", style="Title.TLabel").pack(anchor="w", pady=(0, 6))
 
@@ -958,9 +971,11 @@ class GBFAcceleratorGUI:
         chk_warm.pack(anchor="w", pady=2)
 
     def _on_main_mousewheel(self, event):
-        """Smooth mousewheel and trackpad scrolling for settings canvas."""
+        """Smooth mousewheel and trackpad scrolling for settings canvas on macOS."""
+        if sys.platform != "darwin" or not hasattr(self, "canvas_settings"):
+            return
         try:
-            if not hasattr(self, "canvas_settings") or not hasattr(self, "card_settings_frame"):
+            if not hasattr(self, "card_settings_frame"):
                 return
             x, y = self.canvas_settings.winfo_pointerxy()
             w = self.canvas_settings.winfo_containing(x, y)

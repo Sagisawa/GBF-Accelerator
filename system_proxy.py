@@ -343,7 +343,7 @@ def check_proxy_conflict(port: Optional[int] = None) -> Optional[str]:
             pass
 
         if conflicts:
-            return "、".join(conflicts)
+            return " • ".join(conflicts)
     except Exception:
         pass
     return None
