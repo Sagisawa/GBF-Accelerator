@@ -135,15 +135,19 @@ pip install -r requirements.txt
 python gui_main.py
 ```
 
-### 打包为独立可执行文件
+### 打包为独立可执行文件 / 应用程序
 
-项目使用 PyInstaller 进行打包：
+- **Windows**（打包为单个独立可执行文件）：
+  ```bash
+  python build_exe.py
+  ```
+  打包完成后，可执行文件位于 `dist/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_vX.Y.Z_GUI.zip`。
 
-```bash
-python build_exe.py
-```
-
-打包完成后，可执行文件位于 `dist/GBF_Accelerator.exe`。
+- **macOS**（打包为 Universal 2 双架构 `.app` 应用程序）：
+  ```bash
+  python build_app.py
+  ```
+  打包完成后，应用程序位于 `dist/GBF_Accelerator.app`，发布包位于 `release/GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`，原生双兼容 Apple Silicon（M系列）与 Intel 芯片。
 
 ---
 

@@ -9,10 +9,29 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 
 def get_base_dir() -> Path:
-    """Return directory where executable or main script is located."""
+    """Return writable directory where configurations, certificates, and runtime cache live."""
     if getattr(sys, "frozen", False):
-        # Running as PyInstaller bundled executable
+        if sys.platform == "darwin":
+            # On macOS, if running inside a .app bundle (e.g. /Applications/GBF_Accelerator.app/Contents/MacOS/GBF_Accelerator),
+            # the app bundle is read-only and code-signed. Writable user data must live in ~/Library/Application Support/GBF-Accelerator.
+            exe_path = str(Path(sys.executable).resolve())
+            if ".app/Contents/MacOS" in exe_path:
+                app_support = Path.home() / "Library" / "Application Support" / "GBF-Accelerator"
+                app_support.mkdir(parents=True, exist_ok=True)
+                return app_support
         return Path(sys.executable).parent.resolve()
+    return Path(__file__).parent.resolve()
+
+def get_resource_dir() -> Path:
+    """Return read-only directory containing bundled static resources (PAC, templates, etc.)."""
+    if getattr(sys, "frozen", False):
+        if hasattr(sys, "_MEIPASS"):
+            return Path(sys._MEIPASS)
+        exe_path = Path(sys.executable).resolve()
+        res = exe_path.parent.parent / "Resources"
+        if res.is_dir():
+            return res
+        return exe_path.parent
     return Path(__file__).parent.resolve()
 
 CONFIG_FILE = get_base_dir() / "config.json"

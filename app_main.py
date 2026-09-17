@@ -14,6 +14,7 @@ if sys.platform == "win32":
 
 from config_manager import (
     get_base_dir,
+    get_resource_dir,
     config_manager,
     is_ca_installed,
     install_ca_certificate,
@@ -134,16 +135,26 @@ def ensure_bundled_files():
     # 2. 使用说明.txt
     readme_file = base_dir / "使用说明.txt"
     if not readme_file.is_file():
-        try:
-            with open(readme_file, "w", encoding="utf-8") as f:
-                f.write(USAGE_TEXT.format(pac_path=str(pac_file).replace("\\", "/")))
-        except Exception:
-            pass
+        source_readme = get_resource_dir() / "使用说明.txt"
+        if source_readme.is_file():
+            try:
+                import shutil
+                shutil.copy2(source_readme, readme_file)
+            except Exception:
+                pass
+        else:
+            try:
+                with open(readme_file, "w", encoding="utf-8") as f:
+                    f.write(USAGE_TEXT.format(pac_path=str(pac_file).replace("\\", "/")))
+            except Exception:
+                pass
 
     # 3. SwitchyOmega_GBF.bak (if source exists in source tree or bundled)
     bak_dest = base_dir / "SwitchyOmega_GBF.bak"
     if not bak_dest.is_file():
-        source_bak = Path(__file__).parent / "SwitchyOmega_GBF.bak"
+        source_bak = get_resource_dir() / "SwitchyOmega_GBF.bak"
+        if not source_bak.is_file():
+            source_bak = Path(__file__).parent / "SwitchyOmega_GBF.bak"
         if source_bak.is_file():
             try:
                 import shutil
