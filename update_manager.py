@@ -112,13 +112,26 @@ def check_for_updates(
     # Find portable GUI zip or exe asset download URL
     download_url = None
     assets = data.get("assets", [])
+    is_mac = sys.platform == "darwin"
     for asset in assets:
         name = asset.get("name", "")
-        if name.endswith(".zip") and "GUI" in name:
-            download_url = asset.get("browser_download_url")
-            break
-        elif name.endswith(".zip"):
-            download_url = asset.get("browser_download_url")
+        if not name.endswith(".zip"):
+            continue
+        lower_name = name.lower()
+        if is_mac:
+            # macOS: 优先匹配带 mac/darwin/osx 的 zip
+            if any(k in lower_name for k in ("mac", "darwin", "osx")):
+                download_url = asset.get("browser_download_url")
+                break
+        else:
+            # Windows: 避开 mac/linux，优先匹配 GUI.zip
+            if any(k in lower_name for k in ("mac", "darwin", "osx", "linux")):
+                continue
+            if "gui" in lower_name:
+                download_url = asset.get("browser_download_url")
+                break
+            elif not download_url:
+                download_url = asset.get("browser_download_url")
 
     has_update = is_newer_version(latest_ver, current_ver)
 

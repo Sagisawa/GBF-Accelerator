@@ -211,7 +211,7 @@ class CacheManager:
             return None
 
     def _apply_browser_cache_headers(self, headers: Dict[str, str], url_path: str = ""):
-        """Inject or omit immutable cache headers according to user config.
+        r"""Inject or omit immutable cache headers according to user config.
         Crucial safety rule: ONLY inject immutable if the URL is confirmed to be versioned
         (e.g. contains numeric timestamp/hash like /assets/1772717316/ or /\d{8,}/).
         Never inject immutable into unversioned assets to prevent serving stale assets after updates.
@@ -1088,6 +1088,14 @@ class CacheManager:
             self.store_ram_cache(url_path, headers, data)
             with self._missing_lock:
                 self._known_missing.pop(clean_key, None)
+            m_ver = re.match(r"^(assets(?:_(?:en|jp))?)/(\d+)/", clean_key)
+            if m_ver:
+                prefix, ver = m_ver.group(1), m_ver.group(2)
+                with self._version_dirs_lock:
+                    cached = self._cached_version_dirs.get(prefix)
+                    if cached is not None and ver not in cached:
+                        cached.append(ver)
+                        cached.sort(key=int, reverse=True)
             return True
         except Exception:
             return False

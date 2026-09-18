@@ -176,6 +176,11 @@ def ensure_server_cert():
                 except Exception:
                     need_generate = True
 
+                try:
+                    srv_cert.extensions.get_extension_for_oid(x509.ExtensionOID.AUTHORITY_KEY_IDENTIFIER)
+                except Exception:
+                    need_generate = True
+
                 if hasattr(srv_cert, "not_valid_before_utc"):
                     not_before = srv_cert.not_valid_before_utc
                     not_after = srv_cert.not_valid_after_utc
@@ -211,6 +216,14 @@ def ensure_server_cert():
         .add_extension(x509.SubjectAlternativeName(sans), critical=False)
         .add_extension(
             x509.ExtendedKeyUsage([x509.ExtendedKeyUsageOID.SERVER_AUTH]),
+            critical=False,
+        )
+        .add_extension(
+            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+            critical=False,
+        )
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(server_key.public_key()),
             critical=False,
         )
         .sign(ca_key, hashes.SHA256())
