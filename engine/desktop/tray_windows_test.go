@@ -19,8 +19,9 @@ func (m *mockController) StopProxy()                   { m.running = false }
 func (m *mockController) GetListenPort() int           { return 8124 }
 func (m *mockController) GetControlPort() int          { return 8125 }
 func (m *mockController) GetCacheDir() string          { return "C:\\cache" }
-func (m *mockController) OpenBrowser(url string) error { return nil }
-func (m *mockController) OpenFolder(path string) error { return nil }
+func (m *mockController) OpenBrowser(url string) error   { return nil }
+func (m *mockController) OpenAppWindow(url string) error { return nil }
+func (m *mockController) OpenFolder(path string) error   { return nil }
 func (m *mockController) Quit()                        {}
 
 func TestAppIconBytes(t *testing.T) {

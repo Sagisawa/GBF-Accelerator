@@ -494,8 +494,14 @@ export const App: React.FC = () => {
   const ramUsageMb = Math.round(cacheStats?.ram_mb ?? (status?.cache?.ram_mb ?? 0))
   const ramMaxMb = config.ram_cache_max_mb ?? 256
 
+  const isStandalone = typeof window !== 'undefined' && (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.location.search.includes('standalone') ||
+    Boolean((window.navigator as any).standalone)
+  )
+
   return (
-    <div className="min-h-screen bg-[#f1f5f9] flex flex-col items-center justify-start py-6 px-3 sm:px-6 font-sans antialiased text-slate-800 selection:bg-blue-200">
+    <div className={`min-h-screen ${isStandalone ? 'bg-white py-0 px-0' : 'bg-[#f1f5f9] py-6 px-3 sm:px-6'} flex flex-col items-center justify-start font-sans antialiased text-slate-800 selection:bg-blue-200`}>
       {/* Toast Notification */}
       {toast && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-3 duration-200">
@@ -509,43 +515,45 @@ export const App: React.FC = () => {
       )}
 
       {/* Main Desktop Window Frame */}
-      <div className="w-full max-w-[800px] bg-white rounded-lg shadow-xl border border-slate-300 overflow-hidden flex flex-col">
+      <div className={`w-full ${isStandalone ? 'max-w-none rounded-none shadow-none border-0' : 'max-w-[800px] rounded-lg shadow-xl border border-slate-300'} bg-white overflow-hidden flex flex-col`}>
         {/* Windows Simulated Title Bar */}
-        <div className="bg-white border-b border-slate-200 h-8 pl-3 pr-0 flex items-center justify-between select-none">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
-              <Zap className="w-2.5 h-2.5 fill-current" />
+        {!isStandalone && (
+          <div className="bg-white border-b border-slate-200 h-8 pl-3 pr-0 flex items-center justify-between select-none">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <Zap className="w-2.5 h-2.5 fill-current" />
+              </div>
+              <span className="text-xs font-normal text-slate-700">GBF 加速器</span>
             </div>
-            <span className="text-xs font-normal text-slate-700">GBF 加速器</span>
-          </div>
 
-          <div className="flex items-center h-full">
-            <button
-              type="button"
-              onClick={() => showToast('GBF 加速代理正在后台运行', 'info')}
-              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
-              title="最小化"
-            >
-              —
-            </button>
-            <button
-              type="button"
-              onClick={() => showToast('窗口已处于最大适配尺寸', 'info')}
-              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
-              title="最大化"
-            >
-              □
-            </button>
-            <button
-              type="button"
-              onClick={() => showToast('如需退出请关闭浏览器标签或使用托盘菜单', 'info')}
-              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-[#e81123] hover:text-white text-xs transition-colors"
-              title="关闭"
-            >
-              ✕
-            </button>
+            <div className="flex items-center h-full">
+              <button
+                type="button"
+                onClick={() => showToast('GBF 加速代理正在后台运行', 'info')}
+                className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
+                title="最小化"
+              >
+                —
+              </button>
+              <button
+                type="button"
+                onClick={() => showToast('窗口已处于最大适配尺寸', 'info')}
+                className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
+                title="最大化"
+              >
+                □
+              </button>
+              <button
+                type="button"
+                onClick={() => showToast('如需退出请关闭浏览器标签或使用托盘菜单', 'info')}
+                className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-[#e81123] hover:text-white text-xs transition-colors"
+                title="关闭"
+              >
+                ✕
+              </button>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Window Client Area */}
         <div className="p-4 sm:p-5 flex flex-col space-y-3 bg-white">

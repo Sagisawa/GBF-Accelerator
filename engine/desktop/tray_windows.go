@@ -372,7 +372,7 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			lastClickMu.Unlock()
 
 			consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", t.ctrl.GetControlPort())
-			_ = t.ctrl.OpenBrowser(consoleURL)
+			_ = t.ctrl.OpenAppWindow(consoleURL)
 			return 0
 
 		case wmRButtonUp:
@@ -385,7 +385,7 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		switch cmdID {
 		case cmdOpenConsole:
 			consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", t.ctrl.GetControlPort())
-			_ = t.ctrl.OpenBrowser(consoleURL)
+			_ = t.ctrl.OpenAppWindow(consoleURL)
 		case cmdToggleProxy:
 			if t.ctrl.IsRunning() {
 				t.ctrl.StopProxy()

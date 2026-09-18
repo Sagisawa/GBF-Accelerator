@@ -54,6 +54,10 @@ func (a *appController) OpenBrowser(url string) error {
 	return desktop.OpenBrowser(url)
 }
 
+func (a *appController) OpenAppWindow(url string) error {
+	return desktop.OpenAppWindow(url)
+}
+
 func (a *appController) OpenFolder(path string) error {
 	return desktop.OpenFolder(path)
 }
@@ -80,6 +84,7 @@ func main() {
 	noGUI := flag.Bool("nogui", false, "Run in headless CLI mode without system tray")
 	headless := flag.Bool("headless", false, "Alias for -nogui")
 	openBrowser := flag.Bool("open-browser", false, "Automatically open Web console in browser on startup")
+	minimized := flag.Bool("minimized", false, "Start minimized in system tray without opening window")
 
 	flag.Parse()
 
@@ -177,8 +182,12 @@ func main() {
 		}
 	}
 
-	if *openBrowser {
-		consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", curCfg.ControlPort)
+	consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", curCfg.ControlPort)
+	if !*noGUI && !*headless && !*minimized {
+		if err := desktop.OpenAppWindow(consoleURL); err != nil {
+			fmt.Printf("[*] Failed to open app window: %v\n", err)
+		}
+	} else if *openBrowser {
 		_ = desktop.OpenBrowser(consoleURL)
 	}
 

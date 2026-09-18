@@ -18,6 +18,7 @@ type Controller interface {
 	GetControlPort() int
 	GetCacheDir() string
 	OpenBrowser(url string) error
+	OpenAppWindow(url string) error
 	OpenFolder(path string) error
 	Quit()
 }
@@ -27,6 +28,13 @@ type Tray interface {
 	Start() error
 	Update()
 	Stop()
+}
+
+// OpenAppWindow opens the specified URL in a dedicated standalone application window without browser chrome.
+// On Windows/macOS, it attempts to launch Edge/Chrome in --app mode or platform webview.
+// If standalone app mode is unavailable, it gracefully falls back to OpenBrowser.
+func OpenAppWindow(url string) error {
+	return openAppWindow(url)
 }
 
 // OpenBrowser opens the specified URL in the system default web browser.
