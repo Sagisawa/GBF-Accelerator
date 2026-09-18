@@ -32,7 +32,7 @@ def _startup_args_mac() -> List[str]:
             exe_str = str(Path(exe_str).resolve())
         executable = PurePosixPath(exe_str)
         for p in [executable] + list(executable.parents):
-            if p.suffix == ".app":
+            if p.suffix.lower() == ".app":
                 return ["/usr/bin/open", "-a", p.as_posix(), "--args", "--minimized"]
         return [executable.as_posix(), "--minimized"]
 

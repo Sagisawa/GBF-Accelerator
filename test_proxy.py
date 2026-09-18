@@ -2381,9 +2381,16 @@ async def run_test():
                     ok, err = startup_manager.set_startup_enabled(True)
                     assert ok is True, f"Failed to enable startup: {err}"
                     assert fake_plist.is_file(), "LaunchAgent plist must be written"
+                    assert startup_manager.is_startup_enabled() is True, "is_startup_enabled must return True when plist exists"
                     # CRITICAL: launchctl load must NEVER be called while enabling to prevent duplicate instance kill
                     for cmd in launched_cmds:
                         assert "load" not in cmd, f"launchctl load was invoked while enabling startup: {cmd}"
+
+                    # 1a-2. Startup Manager Contract: set_startup_enabled(False) MUST unload and unlink plist
+                    ok_dis, err_dis = startup_manager.set_startup_enabled(False)
+                    assert ok_dis is True, f"Failed to disable startup: {err_dis}"
+                    assert not fake_plist.exists(), "LaunchAgent plist must be removed"
+                    assert startup_manager.is_startup_enabled() is False, "is_startup_enabled must return False when plist removed"
 
                 # 1b. Startup args inside .app bundle must route via /usr/bin/open -a
                 with mock.patch.object(startup_manager.sys, "platform", "darwin"), \
@@ -2394,8 +2401,10 @@ async def run_test():
 
             # 2. Process Matching Contract: kill_process_on_port must not kill unrelated scripts in parent dir
             with mock.patch.object(config_manager.sys, "platform", "darwin"):
-                # 2a. Safe port whitelist protection (including 6152 Surge)
+                # 2a. Safe port whitelist protection (including 6152 Surge, 7891 Mihomo, 8099 ShimakazeGo)
                 assert config_manager.kill_process_on_port(6152) is False
+                assert config_manager.kill_process_on_port(7891) is False
+                assert config_manager.kill_process_on_port(8099) is False
 
                 # 2b. Parent dir named GBF_Accelerator running other_app.py -> must NOT kill
                 mock_lsof = mock.Mock(returncode=0, stdout="9999\n")

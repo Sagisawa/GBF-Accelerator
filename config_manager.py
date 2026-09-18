@@ -15,7 +15,7 @@ def get_base_dir() -> Path:
             # On macOS, if running inside a .app bundle (e.g. /Applications/GBF_Accelerator.app/Contents/MacOS/GBF_Accelerator),
             # the app bundle is read-only and code-signed. Writable user data must live in ~/Library/Application Support/GBF-Accelerator.
             exe_path = str(Path(sys.executable).resolve())
-            if ".app/Contents/MacOS" in exe_path:
+            if ".app/contents/macos" in exe_path.lower():
                 app_support = Path.home() / "Library" / "Application Support" / "GBF-Accelerator"
                 app_support.mkdir(parents=True, exist_ok=True)
                 return app_support
@@ -291,7 +291,7 @@ def _get_running_acgpower_path() -> Optional[Path]:
                             exe = Path(cand_exe_str)
                             if exe.exists():
                                 exe_str = str(exe)
-                                if ".app/Contents/MacOS" in exe_str:
+                                if ".app/contents/macos" in exe_str.lower():
                                     app_bundle = exe.parent.parent.parent
                                     if (app_bundle / "cache").is_dir():
                                         return app_bundle.resolve()
@@ -820,7 +820,7 @@ def kill_process_on_port(port: int) -> bool:
     """Safely terminate previous GBF_Accelerator instances listening on port.
     Guarantees exact port boundary matching and strictly inspects process identity.
     """
-    if port in (7890, 7897, 10808, 10809, 6152, 80, 443):
+    if port in (7890, 7891, 7897, 8099, 10808, 10809, 6152, 80, 443):
         return False
 
     if sys.platform == "win32":

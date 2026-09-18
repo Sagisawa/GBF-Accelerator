@@ -84,7 +84,7 @@ def get_app_version() -> str:
         from update_manager import APP_VERSION
         return APP_VERSION
     except Exception:
-        return "1.7.2"
+        return "1.8.0"
 
 def build(target_arch: str = "universal2") -> bool:
     if sys.platform != "darwin":
