@@ -45,6 +45,9 @@ GBF Accelerator 各版本的更新记录与 Release 说明。
 - **跨平台资源过滤**：客户端检查更新时自动感知当前操作系统，Windows 客户端自动过滤 macOS 安装包，macOS 客户端自动过滤 Windows 安装包。
 - **Universal 2 优先策略**：macOS 客户端匹配新版本资源时，优先匹配 `universal2` 双架构通用安装包；若不存在则平滑回退至常规 macOS 安装包。
 
+### ❤️ 特别致谢
+- 感谢 [@toooonyy](https://github.com/toooonyy) 在 [#5](https://github.com/Sagisawa/GBF-Accelerator/issues/5) 中提出的跨平台构想，并在 [#6](https://github.com/Sagisawa/GBF-Accelerator/pull/6) 中为 macOS / Linux (nogui) 模式与证书配置指南搭建的基础，启发并促成了本次 v1.8.0 跨平台版本的落地！
+
 ## [v1.7.2] - 2026-09-16
 
 ### 前台素材优先调度与 QoS 避让
