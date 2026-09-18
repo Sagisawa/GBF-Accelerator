@@ -306,6 +306,9 @@ class ControlHttpHandler:
                     gbf_proxy.DIRECT_MODE = bool(new_cfg["direct_mode"])
                 if "upstream_proxy" in new_cfg:
                     gbf_proxy.UPSTREAM_PROXY = config_manager.get_effective_upstream_proxy()
+                if "cache_dir" in new_cfg:
+                    from pathlib import Path
+                    cache_manager.set_cache_base(Path(config_manager.get_effective_cache_dir()).resolve())
                 await self.send_json(200, {"ok": True, "message": "Configuration updated", "config": config_manager.config})
             except Exception as e:
                 await self.send_json(400, {"error": f"Failed to apply config: {e}"})
@@ -346,6 +349,40 @@ class ControlHttpHandler:
                 "disk_files_deleted": disk_deleted,
                 "disk_bytes_freed": disk_freed,
             })
+            return
+
+        # 7b. /api/cache/open-folder
+        if path == "/api/cache/open-folder" and method == "POST":
+            from pathlib import Path
+            folder = Path(cache_manager.cache_base).resolve()
+            folder.mkdir(parents=True, exist_ok=True)
+            if sys.platform == "win32":
+                os.startfile(str(folder))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+            await self.send_json(200, {"ok": True, "path": str(folder)})
+            return
+
+        # 7c. /api/utils/browse-dir
+        if path == "/api/utils/browse-dir" and method == "POST":
+            chosen = ""
+            if sys.platform == "win32":
+                ps_cmd = (
+                    "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
+                    "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                    "$f.Description = '选择 GBF 本地静态缓存保存目录'; "
+                    "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }"
+                )
+                res = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True,
+                    text=True,
+                    creationflags=0x08000000 if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+                )
+                chosen = res.stdout.strip()
+            await self.send_json(200, {"ok": True, "path": chosen})
             return
 
         # 8. /api/cache/audit

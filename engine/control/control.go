@@ -8,15 +8,19 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"gbf-proxy/cache"
 	"gbf-proxy/config"
+	"gbf-proxy/desktop"
 	"gbf-proxy/proxy"
 	"gbf-proxy/telemetry"
 	"gbf-proxy/ui"
@@ -151,6 +155,16 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	case "/api/cache/clear":
 		if req.Method == http.MethodPost {
 			c.handleCacheClear(w, req)
+			return
+		}
+	case "/api/cache/open-folder":
+		if req.Method == http.MethodPost {
+			c.handleOpenCacheFolder(w, req)
+			return
+		}
+	case "/api/utils/browse-dir":
+		if req.Method == http.MethodPost {
+			c.handleBrowseDir(w, req)
 			return
 		}
 	case "/api/cache/audit":
@@ -365,6 +379,27 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 		"disk_files_deleted": diskDeleted,
 		"disk_bytes_freed":   diskFreed,
 	})
+}
+
+func (c *ControlServer) handleOpenCacheFolder(w http.ResponseWriter, req *http.Request) {
+	base := c.cacheMgr.GetCacheBase()
+	_ = os.MkdirAll(base, 0755)
+	_ = desktop.OpenFolder(base)
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": base})
+}
+
+func (c *ControlServer) handleBrowseDir(w http.ResponseWriter, req *http.Request) {
+	var chosen string
+	if runtime.GOOS == "windows" {
+		psCmd := "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = '选择 GBF 本地静态缓存保存目录'; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }"
+		cmd := exec.Command("powershell", "-NoProfile", "-Command", psCmd)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		out, err := cmd.Output()
+		if err == nil {
+			chosen = strings.TrimSpace(string(out))
+		}
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": chosen})
 }
 
 func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Request) {

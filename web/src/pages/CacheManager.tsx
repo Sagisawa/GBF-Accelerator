@@ -1,7 +1,7 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { CacheStats } from '../types'
-import { clearCache, auditCache, slimCache } from '../api'
-import { Database, HardDrive, Trash2, Wrench, RefreshCw, CheckCircle2, ShieldAlert } from 'lucide-react'
+import { clearCache, auditCache, slimCache, applyConfig, openCacheFolder, browseDirectory } from '../api'
+import { Database, HardDrive, Trash2, Wrench, RefreshCw, CheckCircle2, ShieldAlert, FolderOpen, Edit2, Save, X } from 'lucide-react'
 
 interface CacheManagerProps {
   stats: CacheStats | null
@@ -67,6 +67,50 @@ export const CacheManager: React.FC<CacheManagerProps> = ({ stats, onRefresh }) 
     }
   }
 
+  const [isEditingDir, setIsEditingDir] = useState(false)
+  const [dirInput, setDirInput] = useState(stats?.cache_base || '')
+
+  useEffect(() => {
+    if (stats?.cache_base && !isEditingDir) {
+      setDirInput(stats.cache_base)
+    }
+  }, [stats?.cache_base, isEditingDir])
+
+  const handleSaveDir = async () => {
+    if (!dirInput.trim()) return
+    setBusy(true)
+    try {
+      await applyConfig({ cache_dir: dirInput.trim() })
+      setMsg({ text: `缓存目录已成功更改为: ${dirInput.trim()}`, type: 'success' })
+      setIsEditingDir(false)
+      onRefresh()
+    } catch (e: any) {
+      setMsg({ text: `保存缓存目录失败: ${e.message}`, type: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleBrowseDir = async () => {
+    try {
+      const chosen = await browseDirectory()
+      if (chosen && chosen.trim()) {
+        setDirInput(chosen.trim())
+      }
+    } catch (e: any) {
+      setMsg({ text: `调起目录选择窗口失败: ${e.message}`, type: 'error' })
+    }
+  }
+
+  const handleOpenFolder = async () => {
+    try {
+      await openCacheFolder()
+      setMsg({ text: '已在系统文件资源管理器中打开缓存目录', type: 'info' })
+    } catch (e: any) {
+      setMsg({ text: `打开目录失败: ${e.message}`, type: 'error' })
+    }
+  }
+
   if (!stats) {
     return <div className="text-slate-400 p-8 text-center">正在读取缓存统计...</div>
   }
@@ -109,15 +153,105 @@ export const CacheManager: React.FC<CacheManagerProps> = ({ stats, onRefresh }) 
         </div>
 
         {/* Disk Base Directory */}
-        <div className="bg-[#131c2e] border border-slate-800 rounded-2xl p-6 md:col-span-2">
-          <div className="flex items-center justify-between text-slate-400 mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">本地磁盘缓存基准目录</span>
-            <HardDrive className="w-5 h-5 text-sky-400" />
+        <div className="bg-[#131c2e] border border-slate-800 rounded-2xl p-6 md:col-span-2 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between text-slate-400 mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wider">本地磁盘缓存基准目录</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleOpenFolder}
+                  type="button"
+                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition border border-slate-700/60"
+                  title="在系统文件资源管理器中打开此文件夹"
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
+                  <span>打开文件夹</span>
+                </button>
+                {!isEditingDir && (
+                  <button
+                    onClick={() => setIsEditingDir(true)}
+                    type="button"
+                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-sky-950/60 hover:bg-sky-900/80 text-sky-300 hover:text-sky-200 rounded-lg transition border border-sky-800/60"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                    <span>更换目录</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {!isEditingDir ? (
+              <div className="text-sm font-mono text-slate-200 bg-slate-900/80 p-3 rounded-lg border border-slate-800 truncate select-all">
+                {stats.cache_base || '未设置'}
+              </div>
+            ) : (
+              <div className="space-y-2 bg-slate-900/90 p-3 rounded-xl border border-sky-800/80">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={dirInput}
+                    onChange={(e) => setDirInput(e.target.value)}
+                    placeholder="输入或选择本地缓存目录路径，例如: D:\acgpower\cache\gbf\https"
+                    className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                  />
+                  <button
+                    onClick={handleBrowseDir}
+                    type="button"
+                    className="flex items-center gap-1 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition shrink-0"
+                    title="调出系统文件选择窗口"
+                  >
+                    <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
+                    <span>浏览...</span>
+                  </button>
+                  <button
+                    onClick={handleSaveDir}
+                    disabled={busy}
+                    type="button"
+                    className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium transition shrink-0"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>保存</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsEditingDir(false)
+                      setDirInput(stats.cache_base || '')
+                    }}
+                    type="button"
+                    className="flex items-center px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white rounded-lg text-xs transition shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400 pt-1">
+                  <span className="text-slate-500">常用预设:</span>
+                  <button
+                    type="button"
+                    onClick={() => setDirInput('auto')}
+                    className="px-2 py-0.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded hover:text-white transition"
+                  >
+                    自动探测 (auto)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDirInput('D:\\acgpower\\cache\\gbf\\https')}
+                    className="px-2 py-0.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded hover:text-white transition font-mono"
+                  >
+                    D:\acgpower...
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDirInput('C:\\acgpower\\cache\\gbf\\https')}
+                    className="px-2 py-0.5 bg-slate-800/80 hover:bg-slate-700 text-slate-300 rounded hover:text-white transition font-mono"
+                  >
+                    C:\acgpower...
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
-          <div className="text-sm font-mono text-slate-200 bg-slate-900/80 p-3 rounded-lg border border-slate-800 truncate">
-            {stats.cache_base || '未设置'}
-          </div>
-          <div className="flex items-center justify-between text-xs text-slate-400 mt-3">
+
+          <div className="flex items-center justify-between text-xs text-slate-400 mt-3 pt-2 border-t border-slate-800/60">
             <span>总计命中: <strong className="text-emerald-400 font-mono">{stats.hits_total}</strong> 次</span>
             <span>命中率: <strong className="text-sky-400 font-mono">{stats.hit_ratio_percent}%</strong></span>
             <span>未命中: <strong className="text-slate-400 font-mono">{stats.misses}</strong> 次</span>

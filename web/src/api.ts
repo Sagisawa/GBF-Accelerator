@@ -75,3 +75,16 @@ export async function fetchLogs(): Promise<LogItem[]> {
   const data = await res.json()
   return data.logs || []
 }
+
+export async function openCacheFolder(): Promise<void> {
+  const res = await fetch(`${BASE}/api/cache/open-folder`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+}
+
+export async function browseDirectory(): Promise<string> {
+  const res = await fetch(`${BASE}/api/utils/browse-dir`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return data.path || ''
+}
+

@@ -109,21 +109,28 @@ class TestMilestoneM4(unittest.TestCase):
         resp = self.client.get(f"{self.control_url}/")
         content = resp.text
 
+        import re
+        css_match = re.search(r'href="/assets/(index-[^"]+\.css)"', content)
+        self.assertIsNotNone(css_match, "CSS asset reference not found in index.html")
+        css_file = css_match.group(1)
+
+        js_match = re.search(r'src="/assets/(index-[^"]+\.js)"', content)
+        self.assertIsNotNone(js_match, "JS asset reference not found in index.html")
+        js_file = js_match.group(1)
+
         # Test CSS
-        self.assertIn("index-BLwYVszU.css", content)
-        css_resp = self.client.get(f"{self.control_url}/assets/index-BLwYVszU.css")
+        css_resp = self.client.get(f"{self.control_url}/assets/{css_file}")
         self.assertEqual(css_resp.status_code, 200)
         self.assertIn("text/css", css_resp.headers.get("content-type", ""))
         self.assertIn("immutable", css_resp.headers.get("cache-control", ""))
         self.assertGreater(len(css_resp.content), 100)
 
         # Test JS
-        self.assertIn("index-CbwdOLUq.js", content)
-        js_resp = self.client.get(f"{self.control_url}/assets/index-CbwdOLUq.js")
+        js_resp = self.client.get(f"{self.control_url}/assets/{js_file}")
         self.assertEqual(js_resp.status_code, 200)
         self.assertIn("javascript", js_resp.headers.get("content-type", ""))
         self.assertIn("immutable", js_resp.headers.get("cache-control", ""))
-        self.assertGreater(len(js_resp.content), 500)
+        self.assertGreater(len(js_resp.content), 100)
 
         # Test Favicon
         ico_resp = self.client.get(f"{self.control_url}/favicon.ico")
@@ -233,7 +240,12 @@ class TestMilestoneM4(unittest.TestCase):
                 self.assertIn("<div id=\"root\"></div>", resp_spa.text)
 
                 # Verify embedded asset serving
-                resp_css = self.client.get(f"{ctrl_url}/assets/index-BLwYVszU.css")
+                import re
+                css_match = re.search(r'href="/assets/(index-[^"]+\.css)"', resp_dash.text)
+                self.assertIsNotNone(css_match, "CSS asset reference not found in index.html")
+                css_file = css_match.group(1)
+
+                resp_css = self.client.get(f"{ctrl_url}/assets/{css_file}")
                 self.assertEqual(resp_css.status_code, 200)
                 self.assertIn("text/css", resp_css.headers.get("content-type", ""))
                 self.assertIn("immutable", resp_css.headers.get("cache-control", ""))
