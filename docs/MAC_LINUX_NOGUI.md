@@ -93,22 +93,28 @@ http://127.0.0.1:8124
 
 ### 4.2 信任根证书
 
-根证书由程序生成于 `certs/ca.crt`。**macOS / Linux 不自动写入系统证书库**，你需要按下列任一方式手动信任一次：
+根证书由程序生成于 `certs/ca.crt`。**在 nogui 命令行模式下，程序不会自动写入系统证书库**，你需要按下列方式手动信任一次（macOS 用户推荐直接执行项目根目录下的 `./install_ca.sh` 一键自动导入并信任）：
 
 #### macOS
 
-**系统级（影响所有浏览器，需要 sudo，会要求输入密码）：**
+**方式一（推荐，一键脚本）：**
 
 ```bash
-sudo security add-trusted-cert -d -r trustRoot \
-    -k /Library/Keychains/System.keychain ./certs/ca.crt
+./install_ca.sh
 ```
 
-**仅当前用户（Safari / Chrome，不需要 sudo）：**
+**方式二（手动命令，仅当前用户 Safari / Chrome，不需要 sudo）：**
 
 ```bash
 security add-trusted-cert -r trustRoot \
     -k ~/Library/Keychains/login.keychain-db ./certs/ca.crt
+```
+
+**方式三（手动系统级，影响所有浏览器，需要 sudo，会要求输入密码）：**
+
+```bash
+sudo security add-trusted-cert -d -r trustRoot \
+    -k /Library/Keychains/System.keychain ./certs/ca.crt
 ```
 
 > Firefox 使用独立证书库。若要让 Firefox 也信任，需要在 Firefox 设置 → 隐私与安全 → 证书 → 查看证书 → 证书颁发机构 → 导入 `certs/ca.crt`，并勾选「信任由此证书颁发机构标识的网站」。

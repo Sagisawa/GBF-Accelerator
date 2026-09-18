@@ -61,5 +61,55 @@ class TestUpdateManager(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("为空", msg)
 
+    def test_platform_aware_asset_filtering(self):
+        mock_release = {
+            "tag_name": "v1.8.0",
+            "name": "v1.8.0 - Release",
+            "body": "notes",
+            "html_url": "https://github.com/Sagisawa/GBF-Accelerator/releases/tag/v1.8.0",
+            "published_at": "2026-09-18T00:00:00Z",
+            "assets": [
+                {
+                    "name": "GBF_Accelerator_v1.8.0_mac_GUI.zip",
+                    "browser_download_url": "https://example.com/GBF_Accelerator_v1.8.0_mac_GUI.zip",
+                },
+                {
+                    "name": "GBF_Accelerator_v1.8.0_GUI.zip",
+                    "browser_download_url": "https://example.com/GBF_Accelerator_v1.8.0_GUI.zip",
+                },
+            ],
+        }
+        with patch("httpx.Client") as mock_client:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = mock_release
+            mock_client.return_value.__enter__.return_value.get.return_value = mock_resp
+
+            # Case 1: macOS platform matches macOS-labeled package
+            with patch("sys.platform", "darwin"):
+                info_mac = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertTrue(info_mac.has_update)
+                self.assertEqual(info_mac.download_url, "https://example.com/GBF_Accelerator_v1.8.0_mac_GUI.zip")
+
+            # Case 2: Windows platform matches Windows-labeled package and excludes macOS package
+            with patch("sys.platform", "win32"):
+                info_win = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertTrue(info_win.has_update)
+                self.assertEqual(info_win.download_url, "https://example.com/GBF_Accelerator_v1.8.0_GUI.zip")
+
+            # Case 3: On Windows with only macOS package available -> download_url is None
+            mock_release_mac_only = dict(mock_release, assets=[mock_release["assets"][0]])
+            mock_resp.json.return_value = mock_release_mac_only
+            with patch("sys.platform", "win32"):
+                info_win_none = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertIsNone(info_win_none.download_url)
+
+            # Case 4: On macOS with only Windows package available -> download_url is None
+            mock_release_win_only = dict(mock_release, assets=[mock_release["assets"][1]])
+            mock_resp.json.return_value = mock_release_win_only
+            with patch("sys.platform", "darwin"):
+                info_mac_none = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertIsNone(info_mac_none.download_url)
+
 if __name__ == "__main__":
     unittest.main()
