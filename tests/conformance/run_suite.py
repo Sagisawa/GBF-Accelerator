@@ -89,21 +89,74 @@ async def run_suite_async():
         except Exception:
             pass
 
+    actual_engine = args.engine
     try:
         # 2. Ensure proxy and control server are running
         proxy_listening = is_port_listening(args.proxy_port)
         control_listening = is_port_listening(args.control_port)
 
         if not (proxy_listening and control_listening):
-            print(f"[*] Starting {args.engine} proxy engine on ports {args.proxy_port}/{args.control_port}...")
-            cmd = [
-                sys.executable,
-                "-m",
-                "tests.conformance.python_engine",
-                "--proxy-port", str(args.proxy_port),
-                "--control-port", str(args.control_port),
-                "--upstream-proxy", f"http://127.0.0.1:{mock_port}",
-            ]
+            if args.engine == "go":
+                exe_name = "gbf_proxy.exe" if sys.platform == "win32" else "gbf_proxy"
+                go_candidates = [
+                    Path(_repo_root) / "bin" / exe_name,
+                    Path(_repo_root) / exe_name,
+                    Path(_repo_root) / "engine" / exe_name,
+                ]
+                go_bin = next((c for c in go_candidates if c.is_file() and os.access(c, os.X_OK)), None)
+                if not go_bin:
+                    sys.stderr.write(
+                        f"[-] Go engine requested (--engine go), but Go binary not found in bin/ or engine/.\n"
+                        f"    Please compile the Go core first or use '--engine python'.\n"
+                    )
+                    return 1
+                cmd = [
+                    str(go_bin),
+                    "--proxy-port", str(args.proxy_port),
+                    "--control-port", str(args.control_port),
+                    "--upstream-proxy", f"http://127.0.0.1:{mock_port}",
+                ]
+                actual_engine = "go"
+            elif args.engine == "auto":
+                exe_name = "gbf_proxy.exe" if sys.platform == "win32" else "gbf_proxy"
+                go_candidates = [
+                    Path(_repo_root) / "bin" / exe_name,
+                    Path(_repo_root) / exe_name,
+                    Path(_repo_root) / "engine" / exe_name,
+                ]
+                go_bin = next((c for c in go_candidates if c.is_file() and os.access(c, os.X_OK)), None)
+                if go_bin:
+                    print(f"[*] Auto-detected Go engine binary: {go_bin}")
+                    cmd = [
+                        str(go_bin),
+                        "--proxy-port", str(args.proxy_port),
+                        "--control-port", str(args.control_port),
+                        "--upstream-proxy", f"http://127.0.0.1:{mock_port}",
+                    ]
+                    actual_engine = "go"
+                else:
+                    print("[*] No Go engine binary found, auto-defaulting to Python proxy engine.")
+                    cmd = [
+                        sys.executable,
+                        "-m",
+                        "tests.conformance.python_engine",
+                        "--proxy-port", str(args.proxy_port),
+                        "--control-port", str(args.control_port),
+                        "--upstream-proxy", f"http://127.0.0.1:{mock_port}",
+                    ]
+                    actual_engine = "python"
+            else:
+                cmd = [
+                    sys.executable,
+                    "-m",
+                    "tests.conformance.python_engine",
+                    "--proxy-port", str(args.proxy_port),
+                    "--control-port", str(args.control_port),
+                    "--upstream-proxy", f"http://127.0.0.1:{mock_port}",
+                ]
+                actual_engine = "python"
+
+            print(f"[*] Starting {actual_engine.upper()} proxy engine on ports {args.proxy_port}/{args.control_port}...")
             proxy_proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -126,6 +179,17 @@ async def run_suite_async():
             print(f"[*] Attaching to already-running proxy on ports {args.proxy_port}/{args.control_port}")
             # Configure running proxy to route through mock upstream
             async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{args.control_port}", timeout=3.0) as cfg_client:
+                r_status = await cfg_client.get("/api/status")
+                if r_status.status_code == 200:
+                    detected_engine = r_status.json().get("engine", "python")
+                    if args.engine == "auto":
+                        actual_engine = detected_engine
+                    elif args.engine != detected_engine:
+                        print(f"[!] Warning: requested engine is '{args.engine}', but running proxy is '{detected_engine}'")
+                        actual_engine = detected_engine
+                    else:
+                        actual_engine = args.engine
+
                 r_cfg = await cfg_client.get("/api/config")
                 if r_cfg.status_code == 200 and r_cfg.json().get("ok"):
                     old_cfg = r_cfg.json()["config"]
@@ -161,12 +225,16 @@ async def run_suite_async():
         ) as proxy_client, httpx.AsyncClient(
             base_url=f"http://127.0.0.1:{args.control_port}",
             timeout=6.0,
-        ) as ctrl_client:
+        ) as ctrl_client, httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{args.proxy_port}",
+            timeout=6.0,
+        ) as direct_client:
             ctx = ConformanceContext(
                 proxy_port=args.proxy_port,
                 control_port=args.control_port,
                 client=proxy_client,
                 control_client=ctrl_client,
+                direct_client=direct_client,
                 mock_upstream=mock_upstream,
                 ca_ssl_context=ca_ssl_ctx,
             )
@@ -215,9 +283,9 @@ async def run_suite_async():
 
             # 7. Record Baseline if requested
             if args.record_baseline:
-                baseline_path = Path(_repo_root) / "tests" / "conformance" / f"golden_baseline_{args.engine}.json"
+                baseline_path = Path(_repo_root) / "tests" / "conformance" / f"golden_baseline_{actual_engine}.json"
                 baseline_data = {
-                    "engine": args.engine,
+                    "engine": actual_engine,
                     "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     "total_cases": len(selected_cases),
                     "passed_cases": passed_count,

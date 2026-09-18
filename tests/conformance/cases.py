@@ -6,6 +6,7 @@ DO NOT import internal proxy modules (gbf_proxy, cache_manager, etc.) here.
 
 import asyncio
 import dataclasses
+import socket
 import ssl
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -14,12 +15,23 @@ import httpx
 from tests.conformance.mock_upstream import MockUpstreamServer
 
 
+def _get_local_lan_ip() -> Optional[str]:
+    """Retrieve host LAN IPv4 address without importing proxy internals."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return None
+
+
 @dataclasses.dataclass
 class ConformanceContext:
     proxy_port: int
     control_port: int
     client: httpx.AsyncClient
     control_client: httpx.AsyncClient
+    direct_client: httpx.AsyncClient
     mock_upstream: MockUpstreamServer
     ca_ssl_context: ssl.SSLContext
 
@@ -38,18 +50,20 @@ class TestCase:
 
 async def case_01_cache_hit_zero_headers(ctx: ConformanceContext):
     """Static asset cache hit must have zero X-Proxy-* and X-Cache-* headers on the wire."""
-    path = "/assets/test/conformance_asset_01.css"
-    ctx.mock_upstream.set_scenario(path, "ok", content=b"/* asset 01 */\n.btn { display: none; }", content_type="text/css")
+    path = f"/assets/test/conformance_asset_01_{time.time_ns()}.css"
+    content = b"/* asset 01 */\n.btn { display: none; }"
+    ctx.mock_upstream.set_scenario(path, "ok", content=content, content_type="text/css")
     url = f"https://prd-game-a-granbluefantasy.akamaized.net{path}"
 
     # Prime cache (miss -> fetch from mock upstream)
     r1 = await ctx.client.get(url)
     assert r1.status_code == 200, f"Expected 200 on cache prime, got {r1.status_code}"
+    assert r1.content == content, "Prime cache content mismatch"
 
     # Second fetch: cache hit
     r2 = await ctx.client.get(url)
     assert r2.status_code == 200, f"Expected 200 on cache hit, got {r2.status_code}"
-    assert len(r2.content) > 0, "Asset content must be non-empty"
+    assert r2.content == content, "Cache hit content mismatch"
 
     for header in r2.headers:
         h_lower = header.lower()
@@ -59,18 +73,34 @@ async def case_01_cache_hit_zero_headers(ctx: ConformanceContext):
 
 async def case_02_dynamic_api_passthrough(ctx: ConformanceContext):
     """Dynamic API requests pass through upstream with zero local mocks and clean headers."""
-    url = "https://game.granbluefantasy.jp/rest/error/js"
+    path = "/rest/error/js"
+    url = f"https://game.granbluefantasy.jp{path}"
+    ctx.mock_upstream.reset_counts()
+
     resp = await ctx.client.get(url)
-    assert resp.status_code in (200, 400, 404, 405), f"Unexpected status: {resp.status_code}"
+    assert resp.status_code == 200, f"Dynamic API relay failed: {resp.status_code}"
+    assert resp.json() == {"result": "ok"}
+    assert ctx.mock_upstream.get_request_count("GET", path) >= 1, "Dynamic API did not reach upstream"
+
     for header in resp.headers:
         assert not header.lower().startswith("x-proxy-"), f"Disallowed proxy header leak: {header}"
+        assert not header.lower().startswith("x-cache-"), f"Disallowed cache header leak: {header}"
 
 
 async def case_03_heartbeat_passthrough(ctx: ConformanceContext):
     """Anti-cheat & heartbeat endpoint /ob/r must penetrate upstream without local interference."""
-    url = "https://game.granbluefantasy.jp/ob/r"
+    path = "/ob/r"
+    url = f"https://game.granbluefantasy.jp{path}"
+    ctx.mock_upstream.reset_counts()
+
     resp = await ctx.client.post(url, content=b'{"hb": 1}')
-    assert resp.status_code in (200, 400, 404, 405), f"Heartbeat did not pass through: {resp.status_code}"
+    assert resp.status_code == 200, f"Heartbeat did not pass through: {resp.status_code}"
+    assert resp.json().get("ob") is True, f"Heartbeat response mismatch: {resp.text}"
+    assert ctx.mock_upstream.get_request_count("POST", path) >= 1, "Heartbeat was intercepted locally"
+
+    for header in resp.headers:
+        assert not header.lower().startswith("x-proxy-"), f"Disallowed proxy header leak: {header}"
+        assert not header.lower().startswith("x-cache-"), f"Disallowed cache header leak: {header}"
 
 
 async def case_04_options_preflight(ctx: ConformanceContext):
@@ -84,36 +114,56 @@ async def case_04_options_preflight(ctx: ConformanceContext):
 
 
 async def case_05_upstream_relay_query(ctx: ConformanceContext):
-    """GBF official portal must be relayed to upstream returning 200, 301, or 302."""
+    """GBF official portal must be relayed to upstream returning 200 OK with upstream content."""
     url = "https://granbluefantasy.jp/"
+    ctx.mock_upstream.reset_counts()
+
     resp = await ctx.client.get(url)
-    assert resp.status_code in (200, 301, 302), f"Relay failed: {resp.status_code}"
+    assert resp.status_code == 200, f"Relay failed: {resp.status_code}"
+    assert "GBF Mock" in resp.text or "グランブルーファンタジー" in resp.text
+    assert ctx.mock_upstream.get_request_count("GET", "/") >= 1, "Portal request was not relayed upstream"
+
+    for header in resp.headers:
+        assert not header.lower().startswith("x-proxy-"), f"Disallowed proxy header leak: {header}"
+        assert not header.lower().startswith("x-cache-"), f"Disallowed cache header leak: {header}"
 
 
 async def case_06_chunked_post(ctx: ConformanceContext):
     """Chunked Transfer-Encoding POST must be forwarded upstream intact."""
-    url = "https://game.granbluefantasy.jp/rest/error/js"
+    path = "/rest/error/js"
+    url = f"https://game.granbluefantasy.jp{path}"
+    ctx.mock_upstream.reset_counts()
+
     async def chunk_gen():
         yield b"chunk_one_"
         yield b"chunk_two"
+
     resp = await ctx.client.post(
         url,
         content=chunk_gen(),
         headers={"transfer-encoding": "chunked"}
     )
-    assert resp.status_code in (200, 400, 404, 405), f"Chunked post failed: {resp.status_code}"
+    assert resp.status_code == 200, f"Chunked post failed: {resp.status_code}"
+    assert resp.json() == {"result": "ok"}
+
+    last_req = ctx.mock_upstream.get_last_request(path)
+    assert last_req is not None, "Upstream did not record the chunked POST request"
+    assert last_req.get("body") == b"chunk_one_chunk_two", (
+        f"Chunked payload corruption: expected b'chunk_one_chunk_two', got {last_req.get('body')!r}"
+    )
 
 
 async def case_07_cors_preservation(ctx: ConformanceContext):
     """Dynamic API responses must strictly preserve original upstream CORS without injecting '*'."""
     url = "https://game.granbluefantasy.jp/rest/error/js"
     resp = await ctx.client.get(url)
+    assert resp.status_code == 200, f"Dynamic API failed: {resp.status_code}"
     assert resp.headers.get("access-control-allow-origin") != "*", "Proxy must not inject wildcard CORS into dynamic responses"
 
 
 async def case_08_cache_query_normalization(ctx: ConformanceContext):
     """Cache lookup strips query parameters, hitting cached asset under cache-busting queries."""
-    path = "/assets/test/conformance_asset_08.css"
+    path = f"/assets/test/conformance_asset_08_{time.time_ns()}.css"
     ctx.mock_upstream.set_scenario(path, "ok", content=b"/* 08 */\nbody { color: blue; }", content_type="text/css")
     url_base = f"https://prd-game-a-granbluefantasy.akamaized.net{path}"
 
@@ -147,7 +197,7 @@ async def case_09_path_traversal_rejection(ctx: ConformanceContext):
 
 async def case_10_head_request_zero_body(ctx: ConformanceContext):
     """HEAD requests to static assets return 200 with zero content length body and preserved Content-Length header."""
-    path = "/assets/test/conformance_asset_10.css"
+    path = f"/assets/test/conformance_asset_10_{time.time_ns()}.css"
     ctx.mock_upstream.set_scenario(path, "ok", content=b"/* 10 */\n.box { margin: 10px; }", content_type="text/css")
     url = f"https://prd-game-a-granbluefantasy.akamaized.net{path}"
 
@@ -214,49 +264,68 @@ async def case_13_singleflight_failure_recovery(ctx: ConformanceContext):
 
 async def case_14_root_ca_endpoint(ctx: ConformanceContext):
     """GET /ca.crt serves valid Root CA certificate PEM for client setup."""
-    async with httpx.AsyncClient() as direct_client:
-        resp = await direct_client.get(f"http://127.0.0.1:{ctx.proxy_port}/ca.crt")
-        assert resp.status_code == 200
-        assert resp.headers.get("content-type") == "application/x-x509-ca-cert"
-        assert b"BEGIN CERTIFICATE" in resp.content
+    resp = await ctx.direct_client.get("/ca.crt")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type") == "application/x-x509-ca-cert"
+    assert b"BEGIN CERTIFICATE" in resp.content
 
 
 async def case_15_dynamic_pac_endpoint(ctx: ConformanceContext):
     """GET /proxy.pac serves valid PAC script referencing the proxy port."""
-    async with httpx.AsyncClient() as direct_client:
-        resp = await direct_client.get(f"http://127.0.0.1:{ctx.proxy_port}/proxy.pac")
-        assert resp.status_code == 200
-        assert resp.headers.get("content-type") == "application/x-ns-proxy-autoconfig"
-        assert "FindProxyForURL" in resp.text
-        assert str(ctx.proxy_port) in resp.text
+    resp = await ctx.direct_client.get("/proxy.pac")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type") == "application/x-ns-proxy-autoconfig"
+    assert "FindProxyForURL" in resp.text
+    assert str(ctx.proxy_port) in resp.text
 
 
 async def case_16_mobile_landing_endpoint(ctx: ConformanceContext):
     """GET / on proxy port serves mobile guide HTML landing page."""
-    async with httpx.AsyncClient() as direct_client:
-        resp = await direct_client.get(f"http://127.0.0.1:{ctx.proxy_port}/")
-        assert resp.status_code == 200
-        assert "text/html" in resp.headers.get("content-type", "")
-        assert "GBF" in resp.text
+    resp = await ctx.direct_client.get("/")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+    assert "GBF" in resp.text
 
 
 async def case_17_skyleap_mobage_upstream(ctx: ConformanceContext):
     """SkyLeap Mobage portal request is proxied through without error."""
+    ctx.mock_upstream.reset_counts()
     resp = await ctx.client.get("http://gbf.game.mbga.jp/")
-    assert resp.status_code in (200, 301, 302, 403, 404)
+    assert resp.status_code == 200, f"Mobage upstream relay failed: {resp.status_code}"
+    assert "GBF Mock" in resp.text or "グランブルーファンタジー" in resp.text
+    assert ctx.mock_upstream.get_request_count("GET", "/") >= 1
 
 
 async def case_18_lan_acl_rejection(ctx: ConformanceContext):
-    """LAN ACL permits loopback client connections and maintains allow_lan=False default."""
-    async with httpx.AsyncClient() as direct_client:
-        r_local = await direct_client.get(f"http://127.0.0.1:{ctx.proxy_port}/ca.crt")
-        assert r_local.status_code == 200
+    """LAN ACL permits loopback client connections and rejects non-loopback connections when allow_lan=False."""
+    # 1. Loopback client must be permitted
+    r_local = await ctx.direct_client.get("/ca.crt")
+    assert r_local.status_code == 200
+    assert b"BEGIN CERTIFICATE" in r_local.content
 
+    # 2. Control plane reports default allow_lan=False
     r_cfg = await ctx.control_client.get("/api/config")
     assert r_cfg.status_code == 200
     cfg_data = r_cfg.json()
     assert cfg_data.get("ok") is True
     assert cfg_data.get("config", {}).get("allow_lan") is False
+
+    r_status = await ctx.control_client.get("/api/status")
+    assert r_status.status_code == 200
+    status_data = r_status.json()
+    assert status_data.get("allow_lan") is False
+    assert status_data.get("lan_ip") is None
+
+    # 3. Connection to non-loopback LAN IP must fail when allow_lan is False
+    lan_ip = _get_local_lan_ip()
+    if lan_ip and lan_ip != "127.0.0.1":
+        conn_rejected = False
+        try:
+            async with httpx.AsyncClient(timeout=0.3) as lan_client:
+                await lan_client.get(f"http://{lan_ip}:{ctx.proxy_port}/ca.crt")
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            conn_rejected = True
+        assert conn_rejected, f"LAN ACL violation: non-loopback connection to {lan_ip}:{ctx.proxy_port} was not rejected"
 
 
 async def case_19_offline_cache_fallback(ctx: ConformanceContext):
@@ -314,10 +383,20 @@ async def case_22_connection_reuse_keepalive(ctx: ConformanceContext):
     """Client reuse of persistent HTTP keep-alive connection across multiple requests."""
     url1 = "https://game.granbluefantasy.jp/rest/mock/req1"
     url2 = "https://game.granbluefantasy.jp/rest/mock/req2"
+    ctx.mock_upstream.reset_counts()
     r1 = await ctx.client.get(url1)
     assert r1.status_code == 200
     r2 = await ctx.client.get(url2)
     assert r2.status_code == 200
+
+    req1 = ctx.mock_upstream.get_last_request("/rest/mock/req1")
+    req2 = ctx.mock_upstream.get_last_request("/rest/mock/req2")
+    assert req1 is not None, "Missing req1 in mock upstream history"
+    assert req2 is not None, "Missing req2 in mock upstream history"
+    assert req1.get("conn_id") == req2.get("conn_id"), (
+        f"Expected persistent HTTP keep-alive connection reuse, got different upstream connections: "
+        f"{req1.get('conn_id')} != {req2.get('conn_id')}"
+    )
 
 
 async def case_23_asset_byte_fidelity(ctx: ConformanceContext):
@@ -327,9 +406,15 @@ async def case_23_asset_byte_fidelity(ctx: ConformanceContext):
     expected_bytes = b"var conformance = { version: '2.0.0', intact: true };\n"
     ctx.mock_upstream.set_scenario(path, "ok", content=expected_bytes, content_type="application/javascript")
 
-    resp = await ctx.client.get(url)
-    assert resp.status_code == 200
-    assert resp.content == expected_bytes, "Byte fidelity violation: served bytes differed from upstream"
+    # 1. First fetch: streamed through proxy from upstream
+    resp1 = await ctx.client.get(url)
+    assert resp1.status_code == 200
+    assert resp1.content == expected_bytes, "Byte fidelity violation on stream: served bytes differed from upstream"
+
+    # 2. Second fetch: served from local cache
+    resp2 = await ctx.client.get(url)
+    assert resp2.status_code == 200
+    assert resp2.content == expected_bytes, "Byte fidelity violation on cache hit: cached bytes differed from upstream"
 
 
 async def case_24_offline_cache_independence(ctx: ConformanceContext):
@@ -625,7 +710,7 @@ ALL_CASES: List[TestCase] = [
     TestCase(
         name="case_18_lan_acl_rejection",
         category="CONTROL_PLANE_NETWORKING",
-        description="LAN ACL permits loopback client connections and maintains allow_lan=False default",
+        description="LAN ACL permits loopback client connections and rejects non-loopback connections when allow_lan=False",
         func=case_18_lan_acl_rejection,
     ),
     TestCase(

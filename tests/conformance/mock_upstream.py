@@ -119,6 +119,8 @@ class MockUpstreamServer:
         clean_path = path.split("?")[0].lower()
         if "://" in clean_path:
             clean_path = urllib.parse.urlsplit(clean_path).path.lower()
+        if not clean_path.startswith("/"):
+            clean_path = "/" + clean_path
         key = f"{method.upper()} {clean_path}"
         return self.request_counts.get(key, 0)
 
@@ -131,7 +133,24 @@ class MockUpstreamServer:
         clean_path = path.split("?")[0].lower()
         if "://" in clean_path:
             clean_path = urllib.parse.urlsplit(clean_path).path.lower()
+        if not clean_path.startswith("/"):
+            clean_path = "/" + clean_path
         self.scenarios[clean_path] = {"behavior": behavior, **kwargs}
+
+    def get_last_request(self, path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Retrieve the most recent request recorded, optionally filtered by path."""
+        clean_path = None
+        if path is not None:
+            clean_path = path.split("?")[0].lower()
+            if "://" in clean_path:
+                clean_path = urllib.parse.urlsplit(clean_path).path.lower()
+            if not clean_path.startswith("/"):
+                clean_path = "/" + clean_path
+
+        for req in reversed(self.request_history):
+            if clean_path is None or req["path"] == clean_path:
+                return req
+        return None
 
     async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
@@ -247,6 +266,8 @@ class MockUpstreamServer:
             norm_path = "/" + norm_path
 
         # Track request
+        peer = writer.get_extra_info("peername")
+        conn_id = id(writer)
         async with self._lock:
             key = f"{method} {norm_path}"
             self.request_counts[key] += 1
@@ -256,7 +277,10 @@ class MockUpstreamServer:
                 "path": norm_path,
                 "headers": headers,
                 "body_len": len(body),
+                "body": body,
                 "count": cur_count,
+                "conn_id": conn_id,
+                "peer": peer,
             })
 
         # Check for configured scenario

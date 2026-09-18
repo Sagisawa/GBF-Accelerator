@@ -96,6 +96,7 @@ def get_runtime_status() -> Dict[str, Any]:
 
     return {
         "version": APP_VERSION,
+        "engine": "python",
         "proxy_running": proxy_running,
         "listen_host": listen_host,
         "listen_port": listen_port,

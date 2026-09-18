@@ -1,6 +1,6 @@
 {
   "engine": "python",
-  "timestamp": "2026-09-18T14:03:58.589693+00:00",
+  "timestamp": "2026-09-18T14:13:03.323236+00:00",
   "total_cases": 35,
   "passed_cases": 35,
   "failed_cases": 0,
@@ -12,7 +12,7 @@
       "name": "case_01_cache_hit_zero_headers",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 16.33,
+      "duration_ms": 50.39,
       "description": "Static asset cache hit must have zero X-Proxy-* and X-Cache-* headers on wire",
       "error": null
     },
@@ -20,7 +20,7 @@
       "name": "case_02_dynamic_api_passthrough",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 40.68,
+      "duration_ms": 15.02,
       "description": "Dynamic API requests pass through upstream with zero local mocks and clean headers",
       "error": null
     },
@@ -28,7 +28,7 @@
       "name": "case_03_heartbeat_passthrough",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 6.27,
+      "duration_ms": 5.52,
       "description": "Anti-cheat & heartbeat endpoint /ob/r must penetrate upstream without local interference",
       "error": null
     },
@@ -36,7 +36,7 @@
       "name": "case_04_options_preflight",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 2.72,
+      "duration_ms": 3.33,
       "description": "OPTIONS preflight must return 200 with wildcard CORS headers and standard allowed methods",
       "error": null
     },
@@ -44,7 +44,7 @@
       "name": "case_05_upstream_relay_query",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 14.07,
+      "duration_ms": 13.86,
       "description": "GBF official portal must be relayed to upstream returning 200, 301, or 302",
       "error": null
     },
@@ -52,7 +52,7 @@
       "name": "case_06_chunked_post",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 6.76,
+      "duration_ms": 6.92,
       "description": "Chunked Transfer-Encoding POST must be forwarded upstream intact",
       "error": null
     },
@@ -60,7 +60,7 @@
       "name": "case_07_cors_preservation",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 6.09,
+      "duration_ms": 5.79,
       "description": "Dynamic API responses must strictly preserve original upstream CORS without injecting '*'",
       "error": null
     },
@@ -68,7 +68,7 @@
       "name": "case_08_cache_query_normalization",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 7.33,
+      "duration_ms": 10.1,
       "description": "Cache lookup strips query parameters, hitting cached asset under cache-busting queries",
       "error": null
     },
@@ -76,7 +76,7 @@
       "name": "case_09_path_traversal_rejection",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 25.01,
+      "duration_ms": 19.88,
       "description": "Path traversal sequences in asset URLs must be safely rejected and never leak local files",
       "error": null
     },
@@ -84,7 +84,7 @@
       "name": "case_10_head_request_zero_body",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 6.56,
+      "duration_ms": 11.19,
       "description": "HEAD requests to static assets return 200 with zero content length body and preserved Content-Length header",
       "error": null
     },
@@ -92,7 +92,7 @@
       "name": "case_11_multi_set_cookie_preservation",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 6.54,
+      "duration_ms": 5.91,
       "description": "Multiple Set-Cookie headers from upstream must be preserved as distinct headers without folding",
       "error": null
     },
@@ -100,7 +100,7 @@
       "name": "case_12_singleflight_coalescing",
       "category": "P1_SCHEDULING_RESOURCES",
       "status": "PASS",
-      "duration_ms": 214.15,
+      "duration_ms": 218.57,
       "description": "Concurrent requests for identical un-cached asset coalesce into 1 upstream fetch via SingleFlight",
       "error": null
     },
@@ -108,7 +108,7 @@
       "name": "case_13_singleflight_failure_recovery",
       "category": "P1_SCHEDULING_RESOURCES",
       "status": "PASS",
-      "duration_ms": 15.15,
+      "duration_ms": 16.58,
       "description": "When a SingleFlight fetch fails, in-flight state is cleared and subsequent requests re-fetch cleanly",
       "error": null
     },
@@ -116,7 +116,7 @@
       "name": "case_14_root_ca_endpoint",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 318.55,
+      "duration_ms": 27.61,
       "description": "GET /ca.crt serves valid Root CA certificate PEM for client setup",
       "error": null
     },
@@ -124,7 +124,7 @@
       "name": "case_15_dynamic_pac_endpoint",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 295.07,
+      "duration_ms": 4.71,
       "description": "GET /proxy.pac serves valid PAC script referencing the proxy port",
       "error": null
     },
@@ -132,7 +132,7 @@
       "name": "case_16_mobile_landing_endpoint",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 307.65,
+      "duration_ms": 4.39,
       "description": "GET / on proxy port serves mobile guide HTML landing page",
       "error": null
     },
@@ -140,7 +140,7 @@
       "name": "case_17_skyleap_mobage_upstream",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 16.56,
+      "duration_ms": 9.28,
       "description": "SkyLeap Mobage portal request is proxied through without error",
       "error": null
     },
@@ -148,15 +148,15 @@
       "name": "case_18_lan_acl_rejection",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 351.4,
-      "description": "LAN ACL permits loopback client connections and maintains allow_lan=False default",
+      "duration_ms": 643.26,
+      "description": "LAN ACL permits loopback client connections and rejects non-loopback connections when allow_lan=False",
       "error": null
     },
     {
       "name": "case_19_offline_cache_fallback",
       "category": "P1_SCHEDULING_RESOURCES",
       "status": "PASS",
-      "duration_ms": 12.22,
+      "duration_ms": 12.6,
       "description": "When upstream returns error, proxy serves cached asset copy as offline fallback",
       "error": null
     },
@@ -164,7 +164,7 @@
       "name": "case_20_post_zero_retry",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 11.68,
+      "duration_ms": 11.83,
       "description": "POST requests on upstream disconnect MUST NOT retry (strictly max_attempts=1)",
       "error": null
     },
@@ -172,7 +172,7 @@
       "name": "case_21_get_safe_retry_whitelist",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 30.11,
+      "duration_ms": 27.52,
       "description": "Non-whitelisted GET drops without retry; whitelisted GET allows 1 silent fast retry",
       "error": null
     },
@@ -180,7 +180,7 @@
       "name": "case_22_connection_reuse_keepalive",
       "category": "P1_SCHEDULING_RESOURCES",
       "status": "PASS",
-      "duration_ms": 12.71,
+      "duration_ms": 13.04,
       "description": "Client reuse of persistent HTTP keep-alive connection across multiple requests",
       "error": null
     },
@@ -188,7 +188,7 @@
       "name": "case_23_asset_byte_fidelity",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 8.1,
+      "duration_ms": 11.16,
       "description": "Static assets served from proxy must be 100% byte-for-byte identical to upstream bytes",
       "error": null
     },
@@ -196,7 +196,7 @@
       "name": "case_24_offline_cache_independence",
       "category": "P1_SCHEDULING_RESOURCES",
       "status": "PASS",
-      "duration_ms": 11.54,
+      "duration_ms": 10.79,
       "description": "Once cached, static assets can be retrieved offline when upstream is unreachable",
       "error": null
     },
@@ -204,7 +204,7 @@
       "name": "case_25_dynamic_api_isolation",
       "category": "P0_SECURITY_INTEGRITY",
       "status": "PASS",
-      "duration_ms": 18.09,
+      "duration_ms": 17.37,
       "description": "Dynamic game API requests are never persisted into static asset cache",
       "error": null
     },
@@ -212,7 +212,7 @@
       "name": "case_26_control_status",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 5.0,
+      "duration_ms": 5.39,
       "description": "GET /api/status returns valid system status JSON with required keys",
       "error": null
     },
@@ -220,7 +220,7 @@
       "name": "case_27_control_config_mutation",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 16.01,
+      "duration_ms": 14.57,
       "description": "GET /api/config and POST /api/config/apply mutate and restore configuration",
       "error": null
     },
@@ -228,7 +228,7 @@
       "name": "case_28_control_cache_stats_clear",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 8.92,
+      "duration_ms": 8.72,
       "description": "GET /api/cache/stats and POST /api/cache/clear operate cleanly",
       "error": null
     },
@@ -236,7 +236,7 @@
       "name": "case_29_control_cache_audit_slim",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 9.54,
+      "duration_ms": 9.69,
       "description": "POST /api/cache/audit and POST /api/cache/slim trigger background maintenance jobs",
       "error": null
     },
@@ -244,7 +244,7 @@
       "name": "case_30_control_prefetch_status",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 4.34,
+      "duration_ms": 4.74,
       "description": "GET /api/prefetch/status returns queue and yielding metrics",
       "error": null
     },
@@ -252,7 +252,7 @@
       "name": "case_31_control_telemetry_logs",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 9.13,
+      "duration_ms": 10.32,
       "description": "GET /api/telemetry and GET /api/logs return valid monitoring structures",
       "error": null
     },
@@ -260,7 +260,7 @@
       "name": "case_32_control_sse_events",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 392.54,
+      "duration_ms": 324.58,
       "description": "GET /api/events establishes SSE streaming connection and receives initial event",
       "error": null
     },
@@ -268,7 +268,7 @@
       "name": "case_33_control_dashboard_static",
       "category": "CONTROL_PLANE_NETWORKING",
       "status": "PASS",
-      "duration_ms": 10.84,
+      "duration_ms": 9.79,
       "description": "GET / serves dashboard HTML and OPTIONS /api/status returns 204 No Content CORS",
       "error": null
     },
@@ -276,7 +276,7 @@
       "name": "case_34_conditional_get_304",
       "category": "P1_SCHEDULING_RESOURCES",
       "status": "PASS",
-      "duration_ms": 14.69,
+      "duration_ms": 12.78,
       "description": "Conditional GET with matching If-None-Match returns 304 Not Modified with empty body",
       "error": null
     },
@@ -284,7 +284,7 @@
       "name": "case_35_anti_cache_error_pages",
       "category": "P1_SCHEDULING_RESOURCES",
       "status": "PASS",
-      "duration_ms": 23.05,
+      "duration_ms": 20.1,
       "description": "502/503 HTML error pages returned for static asset URLs are never cached",
       "error": null
     }
