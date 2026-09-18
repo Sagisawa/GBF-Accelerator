@@ -198,7 +198,7 @@ def _mac_get_current_pac_url() -> Optional[str]:
         u, en = _mac_get_autoproxy_info(svc)
         if en and u:
             return u
-    return url
+    return None
 
 
 def _mac_enable_pac_proxy(pac_url: str) -> bool:
@@ -294,8 +294,8 @@ def _mac_check_proxy_conflict(port: Optional[int] = None) -> Optional[str]:
     if pac_url and not is_our_pac:
         conflicts.append(f"外部 PAC 脚本 ({pac_url})")
     elif primary in _mac_original_settings:
-        orig_url, _ = _mac_original_settings[primary]
-        if orig_url and not (f":{port}/proxy.pac" in orig_url.lower() if port else "/proxy.pac" in orig_url.lower()):
+        orig_url, orig_en = _mac_original_settings[primary]
+        if orig_en and orig_url and not (f":{port}/proxy.pac" in orig_url.lower() if port else "/proxy.pac" in orig_url.lower()):
             conflicts.append(f"外部 PAC 脚本 ({orig_url})")
 
     # 2. Check manual Web Proxy (HTTP), Secure Web Proxy (HTTPS), and SOCKS Proxy
