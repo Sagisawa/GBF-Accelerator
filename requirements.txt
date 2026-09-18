@@ -4,3 +4,4 @@ h2>=4.1.0
 pillow>=10.0.0
 pystray>=0.19.5
 pyinstaller>=6.0.0
+pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'
