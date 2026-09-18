@@ -1495,6 +1495,9 @@ class GBFAcceleratorGUI:
             if cold_ms is None and not warm:
                 messagebox.showwarning("延迟测试失败", f"无法连通 {target}\n\n线路：{route_desc}\n错误：{err}")
                 return
+            if sys.platform == "darwin":
+                self.show_mac_latency_dialog(target, route_desc, cold_ms, warm)
+                return
             lines = [
                 f"目标：{target}",
                 f"线路：{route_desc}",
@@ -1511,6 +1514,95 @@ class GBFAcceleratorGUI:
             self.root.after(0, show)
         except Exception:
             pass
+
+    def show_mac_latency_dialog(self, target: str, route_desc: str, cold_ms: Optional[float], warm: list):
+        """Display clean, non-truncated latency results in a macOS-optimized modal dialog."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("上游延迟测试结果")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        content = ttk.Frame(dialog, padding="18 16 18 16")
+        content.pack(fill="both", expand=True)
+
+        w_mid = warm[len(warm) // 2] if warm else 999.0
+        header_color = "#28a745" if w_mid <= 200 else ("#007bff" if w_mid <= 350 else "#dc3545")
+        f_head = ttk.Frame(content)
+        f_head.pack(fill="x", pady=(0, 10))
+        ttk.Label(
+            f_head,
+            text="⚡ 上游网络延迟测试结果",
+            font=ui_font(11, "bold"),
+            foreground=header_color,
+        ).pack(anchor="w")
+
+        # Card container
+        card = ttk.Frame(content, relief="solid", borderwidth=1, padding="12 10 12 10")
+        card.pack(fill="x", pady=(0, 12))
+
+        # Target & Route rows
+        f_info = ttk.Frame(card)
+        f_info.pack(fill="x")
+        ttk.Label(f_info, text="测试目标：", font=ui_font(9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(f_info, text=target, font=mono_font(9)).grid(row=0, column=1, sticky="w")
+
+        ttk.Label(f_info, text="路由通道：", font=ui_font(9, "bold")).grid(row=1, column=0, sticky="w", pady=(3, 0))
+        ttk.Label(f_info, text=route_desc, font=ui_font(9)).grid(row=1, column=1, sticky="w", pady=(3, 0))
+
+        ttk.Separator(card, orient="horizontal").pack(fill="x", pady=8)
+
+        # Metrics rows
+        f_metrics = ttk.Frame(card)
+        f_metrics.pack(fill="x")
+
+        cold_text = f"{cold_ms:.0f} ms（含代理握手与 TLS 建链）" if cold_ms is not None else "测试失败"
+        ttk.Label(f_metrics, text="冷连接耗时：", font=ui_font(9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(f_metrics, text=cold_text, font=ui_font(9)).grid(row=0, column=1, sticky="w")
+
+        if warm:
+            warm.sort()
+            w_min, w_mid, w_max = warm[0], warm[len(warm) // 2], warm[-1]
+            warm_text = f"最快 {w_min:.0f} ms ｜ 中位 {w_mid:.0f} ms ｜ 最慢 {w_max:.0f} ms"
+            ttk.Label(f_metrics, text="热连接 RTT：", font=ui_font(9, "bold")).grid(row=1, column=0, sticky="w", pady=(3, 0))
+            ttk.Label(f_metrics, text=warm_text, font=ui_font(9, "bold"), foreground=header_color).grid(row=1, column=1, sticky="w", pady=(3, 0))
+
+            if w_mid <= 100:
+                eval_text = "● 延迟极佳（<100ms），游戏接口响应丝滑"
+                eval_fg = "#28a745"
+            elif w_mid <= 200:
+                eval_text = "● 延迟优良（100~200ms），满足多人战与战斗流畅需求"
+                eval_fg = "#28a745"
+            elif w_mid <= 350:
+                eval_text = "● 延迟尚可（200~350ms），可正常游玩"
+                eval_fg = "#e67e22"
+            else:
+                eval_text = "● 延迟较高（>350ms），建议检查代理节点或网络线路"
+                eval_fg = "#dc3545"
+
+            ttk.Label(card, text=eval_text, font=ui_font(9), foreground=eval_fg).pack(anchor="w", pady=(8, 0))
+
+        # OK button
+        btn_box = ttk.Frame(content)
+        btn_box.pack(fill="x")
+        btn_ok = ttk.Button(btn_box, text="确定", width=10, command=dialog.destroy)
+        btn_ok.pack(side="right")
+        btn_ok.focus_set()
+
+        dialog.bind("<Return>", lambda e: dialog.destroy())
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        # Center over main window
+        dialog.update_idletasks()
+        parent_x = self.root.winfo_rootx()
+        parent_y = self.root.winfo_rooty()
+        parent_w = self.root.winfo_width()
+        parent_h = self.root.winfo_height()
+        dlg_w = max(480, dialog.winfo_width())
+        dlg_h = dialog.winfo_height()
+        x = max(0, parent_x + (parent_w - dlg_w) // 2)
+        y = max(0, parent_y + (parent_h - dlg_h) // 2)
+        dialog.geometry(f"{dlg_w}x{dlg_h}+{x}+{y}")
 
     def install_ca(self):
         ensure_ca()
