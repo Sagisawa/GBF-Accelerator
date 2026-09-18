@@ -203,12 +203,14 @@ Windows     macOS
 - **Release 标题**：严格固定为 `vx.x.x - “主要功能/修复”` 中文格式：
   - 范例：`v1.7.2 - 前台素材优先调度、预加载解耦防卡顿与启动优化`
 - **Release 说明**：保存在 `docs/releases/vX.Y.Z.md`，使用规范客观的中文 Markdown。
-- **发布压缩包**：严格命名为 `GBF_Accelerator_vX.Y.Z_GUI.zip`。
+- **发布压缩包**：
+  - Windows 客户端：严格命名为 `GBF_Accelerator_vX.Y.Z_GUI.zip`；
+  - macOS 客户端：严格命名为 `GBF_Accelerator_vX.Y.Z_mac_GUI.zip`（包含 `mac`/`darwin`/`osx` 标识，以配合 `update_manager.py` 跨平台匹配与过滤逻辑）。
 
 ### 3. 版本发布检查清单 (Release Checklist)
 每次发布版本前，必须严格核对以下 5 项，严禁将 Release 标题混淆复制给 Commit：
 1. `update_manager.py` 中的 `APP_VERSION = "X.Y.Z"`；
-2. `build_exe.py` 中的 `zip_path` 指向 `GBF_Accelerator_vX.Y.Z_GUI.zip`；
+2. `build_exe.py` 中的 `zip_path` 指向 `GBF_Accelerator_vX.Y.Z_GUI.zip`（macOS 独立发布包命名为 `GBF_Accelerator_vX.Y.Z_mac_GUI.zip`）；
 3. `CHANGELOG.md` 与 `README.md` 包含对应版本的更新说明；
 4. **Git Commit 信息必须为纯英文**；
 5. **GitHub Release 标题必须为 `vX.Y.Z - 主要功能/修复`（中文）**。

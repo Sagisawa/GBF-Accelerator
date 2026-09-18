@@ -1,22 +1,26 @@
 # GBF Accelerator — macOS / Linux (nogui) 使用说明
 
-> 本文档面向在 **macOS 或 Linux** 桌面 / 服务器上以**命令行模式 (nogui)** 运行 GBF Accelerator 的用户。
-> Windows GUI 用户请参考随程序分发的《使用说明.txt》，本文不适用。
+> **macOS GUI 用户须知**：
+> macOS 已支持完整的原生图形界面版本（包含 Tkinter GUI 主界面、Menu Bar 顶部状态栏常驻菜单、一键 CA 根证书自动信任、`networksetup` 系统代理自动托管以及跨平台更新检查）。
+> macOS 用户推荐直接运行打包好的 `GBF_Accelerator.app`（或源码模式运行 `./start_proxy.sh` / `python3 gui_main.py`）。
+> **本文档仅面向**：在 **Linux** 系统，或在 **macOS** 上以纯**命令行模式 (nogui)** / 无头服务器方式运行 `python3 app_main.py` 的用户。
+> Windows GUI 用户请参考随程序分发的《使用说明.txt》。
 
 ---
 
-## 1. 与 Windows 版的差异
+## 1. 运行模式与平台能力对比
 
-| 项目 | Windows 版 | macOS / Linux (nogui) |
-|---|---|---|
-| 启动方式 | 双击 `GBF_Accelerator.exe`（含 GUI） | `python3 app_main.py`（纯命令行） |
-| 系统代理 | 自动写入注册表 + WinINet 通知 | **不自动写入**，需在浏览器手动设置 HTTP/HTTPS 代理 |
-| 根证书信任 | 自动调用 `certutil -addstore` | **不自动写入**，需在 macOS Keychain 或 Linux NSS / 系统证书库手动信任 |
-| 开机自启 | 写入 `HKCU\...\Run` | **不提供** |
-| 静态资源缓存 | ✓ | ✓ |
-| 动态 API 透明转发 | ✓ | ✓ |
-| 连接池 / 预加载调度 | ✓ | ✓ |
-| 更新检查 | GUI 托盘 | **不提供**（自动更新仅在 Windows GUI 路径内置） |
+| 项目 | Windows GUI 版 | macOS 原生 GUI 版 | nogui 命令行模式 (Linux / macOS 无头) |
+|---|---|---|---|
+| 启动方式 | 双击 `GBF_Accelerator.exe`（含 GUI） | 双击 `GBF_Accelerator.app` 或 `./start_proxy.sh` / `python3 gui_main.py` | `python3 app_main.py`（纯命令行） |
+| 系统代理 | 自动写入注册表 + WinINet 通知 | 自动调用 `networksetup` 配置系统代理与直连绕过列表 | **不自动写入**，需在浏览器手动设置 HTTP/HTTPS 代理 |
+| 根证书信任 | 自动调用 `certutil -addstore` | 自动调用 `security add-trusted-cert` 信任 Keychain 根证书 | **不自动写入**，需在系统或浏览器证书库手动信任 |
+| 开机自启 | 写入 `HKCU\...\Run` | 写入 LaunchAgents plist | **不提供** |
+| 托盘 / 状态栏 | Windows 任务栏通知区托盘图标 | macOS Menu Bar 顶部状态栏常驻图标（Cocoa / pystray） | **不提供** |
+| 静态资源缓存 | ✓ | ✓ | ✓ |
+| 动态 API 透明转发 | ✓ | ✓ | ✓ |
+| 连接池 / 预加载调度 | ✓ | ✓ | ✓ |
+| 更新检查 | GUI 自动检测更新 | GUI 自动检测更新（跨平台过滤） | **不提供** |
 
 **核心原则与 Windows 版一致**：本工具为网络层本地静态资源缓存与透明代理，不修改任何游戏内数据、协议包或战斗参数；游戏核心 API（抽卡、编队、结算、多人战等）原样转发至上游代理，保留 Cygames 原生响应头；本工具不对账号安全作任何保证，使用第三方网络工具存在违反游戏服务条款的可能，是否使用请自行评估，风险自负。
 
@@ -42,9 +46,9 @@ cd GBF-Accelerator
 python3 -m pip install -r requirements.txt
 ```
 
-> `requirements.txt` 已包含 mac/linux 全部所需依赖：
-> `cryptography`、`httpx[socks,http2]`、`h2`、`pillow`、`pystray`、`pyinstaller`。
-> 在 nogui 模式下 `pystray` / `pillow` / `pyinstaller` 不会被调用，但安装无害。
+> `requirements.txt` 已包含全平台所需依赖：
+> `cryptography`、`httpx[socks,http2]`、`h2`、`pillow`、`pystray`、`pyinstaller`，以及 macOS 专属的 `pyobjc-framework-Cocoa`。
+> 在 nogui 命令行模式下 `pystray` / `pillow` / `pyinstaller` / `pyobjc` 不会被调用，但安装无害。
 
 ### 3.2 首次启动
 
@@ -169,17 +173,18 @@ certutil -A -n GBF-Accelerator -t C,C \
 
 ---
 
-## 7. 不提供的功能（与 Windows GUI 版的差异）
+## 7. nogui 命令行模式不提供的功能（与 GUI 版的差异）
 
-- **图形化界面**：本项目 GUI 基于 Tkinter，仅 Windows 路径使用，mac/linux 不会加载。
-- **托盘图标与菜单**：仅 Windows。
-- **系统代理自动写入**：仅 Windows。
-- **根证书自动安装**：仅 Windows。
-- **开机自启**：仅 Windows（`HKCU\...\Run`）。
-- **PyInstaller 单文件可执行**：仅 Windows 出包，mac/linux 用户从源码启动。
-- **GUI 内嵌的更新检查**：仅 Windows。
+以下功能仅在图形界面版本（Windows GUI / macOS 原生 GUI）中内置，nogui 纯命令行模式下不提供：
 
-这些是有意为之的边界，不构成缺陷。如确实需要其中某项，请按对应平台惯例自行扩展。
+- **图形化操作界面**：nogui 模式仅在终端输出运行日志，不弹出 Tkinter 图形窗口。
+- **托盘 / 状态栏图标与菜单**：nogui 模式无任务栏托盘或 Menu Bar 状态栏常驻图标。
+- **系统代理自动接管**：nogui 模式不修改系统网络设置，需手动在浏览器中配置代理。
+- **根证书一键静默信任**：nogui 模式不自动写入系统钥匙串或证书库，需按 §4.2 手动信任。
+- **开机自启配置**：nogui 模式不写入自启项，如需后台常驻建议使用 `systemd` 或 `launchd` 服务。
+- **GUI 内嵌的更新提示**：nogui 模式不包含图形化更新弹窗。
+
+这些是有意为之的命令行轻量化边界，不构成缺陷。如需图形界面体验，推荐使用各平台对应的 GUI 版本。
 
 ---
 
