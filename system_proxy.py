@@ -198,7 +198,7 @@ def _mac_get_current_pac_url() -> Optional[str]:
         u, en = _mac_get_autoproxy_info(svc)
         if en and u:
             return u
-    return url
+    return None
 
 
 def _mac_enable_pac_proxy(pac_url: str) -> bool:
@@ -283,6 +283,59 @@ def _mac_disable_pac_proxy(force: bool = False) -> bool:
     return success_all
 
 
+def _mac_check_proxy_conflict(port: Optional[int] = None) -> Optional[str]:
+    """Detect if external PAC or manual HTTP/HTTPS/SOCKS proxy is configured on macOS."""
+    conflicts = []
+    primary = _mac_get_primary_service()
+
+    # 1. External PAC script conflict
+    pac_url = get_current_pac_url()
+    is_our_pac = is_pac_proxy_enabled(port)
+    if pac_url and not is_our_pac:
+        conflicts.append(f"外部 PAC 脚本 ({pac_url})")
+    elif primary in _mac_original_settings:
+        orig_url, orig_en = _mac_original_settings[primary]
+        if orig_en and orig_url and not (f":{port}/proxy.pac" in orig_url.lower() if port else "/proxy.pac" in orig_url.lower()):
+            conflicts.append(f"外部 PAC 脚本 ({orig_url})")
+
+    # 2. Check manual Web Proxy (HTTP), Secure Web Proxy (HTTPS), and SOCKS Proxy
+    def parse_networksetup_proxy(flag: str, label: str):
+        try:
+            res = subprocess.run(
+                ["networksetup", flag, primary],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+            if res.returncode == 0:
+                enabled = False
+                server = ""
+                proxy_port = ""
+                for line in res.stdout.splitlines():
+                    if line.startswith("Enabled:"):
+                        enabled = (line.split(":", 1)[1].strip().lower() == "yes")
+                    elif line.startswith("Server:"):
+                        server = line.split(":", 1)[1].strip()
+                    elif line.startswith("Port:"):
+                        proxy_port = line.split(":", 1)[1].strip()
+                if enabled and server:
+                    target = f"{server}:{proxy_port}" if proxy_port and proxy_port != "0" else server
+                    conflicts.append(f"手动 {label} ({target})")
+                elif enabled:
+                    conflicts.append(f"手动 {label}")
+        except Exception:
+            pass
+
+    parse_networksetup_proxy("-getwebproxy", "HTTP 代理")
+    parse_networksetup_proxy("-getsecurewebproxy", "HTTPS 代理")
+    parse_networksetup_proxy("-getsocksfirewallproxy", "SOCKS 代理")
+
+    if conflicts:
+        return " • ".join(conflicts)
+    return None
+
+
 # ================= Unified Public API =================
 
 def get_current_pac_url() -> Optional[str]:
@@ -306,9 +359,11 @@ def is_pac_proxy_enabled(port: Optional[int] = None) -> bool:
 
 
 def check_proxy_conflict(port: Optional[int] = None) -> Optional[str]:
-    """Check if an external system proxy or external PAC script is configured in Windows.
+    """Check if an external system proxy or external PAC script is configured in Windows or macOS.
     Returns a descriptive string of the conflict source if detected, or None if clear.
     """
+    if sys.platform == "darwin":
+        return _mac_check_proxy_conflict(port)
     if sys.platform != "win32":
         return None
     try:

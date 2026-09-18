@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/Sagisawa/GBF-Accelerator?color=blue&logo=github)](https://github.com/Sagisawa/GBF-Accelerator/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20(nogui)-informational.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-83%2F83%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-85%2F85%20Passed-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
@@ -364,7 +364,7 @@ python3 app_main.py
 ## 开发与构建
 
 ### 运行测试套件
-项目配备了严谨的回归测试套件，涵盖双通道隔离、SingleFlight 合并、只读失效重试、Magic Bytes 校验与跨平台更新逻辑：
+项目配备了严谨的回归测试套件（75 项核心代理测试与 10 项更新管理测试，共 85 项自动化测试），涵盖双通道隔离、SingleFlight 合并、只读失效重试、Magic Bytes 校验、进程单例防重与跨平台更新逻辑：
 ```powershell
 # Windows
 .\.venv\Scripts\python.exe test_proxy.py
@@ -375,15 +375,19 @@ python3 test_proxy.py
 python3 test_update_manager.py
 ```
 
-### 打包独立发布包
-项目基于 PyInstaller 进行自动化打包：
-```bash
-# Windows 打包 (输出位于 dist/ 及 release/)
-python build_exe.py
+### 打包为独立可执行文件 / 应用程序
 
-# macOS 打包
-pyinstaller GBF_Accelerator_mac.spec
-```
+- **Windows**（打包为单个独立可执行文件）：
+  ```bash
+  python build_exe.py
+  ```
+  打包完成后，可执行文件位于 `dist/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_vX.Y.Z_GUI.zip`。
+
+- **macOS**（打包为 Universal 2 双架构 `.app` 应用程序）：
+  ```bash
+  python build_app.py
+  ```
+  打包完成后，应用程序位于 `dist/GBF_Accelerator.app`，发布包位于 `release/GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`，原生双兼容 Apple Silicon（M系列）与 Intel 芯片。
 
 ---
 

@@ -4,7 +4,7 @@ import os
 import plistlib
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Tuple, List
 
 APP_NAME = "GBF_Accelerator"
@@ -27,12 +27,18 @@ def _startup_command_windows() -> str:
 def _startup_args_mac() -> List[str]:
     """Build argument list for LaunchAgent plist on macOS."""
     if getattr(sys, "frozen", False):
-        executable = Path(sys.executable).resolve()
-        return [str(executable), "--minimized"]
+        exe_str = str(sys.executable)
+        if os.name == "posix":
+            exe_str = str(Path(exe_str).resolve())
+        executable = PurePosixPath(exe_str)
+        for p in [executable] + list(executable.parents):
+            if p.suffix == ".app":
+                return ["/usr/bin/open", "-a", p.as_posix(), "--args", "--minimized"]
+        return [executable.as_posix(), "--minimized"]
 
     python_exe = Path(sys.executable).resolve()
     gui_script = (Path(__file__).resolve().parent / "gui_main.py").resolve()
-    return [str(python_exe), str(gui_script), "--minimized"]
+    return [python_exe.as_posix(), gui_script.as_posix(), "--minimized"]
 
 
 def is_supported() -> bool:
@@ -100,7 +106,6 @@ def set_startup_enabled(enabled: bool) -> Tuple[bool, str]:
                     subprocess.run(["launchctl", "unload", str(MAC_PLIST_PATH)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
-                subprocess.run(["launchctl", "load", str(MAC_PLIST_PATH)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 try:
                     subprocess.run(["launchctl", "unload", str(MAC_PLIST_PATH)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
