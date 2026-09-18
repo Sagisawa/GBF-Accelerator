@@ -46,7 +46,7 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
   const handleTogglePrefetch = async (checked: boolean) => {
     try {
       await applyConfig({ enable_prefetch: checked })
-      onToast(checked ? '场景素材智能预加载已开启' : '场景素材预加载已关闭', 'info')
+      onToast(checked ? '场景素材智能平滑预加载已开启' : '场景素材预加载已关闭', 'info')
       onConfigUpdated()
     } catch (e: any) {
       onToast(`设置预加载失败: ${e.message}`, 'error')
@@ -56,7 +56,7 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
   const handleToggleBrowserCache = async (checked: boolean) => {
     try {
       await applyConfig({ enable_browser_cache: checked })
-      onToast(checked ? '浏览器本地缓存协商已开启' : '浏览器协商已关闭', 'info')
+      onToast(checked ? '浏览器 304 协商缓存已开启' : '浏览器协商缓存已关闭', 'info')
       onConfigUpdated()
     } catch (e: any) {
       onToast(`设置浏览器缓存失败: ${e.message}`, 'error')
@@ -71,30 +71,30 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
   }
 
   return (
-    <section className="space-y-2 select-none">
+    <section id="advanced" className="space-y-2 select-none scroll-mt-24">
       <div className="flex items-center justify-between px-1">
-        <h3 className="text-[11px] font-semibold text-label-secondary uppercase tracking-wider">
+        <h3 className="text-xs font-semibold text-neutral-400 uppercase tracking-wider">
           进阶系统调优
         </h3>
       </div>
 
       {/* Apple Inset Grouped Container */}
-      <div className="bg-[#1c1c1e] border border-white/[0.08] rounded-2xl divide-y divide-white/[0.06] overflow-hidden transition-all duration-200">
+      <div className="bg-[#1c1c1e] border border-white/[0.08] rounded-2xl divide-y divide-white/[0.06] overflow-hidden shadow-apple transition-all duration-200">
         {/* Accordion Trigger Header */}
         <button
           type="button"
           onClick={() => setIsOpen(!isOpen)}
-          className="w-full px-4 sm:px-5 py-3.5 flex items-center justify-between text-left hover:bg-white/[0.04] transition-colors"
+          className="w-full px-5 py-4 flex items-center justify-between text-left hover:bg-white/[0.04] transition-colors"
         >
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-xl bg-purple-500/15 text-purple-400 flex items-center justify-center shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-purple-500/15 text-purple-400 flex items-center justify-center shrink-0">
               <Sliders className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-sm font-medium text-white tracking-tight">
+              <div className="text-sm font-semibold text-white tracking-tight">
                 更多性能调优与 PAC 脚本
               </div>
-              <div className="text-xs text-label-secondary mt-0.5">
+              <div className="text-xs text-label-secondary mt-0.5 leading-relaxed">
                 RAM 上限 {ramMb} MB · 预加载 {enablePrefetch ? '开启' : '关闭'} · 浏览器 304 协商
               </div>
             </div>
@@ -111,17 +111,17 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
         {isOpen && (
           <div className="divide-y divide-white/[0.06] animate-in fade-in duration-150">
             {/* Row 1: RAM Slider */}
-            <div className="p-4 sm:p-5 space-y-3">
+            <div className="p-5 space-y-3">
               <div className="flex justify-between items-center">
                 <div>
-                  <div className="text-sm font-medium text-white tracking-tight">
+                  <div className="text-sm font-semibold text-white tracking-tight">
                     RAM 物理内存热缓存上限
                   </div>
-                  <div className="text-xs text-label-secondary mt-0.5">
-                    热点素材常驻 RAM 物理内存实现微秒级零 I/O 读取，超出自动置换
+                  <div className="text-xs text-label-secondary mt-0.5 leading-relaxed">
+                    热点素材常驻内存实现微秒级零 I/O 读取，超出上限自动按 LRU 安全置换
                   </div>
                 </div>
-                <span className="text-xs font-bold font-mono px-2.5 py-1 rounded-full bg-apple-green/15 text-apple-green tnum">
+                <span className="text-xs font-bold font-mono px-3 py-1 rounded-full bg-apple-green/15 text-apple-green tnum">
                   {ramMb} MB
                 </span>
               </div>
@@ -135,18 +135,18 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
                 onMouseUp={(e) => handleRamChange(Number((e.target as HTMLInputElement).value))}
                 onTouchEnd={(e) => handleRamChange(Number((e.target as HTMLInputElement).value))}
                 onKeyUp={(e) => handleRamChange(Number((e.target as HTMLInputElement).value))}
-                className="w-full h-1.5 accent-apple-green cursor-pointer"
+                className="w-full h-2 accent-apple-green cursor-pointer"
               />
             </div>
 
             {/* Row 2: Prefetch Switch */}
-            <div className="px-4 sm:px-5 py-3.5 flex items-center justify-between gap-4">
+            <div className="px-5 py-4 flex items-center justify-between gap-4">
               <div className="pr-4">
-                <div className="text-sm font-medium text-white tracking-tight">
+                <div className="text-sm font-semibold text-white tracking-tight">
                   场景素材智能平滑预加载 (Prefetch)
                 </div>
                 <div className="text-xs text-label-secondary mt-0.5 leading-relaxed">
-                  后台轻量解析场景引用的素材并带平滑避让预拉取，大幅降低切副本或首充卡顿
+                  后台轻量解析引用素材并带动态避让预拉取，大幅消除切副本或首充顿挫感
                 </div>
               </div>
 
@@ -158,9 +158,9 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
             </div>
 
             {/* Row 3: Browser Cache Switch */}
-            <div className="px-4 sm:px-5 py-3.5 flex items-center justify-between gap-4">
+            <div className="px-5 py-4 flex items-center justify-between gap-4">
               <div className="pr-4">
-                <div className="text-sm font-medium text-white tracking-tight">
+                <div className="text-sm font-semibold text-white tracking-tight">
                   浏览器本地协商缓存 (Browser 304 Cache)
                 </div>
                 <div className="text-xs text-label-secondary mt-0.5 leading-relaxed">
@@ -176,9 +176,9 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
             </div>
 
             {/* Row 4: PAC Script */}
-            <div className="px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="px-5 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-medium text-white tracking-tight">
+                <div className="text-sm font-semibold text-white tracking-tight">
                   PAC 自动分流脚本地址
                 </div>
                 <div className="text-xs font-mono text-label-secondary mt-0.5 select-all">

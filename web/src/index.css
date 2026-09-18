@@ -12,10 +12,24 @@
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
+  html {
+    scroll-behavior: smooth;
+  }
+
   /* Universal tabular nums for numerical metrics */
   .tnum {
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum";
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-eq-1,
+  .animate-eq-2,
+  .animate-eq-3,
+  .animate-eq-4 {
+    animation: none !important;
+    height: 10px;
   }
 }
 

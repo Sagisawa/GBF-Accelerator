@@ -16,7 +16,7 @@ export const UtilityDock: React.FC<UtilityDockProps> = ({
   logCount,
 }) => {
   return (
-    <footer className="pt-6 pb-12 flex flex-wrap items-center justify-between gap-4 text-xs text-label-secondary border-t border-white/[0.08] select-none">
+    <footer className="pt-8 pb-16 flex flex-wrap items-center justify-between gap-4 text-xs text-label-secondary border-t border-white/[0.08] select-none">
       {/* Left Action Pills */}
       <div className="flex items-center gap-2 flex-wrap">
         <Button
@@ -36,7 +36,7 @@ export const UtilityDock: React.FC<UtilityDockProps> = ({
           icon={<Terminal className="w-3.5 h-3.5 text-apple-blue" />}
           shortcut="L"
         >
-          实时日志终端 {logCount > 0 && <span className="text-[10px] font-mono text-label-secondary">({logCount})</span>}
+          运行终端 {logCount > 0 && <span className="text-[10px] font-mono text-label-secondary">({logCount})</span>}
         </Button>
 
         <Button
@@ -59,7 +59,7 @@ export const UtilityDock: React.FC<UtilityDockProps> = ({
           className="hover:text-white flex items-center gap-1.5 transition-colors"
         >
           <Gamepad2 className="w-3.5 h-3.5 text-apple-blue" />
-          <span>打开游戏页</span>
+          <span>打开游戏网页</span>
         </a>
 
         <a
@@ -69,7 +69,7 @@ export const UtilityDock: React.FC<UtilityDockProps> = ({
           className="hover:text-white flex items-center gap-1.5 transition-colors"
         >
           <Github className="w-3.5 h-3.5" />
-          <span>GitHub</span>
+          <span>GitHub 开源</span>
         </a>
       </div>
     </footer>
