@@ -23,6 +23,9 @@ func openAppWindow(url string) error {
 		if path, err := exec.LookPath(bin); err == nil {
 			cmd := exec.Command(path, fmt.Sprintf("--app=%s", appURL), "--window-size=820,960")
 			if err := cmd.Start(); err == nil {
+				go func() {
+					_ = cmd.Wait()
+				}()
 				return nil
 			}
 		}

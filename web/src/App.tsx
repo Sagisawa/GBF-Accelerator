@@ -515,7 +515,7 @@ export const App: React.FC = () => {
       )}
 
       {/* Main Desktop Window Frame */}
-      <div className={`w-full ${isStandalone ? 'max-w-none rounded-none shadow-none border-0' : 'max-w-[800px] rounded-lg shadow-xl border border-slate-300'} bg-white overflow-hidden flex flex-col`}>
+      <div className={`w-full ${isStandalone ? 'max-w-[820px] rounded-none shadow-none border-0' : 'max-w-[800px] rounded-lg shadow-xl border border-slate-300'} bg-white overflow-hidden flex flex-col`}>
         {/* Windows Simulated Title Bar */}
         {!isStandalone && (
           <div className="bg-white border-b border-slate-200 h-8 pl-3 pr-0 flex items-center justify-between select-none">

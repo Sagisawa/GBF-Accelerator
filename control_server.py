@@ -314,11 +314,22 @@ class ControlHttpHandler:
                 config_manager.save_config()
                 if "direct_mode" in new_cfg:
                     gbf_proxy.DIRECT_MODE = bool(new_cfg["direct_mode"])
-                if "upstream_proxy" in new_cfg:
-                    gbf_proxy.UPSTREAM_PROXY = config_manager.get_effective_upstream_proxy()
                 if "cache_dir" in new_cfg:
+                    if str(new_cfg["cache_dir"]).lower() == "auto":
+                        detected_acgp = config_manager.auto_detect_acgpower_cache()
+                        if detected_acgp:
+                            new_cfg["cache_dir"] = str(detected_acgp)
+                            config_manager.config["cache_dir"] = str(detected_acgp)
                     from pathlib import Path
                     cache_manager.set_cache_base(Path(config_manager.get_effective_cache_dir()).resolve())
+                if "upstream_proxy" in new_cfg:
+                    if str(new_cfg["upstream_proxy"]).lower() == "auto":
+                        detected_proxies = config_manager.detect_upstream_proxies()
+                        if detected_proxies:
+                            new_cfg["upstream_proxy"] = detected_proxies[0][0]
+                            config_manager.config["upstream_proxy"] = detected_proxies[0][0]
+                    gbf_proxy.UPSTREAM_PROXY = config_manager.get_effective_upstream_proxy()
+                config_manager.save_config()
                 await self.send_json(200, {"ok": True, "message": "Configuration updated", "config": config_manager.config})
             except Exception as e:
                 await self.send_json(400, {"error": f"Failed to apply config: {e}"})
@@ -393,6 +404,50 @@ class ControlHttpHandler:
                 )
                 chosen = res.stdout.strip()
             await self.send_json(200, {"ok": True, "path": chosen})
+            return
+
+        # 7d. /api/utils/test-latency
+        if path == "/api/utils/test-latency" and (method == "GET" or method == "POST"):
+            import httpx
+            target = "https://game.granbluefantasy.jp/"
+            is_direct = bool(config_manager.config.get("direct_mode", False))
+            if is_direct:
+                proxy_url = None
+                route_desc = "直连模式（不经过上游代理）"
+            else:
+                proxy_url = config_manager.get_effective_upstream_proxy() or None
+                route_desc = f"经上游代理 {proxy_url or '（未配置）'}"
+
+            verify = False if getattr(gbf_proxy, "SHIMAKAZE_MODE", False) else bool(config_manager.config.get("verify_upstream_tls", True))
+            cold_ms = None
+            warm = []
+            err = ""
+
+            def do_probe():
+                nonlocal cold_ms, warm, err
+                try:
+                    with httpx.Client(proxy=proxy_url, verify=verify, timeout=10.0, trust_env=False, follow_redirects=False) as client:
+                        t0 = time.perf_counter()
+                        client.get(target)
+                        cold_ms = round((time.perf_counter() - t0) * 1000, 1)
+                        for _ in range(3):
+                            t0 = time.perf_counter()
+                            client.get(target)
+                            warm.append(round((time.perf_counter() - t0) * 1000, 1))
+                except Exception as ex:
+                    err = str(ex)
+
+            await asyncio.to_thread(do_probe)
+            if cold_ms is None and not warm:
+                await self.send_json(502, {"ok": False, "error": f"无法连通 {target}: {err}", "route_desc": route_desc})
+            else:
+                await self.send_json(200, {
+                    "ok": True,
+                    "target": target,
+                    "route_desc": route_desc,
+                    "cold_ms": cold_ms,
+                    "warm_list": warm,
+                })
             return
 
         # 8. /api/cache/audit
@@ -539,6 +594,48 @@ class ControlHttpHandler:
     async def dispatch_static(self, path: str, head_only: bool = False):
         """Serve static files from web/dist or provide built-in fallback landing page."""
         clean_path = path.lstrip("/")
+
+        # Serve Root CA certificate
+        if clean_path in ("ca.crt", "ca.pem") or clean_path.endswith(("/ca.crt", "/ca.pem")):
+            from cert_manager import CA_CERT_PATH
+            if CA_CERT_PATH.is_file():
+                cert_data = CA_CERT_PATH.read_bytes()
+                headers = [
+                    "HTTP/1.1 200 OK",
+                    "Content-Type: application/x-x509-ca-cert",
+                    f"Content-Length: {len(cert_data)}",
+                    'Content-Disposition: attachment; filename="gbf_ca.crt"',
+                    "Access-Control-Allow-Origin: *",
+                    "Cache-Control: no-cache",
+                    "Connection: close",
+                ]
+                header_bytes = ("\r\n".join(headers) + "\r\n\r\n").encode("utf-8")
+                self.writer.write(header_bytes)
+                if not head_only:
+                    self.writer.write(cert_data)
+                await self.writer.drain()
+                return
+
+        # Serve PAC script
+        if clean_path in ("proxy.pac", "pac") or clean_path.endswith(("/proxy.pac", "/pac")):
+            req_host = self.headers.get("host", "").split(":")[0] or "127.0.0.1"
+            pac_str = gbf_proxy.generate_pac_script(req_host, gbf_proxy.LISTEN_PORT)
+            pac_data = pac_str.encode("utf-8")
+            headers = [
+                "HTTP/1.1 200 OK",
+                "Content-Type: application/x-ns-proxy-autoconfig",
+                f"Content-Length: {len(pac_data)}",
+                "Access-Control-Allow-Origin: *",
+                "Cache-Control: no-cache",
+                "Connection: close",
+            ]
+            header_bytes = ("\r\n".join(headers) + "\r\n\r\n").encode("utf-8")
+            self.writer.write(header_bytes)
+            if not head_only:
+                self.writer.write(pac_data)
+            await self.writer.drain()
+            return
+
         file_to_serve: Optional[Path] = None
 
         if self.dist_dir and self.dist_dir.is_dir():

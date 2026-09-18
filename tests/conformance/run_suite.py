@@ -122,6 +122,7 @@ async def run_suite_async():
                     "--proxy-port", str(args.proxy_port),
                     "--control-port", str(args.control_port),
                     "--upstream-proxy", f"http://127.0.0.1:{mock_port}",
+                    "--headless",
                 ]
                 actual_engine = "go"
             elif args.engine == "auto":
@@ -145,6 +146,7 @@ async def run_suite_async():
                         "--proxy-port", str(args.proxy_port),
                         "--control-port", str(args.control_port),
                         "--upstream-proxy", f"http://127.0.0.1:{mock_port}",
+                        "--headless",
                     ]
                     actual_engine = "go"
                 else:
