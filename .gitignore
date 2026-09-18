@@ -11,11 +11,13 @@ env/
 /dist/
 /release/
 *.spec
+bin/
+*.exe
 
 # Local user configurations & certs generated at runtime
-certs/
+/certs/
 config.json
-cache/
+/cache/
 *.log
 stdout.log
 stderr.log
