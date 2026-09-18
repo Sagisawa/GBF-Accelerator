@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -75,11 +76,11 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 
 	assetMaxConn := c.AssetMaxConnections
 	if assetMaxConn <= 0 {
-		assetMaxConn = 100
+		assetMaxConn = 32
 	}
 	assetMaxIdle := c.AssetMaxKeepalive
 	if assetMaxIdle <= 0 {
-		assetMaxIdle = 40
+		assetMaxIdle = 16
 	}
 
 	apiTransport := &http.Transport{
@@ -88,10 +89,11 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 			InsecureSkipVerify: !c.VerifyUpstreamTLS,
 		},
 		MaxIdleConns:        apiMaxConn,
-		MaxIdleConnsPerHost: apiMaxConn,
+		MaxIdleConnsPerHost: apiMaxIdle,
 		IdleConnTimeout:     time.Duration(c.APIKeepaliveExpiry) * time.Second,
 		DisableKeepAlives:   false,
 		ForceAttemptHTTP2:   false, // Dedicated HTTP/1.1 pool for dynamic APIs
+		DisableCompression: true,  // P0: Business semantic transparency
 	}
 	s.apiClient = &http.Client{
 		Transport: apiTransport,
@@ -104,10 +106,11 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 			InsecureSkipVerify: !c.VerifyUpstreamTLS,
 		},
 		MaxIdleConns:        assetMaxConn,
-		MaxIdleConnsPerHost: assetMaxConn,
+		MaxIdleConnsPerHost: assetMaxIdle,
 		IdleConnTimeout:     time.Duration(c.AssetKeepaliveExpiry) * time.Second,
 		DisableKeepAlives:   false,
 		ForceAttemptHTTP2:   true, // HTTP/2 multiplexed for Akamai CDN
+		DisableCompression: true,  // P0: Byte-for-byte fidelity
 	}
 	s.assetClient = &http.Client{
 		Transport: assetTransport,
@@ -279,8 +282,39 @@ func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.R
 }
 
 func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, target string) {
-	upConn, err := net.DialTimeout("tcp", target, 10*time.Second)
-	if err != nil {
+	effProxy := s.cfgMgr.GetEffectiveUpstreamProxy()
+
+	var upConn net.Conn
+	var err error
+
+	if effProxy != "" {
+		if u, parseErr := url.Parse(effProxy); parseErr == nil && (u.Scheme == "http" || u.Scheme == "https") {
+			proxyAddr := u.Host
+			if !strings.Contains(proxyAddr, ":") {
+				proxyAddr += ":80"
+			}
+			upConn, err = net.DialTimeout("tcp", proxyAddr, 10*time.Second)
+			if err == nil {
+				connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+				if _, wErr := upConn.Write([]byte(connectReq)); wErr != nil {
+					_ = upConn.Close()
+					return
+				}
+				br := bufio.NewReader(upConn)
+				resp, rErr := http.ReadResponse(br, nil)
+				if rErr != nil || resp.StatusCode != http.StatusOK {
+					_ = upConn.Close()
+					return
+				}
+			}
+		}
+	}
+
+	if upConn == nil && err == nil {
+		upConn, err = net.DialTimeout("tcp", target, 10*time.Second)
+	}
+
+	if err != nil || upConn == nil {
 		return
 	}
 	defer upConn.Close()
@@ -429,19 +463,30 @@ func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, tar
 	return s.handleDynamicAPI(w, req, targetHost)
 }
 
+var reVersioned = regexp.MustCompile(`/(?:assets(?:_(?:en|jp))?)/\d+/|/\d{8,}/`)
+
 func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHost string) bool {
 	cleanPath := strings.Split(req.URL.Path, "?")[0]
 
 	// Security: Reject path traversal sequences immediately
+	unescapedURI, _ := url.PathUnescape(req.RequestURI)
+	unescapedLower := strings.ToLower(unescapedURI)
 	reqURILower := strings.ToLower(req.RequestURI)
 	pathLower := strings.ToLower(req.URL.Path)
+	cleanLower := strings.ToLower(cleanPath)
 	if strings.Contains(req.RequestURI, "..") ||
 		strings.Contains(req.URL.Path, "..") ||
+		strings.Contains(unescapedURI, "..") ||
 		strings.Contains(reqURILower, "windows") ||
 		strings.Contains(pathLower, "windows") ||
+		strings.Contains(unescapedLower, "windows") ||
 		strings.Contains(reqURILower, "passwd") ||
 		strings.Contains(pathLower, "passwd") ||
-		strings.Contains(cleanPath, ":") {
+		strings.Contains(unescapedLower, "passwd") ||
+		strings.Contains(cleanPath, ":") ||
+		strings.Contains(unescapedURI, ":") ||
+		strings.HasPrefix(cleanLower, "\\") ||
+		strings.HasPrefix(unescapedLower, "\\") {
 		_, _ = fmt.Fprintf(w, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n")
 		return true
 	}
@@ -458,8 +503,10 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	if item != nil {
 		if hitSrc == "RAM" {
 			s.stats.IncRAMHit()
+			s.stats.Log("INFO", fmt.Sprintf("[CACHE-RAM] HIT -> %s (%d B)", cleanPath, len(item.Data)))
 		} else {
 			s.stats.IncDiskHit()
+			s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] HIT -> %s (%d B)", cleanPath, len(item.Data)))
 		}
 
 		// Conditional GET: 304 Not Modified check
@@ -471,7 +518,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 			return true
 		}
 
-		s.sendAssetResponse(w, 200, item, isHead)
+		s.sendAssetResponse(w, 200, item, isHead, req.URL.Path)
 		return true
 	}
 
@@ -540,6 +587,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 			headersMap["etag"] = etag
 		}
 		s.cacheMgr.Save(req.URL.Path, headersMap, data)
+		s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 OK -> %s (%d B)", cleanPath, len(data)))
 
 		return &cache.CacheItem{
 			Data:            data,
@@ -564,7 +612,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		return true
 	}
 
-	s.sendAssetResponse(w, 200, cachedItem, isHead)
+	s.sendAssetResponse(w, 200, cachedItem, isHead, req.URL.Path)
 	return true
 }
 
@@ -582,6 +630,7 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	s.stats.AddActiveAPI(1)
 	defer s.stats.AddActiveAPI(-1)
 
+	startTime := time.Now()
 	bodyBytes, _ := io.ReadAll(req.Body)
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
@@ -633,10 +682,13 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 
 	respBytes, _ := io.ReadAll(resp.Body)
 	s.forwardDynamicResponse(w, resp, respBytes, req.Method == http.MethodHead)
+	elapsed := time.Since(startTime).Milliseconds()
+	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-API] %d %s %s%s (%dms)", resp.StatusCode, req.Method, targetHost, req.URL.Path, elapsed))
 	return true
 }
 
-func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.CacheItem, isHead bool) {
+func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.CacheItem, isHead bool, urlPath string) {
+	cfg := s.cfgMgr.Get()
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "HTTP/1.1 %d OK\r\n", status)
 	if item.ContentType != "" {
@@ -649,9 +701,16 @@ func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.Cac
 	if item.ContentEncoding != "" {
 		fmt.Fprintf(&buf, "Content-Encoding: %s\r\n", item.ContentEncoding)
 	}
-	// Permitted standard headers
 	buf.WriteString("Access-Control-Allow-Origin: *\r\n")
-	buf.WriteString("Cache-Control: public, max-age=31536000, immutable\r\n")
+
+	// P1: Safe browser cache policy - immutable ONLY for versioned assets
+	if !cfg.EnableBrowserCache {
+		buf.WriteString("Cache-Control: no-cache\r\n")
+	} else if reVersioned.MatchString(urlPath) {
+		buf.WriteString("Cache-Control: public, max-age=31536000, immutable\r\n")
+	} else {
+		buf.WriteString("Cache-Control: public, max-age=3600\r\n")
+	}
 	buf.WriteString("Connection: keep-alive\r\n\r\n")
 
 	if isHead {
@@ -690,10 +749,12 @@ func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, b
 		fmt.Fprintf(&buf, "Set-Cookie: %s\r\n", cookie)
 	}
 
-	fmt.Fprintf(&buf, "Content-Length: %d\r\n", len(body))
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified {
+		fmt.Fprintf(&buf, "Content-Length: %d\r\n", len(body))
+	}
 	buf.WriteString("Connection: keep-alive\r\n\r\n")
 
-	if isHead {
+	if isHead || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified {
 		_, _ = w.Write(buf.Bytes())
 	} else {
 		_, _ = w.Write(buf.Bytes())
@@ -731,6 +792,7 @@ func isGBFDomain(host string) bool {
 	return strings.HasSuffix(host, "granbluefantasy.jp") ||
 		strings.HasSuffix(host, "granbluefantasy.com") ||
 		strings.HasSuffix(host, "mbga.jp") ||
+		strings.HasSuffix(host, "mobage.jp") ||
 		host == "localhost" || host == "127.0.0.1"
 }
 

@@ -72,6 +72,7 @@ async def run_suite_async():
     print("=" * 70)
 
     # 1. Start mock upstream server on a dynamic port
+    os.environ["NO_PROXY"] = "*"
     mock_upstream = MockUpstreamServer(host="127.0.0.1", port=0)
     mock_port = await mock_upstream.start()
     print(f"[*] Mock upstream server listening on 127.0.0.1:{mock_port}")
@@ -97,12 +98,17 @@ async def run_suite_async():
 
         if not (proxy_listening and control_listening):
             if args.engine == "go":
-                exe_name = "gbf_proxy.exe" if sys.platform == "win32" else "gbf_proxy"
-                go_candidates = [
-                    Path(_repo_root) / "bin" / exe_name,
-                    Path(_repo_root) / exe_name,
-                    Path(_repo_root) / "engine" / exe_name,
+                exe_names = [
+                    "gbf_proxy.exe" if sys.platform == "win32" else "gbf_proxy",
+                    "gbf-proxy.exe" if sys.platform == "win32" else "gbf-proxy",
                 ]
+                go_candidates = []
+                for name in exe_names:
+                    go_candidates.extend([
+                        Path(_repo_root) / "bin" / name,
+                        Path(_repo_root) / name,
+                        Path(_repo_root) / "engine" / name,
+                    ])
                 go_bin = next((c for c in go_candidates if c.is_file() and os.access(c, os.X_OK)), None)
                 if not go_bin:
                     sys.stderr.write(
@@ -118,12 +124,17 @@ async def run_suite_async():
                 ]
                 actual_engine = "go"
             elif args.engine == "auto":
-                exe_name = "gbf_proxy.exe" if sys.platform == "win32" else "gbf_proxy"
-                go_candidates = [
-                    Path(_repo_root) / "bin" / exe_name,
-                    Path(_repo_root) / exe_name,
-                    Path(_repo_root) / "engine" / exe_name,
+                exe_names = [
+                    "gbf_proxy.exe" if sys.platform == "win32" else "gbf_proxy",
+                    "gbf-proxy.exe" if sys.platform == "win32" else "gbf-proxy",
                 ]
+                go_candidates = []
+                for name in exe_names:
+                    go_candidates.extend([
+                        Path(_repo_root) / "bin" / name,
+                        Path(_repo_root) / name,
+                        Path(_repo_root) / "engine" / name,
+                    ])
                 go_bin = next((c for c in go_candidates if c.is_file() and os.access(c, os.X_OK)), None)
                 if go_bin:
                     print(f"[*] Auto-detected Go engine binary: {go_bin}")
@@ -178,7 +189,7 @@ async def run_suite_async():
         else:
             print(f"[*] Attaching to already-running proxy on ports {args.proxy_port}/{args.control_port}")
             # Configure running proxy to route through mock upstream
-            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{args.control_port}", timeout=3.0) as cfg_client:
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{args.control_port}", timeout=3.0, trust_env=False) as cfg_client:
                 r_status = await cfg_client.get("/api/status")
                 if r_status.status_code == 200:
                     detected_engine = r_status.json().get("engine", "python")
@@ -209,7 +220,7 @@ async def run_suite_async():
 
         # 3. Retrieve Root CA certificate from proxy over HTTP (Pure Black-Box)
         ca_cert_url = f"http://127.0.0.1:{args.proxy_port}/ca.crt"
-        async with httpx.AsyncClient() as bootstrap_client:
+        async with httpx.AsyncClient(trust_env=False) as bootstrap_client:
             ca_resp = await bootstrap_client.get(ca_cert_url)
             assert ca_resp.status_code == 200, f"Failed to download CA from {ca_cert_url}"
             ca_pem = ca_resp.text
@@ -222,12 +233,15 @@ async def run_suite_async():
             proxy=f"http://127.0.0.1:{args.proxy_port}",
             verify=ca_ssl_ctx,
             timeout=10.0,
+            trust_env=False,
         ) as proxy_client, httpx.AsyncClient(
             base_url=f"http://127.0.0.1:{args.control_port}",
             timeout=6.0,
+            trust_env=False,
         ) as ctrl_client, httpx.AsyncClient(
             base_url=f"http://127.0.0.1:{args.proxy_port}",
             timeout=6.0,
+            trust_env=False,
         ) as direct_client:
             ctx = ConformanceContext(
                 proxy_port=args.proxy_port,
@@ -312,7 +326,7 @@ async def run_suite_async():
         # Revert config if attached to pre-existing instance
         if revert_config:
             try:
-                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{args.control_port}", timeout=2.0) as cfg_client:
+                async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{args.control_port}", timeout=2.0, trust_env=False) as cfg_client:
                     await cfg_client.post("/api/config/apply", json=revert_config)
             except Exception:
                 pass

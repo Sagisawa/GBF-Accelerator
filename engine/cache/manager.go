@@ -86,11 +86,11 @@ func (m *Manager) resolvePath(urlPath string) (string, bool) {
 	clean := strings.TrimSpace(strings.Split(urlPath, "?")[0])
 	clean = filepath.Clean(filepath.FromSlash(strings.TrimPrefix(clean, "/")))
 
-	// Security: Prevent path traversal
+	// Security: Prevent path traversal, Windows drive letters, and UNC paths
 	if strings.HasPrefix(clean, "..") || strings.Contains(clean, ".."+string(filepath.Separator)) {
 		return "", false
 	}
-	if filepath.IsAbs(clean) || strings.HasPrefix(clean, "C:") || strings.HasPrefix(clean, "c:") {
+	if filepath.IsAbs(clean) || (len(clean) >= 2 && clean[1] == ':') || strings.HasPrefix(clean, `\\`) {
 		return "", false
 	}
 
@@ -205,6 +205,9 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 	// Check gzip signature
 	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
 		contentEncoding = "gzip"
+	} else if contentEncoding == "gzip" {
+		// Strip misleading gzip encoding from decompressed plaintext to prevent ERR_CONTENT_DECODING_FAILED
+		contentEncoding = ""
 	}
 
 	item := &CacheItem{
@@ -307,6 +310,9 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 	}
 
 	ce := getHeader(headers, "content-encoding")
+	if !(len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b) && ce == "gzip" {
+		ce = ""
+	}
 	etag := getHeader(headers, "etag")
 	if etag == "" {
 		etag = fmt.Sprintf("\"%x-%x\"", time.Now().Unix(), len(data))

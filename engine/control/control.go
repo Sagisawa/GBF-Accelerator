@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,10 +37,19 @@ type ControlServer struct {
 func NewControlServer(cfgMgr *config.Manager, cacheMgr *cache.Manager, proxySrv *proxy.ProxyServer, stats *telemetry.Stats) *ControlServer {
 	// Locate web/dist
 	distDir := ""
-	for _, candidate := range []string{
+	candidates := []string{
 		filepath.Join("web", "dist"),
 		filepath.Join("..", "web", "dist"),
-	} {
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "web", "dist"),
+			filepath.Join(exeDir, "..", "web", "dist"),
+			filepath.Join(exeDir, "..", "..", "web", "dist"),
+		)
+	}
+	for _, candidate := range candidates {
 		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
 			distDir, _ = filepath.Abs(candidate)
 			break
@@ -190,6 +200,12 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			})
 			return
 		}
+	}
+
+	// Reject unmatched API routes with 404 JSON
+	if strings.HasPrefix(path, "/api/") {
+		c.sendJSON(w, http.StatusNotFound, map[string]interface{}{"error": "not found", "path": path})
+		return
 	}
 
 	// Static Web serving / SPA Fallback
@@ -393,19 +409,32 @@ func (c *ControlServer) handlePrefetchStatus(w http.ResponseWriter, req *http.Re
 	})
 }
 
+func (c *ControlServer) getTelemetrySummary() map[string]interface{} {
+	totalAPIs := atomic.LoadInt64(&c.stats.TotalAPIs)
+	totalAssets := atomic.LoadInt64(&c.stats.TotalAssets)
+	totalReqs := totalAPIs + totalAssets
+	reused := totalAPIs
+	reuseRate := 100.0
+	if totalReqs > 0 && totalAPIs == 0 {
+		reuseRate = 0.0
+	}
+
+	return map[string]interface{}{
+		"total_requests":     totalReqs,
+		"reused_connections": reused,
+		"new_connections":    1,
+		"reuse_rate":         reuseRate,
+		"retry_count":        atomic.LoadInt64(&c.stats.APIRetries),
+		"percentiles":        map[string]float64{"p50": 5.0, "p90": 15.0, "p99": 30.0},
+		"protocols":          map[string]int{"HTTP/1.1": int(totalAPIs), "HTTP/2": int(totalAssets)},
+		"exceptions":         map[string]int{},
+	}
+}
+
 func (c *ControlServer) handleTelemetry(w http.ResponseWriter, req *http.Request) {
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok": true,
-		"telemetry": map[string]interface{}{
-			"total_requests":     atomic.LoadInt64(&c.stats.TotalAPIs) + atomic.LoadInt64(&c.stats.TotalAssets),
-			"reused_connections": atomic.LoadInt64(&c.stats.TotalAPIs),
-			"new_connections":    1,
-			"reuse_rate":         100.0,
-			"retry_count":        atomic.LoadInt64(&c.stats.APIRetries),
-			"percentiles":        map[string]float64{"p50": 5.0, "p90": 15.0, "p99": 30.0},
-			"protocols":          map[string]int{"HTTP/1.1": int(atomic.LoadInt64(&c.stats.TotalAPIs)), "HTTP/2": int(atomic.LoadInt64(&c.stats.TotalAssets))},
-			"exceptions":         map[string]int{},
-		},
+		"ok":        true,
+		"telemetry": c.getTelemetrySummary(),
 	})
 }
 
@@ -428,10 +457,25 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	// Send initial status event
+	// 1. Send initial status event
 	statusData, _ := json.Marshal(c.getRuntimeStatus())
 	fmt.Fprintf(w, "event: status\ndata: %s\n\n", statusData)
+
+	// 2. Send recent logs on connect (up to last 20)
+	recentLogs := c.stats.GetLogs()
+	startIdx := 0
+	if len(recentLogs) > 20 {
+		startIdx = len(recentLogs) - 20
+	}
+	for _, l := range recentLogs[startIdx:] {
+		logData, _ := json.Marshal(l)
+		fmt.Fprintf(w, "event: log\ndata: %s\n\n", logData)
+	}
 	flusher.Flush()
+
+	// 3. Subscribe to real-time logs
+	logCh, unsubscribe := c.stats.SubscribeLogs()
+	defer unsubscribe()
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -442,12 +486,19 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 			return
 		case <-c.closedChan:
 			return
+		case logEnt, ok := <-logCh:
+			if ok {
+				logData, _ := json.Marshal(logEnt)
+				fmt.Fprintf(w, "event: log\ndata: %s\n\n", logData)
+				flusher.Flush()
+			}
 		case now := <-ticker.C:
 			pulseData, _ := json.Marshal(map[string]interface{}{
 				"time":       now.Format("15:04:05"),
 				"uptime":     math.Round(time.Since(c.stats.StartTime).Seconds()*10) / 10,
 				"active_api": atomic.LoadInt32(&c.stats.ActiveAPICount),
 				"active_fg":  atomic.LoadInt32(&c.stats.ActiveForegroundAssets),
+				"telemetry":  c.getTelemetrySummary(),
 				"hits":       atomic.LoadInt64(&c.stats.TotalHits),
 				"misses":     atomic.LoadInt64(&c.stats.CacheMisses),
 			})
@@ -458,28 +509,39 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 }
 
 func (c *ControlServer) handleStaticWeb(w http.ResponseWriter, req *http.Request) {
+	cleanPath := strings.TrimPrefix(filepath.Clean(filepath.FromSlash(req.URL.Path)), "/")
+	if cleanPath == "." {
+		cleanPath = ""
+	}
+
 	if c.distDir != "" {
-		clean := filepath.Clean(filepath.FromSlash(req.URL.Path))
-		candidate := filepath.Join(c.distDir, clean)
+		candidate := filepath.Join(c.distDir, cleanPath)
 		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
 			http.ServeFile(w, req, candidate)
 			return
 		}
-		indexFile := filepath.Join(c.distDir, "index.html")
-		if fi, err := os.Stat(indexFile); err == nil && !fi.IsDir() {
-			http.ServeFile(w, req, indexFile)
-			return
+		if cleanPath == "" || cleanPath == "index.html" || cleanPath == "dashboard" || !strings.Contains(cleanPath, ".") {
+			indexFile := filepath.Join(c.distDir, "index.html")
+			if fi, err := os.Stat(indexFile); err == nil && !fi.IsDir() {
+				http.ServeFile(w, req, indexFile)
+				return
+			}
 		}
 	}
 
-	// Fallback minimal HTML dashboard
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	if req.Method != http.MethodHead {
-		w.Write([]byte(`<!DOCTYPE html>
+	// Fallback minimal HTML dashboard only for root or index.html / dashboard
+	if cleanPath == "" || cleanPath == "index.html" || cleanPath == "dashboard" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		if req.Method != http.MethodHead {
+			w.Write([]byte(`<!DOCTYPE html>
 <html>
 <head><title>GBF Accelerator Dashboard</title></head>
 <body><h1>GBF Accelerator Dashboard (Go Engine)</h1></body>
 </html>`))
+		}
+		return
 	}
+
+	c.sendJSON(w, http.StatusNotFound, map[string]string{"error": "File not found", "path": req.URL.Path})
 }

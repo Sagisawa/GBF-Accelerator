@@ -28,16 +28,19 @@ type Stats struct {
 	ActiveForegroundAssets int32
 	LastError              string
 
-	mu   sync.RWMutex
-	logs []LogEntry
+	mu          sync.RWMutex
+	logs        []LogEntry
+	subMu       sync.RWMutex
+	subscribers []chan LogEntry
 }
 
 var GlobalStats = NewStats()
 
 func NewStats() *Stats {
 	return &Stats{
-		StartTime: time.Now(),
-		logs:      make([]LogEntry, 0, 1000),
+		StartTime:   time.Now(),
+		logs:        make([]LogEntry, 0, 1000),
+		subscribers: make([]chan LogEntry, 0),
 	}
 }
 
@@ -82,11 +85,41 @@ func (s *Stats) Log(level, msg string) {
 		Msg:   msg,
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.logs = append(s.logs, entry)
 	if len(s.logs) > 1000 {
 		s.logs = s.logs[len(s.logs)-1000:]
 	}
+	s.mu.Unlock()
+
+	// Fan-out to SSE subscribers
+	s.subMu.RLock()
+	for _, ch := range s.subscribers {
+		select {
+		case ch <- entry:
+		default:
+		}
+	}
+	s.subMu.RUnlock()
+}
+
+func (s *Stats) SubscribeLogs() (chan LogEntry, func()) {
+	ch := make(chan LogEntry, 100)
+	s.subMu.Lock()
+	s.subscribers = append(s.subscribers, ch)
+	s.subMu.Unlock()
+
+	unsubscribe := func() {
+		s.subMu.Lock()
+		defer s.subMu.Unlock()
+		for i, sub := range s.subscribers {
+			if sub == ch {
+				s.subscribers = append(s.subscribers[:i], s.subscribers[i+1:]...)
+				close(ch)
+				break
+			}
+		}
+	}
+	return ch, unsubscribe
 }
 
 func (s *Stats) GetLogs() []LogEntry {

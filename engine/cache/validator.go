@@ -54,7 +54,16 @@ func IsValidCacheContent(cleanPath, contentType string, data []byte) bool {
 	sampleLower := bytes.TrimSpace(bytes.ToLower(sample))
 	if bytes.HasPrefix(sampleLower, []byte("<!doctype")) ||
 		bytes.HasPrefix(sampleLower, []byte("<html")) ||
-		bytes.HasPrefix(sampleLower, []byte("<head")) {
+		bytes.HasPrefix(sampleLower, []byte("<head")) ||
+		bytes.HasPrefix(sampleLower, []byte("<body")) ||
+		bytes.HasPrefix(sampleLower, []byte("<h1")) ||
+		bytes.HasPrefix(sampleLower, []byte("<title")) ||
+		bytes.Contains(sampleLower, []byte("<title>502")) ||
+		bytes.Contains(sampleLower, []byte("<title>503")) ||
+		bytes.Contains(sampleLower, []byte("<title>504")) ||
+		bytes.Contains(sampleLower, []byte("502 bad gateway")) ||
+		bytes.Contains(sampleLower, []byte("503 service")) ||
+		bytes.Contains(sampleLower, []byte("504 gateway time-out")) {
 		return false
 	}
 
@@ -78,6 +87,14 @@ func IsValidCacheContent(cleanPath, contentType string, data []byte) bool {
 		}
 	} else if strings.HasSuffix(cleanLower, ".gif") {
 		if !bytes.HasPrefix(rawSample, []byte("GIF87a")) && !bytes.HasPrefix(rawSample, []byte("GIF89a")) {
+			return false
+		}
+	} else if strings.HasSuffix(cleanLower, ".wav") {
+		if len(rawSample) < 12 || !bytes.HasPrefix(rawSample, []byte("RIFF")) || !bytes.Equal(rawSample[8:12], []byte("WAVE")) {
+			return false
+		}
+	} else if strings.HasSuffix(cleanLower, ".ogg") {
+		if !bytes.HasPrefix(rawSample, []byte("OggS")) {
 			return false
 		}
 	} else if strings.HasSuffix(cleanLower, ".woff2") {

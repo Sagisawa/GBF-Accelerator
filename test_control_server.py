@@ -22,6 +22,8 @@ import control_server
 import gbf_proxy
 from config_manager import config_manager
 
+os.environ["NO_PROXY"] = "*"
+
 
 class TestControlServer(unittest.IsolatedAsyncioTestCase):
     TEST_CONTROL_PORT = 8129

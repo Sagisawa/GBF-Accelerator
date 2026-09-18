@@ -321,7 +321,7 @@ async def case_18_lan_acl_rejection(ctx: ConformanceContext):
     if lan_ip and lan_ip != "127.0.0.1":
         conn_rejected = False
         try:
-            async with httpx.AsyncClient(timeout=0.3) as lan_client:
+            async with httpx.AsyncClient(timeout=0.3, trust_env=False) as lan_client:
                 await lan_client.get(f"http://{lan_ip}:{ctx.proxy_port}/ca.crt")
         except (httpx.ConnectError, httpx.ConnectTimeout):
             conn_rejected = True
@@ -541,7 +541,7 @@ async def case_31_control_telemetry_logs(ctx: ConformanceContext):
 async def case_32_control_sse_events(ctx: ConformanceContext):
     """GET /api/events establishes SSE streaming connection and receives initial event."""
     received = []
-    async with httpx.AsyncClient(timeout=3.0) as sse_client:
+    async with httpx.AsyncClient(timeout=3.0, trust_env=False) as sse_client:
         async with sse_client.stream("GET", f"http://127.0.0.1:{ctx.control_port}/api/events") as stream:
             assert stream.status_code == 200
             assert "text/event-stream" in stream.headers.get("content-type", "")

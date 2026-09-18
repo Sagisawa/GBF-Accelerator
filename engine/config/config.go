@@ -66,8 +66,8 @@ func DefaultConfig() Config {
 		APIMaxConnections:    16,
 		APIMaxKeepalive:      4,
 		APIKeepaliveExpiry:   20.0,
-		AssetMaxConnections:  100,
-		AssetMaxKeepalive:    40,
+		AssetMaxConnections:  32,
+		AssetMaxKeepalive:    16,
 		AssetKeepaliveExpiry: 60.0,
 		EnableAPITelemetry:   true,
 	}
