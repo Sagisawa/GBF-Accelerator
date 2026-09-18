@@ -1477,18 +1477,20 @@ class GBFAcceleratorGUI:
 
     def run_latency_test(self):
         """Measure real RTT to the game server through the current upstream route."""
+        is_direct = bool(self.var_direct_mode.get())
+        proxy_url = self.var_upstream.get().strip()
         self.btn_latency.configure(state="disabled", text=" 测试中...")
-        threading.Thread(target=self._bg_latency_test, daemon=True).start()
+        threading.Thread(target=self._bg_latency_test, args=(is_direct, proxy_url), daemon=True).start()
 
-    def _bg_latency_test(self):
+    def _bg_latency_test(self, is_direct: bool, raw_proxy_url: str):
         import httpx
 
         target = "https://game.granbluefantasy.jp/"
-        if self.var_direct_mode.get():
+        if is_direct:
             proxy_url = None
             route_desc = "直连模式（不经过上游代理）"
         else:
-            proxy_url = self.var_upstream.get().strip() or None
+            proxy_url = raw_proxy_url or None
             route_desc = f"经上游代理 {proxy_url or '（未配置）'}"
 
         verify = False if gbf_proxy.SHIMAKAZE_MODE else bool(config_manager.config.get("verify_upstream_tls", True))
@@ -1496,47 +1498,58 @@ class GBFAcceleratorGUI:
         warm = []
         err = ""
         try:
-            # Probe 1 (cold): includes proxy CONNECT + cross-sea TCP/TLS setup,
-            # a one-time cost per connection. Probes 2-4 (warm): reuse the
-            # keep-alive connection, representative of in-game API latency.
-            with httpx.Client(proxy=proxy_url, verify=verify, timeout=12.0, trust_env=False, follow_redirects=False) as client:
-                t0 = time.perf_counter()
-                client.get(target)
-                cold_ms = (time.perf_counter() - t0) * 1000
-                for _ in range(3):
+            try:
+                # Probe 1 (cold): includes proxy CONNECT + cross-sea TCP/TLS setup,
+                # a one-time cost per connection. Probes 2-4 (warm): reuse the
+                # keep-alive connection, representative of in-game API latency.
+                with httpx.Client(proxy=proxy_url, verify=verify, timeout=12.0, trust_env=False, follow_redirects=False) as client:
                     t0 = time.perf_counter()
                     client.get(target)
-                    warm.append((time.perf_counter() - t0) * 1000)
-        except Exception as e:
-            err = str(e)
+                    cold_ms = (time.perf_counter() - t0) * 1000
+                    for _ in range(3):
+                        t0 = time.perf_counter()
+                        client.get(target)
+                        warm.append((time.perf_counter() - t0) * 1000)
+            except Exception as e:
+                err = str(e)
 
-        def show():
+            def show():
+                try:
+                    self.btn_latency.configure(state="normal", text=" 延迟测试")
+                except Exception:
+                    pass
+                if cold_ms is None and not warm:
+                    messagebox.showwarning("延迟测试失败", f"无法连通 {target}\n\n线路：{route_desc}\n错误：{err}", parent=self.root)
+                    return
+                if sys.platform == "darwin":
+                    self.show_mac_latency_dialog(target, route_desc, cold_ms, warm)
+                    return
+                lines = [
+                    f"目标：{target}",
+                    f"线路：{route_desc}",
+                    "",
+                    f"冷连接（建链 + 首个请求）：{cold_ms:.0f} ms" if cold_ms is not None else "冷连接：失败",
+                ]
+                if warm:
+                    warm.sort()
+                    w_min, w_mid, w_max = warm[0], warm[len(warm) // 2], warm[-1]
+                    lines.append(f"热连接 RTT（3 次）：最快 {w_min:.0f} ｜ 中位 {w_mid:.0f} ｜ 最慢 {w_max:.0f} ms")
+                messagebox.showinfo("上游延迟测试结果", "\n".join(lines), parent=self.root)
+
             try:
-                self.btn_latency.configure(state="normal", text=" 延迟测试")
+                self.root.after(0, show)
             except Exception:
                 pass
-            if cold_ms is None and not warm:
-                messagebox.showwarning("延迟测试失败", f"无法连通 {target}\n\n线路：{route_desc}\n错误：{err}")
-                return
-            if sys.platform == "darwin":
-                self.show_mac_latency_dialog(target, route_desc, cold_ms, warm)
-                return
-            lines = [
-                f"目标：{target}",
-                f"线路：{route_desc}",
-                "",
-                f"冷连接（建链 + 首个请求）：{cold_ms:.0f} ms" if cold_ms is not None else "冷连接：失败",
-            ]
-            if warm:
-                warm.sort()
-                w_min, w_mid, w_max = warm[0], warm[len(warm) // 2], warm[-1]
-                lines.append(f"热连接 RTT（3 次）：最快 {w_min:.0f} ｜ 中位 {w_mid:.0f} ｜ 最慢 {w_max:.0f} ms")
-            messagebox.showinfo("上游延迟测试结果", "\n".join(lines))
-
-        try:
-            self.root.after(0, show)
-        except Exception:
-            pass
+        finally:
+            def restore_btn():
+                try:
+                    self.btn_latency.configure(state="normal", text=" 延迟测试")
+                except Exception:
+                    pass
+            try:
+                self.root.after(0, restore_btn)
+            except Exception:
+                pass
 
     def show_mac_latency_dialog(self, target: str, route_desc: str, cold_ms: Optional[float], warm: list):
         """Display clean, non-truncated latency results in a macOS-optimized modal dialog."""
@@ -1778,7 +1791,7 @@ class GBFAcceleratorGUI:
             messagebox.showwarning("提示", "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成...")
             return
 
-        chosen = filedialog.askdirectory(title="选择 GBF 本地缓存保存目录", initialdir=self.var_cache_dir.get())
+        chosen = filedialog.askdirectory(parent=self.root, title="选择 GBF 本地缓存保存目录", initialdir=self.var_cache_dir.get())
         if chosen:
             p = Path(chosen).resolve()
             norm_p = normalize_cache_dir(p)
@@ -2795,6 +2808,14 @@ class GBFAcceleratorGUI:
     def hide_to_tray(self, notify=True):
         if self.tray_icon or sys.platform == "darwin":
             self.root.withdraw()
+            if sys.platform == "darwin":
+                try:
+                    import AppKit
+                    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+                        AppKit.NSApplicationActivationPolicyAccessory
+                    )
+                except Exception:
+                    pass
             # Cancel running stats timer so CPU stays at absolute 0.0% in background
             if getattr(self, "_stats_job", None):
                 try:
@@ -2826,6 +2847,14 @@ class GBFAcceleratorGUI:
             return
         self._is_restoring_window = True
         try:
+            if sys.platform == "darwin":
+                try:
+                    import AppKit
+                    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+                        AppKit.NSApplicationActivationPolicyRegular
+                    )
+                except Exception:
+                    pass
             self.root.deiconify()
             self.root.lift()
             if sys.platform == "darwin":

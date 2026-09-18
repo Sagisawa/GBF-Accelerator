@@ -112,8 +112,11 @@ def is_port_open(host: str, port: int, timeout: float = 0.3) -> bool:
 
 def detect_upstream_proxies() -> List[Tuple[str, str]]:
     """Return every reachable local proxy candidate as (url, display name)."""
+    probe_ports = list(PROBE_PROXY_PORTS)
+    if sys.platform == "darwin":
+        probe_ports.append((6152, "Surge (HTTP)"))
     detected: List[Tuple[str, str]] = []
-    for port, name in PROBE_PROXY_PORTS:
+    for port, name in probe_ports:
         if is_port_open("127.0.0.1", port):
             # Distinguish a pure SOCKS5 listener (common v2rayN 10809) from HTTP.
             # 岛风 GO 8099 is intentionally treated as HTTP.
@@ -622,9 +625,7 @@ def is_ca_installed() -> bool:
             )
             if res.returncode == 0:
                 out_upper = res.stdout.upper().replace(" ", "")
-                if sha1 in out_upper:
-                    return True
-                return "GBF Local Accelerator Root CA" in res.stdout
+                return sha1 in out_upper
             return False
         return True
     except Exception:
@@ -819,7 +820,7 @@ def kill_process_on_port(port: int) -> bool:
     """Safely terminate previous GBF_Accelerator instances listening on port.
     Guarantees exact port boundary matching and strictly inspects process identity.
     """
-    if port in (7890, 7897, 10808, 10809, 80, 443):
+    if port in (7890, 7897, 10808, 10809, 6152, 80, 443):
         return False
 
     if sys.platform == "win32":
@@ -874,28 +875,50 @@ def kill_process_on_port(port: int) -> bool:
             if res.returncode != 0 or not res.stdout.strip():
                 return True
             current_pid = os.getpid()
+            pids = []
             for pid_str in res.stdout.splitlines():
                 pid_str = pid_str.strip()
-                if not pid_str.isdigit():
-                    continue
-                pid = int(pid_str)
-                if pid in (0, 1, current_pid):
-                    continue
+                if pid_str.isdigit():
+                    p = int(pid_str)
+                    if p not in (0, 1, current_pid) and p not in pids:
+                        pids.append(p)
+
+            for pid in pids:
                 try:
-                    ps_out = subprocess.check_output(
-                        ["ps", "-p", str(pid), "-o", "command="],
+                    comm_out = subprocess.check_output(
+                        ["ps", "-p", str(pid), "-o", "comm="],
                         text=True,
                         stderr=subprocess.DEVNULL,
                         timeout=2,
-                    )
-                    if any(target in ps_out for target in ("gbf_proxy", "app_main", "gui_main", "GBF_Accelerator")):
+                    ).strip()
+                    comm_name = Path(comm_out).name
+                    should_kill = False
+                    if comm_name in ("GBF_Accelerator", "GBF-Accelerator"):
+                        should_kill = True
+                    else:
+                        cmd_out = subprocess.check_output(
+                            ["ps", "-p", str(pid), "-o", "command="],
+                            text=True,
+                            stderr=subprocess.DEVNULL,
+                            timeout=2,
+                        )
+                        py_script_pattern = re.compile(r'(?:^|[\s/])(gbf_proxy|app_main|gui_main)\.py(?:\s|$)')
+                        if py_script_pattern.search(cmd_out):
+                            should_kill = True
+
+                    if should_kill:
                         import signal
-                        os.kill(pid, signal.SIGTERM)
-                        import time
-                        time.sleep(0.1)
                         try:
-                            os.kill(pid, signal.SIGKILL)
-                        except OSError:
+                            os.kill(pid, signal.SIGTERM)
+                            import time
+                            time.sleep(0.1)
+                            try:
+                                os.kill(pid, signal.SIGKILL)
+                            except OSError:
+                                pass
+                        except PermissionError:
+                            return False
+                        except ProcessLookupError:
                             pass
                     else:
                         return False

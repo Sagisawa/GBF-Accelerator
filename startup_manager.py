@@ -28,6 +28,9 @@ def _startup_args_mac() -> List[str]:
     """Build argument list for LaunchAgent plist on macOS."""
     if getattr(sys, "frozen", False):
         executable = Path(sys.executable).resolve()
+        for p in [executable] + list(executable.parents):
+            if p.suffix == ".app":
+                return ["/usr/bin/open", "-a", str(p), "--args", "--minimized"]
         return [str(executable), "--minimized"]
 
     python_exe = Path(sys.executable).resolve()
@@ -100,7 +103,6 @@ def set_startup_enabled(enabled: bool) -> Tuple[bool, str]:
                     subprocess.run(["launchctl", "unload", str(MAC_PLIST_PATH)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
-                subprocess.run(["launchctl", "load", str(MAC_PLIST_PATH)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
                 try:
                     subprocess.run(["launchctl", "unload", str(MAC_PLIST_PATH)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

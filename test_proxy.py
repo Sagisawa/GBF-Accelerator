@@ -2363,7 +2363,101 @@ async def run_test():
 
             print("Test 74 - macOS ACGP Process Detection, Path Normalization & Proxy Conflict Contract: OK", flush=True)
 
-            print("\n[+] ALL 74 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # ---------------- Test 75: macOS Process Isolation, Startup & Strict CA Security Contract ----------------
+            import startup_manager
+
+            # 1. Startup Manager Contract: set_startup_enabled(True) MUST NOT invoke launchctl load
+            with tempfile.TemporaryDirectory() as tmp_launch:
+                fake_plist = Path(tmp_launch) / "test_startup.plist"
+                launched_cmds = []
+
+                def mock_launch_subprocess(cmd, **kwargs):
+                    launched_cmds.append(cmd)
+                    return mock.Mock(returncode=0)
+
+                with mock.patch.object(startup_manager.sys, "platform", "darwin"), \
+                     mock.patch.object(startup_manager, "MAC_PLIST_PATH", fake_plist), \
+                     mock.patch.object(startup_manager.subprocess, "run", side_effect=mock_launch_subprocess):
+                    ok, err = startup_manager.set_startup_enabled(True)
+                    assert ok is True, f"Failed to enable startup: {err}"
+                    assert fake_plist.is_file(), "LaunchAgent plist must be written"
+                    # CRITICAL: launchctl load must NEVER be called while enabling to prevent duplicate instance kill
+                    for cmd in launched_cmds:
+                        assert "load" not in cmd, f"launchctl load was invoked while enabling startup: {cmd}"
+
+                # 1b. Startup args inside .app bundle must route via /usr/bin/open -a
+                with mock.patch.object(startup_manager.sys, "platform", "darwin"), \
+                     mock.patch.object(startup_manager.sys, "frozen", True, create=True), \
+                     mock.patch.object(startup_manager.sys, "executable", "/Applications/GBF_Accelerator.app/Contents/MacOS/GBF_Accelerator"):
+                    args = startup_manager._startup_args_mac()
+                    assert args == ["/usr/bin/open", "-a", "/Applications/GBF_Accelerator.app", "--args", "--minimized"], f"Unexpected args: {args}"
+
+            # 2. Process Matching Contract: kill_process_on_port must not kill unrelated scripts in parent dir
+            with mock.patch.object(config_manager.sys, "platform", "darwin"):
+                # 2a. Safe port whitelist protection (including 6152 Surge)
+                assert config_manager.kill_process_on_port(6152) is False
+
+                # 2b. Parent dir named GBF_Accelerator running other_app.py -> must NOT kill
+                mock_lsof = mock.Mock(returncode=0, stdout="9999\n")
+                mock_killed_pids = []
+                def mock_kill(pid, sig):
+                    mock_killed_pids.append(pid)
+
+                with mock.patch.object(config_manager.subprocess, "run", return_value=mock_lsof), \
+                     mock.patch.object(config_manager.subprocess, "check_output", side_effect=[
+                         "python3\n",  # comm
+                         "/usr/bin/python3 /Users/test/GBF_Accelerator/other_service.py\n",  # command
+                     ]), \
+                     mock.patch("os.kill", side_effect=mock_kill):
+                    res_unrelated = config_manager.kill_process_on_port(8124)
+                    assert res_unrelated is False, "Unrelated script in GBF_Accelerator folder must not be killed"
+                    assert len(mock_killed_pids) == 0
+
+                # 2c. Target script running gui_main.py -> MUST kill
+                with mock.patch.object(config_manager.subprocess, "run", return_value=mock_lsof), \
+                     mock.patch.object(config_manager.subprocess, "check_output", side_effect=[
+                         "python3\n",  # comm
+                         "/usr/bin/python3 /Users/test/GBF-Accelerator-mac/gui_main.py --minimized\n",  # command
+                     ]), \
+                     mock.patch("os.kill", side_effect=mock_kill), \
+                     mock.patch("time.sleep"):
+                    res_target = config_manager.kill_process_on_port(8124)
+                    assert res_target is True, "gui_main.py process must be recognized and killed"
+                    assert 9999 in mock_killed_pids
+
+                # 2d. Packaged binary named GBF-Accelerator -> MUST kill
+                mock_killed_pids.clear()
+                with mock.patch.object(config_manager.subprocess, "run", return_value=mock_lsof), \
+                     mock.patch.object(config_manager.subprocess, "check_output", return_value="/Applications/GBF-Accelerator.app/Contents/MacOS/GBF-Accelerator\n"), \
+                     mock.patch("os.kill", side_effect=mock_kill), \
+                     mock.patch("time.sleep"):
+                    res_bin = config_manager.kill_process_on_port(8124)
+                    assert res_bin is True, "GBF-Accelerator executable must be recognized and killed"
+                    assert 9999 in mock_killed_pids
+
+            # 3. Strict SHA-1 Root CA Verification Contract: Reject name-only matches
+            with mock.patch.object(config_manager.sys, "platform", "darwin"), \
+                 mock.patch.object(config_manager, "get_base_dir", return_value=Path("/tmp/fake_dir")):
+                # Mock local cert with a known SHA-1
+                fake_ca_path = Path("/tmp/fake_dir/certs/ca.crt")
+                with mock.patch.object(Path, "is_file", return_value=True), \
+                     mock.patch.object(Path, "read_bytes", return_value=b"fake-cert"):
+                    mock_cert = mock.Mock()
+                    mock_cert.fingerprint.return_value = bytes.fromhex("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                    with mock.patch("cryptography.x509.load_pem_x509_certificate", return_value=mock_cert):
+                        # Output with matching CN but DIFFERENT SHA-1 -> must return False
+                        diff_sha_out = mock.Mock(returncode=0, stdout="SHA-1 hash: BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\nGBF Local Accelerator Root CA")
+                        with mock.patch.object(config_manager.subprocess, "run", return_value=diff_sha_out):
+                            assert config_manager.is_ca_installed() is False, "Mismatched SHA-1 must return False even if Common Name matches"
+
+                        # Output with matching SHA-1 -> returns True
+                        same_sha_out = mock.Mock(returncode=0, stdout="SHA-1 hash: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nGBF Local Accelerator Root CA")
+                        with mock.patch.object(config_manager.subprocess, "run", return_value=same_sha_out):
+                            assert config_manager.is_ca_installed() is True, "Matching SHA-1 must return True"
+
+            print("Test 75 - macOS Process Isolation, Startup & Strict CA Security Contract: OK", flush=True)
+
+            print("\n[+] ALL 75 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()
