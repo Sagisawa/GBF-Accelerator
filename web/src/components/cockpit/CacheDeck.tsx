@@ -23,19 +23,20 @@ export const CacheDeck: React.FC<CacheDeckProps> = ({
   const [busy, setBusy] = useState<boolean>(false)
 
   useEffect(() => {
-    if (currentDir && !pathInput) {
+    if (currentDir && (!pathInput || !isDirty)) {
       setPathInput(currentDir)
     }
   }, [currentDir])
 
   const isDirty = pathInput.trim() !== currentDir.trim() && pathInput.trim() !== ''
 
-  const handleSaveDir = async () => {
-    if (!pathInput.trim()) return
+  const handleSaveDir = async (newPath?: string) => {
+    const targetPath = (newPath ?? pathInput).trim()
+    if (!targetPath) return
     setBusy(true)
     try {
-      await applyConfig({ cache_dir: pathInput.trim() })
-      onToast(`缓存路径已更新: ${pathInput.trim()}`, 'success')
+      await applyConfig({ cache_dir: targetPath })
+      onToast(`缓存路径已更新: ${targetPath}`, 'success')
       onRefresh()
     } catch (e: any) {
       onToast(`保存失败: ${e.message}`, 'error')
@@ -136,7 +137,7 @@ export const CacheDeck: React.FC<CacheDeckProps> = ({
               <Button
                 variant="primary"
                 size="sm"
-                onClick={handleSaveDir}
+                onClick={() => handleSaveDir()}
                 loading={busy}
                 icon={<Save className="w-3.5 h-3.5" />}
               >
@@ -188,7 +189,10 @@ export const CacheDeck: React.FC<CacheDeckProps> = ({
               <button
                 key={p.path}
                 type="button"
-                onClick={() => setPathInput(p.path)}
+                onClick={() => {
+                  setPathInput(p.path)
+                  handleSaveDir(p.path)
+                }}
                 className="px-2 py-0.5 rounded text-[11px] font-mono bg-surface-subtle hover:bg-surface-active text-label-secondary hover:text-label-primary border border-hairline transition-colors"
               >
                 {p.name}

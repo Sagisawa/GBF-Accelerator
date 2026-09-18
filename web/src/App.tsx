@@ -169,6 +169,9 @@ export const App: React.FC = () => {
     setIsShortcutsModalOpen(false)
   }
 
+  const isAnyModalOpen =
+    isLogDrawerOpen || isMobileModalOpen || isClearModalOpen || isShortcutsModalOpen
+
   // Keyboard Shortcuts Registration
   useKeyboardShortcuts({
     onToggleProxy: handleToggleProxy,
@@ -177,6 +180,7 @@ export const App: React.FC = () => {
     onOpenClearModal: () => setIsClearModalOpen(true),
     onOpenShortcutsModal: () => setIsShortcutsModalOpen(true),
     onCloseAll: handleCloseAll,
+    isModalOpen: isAnyModalOpen,
   })
 
   return (

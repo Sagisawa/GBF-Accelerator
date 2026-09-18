@@ -22,6 +22,12 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
   const [ramMb, setRamMb] = useState<number>(config.ram_cache_max_mb || 256)
   const [copied, setCopied] = useState<boolean>(false)
 
+  React.useEffect(() => {
+    if (typeof config.ram_cache_max_mb === 'number') {
+      setRamMb(config.ram_cache_max_mb)
+    }
+  }, [config.ram_cache_max_mb])
+
   const enablePrefetch = config.enable_prefetch ?? true
   const enableBrowserCache = config.enable_browser_cache ?? true
   const port = config.listen_port ?? status?.listen_port ?? 8124
@@ -116,6 +122,7 @@ export const AdvancedDisclosure: React.FC<AdvancedDisclosureProps> = ({
               onChange={(e) => setRamMb(Number(e.target.value))}
               onMouseUp={(e) => handleRamChange(Number((e.target as HTMLInputElement).value))}
               onTouchEnd={(e) => handleRamChange(Number((e.target as HTMLInputElement).value))}
+              onKeyUp={(e) => handleRamChange(Number((e.target as HTMLInputElement).value))}
               className="w-full h-1.5 accent-sys-green cursor-pointer"
             />
           </div>

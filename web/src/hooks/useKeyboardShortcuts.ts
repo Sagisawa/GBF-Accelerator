@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 export interface ShortcutHandlers {
   onToggleProxy?: () => void
@@ -7,64 +7,95 @@ export interface ShortcutHandlers {
   onOpenClearModal?: () => void
   onOpenShortcutsModal?: () => void
   onCloseAll?: () => void
+  isModalOpen?: boolean
 }
 
 export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
+  const handlersRef = useRef(handlers)
+  handlersRef.current = handlers
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Input / TextArea guard: Never trigger single-key actions while user is typing
+      // 1. IME composition guard: Never intercept IME candidate selection (Space/Enter/numbers)
+      if (e.isComposing || e.keyCode === 229) {
+        return
+      }
+
+      // 2. Input / Textarea / Select / ContentEditable guard
       const target = e.target as HTMLElement | null
       if (
         target &&
         (target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
           target.isContentEditable)
       ) {
-        // Only allow Esc inside inputs to blur
+        // Only allow Esc inside inputs to blur and close
         if (e.key === 'Escape') {
           target.blur()
-          handlers.onCloseAll?.()
+          handlersRef.current.onCloseAll?.()
         }
         return
       }
 
-      // Do not hijack standard modifier combos like Cmd+C, Ctrl+C, Ctrl+L, Alt+F4
+      // 3. Button guard: Allow native button click with Space
+      if (target && (target.tagName === 'BUTTON' || target.closest('button'))) {
+        if (e.key === ' ') {
+          return
+        }
+      }
+
+      // 4. Do not hijack standard browser / OS modifier combos like Cmd+C, Ctrl+C, Ctrl+L, Alt+F4
       if (e.metaKey || e.ctrlKey || e.altKey) {
+        return
+      }
+
+      // 5. If a modal or drawer is open:
+      // Only allow Esc (or L if toggling logs drawer)
+      const isModalOpen = handlersRef.current.isModalOpen
+      if (isModalOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          handlersRef.current.onCloseAll?.()
+        } else if (e.key === 'l' || e.key === 'L') {
+          e.preventDefault()
+          handlersRef.current.onToggleLogs?.()
+        }
         return
       }
 
       switch (e.key) {
         case ' ':
           e.preventDefault()
-          handlers.onToggleProxy?.()
+          handlersRef.current.onToggleProxy?.()
           break
 
         case 'l':
         case 'L':
           e.preventDefault()
-          handlers.onToggleLogs?.()
+          handlersRef.current.onToggleLogs?.()
           break
 
         case 'd':
         case 'D':
           e.preventDefault()
-          handlers.onToggleDirect?.()
+          handlersRef.current.onToggleDirect?.()
           break
 
         case 'c':
         case 'C':
           e.preventDefault()
-          handlers.onOpenClearModal?.()
+          handlersRef.current.onOpenClearModal?.()
           break
 
         case '?':
           e.preventDefault()
-          handlers.onOpenShortcutsModal?.()
+          handlersRef.current.onOpenShortcutsModal?.()
           break
 
         case 'Escape':
           e.preventDefault()
-          handlers.onCloseAll?.()
+          handlersRef.current.onCloseAll?.()
           break
 
         default:
@@ -74,5 +105,6 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [handlers])
+  }, [])
 }
+

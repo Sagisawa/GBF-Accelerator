@@ -298,9 +298,19 @@ class ControlHttpHandler:
                 if not isinstance(new_cfg, dict):
                     await self.send_json(400, {"error": "Config payload must be a JSON object"})
                     return
+                if "port" in new_cfg and "listen_port" not in new_cfg:
+                    new_cfg["listen_port"] = new_cfg["port"]
                 for k, v in new_cfg.items():
                     if k in config_manager.config:
                         config_manager.config[k] = v
+                if "listen_port" in new_cfg:
+                    try:
+                        p = int(new_cfg["listen_port"])
+                        if 0 < p < 65536:
+                            config_manager.config["listen_port"] = p
+                            gbf_proxy.LISTEN_PORT = p
+                    except (ValueError, TypeError):
+                        pass
                 config_manager.save_config()
                 if "direct_mode" in new_cfg:
                     gbf_proxy.DIRECT_MODE = bool(new_cfg["direct_mode"])
