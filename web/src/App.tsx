@@ -184,44 +184,51 @@ export const App: React.FC = () => {
   })
 
   return (
-    <div className="min-h-screen bg-canvas text-label-primary flex flex-col font-sans selection:bg-sys-blue/20">
-      {/* Toast Notification */}
+    <div className="min-h-screen bg-canvas text-label-primary flex flex-col font-sans selection:bg-apple-red/30">
+      {/* Toast Notification (Apple Pill) */}
       {toast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-2 duration-150">
-          <div className="px-4 py-2 rounded-xl bg-surface-elevated border border-hairline-strong shadow-2xl flex items-center gap-2.5 text-xs">
-            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-sys-green shrink-0" />}
-            {toast.type === 'error' && <XCircle className="w-4 h-4 text-sys-red shrink-0" />}
-            {toast.type === 'info' && <Info className="w-4 h-4 text-sys-blue shrink-0" />}
-            <span className="font-medium text-label-primary">{toast.msg}</span>
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-3 duration-200">
+          <div className="px-4 py-2.5 rounded-full bg-[#1c1c1e]/95 backdrop-blur-2xl border border-white/[0.12] shadow-apple-pop flex items-center gap-2.5 text-xs">
+            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-apple-green shrink-0" />}
+            {toast.type === 'error' && <XCircle className="w-4 h-4 text-apple-red shrink-0" />}
+            {toast.type === 'info' && <Info className="w-4 h-4 text-apple-blue shrink-0" />}
+            <span className="font-medium text-white tracking-tight">{toast.msg}</span>
           </div>
         </div>
       )}
 
-      {/* 1. Header Bar */}
+      {/* 1. Apple Music Style Persistent Player Bar */}
       <HeaderBar
         status={status}
+        telemetry={telemetry}
+        config={config}
         loading={loadingProxy}
         onToggleProxy={handleToggleProxy}
+        onOpenMobileGuide={() => setIsMobileModalOpen(true)}
+        onToggleLogs={() => setIsLogDrawerOpen((prev) => !prev)}
+        onOpenClearModal={() => setIsClearModalOpen(true)}
+        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
+        logCount={logs.length}
       />
 
-      {/* 2. Main Cockpit Dashboard (width constrained to max-w-4xl ~840px for single-screen ergonomics) */}
-      <main className="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 py-6 space-y-4">
+      {/* 2. Main Apple Inset Dashboard Canvas */}
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-6 space-y-5">
         {/* Error Alert if any */}
         {status?.last_error && (
-          <div className="p-3 bg-sys-redBg border border-sys-red/30 rounded-xl text-xs text-sys-red flex items-center gap-2 animate-in fade-in">
+          <div className="p-4 bg-apple-red/10 border border-apple-red/30 rounded-2xl text-xs text-apple-red flex items-center gap-3 animate-in fade-in">
             <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>内核运行异常: {status.last_error}</span>
+            <span>代理内核运行异常: {status.last_error}</span>
           </div>
         )}
 
-        {/* 3-Pillar Telemetry Strip */}
+        {/* Apple Curated Feature Cards (Telemetry & Status) */}
         <TelemetryStrip
           status={status}
           telemetry={telemetry}
           prefetch={prefetch}
         />
 
-        {/* Deck 1: Local Cache Storage */}
+        {/* Section 1: Local Cache Storage Inset Group */}
         <CacheDeck
           status={status}
           cacheStats={cacheStats}
@@ -229,7 +236,7 @@ export const App: React.FC = () => {
           onToast={showToast}
         />
 
-        {/* Deck 2: Upstream Proxy & Routing */}
+        {/* Section 2: Upstream Routing Inset Group */}
         <UpstreamDeck
           status={status}
           config={config}
@@ -237,7 +244,7 @@ export const App: React.FC = () => {
           onToast={showToast}
         />
 
-        {/* Deck 3: Network Port & LAN */}
+        {/* Section 3: Port & Multi-Device Inset Group */}
         <NetworkDeck
           status={status}
           config={config}
@@ -246,7 +253,7 @@ export const App: React.FC = () => {
           onToast={showToast}
         />
 
-        {/* Advanced Disclosure Drawer */}
+        {/* Section 4: Advanced Tuning Inset Group */}
         <AdvancedDisclosure
           status={status}
           config={config}
@@ -254,7 +261,7 @@ export const App: React.FC = () => {
           onToast={showToast}
         />
 
-        {/* Bottom Utility Dock */}
+        {/* Bottom Apple Music Style Footer */}
         <UtilityDock
           onOpenClearModal={() => setIsClearModalOpen(true)}
           onToggleLogs={() => setIsLogDrawerOpen((prev) => !prev)}

@@ -7,7 +7,7 @@ export interface SwitchProps {
   disabled?: boolean
   label?: string
   description?: string
-  color?: 'green' | 'blue'
+  color?: 'green' | 'blue' | 'red'
   className?: string
 }
 
@@ -20,19 +20,23 @@ export const Switch: React.FC<SwitchProps> = ({
   color = 'green',
   className,
 }) => {
-  const activeBg = color === 'green' ? 'bg-sys-green' : 'bg-sys-blue'
+  const activeBg = {
+    green: 'bg-apple-green',
+    blue: 'bg-apple-blue',
+    red: 'bg-apple-red',
+  }[color]
 
   return (
     <label
       className={cn(
-        'flex items-center justify-between select-none group',
+        'flex items-center justify-between select-none group py-1',
         disabled ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer',
         className
       )}
     >
       {(label || description) && (
         <div className="flex flex-col pr-4">
-          {label && <span className="text-sm font-medium text-label-primary">{label}</span>}
+          {label && <span className="text-sm font-medium text-label-primary tracking-tight">{label}</span>}
           {description && (
             <span className="text-xs text-label-secondary mt-0.5 leading-relaxed">
               {description}
@@ -50,16 +54,16 @@ export const Switch: React.FC<SwitchProps> = ({
           if (!disabled) onChange(!checked)
         }}
         className={cn(
-          'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-200 ease-out focus:outline-none border',
+          'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors duration-200 ease-in-out focus:outline-none p-0.5',
           checked
-            ? `${activeBg} border-transparent shadow-sm`
-            : 'bg-surface-active border-hairline group-hover:border-hairline-strong'
+            ? `${activeBg} shadow-sm`
+            : 'bg-[#3A3A3C] hover:bg-[#48484A]'
         )}
       >
         <span
           className={cn(
-            'inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform duration-200 ease-out shadow-md',
-            checked ? 'translate-x-[18px]' : 'translate-x-[3px]'
+            'inline-block h-5 w-5 transform rounded-full bg-white transition-transform duration-200 ease-in-out shadow-[0_2px_4px_rgba(0,0,0,0.3)]',
+            checked ? 'translate-x-5' : 'translate-x-0'
           )}
         />
       </button>

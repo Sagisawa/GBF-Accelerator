@@ -16,14 +16,14 @@ export const UtilityDock: React.FC<UtilityDockProps> = ({
   logCount,
 }) => {
   return (
-    <div className="pt-2 pb-8 flex flex-wrap items-center justify-between gap-3 text-xs text-label-secondary border-t border-hairline">
-      {/* Left Action Buttons */}
+    <footer className="pt-6 pb-12 flex flex-wrap items-center justify-between gap-4 text-xs text-label-secondary border-t border-white/[0.08] select-none">
+      {/* Left Action Pills */}
       <div className="flex items-center gap-2 flex-wrap">
         <Button
           variant="secondary"
           size="sm"
           onClick={onOpenClearModal}
-          icon={<Trash2 className="w-3.5 h-3.5 text-sys-red" />}
+          icon={<Trash2 className="w-3.5 h-3.5 text-apple-red" />}
           shortcut="C"
         >
           清空缓存
@@ -33,10 +33,10 @@ export const UtilityDock: React.FC<UtilityDockProps> = ({
           variant="secondary"
           size="sm"
           onClick={onToggleLogs}
-          icon={<Terminal className="w-3.5 h-3.5 text-sys-blue" />}
+          icon={<Terminal className="w-3.5 h-3.5 text-apple-blue" />}
           shortcut="L"
         >
-          实时日志终端 {logCount > 0 && <span className="text-[10px] font-mono text-label-tertiary">({logCount})</span>}
+          实时日志终端 {logCount > 0 && <span className="text-[10px] font-mono text-label-secondary">({logCount})</span>}
         </Button>
 
         <Button
@@ -50,15 +50,15 @@ export const UtilityDock: React.FC<UtilityDockProps> = ({
         </Button>
       </div>
 
-      {/* Right Links */}
-      <div className="flex items-center gap-3">
+      {/* Right Links & Meta */}
+      <div className="flex items-center gap-4 text-xs">
         <a
           href="https://game.granbluefantasy.jp"
           target="_blank"
           rel="noreferrer"
-          className="hover:text-label-primary flex items-center gap-1.5 transition-colors"
+          className="hover:text-white flex items-center gap-1.5 transition-colors"
         >
-          <Gamepad2 className="w-3.5 h-3.5 text-sys-blue" />
+          <Gamepad2 className="w-3.5 h-3.5 text-apple-blue" />
           <span>打开游戏页</span>
         </a>
 
@@ -66,12 +66,12 @@ export const UtilityDock: React.FC<UtilityDockProps> = ({
           href="https://github.com/Sagisawa/GBF-Accelerator"
           target="_blank"
           rel="noreferrer"
-          className="hover:text-label-primary flex items-center gap-1.5 transition-colors"
+          className="hover:text-white flex items-center gap-1.5 transition-colors"
         >
           <Github className="w-3.5 h-3.5" />
           <span>GitHub</span>
         </a>
       </div>
-    </div>
+    </footer>
   )
 }

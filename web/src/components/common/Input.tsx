@@ -20,9 +20,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           ref={ref}
           disabled={disabled}
           className={cn(
-            'w-full bg-surface-subtle text-label-primary placeholder-label-tertiary rounded-lg border border-hairline px-3 py-2 text-sm transition-all duration-150 ease-out shadow-inner',
-            'focus:outline-none focus:border-sys-blue/50 focus:ring-1 focus:ring-sys-blue/30 focus:bg-surface',
-            'hover:border-hairline-strong',
+            'w-full bg-black/30 text-label-primary placeholder-label-tertiary rounded-xl border border-white/[0.08] px-3.5 py-2 text-sm transition-all duration-150 ease-out',
+            'focus:outline-none focus:border-apple-red/60 focus:ring-2 focus:ring-apple-red/20 focus:bg-black/50',
+            'hover:border-white/[0.14]',
             'disabled:opacity-40 disabled:cursor-not-allowed',
             mono && 'font-mono text-[13px]',
             leftIcon && 'pl-9',

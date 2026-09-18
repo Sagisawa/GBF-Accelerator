@@ -3,7 +3,7 @@ import { RuntimeStatus } from '../../types'
 import { Input } from '../common/Input'
 import { Button } from '../common/Button'
 import { Switch } from '../common/Switch'
-import { Globe, Save } from 'lucide-react'
+import { Globe, Save, Zap, ShieldCheck } from 'lucide-react'
 import { applyConfig } from '../../api'
 
 export interface UpstreamDeckProps {
@@ -61,7 +61,6 @@ export const UpstreamDeck: React.FC<UpstreamDeckProps> = ({
 
   const handleToggleShimakaze = async (checked: boolean) => {
     try {
-      // Shimakaze GO uses self-signed certificates, so verify_upstream_tls must be inverted
       await applyConfig({ verify_upstream_tls: !checked })
       onToast(checked ? '岛风GO兼容模式已开启 (放宽TLS强校验)' : '岛风GO兼容模式已关闭 (开启标准TLS校验)', 'info')
       onConfigUpdated()
@@ -79,90 +78,141 @@ export const UpstreamDeck: React.FC<UpstreamDeckProps> = ({
   ]
 
   return (
-    <div className="bg-surface border border-hairline rounded-xl p-5 shadow-specular space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Globe className="w-4 h-4 text-sys-blue" />
-          <h3 className="text-sm font-semibold text-label-primary tracking-tight">
-            上游代理与链路分流 (Upstream Routing)
-          </h3>
-        </div>
-
-        <div className="text-xs text-label-secondary font-mono">
-          当前链路:{' '}
-          <strong className={isDirect ? 'text-sys-green font-medium' : 'text-sys-blue font-medium'}>
-            {isDirect ? '直连日本官方 (Direct)' : currentUpstream}
+    <section className="space-y-2 select-none">
+      <div className="flex items-center justify-between px-1">
+        <h3 className="text-[11px] font-semibold text-label-secondary uppercase tracking-wider">
+          网络与上游代理
+        </h3>
+        <span className="text-[11px] font-mono text-label-secondary">
+          链路:{' '}
+          <strong className={isDirect ? 'text-apple-green font-medium' : 'text-apple-blue font-medium'}>
+            {isDirect ? '日本官方直连 (Direct)' : (currentUpstream === 'auto' ? '自动分流 (auto)' : currentUpstream)}
           </strong>
-        </div>
+        </span>
       </div>
 
-      {/* Upstream Proxy Input */}
-      {!isDirect && (
-        <div className="space-y-2">
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-            <div className="flex-1">
-              <Input
-                value={upstreamInput}
-                onChange={(e) => setUpstreamInput(e.target.value)}
-                placeholder="例如: http://127.0.0.1:7897 或 auto"
-                mono
-              />
+      {/* Apple Inset Grouped Container */}
+      <div className="bg-[#1c1c1e] border border-white/[0.08] rounded-2xl divide-y divide-white/[0.06] overflow-hidden">
+        {/* Row 1: Direct Mode Switch */}
+        <div className="px-4 sm:px-5 py-3.5 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-xl bg-apple-green/15 text-apple-green flex items-center justify-center shrink-0">
+              <Zap className="w-4 h-4" />
             </div>
-
-            {isDirty && (
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() => handleSaveUpstream()}
-                loading={busy}
-                icon={<Save className="w-3.5 h-3.5" />}
-              >
-                保存
-              </Button>
-            )}
+            <div>
+              <div className="text-sm font-medium text-white tracking-tight">
+                直连模式 (Direct Mode)
+              </div>
+              <div className="text-xs text-label-secondary mt-0.5">
+                绕过上游梯子直接连接日本 Cygames 官方 CDN，享受本地静态资源微秒缓存
+              </div>
+            </div>
           </div>
 
-          {/* Presets */}
-          <div className="flex items-center gap-2 text-xs pt-1">
-            <span className="text-label-tertiary">常用填充:</span>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {presets.map((p) => (
-                <button
-                  key={p.val}
-                  type="button"
-                  onClick={() => {
-                    setUpstreamInput(p.val)
-                    handleSaveUpstream(p.val)
-                  }}
-                  className="px-2 py-0.5 rounded text-[11px] font-mono bg-surface-subtle hover:bg-surface-active text-label-secondary hover:text-label-primary border border-hairline transition-colors"
+          <Switch
+            checked={isDirect}
+            onChange={handleToggleDirect}
+            color="green"
+          />
+        </div>
+
+        {/* Row 2: Upstream Proxy Input (when not in direct mode) */}
+        {!isDirect && (
+          <div className="p-4 sm:p-5 space-y-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-xl bg-apple-blue/15 text-apple-blue flex items-center justify-center shrink-0">
+                <Globe className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-sm font-medium text-white tracking-tight">
+                  上游代理服务器
+                </div>
+                <div className="text-xs text-label-secondary mt-0.5">
+                  填写 Clash / v2rayN / 岛风GO 的本地代理监听地址 (支持 HTTP 与 SOCKS5)
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+              <div className="flex-1">
+                <Input
+                  value={upstreamInput}
+                  onChange={(e) => setUpstreamInput(e.target.value)}
+                  placeholder="例如: http://127.0.0.1:7897 或 auto"
+                  mono
+                />
+              </div>
+
+              {isDirty && (
+                <Button
+                  variant="apple"
+                  size="sm"
+                  onClick={() => handleSaveUpstream()}
+                  loading={busy}
+                  icon={<Save className="w-3.5 h-3.5" />}
                 >
-                  {p.name}
-                </button>
-              ))}
+                  保存
+                </Button>
+              )}
             </div>
           </div>
+        )}
+
+        {/* Row 3: Upstream Presets (when not in direct mode) */}
+        {!isDirect && (
+          <div className="px-4 sm:px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="text-xs text-label-secondary">
+              常用代理客户端快速填充
+            </div>
+
+            <div className="inline-flex p-1 rounded-xl bg-black/40 border border-white/[0.06] self-start sm:self-auto gap-1 flex-wrap">
+              {presets.map((p) => {
+                const isSelected = upstreamInput === p.val
+                return (
+                  <button
+                    key={p.val}
+                    type="button"
+                    onClick={() => {
+                      setUpstreamInput(p.val)
+                      handleSaveUpstream(p.val)
+                    }}
+                    className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
+                      isSelected
+                        ? 'bg-white/[0.14] text-white shadow-sm font-semibold'
+                        : 'text-label-secondary hover:text-white'
+                    }`}
+                  >
+                    {p.name}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Row 4: Shimakaze GO Compatible Mode */}
+        <div className="px-4 sm:px-5 py-3.5 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-xl bg-apple-amber/15 text-apple-amber flex items-center justify-center shrink-0">
+              <ShieldCheck className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-sm font-medium text-white tracking-tight">
+                岛风 GO 兼容模式
+              </div>
+              <div className="text-xs text-label-secondary mt-0.5">
+                放宽上游 TLS 证书校验以适配岛风自签名证书，杜绝 502 / SSL 握手异常
+              </div>
+            </div>
+          </div>
+
+          <Switch
+            checked={!verifyTLS}
+            onChange={handleToggleShimakaze}
+            color="blue"
+          />
         </div>
-      )}
-
-      {/* Toggles */}
-      <div className="pt-2 border-t border-hairline space-y-3">
-        <Switch
-          checked={isDirect}
-          onChange={handleToggleDirect}
-          label="直连模式 (Direct Mode)"
-          description="绕过上游梯子直接连接日本 Cygames 官方 CDN，享受本地静态资源毫秒缓存"
-          color="green"
-        />
-
-        <Switch
-          checked={!verifyTLS}
-          onChange={handleToggleShimakaze}
-          label="岛风 GO 兼容模式 (Shimakaze GO Compatible)"
-          description="放宽上游 TLS 证书校验以适配岛风自签名证书，避免 502/SSL 握手异常"
-          color="blue"
-        />
       </div>
-    </div>
+    </section>
   )
 }

@@ -41,29 +41,29 @@ export const Modal: React.FC<ModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/60 backdrop-blur-sm transition-opacity"
+        className="fixed inset-0 bg-black/70 backdrop-blur-md transition-opacity"
         onClick={onClose}
       />
 
       {/* Modal Dialog */}
       <div
         className={cn(
-          'relative w-full bg-surface-elevated border border-hairline-strong rounded-2xl shadow-2xl overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150',
+          'relative w-full bg-[#1c1c1e]/95 backdrop-blur-2xl border border-white/[0.1] rounded-3xl shadow-apple-pop overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-200',
           maxWidth,
           className
         )}
       >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-hairline flex items-center justify-between bg-surface/50">
+        <div className="px-6 py-4 border-b border-white/[0.06] flex items-center justify-between">
           <div>
-            <h3 className="text-base font-semibold text-label-primary">{title}</h3>
+            <h3 className="text-base font-semibold text-white tracking-tight">{title}</h3>
             {subtitle && (
               <p className="text-xs text-label-secondary mt-0.5">{subtitle}</p>
             )}
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-label-tertiary hover:text-label-primary hover:bg-surface-active transition-colors"
+            className="w-7 h-7 rounded-full bg-white/[0.08] hover:bg-white/[0.16] flex items-center justify-center text-label-secondary hover:text-white transition-colors"
             title="关闭 (Esc)"
           >
             <X className="w-4 h-4" />

@@ -3,7 +3,7 @@ import { cn } from '../../utils/cn'
 import { Loader2 } from 'lucide-react'
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'success'
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'success' | 'apple'
   size?: 'xs' | 'sm' | 'md' | 'lg'
   loading?: boolean
   icon?: React.ReactNode
@@ -22,26 +22,28 @@ export const Button: React.FC<ButtonProps> = ({
   ...props
 }) => {
   const baseClasses =
-    'inline-flex items-center justify-center font-medium rounded-lg select-none transition-all duration-100 ease-out focus:outline-none disabled:opacity-40 disabled:pointer-events-none active:scale-[0.985]'
+    'inline-flex items-center justify-center font-medium rounded-full select-none transition-all duration-150 ease-out focus:outline-none disabled:opacity-40 disabled:pointer-events-none active:scale-[0.96] tracking-tight'
 
   const variantClasses = {
     primary:
-      'bg-sys-blue text-white hover:bg-sys-blue/90 shadow-specular active:shadow-specular-active',
+      'bg-white text-black font-semibold hover:bg-white/90 shadow-sm active:bg-white/80',
+    apple:
+      'bg-apple-red text-white font-semibold hover:bg-apple-redHover shadow-apple active:scale-[0.96]',
     secondary:
-      'bg-surface hover:bg-surface-elevated text-label-primary border border-hairline shadow-specular active:shadow-specular-active hover:border-hairline-strong',
+      'bg-white/[0.08] hover:bg-white/[0.14] text-white border border-white/[0.08] active:bg-white/[0.06]',
     danger:
-      'bg-sys-red text-white hover:bg-sys-red/90 shadow-specular active:shadow-specular-active',
+      'bg-apple-red text-white font-medium hover:bg-apple-redHover shadow-apple active:scale-[0.96]',
     ghost:
-      'bg-transparent hover:bg-surface text-label-secondary hover:text-label-primary',
+      'bg-transparent hover:bg-white/[0.08] text-label-secondary hover:text-white active:bg-white/[0.04]',
     success:
-      'bg-sys-green text-black font-semibold hover:bg-sys-green/90 shadow-specular active:shadow-specular-active',
+      'bg-apple-green text-white font-semibold hover:bg-apple-green/90 shadow-sm active:scale-[0.96]',
   }[variant]
 
   const sizeClasses = {
-    xs: 'text-xs px-2 py-1 gap-1.5',
-    sm: 'text-xs px-2.5 py-1.5 gap-1.5',
-    md: 'text-sm px-3.5 py-2 gap-2',
-    lg: 'text-sm px-4 py-2.5 gap-2.5 font-medium',
+    xs: 'text-[11px] px-2.5 py-1 gap-1.5',
+    sm: 'text-xs px-3.5 py-1.5 gap-1.5',
+    md: 'text-xs px-4 py-2 gap-2 font-medium',
+    lg: 'text-sm px-5 py-2.5 gap-2.5 font-semibold',
   }[size]
 
   return (
