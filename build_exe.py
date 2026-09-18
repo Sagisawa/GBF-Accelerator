@@ -52,13 +52,18 @@ def build():
         "--hidden-import", "startup_manager",
         "--hidden-import", "update_manager",
         "--hidden-import", "socksio",
+        "--hidden-import", "control_server",
         "--exclude-module", "AppKit",
         "--exclude-module", "objc",
         "--exclude-module", "Foundation",
         "--add-data", f"{BASE_DIR / 'SwitchyOmega_GBF.bak'};.",
         "--add-data", f"{BASE_DIR / 'proxy.pac'};.",
-        str(BASE_DIR / "gui_main.py"),
     ]
+
+    if (BASE_DIR / "web" / "dist").is_dir():
+        cmd.extend(["--add-data", f"{BASE_DIR / 'web' / 'dist'};web/dist"])
+
+    cmd.append(str(BASE_DIR / "gui_main.py"))
 
     print("Running command:", " ".join(cmd))
     res = subprocess.run(cmd, cwd=str(BASE_DIR))

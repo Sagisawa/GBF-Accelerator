@@ -249,6 +249,15 @@ def main():
     print(f"   [+] 上游代理服务: {upstream}")
 
     # Step 4: Run Proxy Server
+    if config_manager.config.get("enable_control_server", True):
+        try:
+            import control_server
+            ctrl_port = config_manager.get_control_port()
+            if control_server.start_control_server(port=ctrl_port):
+                print(f"   [+] 本地 Web 控制台: http://127.0.0.1:{ctrl_port}")
+        except Exception:
+            pass
+
     if sys.platform != "win32":
         _print_unix_setup_instructions()
     print("   --------------------------------------------------------------")
@@ -256,6 +265,12 @@ def main():
         asyncio.run(gbf_proxy.main())
     except KeyboardInterrupt:
         print("\n[*] 加速器已安全退出。")
+    finally:
+        try:
+            import control_server
+            control_server.stop_control_server()
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

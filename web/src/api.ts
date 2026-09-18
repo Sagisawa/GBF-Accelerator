@@ -1,0 +1,77 @@
+import { RuntimeStatus, TelemetrySummary, CacheStats, PrefetchStatus, LogItem } from './types'
+
+const BASE = ''
+
+export async function fetchStatus(): Promise<RuntimeStatus> {
+  const res = await fetch(`${BASE}/api/status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchConfig(): Promise<Record<string, any>> {
+  const res = await fetch(`${BASE}/api/config`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return data.config || {}
+}
+
+export async function applyConfig(patch: Record<string, any>): Promise<void> {
+  const res = await fetch(`${BASE}/api/config/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+}
+
+export async function toggleProxy(start: boolean): Promise<RuntimeStatus> {
+  const endpoint = start ? '/api/proxy/start' : '/api/proxy/stop'
+  const res = await fetch(`${BASE}${endpoint}`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return data.status
+}
+
+export async function fetchCacheStats(): Promise<CacheStats> {
+  const res = await fetch(`${BASE}/api/cache/stats`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function clearCache(ramOnly = false): Promise<any> {
+  const res = await fetch(`${BASE}/api/cache/clear?ram_only=${ramOnly}`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function auditCache(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cache/audit`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function slimCache(keep = 8): Promise<any> {
+  const res = await fetch(`${BASE}/api/cache/slim?keep=${keep}`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchPrefetchStatus(): Promise<PrefetchStatus> {
+  const res = await fetch(`${BASE}/api/prefetch/status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchTelemetry(): Promise<TelemetrySummary> {
+  const res = await fetch(`${BASE}/api/telemetry`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return data.telemetry
+}
+
+export async function fetchLogs(): Promise<LogItem[]> {
+  const res = await fetch(`${BASE}/api/logs`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const data = await res.json()
+  return data.logs || []
+}

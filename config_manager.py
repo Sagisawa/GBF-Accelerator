@@ -63,6 +63,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "asset_max_keepalive": 40,     # Max idle keep-alive connections for static assets
     "asset_keepalive_expiry": 60.0,# Max seconds an idle asset connection is kept alive
     "enable_api_telemetry": True,  # Track API latency percentiles and connection reuse rate
+    "control_port": 8125,          # Local Control API & Web Dashboard port (strictly 127.0.0.1)
+    "enable_control_server": True, # Enable local control server thread
 }
 
 KNOWN_ACGPOWER_PATHS = [
@@ -960,6 +962,16 @@ class ConfigManager:
         except Exception:
             pass
         return 8124
+
+    def get_control_port(self) -> int:
+        val = self.config.get("control_port", 8125)
+        try:
+            port = int(val)
+            if 1 <= port <= 65535:
+                return port
+        except Exception:
+            pass
+        return 8125
 
     def get_effective_listen_host(self) -> str:
         """Return 0.0.0.0 if allow_lan is enabled, otherwise 127.0.0.1 (or user configured listen_host)."""

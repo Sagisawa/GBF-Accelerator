@@ -443,6 +443,14 @@ class GBFAcceleratorGUI:
         from app_main import ensure_bundled_files
         ensure_bundled_files()
 
+        # Start local control plane server if enabled
+        if config_manager.config.get("enable_control_server", True):
+            try:
+                import control_server
+                control_server.start_control_server()
+            except Exception:
+                pass
+
         # Start proxy thread automatically
         self.start_proxy()
 
@@ -761,6 +769,9 @@ class GBFAcceleratorGUI:
 
         self.btn_logs = self._emoji_button(f_bottom, "📜", "实时日志", self.show_log_window)
         self.btn_logs.pack(side="left", padx=(0, 3))
+
+        self.btn_web = self._emoji_button(f_bottom, "📊", "Web控制台", self.open_web_dashboard)
+        self.btn_web.pack(side="left", padx=(0, 3))
 
         tray_btn_text = "最小化到后台" if sys.platform == "darwin" else "最小化到托盘"
         btn_tray = self._emoji_button(f_bottom, "⬇", tray_btn_text, self.hide_to_tray)
@@ -2892,11 +2903,23 @@ class GBFAcceleratorGUI:
                 pass
         self.log_window = LogViewerWindow(self)
 
+    def open_web_dashboard(self):
+        """Open the local Web Dashboard in user's default browser."""
+        ctrl_port = config_manager.get_control_port()
+        webbrowser.open(f"http://127.0.0.1:{ctrl_port}")
+
     def quit_app(self, *args, terminate_process: bool = True, **kwargs):
         """Cleanly and completely shut down proxy, tray icon, and all application processes."""
         if getattr(self, "_is_quitting", False):
             return
         self._is_quitting = True
+
+        # Stop control server thread if running
+        try:
+            import control_server
+            control_server.stop_control_server()
+        except Exception:
+            pass
 
         # 1. Close log viewer if open
         if self.log_window is not None:
