@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -35,6 +36,7 @@ var (
 	procCreateIconFromResourceEx = modUser32.NewProc("CreateIconFromResourceEx")
 	procDestroyIcon             = modUser32.NewProc("DestroyIcon")
 	procLoadIconW               = modUser32.NewProc("LoadIconW")
+	procRegisterWindowMessageW  = modUser32.NewProc("RegisterWindowMessageW")
 
 	procShell_NotifyIconW = modShell32.NewProc("Shell_NotifyIconW")
 )
@@ -127,12 +129,16 @@ type WindowsTray struct {
 	nid       notifyIconDataW
 	mu        sync.Mutex
 	readyChan chan error
+	doneChan  chan struct{}
 	stopOnce  sync.Once
 }
 
 var (
-	activeTray   *WindowsTray
-	activeTrayMu sync.Mutex
+	activeTray       *WindowsTray
+	activeTrayMu     sync.Mutex
+	wmTaskbarCreated uint32
+	lastClickMu      sync.Mutex
+	lastClickTime    time.Time
 )
 
 // NewTray creates a Windows system tray instance.
@@ -141,6 +147,7 @@ func NewTray(ctrl Controller, iconBytes []byte) Tray {
 		ctrl:      ctrl,
 		iconBytes: iconBytes,
 		readyChan: make(chan error, 1),
+		doneChan:  make(chan struct{}),
 	}
 }
 
@@ -199,6 +206,11 @@ func (t *WindowsTray) runLoop() {
 		hIcon:            t.hIcon,
 	}
 
+	// Register TaskbarCreated message to re-add icon if Windows Explorer restarts
+	taskbarStr, _ := syscall.UTF16PtrFromString("TaskbarCreated")
+	rMsg, _, _ := procRegisterWindowMessageW.Call(uintptr(unsafe.Pointer(taskbarStr)))
+	wmTaskbarCreated = uint32(rMsg)
+
 	t.setTooltip(t.getTooltipText())
 	procShell_NotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&t.nid)))
 
@@ -215,12 +227,20 @@ func (t *WindowsTray) runLoop() {
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
 	}
 
-	// Cleanup on exit
+	// Cleanup on exit: remove tray icon and release resources
 	procShell_NotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&t.nid)))
 	if t.hIcon != 0 {
 		procDestroyIcon.Call(t.hIcon)
 		t.hIcon = 0
 	}
+
+	activeTrayMu.Lock()
+	if activeTray == t {
+		activeTray = nil
+	}
+	activeTrayMu.Unlock()
+
+	close(t.doneChan)
 }
 
 func (t *WindowsTray) loadIcon() uintptr {
@@ -311,29 +331,51 @@ func (t *WindowsTray) Stop() {
 		t.mu.Unlock()
 		if hwnd != 0 {
 			procPostMessageW.Call(hwnd, wmClose, 0, 0)
+			select {
+			case <-t.doneChan:
+			case <-time.After(2 * time.Second):
+			}
 		}
 	})
 }
 
-func wndProc(hwnd uintptr, uMsg uint32, wParam, lParam uintptr) uintptr {
+func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
+	uMsg := uint32(msg)
+
 	activeTrayMu.Lock()
 	t := activeTray
 	activeTrayMu.Unlock()
 
 	if t == nil {
-		ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(uMsg), wParam, lParam)
+		ret, _, _ := procDefWindowProcW.Call(hwnd, msg, wParam, lParam)
 		return ret
+	}
+
+	if wmTaskbarCreated != 0 && uMsg == wmTaskbarCreated {
+		t.mu.Lock()
+		procShell_NotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&t.nid)))
+		t.mu.Unlock()
+		return 0
 	}
 
 	switch uMsg {
 	case wmTrayIcon:
 		switch lParam {
 		case wmLButtonUp, wmLButtonDbl:
+			lastClickMu.Lock()
+			now := time.Now()
+			if now.Sub(lastClickTime) < 500*time.Millisecond {
+				lastClickMu.Unlock()
+				return 0
+			}
+			lastClickTime = now
+			lastClickMu.Unlock()
+
 			consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", t.ctrl.GetControlPort())
 			_ = t.ctrl.OpenBrowser(consoleURL)
 			return 0
 
-		case wmRButtonUp, wmContextMenu:
+		case wmRButtonUp:
 			t.showContextMenu()
 			return 0
 		}
@@ -368,7 +410,7 @@ func wndProc(hwnd uintptr, uMsg uint32, wParam, lParam uintptr) uintptr {
 		return 0
 	}
 
-	ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(uMsg), wParam, lParam)
+	ret, _, _ := procDefWindowProcW.Call(hwnd, msg, wParam, lParam)
 	return ret
 }
 
@@ -413,4 +455,6 @@ func (t *WindowsTray) showContextMenu() {
 	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
 	procSetForegroundWindow.Call(t.hwnd)
 	procTrackPopupMenuEx.Call(hMenu, tpmRightButton|tpmBottomAlign, uintptr(pt.x), uintptr(pt.y), t.hwnd, 0)
+	// KB135788: send WM_NULL to dismiss menu when user clicks outside
+	procPostMessageW.Call(t.hwnd, 0, 0, 0)
 }

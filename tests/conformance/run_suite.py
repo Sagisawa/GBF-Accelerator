@@ -99,6 +99,7 @@ async def run_suite_async():
         if not (proxy_listening and control_listening):
             if args.engine == "go":
                 exe_names = [
+                    "GBF_Accelerator.exe" if sys.platform == "win32" else "GBF_Accelerator",
                     "gbf_proxy.exe" if sys.platform == "win32" else "gbf_proxy",
                     "gbf-proxy.exe" if sys.platform == "win32" else "gbf-proxy",
                 ]
@@ -125,6 +126,7 @@ async def run_suite_async():
                 actual_engine = "go"
             elif args.engine == "auto":
                 exe_names = [
+                    "GBF_Accelerator.exe" if sys.platform == "win32" else "GBF_Accelerator",
                     "gbf_proxy.exe" if sys.platform == "win32" else "gbf_proxy",
                     "gbf-proxy.exe" if sys.platform == "win32" else "gbf-proxy",
                 ]

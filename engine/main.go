@@ -65,6 +65,10 @@ func (a *appController) Quit() {
 }
 
 func main() {
+	desktop.AttachConsole()
+
+	showVersion := flag.Bool("v", false, "Print application version and exit")
+	showVersionLong := flag.Bool("version", false, "Print application version and exit")
 	proxyPort := flag.Int("proxy-port", 8124, "Target proxy listen port")
 	controlPort := flag.Int("control-port", 8125, "Target control plane port")
 	upstreamProxy := flag.String("upstream-proxy", "", "Upstream proxy URL (e.g. http://127.0.0.1:8080)")
@@ -78,6 +82,11 @@ func main() {
 	openBrowser := flag.Bool("open-browser", false, "Automatically open Web console in browser on startup")
 
 	flag.Parse()
+
+	if *showVersion || *showVersionLong {
+		fmt.Printf("GBF-Accelerator v%s\n", config.AppVersion)
+		os.Exit(0)
+	}
 
 	// 1. Initialize Configuration
 	cfgMgr := config.NewManager(*configPath)

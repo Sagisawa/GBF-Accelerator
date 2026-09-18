@@ -33,6 +33,17 @@ def get_app_version() -> str:
         return "1.8.0"
 
 
+def kill_running_instances():
+    """Terminate running instances to prevent file lock errors during compilation."""
+    if sys.platform == "win32":
+        for exe in ["GBF_Accelerator.exe", "gbf-proxy.exe", "gbf_proxy.exe"]:
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+
+
+
 def sync_embedded_assets(rebuild_web: bool = False) -> bool:
     """Synchronize web/dist and icon assets into engine/ui/dist for //go:embed."""
     print("[*] Synchronizing embedded web assets into engine/ui/dist...")
@@ -77,6 +88,7 @@ def sync_embedded_assets(rebuild_web: bool = False) -> bool:
 
 def build_windows(gui_mode: bool = True) -> Path:
     """Compile Go native engine for Windows."""
+    kill_running_instances()
     BIN_DIR.mkdir(parents=True, exist_ok=True)
     exe_name = "GBF_Accelerator.exe"
     out_path = BIN_DIR / exe_name
