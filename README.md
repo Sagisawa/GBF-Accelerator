@@ -11,8 +11,8 @@
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
 
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
-> - **Windows**：下载 `GBF_Accelerator_v1.7.2_GUI.zip`，解压即用。
-> - **macOS**：下载 `GBF_Accelerator_v1.7.2_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Windows**：下载 `GBF_Accelerator_v1.8.0_GUI.zip`，解压即用。
+> - **macOS**：下载 `GBF_Accelerator_v1.8.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
@@ -169,7 +169,7 @@ Browser / Safari / AndApp / Steam
 ### 方式一：使用预构建便携版（推荐）
 
 #### Windows 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v1.7.2_GUI.zip`。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v1.8.0_GUI.zip`。
 2. 解压到任意非中文路径（例如 `D:\GBF_Accelerator\`）。
 3. 确保你的上游代理（Clash Verge / v2rayN 等）已开启并正常联网。
 4. 双击运行 `GBF_Accelerator.exe`。
@@ -177,7 +177,7 @@ Browser / Safari / AndApp / Steam
 6. 在浏览器中打开游戏页面即可正常游玩。
 
 #### macOS 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`（例如当前版本 `GBF_Accelerator_v1.7.2_macOS_universal2.zip`，Universal 2 双架构二进制独立 `.app`，同时原生支持 Intel 与 Apple Silicon Macs）。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`（例如当前版本 `GBF_Accelerator_v1.8.0_macOS_universal2.zip`，Universal 2 双架构二进制独立 `.app`，同时原生支持 Intel 与 Apple Silicon Macs）。
 2. 解压并打开应用程序（若提示签名拦截，请参考 [常见问题 FAQ](#q3-macos-提示应用程序已损坏无法打开或被-gatekeeper-拦截)）。
 3. 确保 Clash / Surge 等上游代理正常运行。
 4. 启动后程序会常驻顶部 Menu Bar 菜单栏；若首次使用，可根据提示完成钥匙串根证书信任。
