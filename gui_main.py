@@ -54,7 +54,26 @@ import update_manager
 from update_manager import APP_VERSION, UpdateInfo
 
 START_MINIMIZED = "--minimized" in sys.argv
-MONO_FONT = "Menlo" if sys.platform == "darwin" else "Consolas"
+
+# Platform-aware font configuration with DPI compensation
+# On macOS Tk 8.6, Cocoa points are rendered at 72 DPI (1.0x).
+# Tk 9.0 and Windows use 96 DPI (1.333x).
+# To achieve pixel-for-pixel visual parity with Tk 9 and Windows, scale by 4/3 on macOS Tk < 9.
+_FONT_SCALE = (4.0 / 3.0) if (sys.platform == "darwin" and getattr(tk, "TkVersion", 8.6) < 9.0) else 1.0
+
+UI_FONT_NAME = ".AppleSystemUIFont" if sys.platform == "darwin" else "Microsoft YaHei UI"
+MONO_FONT_NAME = "Menlo" if sys.platform == "darwin" else "Consolas"
+MONO_FONT = MONO_FONT_NAME
+
+def ui_font(size: int, weight: str = "") -> tuple:
+    """Return platform-adapted UI font tuple with DPI compensation."""
+    sz = int(round(size * _FONT_SCALE))
+    return (UI_FONT_NAME, sz, weight) if weight else (UI_FONT_NAME, sz)
+
+def mono_font(size: int, weight: str = "") -> tuple:
+    """Return platform-adapted monospace font tuple with DPI compensation."""
+    sz = int(round(size * _FONT_SCALE))
+    return (MONO_FONT_NAME, sz, weight) if weight else (MONO_FONT_NAME, sz)
 
 def open_path(path: Any, select: bool = False):
     """Cross-platform helper to open a file or directory in file manager / default app."""
@@ -408,6 +427,12 @@ class GBFAcceleratorGUI:
             except Exception:
                 pass
             self.setup_mac_window_buttons()
+            try:
+                for pat in ("<Command-a>", "<Command-A>"):
+                    self.root.bind_class("TEntry", pat, lambda e: (e.widget.select_range(0, "end"), e.widget.icursor("end"), "break"))
+                    self.root.bind_class("Entry", pat, lambda e: (e.widget.select_range(0, "end"), e.widget.icursor("end"), "break"))
+            except Exception:
+                pass
 
         # Check CA status and detect legacy leaked cert
         self.update_ca_status()
@@ -489,22 +514,22 @@ class GBFAcceleratorGUI:
         style.configure("CardInner.TFrame", background="#ffffff")
 
         # Checkbutton
-        style.configure("TCheckbutton", background="#ffffff", font=("Microsoft YaHei UI", 9))
+        style.configure("TCheckbutton", background="#ffffff", font=ui_font(9))
 
         # Labels
-        style.configure("Title.TLabel", font=("Microsoft YaHei UI", 12, "bold"), background="#ffffff", foreground="#212529")
-        style.configure("Subtitle.TLabel", font=("Microsoft YaHei UI", 9), background="#ffffff", foreground="#6c757d")
-        style.configure("StatNum.TLabel", font=("Microsoft YaHei UI", 15, "bold"), background="#ffffff")
-        style.configure("StatLabel.TLabel", font=("Microsoft YaHei UI", 9), background="#ffffff", foreground="#6c757d")
-        style.configure("Normal.TLabel", font=("Microsoft YaHei UI", 9), background="#ffffff", foreground="#333333")
-        style.configure("Gray.TLabel", font=("Microsoft YaHei UI", 8), background="#ffffff", foreground="#888888")
+        style.configure("Title.TLabel", font=ui_font(12, "bold"), background="#ffffff", foreground="#212529")
+        style.configure("Subtitle.TLabel", font=ui_font(9), background="#ffffff", foreground="#6c757d")
+        style.configure("StatNum.TLabel", font=ui_font(15, "bold"), background="#ffffff")
+        style.configure("StatLabel.TLabel", font=ui_font(9), background="#ffffff", foreground="#6c757d")
+        style.configure("Normal.TLabel", font=ui_font(9), background="#ffffff", foreground="#333333")
+        style.configure("Gray.TLabel", font=ui_font(8), background="#ffffff", foreground="#888888")
 
         # Buttons
         style.configure(
             "Primary.TButton",
             background="#007bff",
             foreground="#ffffff",
-            font=("Microsoft YaHei UI", 9, "bold"),
+            font=ui_font(9, "bold"),
             borderwidth=0,
             padding="12 5",
         )
@@ -518,7 +543,7 @@ class GBFAcceleratorGUI:
             "Success.TButton",
             background="#28a745",
             foreground="#ffffff",
-            font=("Microsoft YaHei UI", 10, "bold"),
+            font=ui_font(10, "bold"),
             borderwidth=0,
             padding="14 6",
         )
@@ -532,7 +557,7 @@ class GBFAcceleratorGUI:
             "Danger.TButton",
             background="#dc3545",
             foreground="#ffffff",
-            font=("Microsoft YaHei UI", 10, "bold"),
+            font=ui_font(10, "bold"),
             borderwidth=0,
             padding="14 6",
         )
@@ -546,7 +571,7 @@ class GBFAcceleratorGUI:
             "Warning.TButton",
             background="#ffc107",
             foreground="#212529",
-            font=("Microsoft YaHei UI", 8, "bold"),
+            font=ui_font(8, "bold"),
             borderwidth=0,
             padding="6 2",
         )
@@ -563,10 +588,11 @@ class GBFAcceleratorGUI:
             return self._icon_cache[key]
         if self._icon_size is None:
             try:
-                px = int(self.root.winfo_fpixels("9p"))
+                base_pt = int(round(9 * _FONT_SCALE))
+                px = int(self.root.winfo_fpixels(f"{base_pt}p"))
             except Exception:
-                px = 16
-            self._icon_size = max(14, min(px, 26))
+                px = int(round(16 * _FONT_SCALE))
+            self._icon_size = max(14, min(px, 32))
         img = render_emoji_image(emoji, self._icon_size)
         if img is None:
             self._icon_cache[key] = False  # negative cache: no usable emoji font
@@ -622,7 +648,7 @@ class GBFAcceleratorGUI:
                 fg="#212529",
                 activebackground="#e0a800",
                 activeforeground="#212529",
-                font=("Microsoft YaHei UI", 8, "bold"),
+                font=ui_font(8, "bold"),
                 relief="flat",
                 padx=6,
                 pady=1,
@@ -648,7 +674,7 @@ class GBFAcceleratorGUI:
                 fg="#ffffff",
                 activebackground="#bd2130",
                 activeforeground="#ffffff",
-                font=("Microsoft YaHei UI", 10, "bold"),
+                font=ui_font(10, "bold"),
                 relief="flat",
                 padx=16,
                 pady=5,
@@ -765,7 +791,7 @@ class GBFAcceleratorGUI:
         f_dir = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_dir.pack(fill="x", pady=(2, 6))
 
-        self.entry_dir = ttk.Entry(f_dir, textvariable=self.var_cache_dir, font=(MONO_FONT, 9))
+        self.entry_dir = ttk.Entry(f_dir, textvariable=self.var_cache_dir, font=mono_font(9))
         self.entry_dir.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         btn_browse = ttk.Button(f_dir, text="浏览...", width=8, command=self.browse_cache_dir)
@@ -785,7 +811,7 @@ class GBFAcceleratorGUI:
         f_up = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_up.pack(fill="x", pady=(2, 6))
 
-        self.entry_up = ttk.Entry(f_up, textvariable=self.var_upstream, font=(MONO_FONT, 9))
+        self.entry_up = ttk.Entry(f_up, textvariable=self.var_upstream, font=mono_font(9))
         self.entry_up.pack(side="left", fill="x", expand=True, padx=(0, 6))
 
         self.btn_confirm_upstream = ttk.Button(f_up, text="确认", width=8, command=self.confirm_upstream)
@@ -824,7 +850,7 @@ class GBFAcceleratorGUI:
         f_port = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_port.pack(fill="x", pady=(2, 6))
 
-        self.entry_port = ttk.Entry(f_port, textvariable=self.var_listen_port, font=(MONO_FONT, 9), width=10)
+        self.entry_port = ttk.Entry(f_port, textvariable=self.var_listen_port, font=mono_font(9), width=10)
         self.entry_port.pack(side="left", padx=(0, 6))
 
         btn_reset_port = ttk.Button(f_port, text="恢复默认 (8124)", width=14, command=self.reset_port_default)
@@ -865,7 +891,7 @@ class GBFAcceleratorGUI:
         f_ca = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_ca.pack(fill="x", pady=(2, 2))
 
-        self.lbl_ca = ttk.Label(f_ca, textvariable=self.var_ca_status, font=("Microsoft YaHei UI", 9, "bold"))
+        self.lbl_ca = ttk.Label(f_ca, textvariable=self.var_ca_status, font=ui_font(9, "bold"))
         self.lbl_ca.pack(side="left", padx=(0, 10))
 
         btn_install_ca = ttk.Button(f_ca, text="一键安装/修复根证书", command=self.install_ca)
@@ -878,7 +904,7 @@ class GBFAcceleratorGUI:
         f_ca_fp = ttk.Frame(card_settings, style="CardInner.TFrame")
         f_ca_fp.pack(fill="x", pady=(1, 4))
         ttk.Label(f_ca_fp, text="SHA-256 指纹：", style="Gray.TLabel").pack(side="left")
-        self.lbl_ca_fp = ttk.Label(f_ca_fp, textvariable=self.var_ca_fp, style="Gray.TLabel", font=(MONO_FONT, 8))
+        self.lbl_ca_fp = ttk.Label(f_ca_fp, textvariable=self.var_ca_fp, style="Gray.TLabel", font=mono_font(8))
         self.lbl_ca_fp.pack(side="left")
 
         # Field 5: Windows System PAC Automation
@@ -893,9 +919,10 @@ class GBFAcceleratorGUI:
         )
         chk_pac.pack(anchor="w")
 
+        startup_cb_text = "开机自启（启动后自动缩小到顶部菜单栏，默认关闭）" if sys.platform == "darwin" else "开机自启（启动后自动缩小到系统托盘，默认关闭）"
         chk_startup = ttk.Checkbutton(
             f_sys_proxy,
-            text="开机自启（启动后自动缩小到系统托盘，默认关闭）",
+            text=startup_cb_text,
             variable=self.var_auto_start,
             command=self.toggle_startup_setting,
         )
@@ -931,7 +958,7 @@ class GBFAcceleratorGUI:
         f_ram_mb = ttk.Frame(f_perf, style="CardInner.TFrame")
         f_ram_mb.pack(anchor="w", pady=(0, 2))
         ttk.Label(f_ram_mb, text="内存缓存上限 (MB):", style="Normal.TLabel").pack(side="left")
-        self.entry_ram_mb = ttk.Entry(f_ram_mb, textvariable=self.var_ram_max_mb, width=8, font=(MONO_FONT, 9))
+        self.entry_ram_mb = ttk.Entry(f_ram_mb, textvariable=self.var_ram_max_mb, width=8, font=mono_font(9))
         self.entry_ram_mb.pack(side="left", padx=(6, 6))
         self.btn_apply_ram = ttk.Button(f_ram_mb, text="应用", width=6, command=self.apply_ram_max_mb)
         self.btn_apply_ram.pack(side="left")
@@ -1315,7 +1342,7 @@ class GBFAcceleratorGUI:
                 fg="#ffffff",
                 activebackground="#218838",
                 activeforeground="#ffffff",
-                font=("Microsoft YaHei UI", 9, "bold"),
+                font=ui_font(9, "bold"),
                 relief="flat",
                 padx=14,
                 pady=6,
@@ -1343,7 +1370,7 @@ class GBFAcceleratorGUI:
                 fg="#ffffff",
                 activebackground="#218838",
                 activeforeground="#ffffff",
-                font=("Microsoft YaHei UI", 9, "bold"),
+                font=ui_font(9, "bold"),
                 relief="flat",
                 padx=12,
                 pady=6,
@@ -1368,7 +1395,7 @@ class GBFAcceleratorGUI:
         ttk.Label(
             f_top,
             text=f"🎉 发现新版本：v{info.latest_version}",
-            font=("Microsoft YaHei UI", 12, "bold"),
+            font=ui_font(12, "bold"),
             foreground="#28a745",
         ).pack(anchor="w")
 
@@ -1381,7 +1408,7 @@ class GBFAcceleratorGUI:
             ttk.Label(
                 f_top,
                 text=info.release_title,
-                font=("Microsoft YaHei UI", 9, "bold"),
+                font=ui_font(9, "bold"),
             ).pack(anchor="w", pady=(3, 0))
 
         # Direct clickable download link
@@ -1391,7 +1418,7 @@ class GBFAcceleratorGUI:
         lbl_link = tk.Label(
             f_link,
             text=target_url,
-            font=("Microsoft YaHei UI", 9, "underline"),
+            font=ui_font(9, "underline"),
             fg="#0066cc",
             cursor="hand2",
         )
@@ -1410,7 +1437,7 @@ class GBFAcceleratorGUI:
             f_text,
             wrap="word",
             height=8,
-            font=("Microsoft YaHei UI", 9),
+            font=ui_font(9),
             yscrollcommand=scrollbar.set,
             bg="#fdfdfd",
             relief="solid",
@@ -1526,7 +1553,8 @@ class GBFAcceleratorGUI:
         if not installed and not is_ca_installed() and not check_legacy_leaked_ca_installed():
             messagebox.showinfo("根证书提示", "系统中未检测到已安装的 GBF 根证书。")
             return
-        if not messagebox.askyesno("注销根证书", "确定要从系统【受信任的根证书颁发机构】中注销/卸载根证书吗？\n\n注销后，加速器将无法解密和缓存 HTTPS 资源，直到重新安装。"):
+        cert_store_desc = "macOS 钥匙串受信任列表" if sys.platform == "darwin" else "系统【受信任的根证书颁发机构】"
+        if not messagebox.askyesno("注销根证书", f"确定要从{cert_store_desc}中注销/卸载根证书吗？\n\n注销后，加速器将无法解密和缓存 HTTPS 资源，直到重新安装。"):
             return
         ok, msg = uninstall_ca_certificate()
         clean_legacy_leaked_ca()
@@ -1541,14 +1569,15 @@ class GBFAcceleratorGUI:
         current_installed = is_ca_installed()
 
         if legacy_found:
+            auth_hint = "（若弹出系统授权提示，请输入 Mac 密码允许信任）" if sys.platform == "darwin" else "（若弹出 Windows 证书提示框，请点击【是 (Y)】允许信任）"
             if messagebox.askyesno(
                 "检测到旧版废弃根证书",
                 "⚠️ 安全与兼容性提示：\n\n"
                 "检测到您的系统根证书库中存在已废弃的旧版公开根证书 (GBF Speed CA)。\n\n"
                 "• 旧证书私钥曾公开，继续保留存在安全隐患，且会导致新版无法解密与缓存游戏资源。\n"
                 "• 建议立即执行一键清理旧证书，并安装本机生成的专属新根证书。\n\n"
-                "是否立即执行一键迁移？\n"
-                "（若弹出 Windows 证书提示框，请点击【是 (Y)】允许信任）",
+                f"是否立即执行一键迁移？\n"
+                f"{auth_hint}",
             ):
                 clean_legacy_leaked_ca()
                 self.install_ca()
@@ -1560,13 +1589,14 @@ class GBFAcceleratorGUI:
 
     def prompt_first_run_ca(self):
         if not is_ca_installed():
+            auth_hint = "（若弹出系统授权提示，请输入 Mac 密码允许信任）" if sys.platform == "darwin" else "（若弹出系统安全提示框，请点击【是 (Y)】允许信任）"
             if messagebox.askyesno(
                 "根证书安装引导",
                 "检测到本机尚未安装/信任加速器专属的 HTTPS 根证书。\n\n"
                 "碧蓝幻想的大部分静态资源（立绘、音频、脚本等）均通过 HTTPS 传输。"
                 "安装根证书后，加速器才能解密并缓存这些静态素材。\n\n"
-                "是否立即启动一键安装向导？\n"
-                "（若弹出系统安全提示框，请点击【是 (Y)】允许信任）",
+                f"是否立即启动一键安装向导？\n"
+                f"{auth_hint}",
             ):
                 self.install_ca()
 
@@ -1595,13 +1625,14 @@ class GBFAcceleratorGUI:
             return
 
         self._proxy_conflict_prompted = True
+        net_stack = "macOS 网络配置" if sys.platform == "darwin" else "Windows 网络栈 (WinINet)"
         messagebox.showwarning(
             "检测到外部代理配置",
             f"检测到系统当前存在外部代理配置：\n\n"
             f"• 当前设置：{conflict}\n\n"
             "技术说明：\n"
-            "1. 本加速器使用 Windows 自动配置脚本 (PAC) 进行游戏域名定向分流。\n"
-            "2. Windows 网络栈 (WinINet) 中若同时开启全局手动代理，部分浏览器或网络组件可能会优先通过手动代理转发，导致加速器 PAC 分流未能按预期生效。\n\n"
+            f"1. 本加速器使用系统自动配置脚本 (PAC) 进行游戏域名定向分流。\n"
+            f"2. {net_stack}中若同时开启其他代理（如手动代理或第三方 PAC），部分浏览器或网络组件可能会优先通过该代理转发，导致加速器 PAC 分流未能按预期生效。\n\n"
             "建议方案：\n"
             "如需搭配第三方代理软件使用，建议在第三方软件中关闭其“系统代理”开关，并在本加速器界面的【上游代理】中填入对应本地端口，由加速器统一分流并转发上游。",
         )
@@ -1710,7 +1741,7 @@ class GBFAcceleratorGUI:
         frame = ttk.Frame(dlg, padding="20 16 20 16")
         frame.pack(fill="both", expand=True)
 
-        ttk.Label(frame, text="🔍 正在全量体检本地静态缓存库...", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+        ttk.Label(frame, text="🔍 正在全量体检本地静态缓存库...", font=ui_font(10, "bold")).pack(anchor="w", pady=(0, 6))
 
         var_progress_text = tk.StringVar(value="正在扫描文件结构，请稍候...")
         lbl_info = ttk.Label(frame, textvariable=var_progress_text, style="Normal.TLabel")
@@ -1837,7 +1868,7 @@ class GBFAcceleratorGUI:
         ttk.Label(
             frame,
             text="🧹 正在清理历史废弃版本代码包（立绘与语音绝不触碰）...",
-            font=("Microsoft YaHei UI", 10, "bold")
+            font=ui_font(10, "bold")
         ).pack(anchor="w", pady=(0, 6))
 
         var_status_text = tk.StringVar(value="正在准备清理历史版本目录...")
@@ -1984,7 +2015,8 @@ class GBFAcceleratorGUI:
                     self.update_shimakaze_controls()
             messagebox.showinfo("上游探测结果", f"检测并连通本地代理服务：\n{active}\n\n代理连接池已更新生效！")
         else:
-            messagebox.showwarning("上游探测警告", f"检测到本地代理地址：\n{active}\n\n但连通测试失败：{msg}\n请确认 Clash 是否已启动并开启本地监听。")
+            proxy_client_hint = "Clash / Surge" if sys.platform == "darwin" else "Clash"
+            messagebox.showwarning("上游探测警告", f"检测到本地代理地址：\n{active}\n\n但连通测试失败：{msg}\n请确认上游代理软件（如 {proxy_client_hint} 等）是否已启动并开启本地监听。")
 
     def choose_upstream(self, detected):
         """Show all detected upstreams and return the user's selected URL."""
@@ -2265,7 +2297,8 @@ class GBFAcceleratorGUI:
         ok, msg = set_startup_enabled(enabled)
         if not ok:
             self.var_auto_start.set(not enabled)
-            messagebox.showerror("开机自启设置失败", msg or "无法修改 Windows 开机启动项。")
+            os_name = "macOS" if sys.platform == "darwin" else "Windows"
+            messagebox.showerror("开机自启设置失败", msg or f"无法修改 {os_name} 开机启动项。")
             return
         config_manager.config["auto_start"] = enabled
         config_manager.save_config()
@@ -2327,7 +2360,7 @@ class GBFAcceleratorGUI:
         ttk.Label(
             f_top,
             text="移动端 / iOS 设备接入配置指引",
-            font=("Microsoft YaHei UI", 11, "bold"),
+            font=ui_font(11, "bold"),
             foreground="#007bff",
         ).pack(anchor="w")
 
@@ -2338,7 +2371,7 @@ class GBFAcceleratorGUI:
         status_text = f"电脑局域网 IP：{lan_ip}    监听端口：{port}"
         if not self.var_allow_lan.get():
             status_text += "\n注意：当前尚未开启【允许局域网连接】，外部设备暂无法连接本代理。"
-            lbl_st = ttk.Label(f_status_box, text=status_text, font=("Microsoft YaHei UI", 9), foreground="#dc3545")
+            lbl_st = ttk.Label(f_status_box, text=status_text, font=ui_font(9), foreground="#dc3545")
             lbl_st.pack(anchor="w")
 
             def enable_now():
@@ -2354,7 +2387,7 @@ class GBFAcceleratorGUI:
             btn_enb.pack(anchor="w", pady=(4, 0))
         else:
             status_text += "\n局域网服务已就绪（支持同一 Wi-Fi 下的 iPhone / iPad / Android 设备）。"
-            ttk.Label(f_status_box, text=status_text, font=("Microsoft YaHei UI", 9), foreground="#28a745").pack(anchor="w")
+            ttk.Label(f_status_box, text=status_text, font=ui_font(9), foreground="#28a745").pack(anchor="w")
 
         # Instructions scrollable text area
         f_steps = ttk.Frame(content)
@@ -2366,7 +2399,7 @@ class GBFAcceleratorGUI:
         txt = tk.Text(
             f_steps,
             wrap="word",
-            font=("Microsoft YaHei UI", 9),
+            font=ui_font(9),
             yscrollcommand=scrollbar.set,
             bg="#fdfdfd",
             relief="solid",
@@ -2831,7 +2864,7 @@ class LogViewerWindow:
         self._scheduled_job = None
         self._last_stats_tick: float = 0.0
         self._context_line: str = ""
-        self._log_font_size: int = 10 if sys.platform == "darwin" else 9
+        self._log_font_size: int = int(round((10 if sys.platform == "darwin" else 9) * _FONT_SCALE))
 
         self.var_auto_scroll = tk.BooleanVar(value=True)
         self.var_paused = tk.BooleanVar(value=False)
@@ -2850,6 +2883,10 @@ class LogViewerWindow:
         # Keyboard shortcuts on top window
         self.top.bind("<Control-f>", self._on_find)
         self.top.bind("<Control-F>", self._on_find)
+        if sys.platform == "darwin":
+            self.top.bind("<Command-f>", self._on_find)
+            self.top.bind("<Command-F>", self._on_find)
+            self.top.bind("<Command-MouseWheel>", self._on_mousewheel_zoom)
         self.top.bind("<Escape>", self._on_escape)
         self.top.bind("<space>", self._on_space)
         self.top.bind("<Control-MouseWheel>", self._on_mousewheel_zoom)
@@ -2884,7 +2921,7 @@ class LogViewerWindow:
 
         # Left-side search and filters
         ttk.Label(toolbar, text="搜索:").pack(side="left", padx=(0, 2))
-        self.entry_filter = ttk.Entry(toolbar, textvariable=self.var_filter_text, width=12, font=("Microsoft YaHei UI", 9))
+        self.entry_filter = ttk.Entry(toolbar, textvariable=self.var_filter_text, width=12, font=ui_font(9))
         self.entry_filter.pack(side="left", padx=(0, 6))
         self.entry_filter.bind("<KeyRelease>", lambda e: self.reapply_filter())
 
@@ -2896,7 +2933,7 @@ class LogViewerWindow:
             "仅素材拉取 (FETCH/PREFETCH)",
             "仅慢请求 (>200ms)",
             "仅重连与告警 (RETRY/ERROR)",
-        ], state="readonly", width=15, font=("Microsoft YaHei UI", 9))
+        ], state="readonly", width=15, font=ui_font(9))
         combo_cat.pack(side="left", padx=(0, 6))
         combo_cat.bind("<<ComboboxSelected>>", lambda e: self.reapply_filter())
 
@@ -2957,6 +2994,11 @@ class LogViewerWindow:
         self.context_menu.add_command(label="🧹 清除当前显示", command=self.clear_display)
 
         self.txt_logs.bind("<Button-3>", self._on_right_click)
+        if sys.platform == "darwin":
+            self.txt_logs.bind("<Button-2>", self._on_right_click)
+            self.txt_logs.bind("<Command-f>", self._on_find)
+            self.txt_logs.bind("<Command-F>", self._on_find)
+            self.txt_logs.bind("<Command-MouseWheel>", self._on_mousewheel_zoom)
         self.txt_logs.bind("<Control-f>", self._on_find)
         self.txt_logs.bind("<Control-F>", self._on_find)
         self.txt_logs.bind("<Escape>", self._on_escape)
@@ -2969,7 +3011,8 @@ class LogViewerWindow:
         self.lbl_status = ttk.Label(f_status, textvariable=self.var_status, style="Gray.TLabel")
         self.lbl_status.pack(side="left")
 
-        self.lbl_hints = ttk.Label(f_status, text="Ctrl+F 搜索 | 空格 暂停 | Ctrl+滚轮 缩放", style="Gray.TLabel")
+        hints_text = "Cmd+F 搜索 | 空格 暂停 | Cmd+滚轮 缩放" if sys.platform == "darwin" else "Ctrl+F 搜索 | 空格 暂停 | Ctrl+滚轮 缩放"
+        self.lbl_hints = ttk.Label(f_status, text=hints_text, style="Gray.TLabel")
         self.lbl_hints.pack(side="right")
 
     def setup_tags(self):

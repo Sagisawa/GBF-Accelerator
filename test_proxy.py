@@ -2246,7 +2246,124 @@ async def run_test():
 
             print("Test 73 - Historical Version Cache Slimming Contract: OK", flush=True)
 
-            print("\n[+] ALL 73 TESTS PASSED SUCCESSFULLY!", flush=True)
+            # ---------------- Test 74: macOS ACGP Process Detection, Path Normalization & Proxy Conflict Contract ----------------
+            import config_manager
+            import subprocess
+
+            # 1. macOS ACGP Process Detection (_get_running_acgpower_path)
+            with mock.patch.object(config_manager.sys, "platform", "darwin"):
+                # 1a. Simulating ps output with an .app bundle
+                with tempfile.TemporaryDirectory() as tmp_mac:
+                    mac_root = Path(tmp_mac)
+                    fake_app = mac_root / "ACGPower.app"
+                    fake_macos = fake_app / "Contents" / "MacOS"
+                    fake_macos.mkdir(parents=True, exist_ok=True)
+                    fake_bin = fake_macos / "ACGPower"
+                    fake_bin.touch()
+                    (fake_app / "cache").mkdir(parents=True, exist_ok=True)
+
+                    fake_ps_out = f"{fake_bin} --flag\n/usr/sbin/syslogd\n"
+                    mock_res = mock.Mock(returncode=0, stdout=fake_ps_out)
+                    with mock.patch.object(config_manager.subprocess, "run", return_value=mock_res):
+                        found_path = config_manager._get_running_acgpower_path()
+                        assert found_path == fake_app.resolve(), f"Expected {fake_app.resolve()}, got {found_path}"
+
+                # 1b. Simulating ps output without acgpower
+                fake_ps_no_acgp = "/Applications/Safari.app/Contents/MacOS/Safari\n"
+                mock_res_none = mock.Mock(returncode=0, stdout=fake_ps_no_acgp)
+                with mock.patch.object(config_manager.subprocess, "run", return_value=mock_res_none):
+                    assert config_manager._get_running_acgpower_path() is None
+
+            # 2. macOS normalize_cache_dir Cases
+            with tempfile.TemporaryDirectory() as tmp_norm:
+                p_norm = Path(tmp_norm)
+
+                # 2a. Case C with ACGPower.app bundle and cache/gbf/https/assets
+                app_dir = p_norm / "ACGPower.app"
+                app_dir.mkdir()
+                cache_dir = p_norm / "cache" / "gbf" / "https" / "assets"
+                cache_dir.mkdir(parents=True)
+                assert config_manager.normalize_cache_dir(p_norm) == (p_norm / "cache" / "gbf" / "https").resolve()
+
+                # 2b. Case E: macOS structure with cache/gbf/assets (no https)
+                p_mac_e = p_norm / "acgp_mac_e"
+                (p_mac_e / "ACGPower").mkdir(parents=True)
+                (p_mac_e / "cache" / "gbf" / "assets").mkdir(parents=True)
+                assert config_manager.normalize_cache_dir(p_mac_e) == (p_mac_e / "cache" / "gbf").resolve()
+
+                # 2c. Custom directory untouched if no ACGP markers
+                p_custom = p_norm / "my_custom_cache"
+                p_custom.mkdir()
+                assert config_manager.normalize_cache_dir(p_custom) == p_custom.resolve()
+
+            # 3. macOS auto_detect_acgpower_cache path scanning
+            with tempfile.TemporaryDirectory() as tmp_home:
+                fake_home = Path(tmp_home)
+                fake_app_dir = fake_home / "app"
+                fake_app_dir.mkdir()
+                acgp_dl = fake_home / "Downloads" / "ACGPOWER-MAC-2"
+                target_cache = acgp_dl / "cache" / "gbf" / "https"
+                (target_cache / "assets").mkdir(parents=True)
+                (acgp_dl / "ACGPower.app").mkdir(parents=True)
+
+                with mock.patch.object(config_manager.sys, "platform", "darwin"), \
+                     mock.patch.object(config_manager, "_get_running_acgpower_path", return_value=None), \
+                     mock.patch.object(config_manager, "get_base_dir", return_value=fake_app_dir), \
+                     mock.patch.object(config_manager.Path, "home", return_value=fake_home):
+                    detected_cache = config_manager.auto_detect_acgpower_cache()
+                    assert detected_cache == target_cache.resolve(), f"Expected {target_cache.resolve()}, got {detected_cache}"
+
+            # 4. macOS Proxy Conflict Detection (_mac_check_proxy_conflict)
+            with mock.patch.object(system_proxy.sys, "platform", "darwin"), \
+                 mock.patch.object(system_proxy, "_mac_get_primary_service", return_value="Wi-Fi"):
+
+                # 4a. Clean state: all networksetup queries return Enabled: No, no PAC
+                def mock_networksetup_clean(cmd, **kwargs):
+                    return mock.Mock(returncode=0, stdout="Enabled: No\nServer:\nPort: 0\n")
+
+                with mock.patch.object(system_proxy.subprocess, "run", side_effect=mock_networksetup_clean), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value=None), \
+                     mock.patch.object(system_proxy, "is_pac_proxy_enabled", return_value=False):
+                    assert system_proxy.check_proxy_conflict(8124) is None
+
+                # 4b. External PAC conflict
+                with mock.patch.object(system_proxy.subprocess, "run", side_effect=mock_networksetup_clean), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value="http://192.168.1.50:8080/pac.pac"), \
+                     mock.patch.object(system_proxy, "is_pac_proxy_enabled", return_value=False):
+                    res_mac_pac = system_proxy.check_proxy_conflict(8124)
+                    assert res_mac_pac == "外部 PAC 脚本 (http://192.168.1.50:8080/pac.pac)"
+
+                # 4c. Manual HTTP proxy conflict
+                def mock_networksetup_http(cmd, **kwargs):
+                    if "-getwebproxy" in cmd:
+                        return mock.Mock(returncode=0, stdout="Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\nAuthenticated Proxy Enabled: 0\n")
+                    return mock.Mock(returncode=0, stdout="Enabled: No\nServer:\nPort: 0\n")
+
+                with mock.patch.object(system_proxy.subprocess, "run", side_effect=mock_networksetup_http), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value=None), \
+                     mock.patch.object(system_proxy, "is_pac_proxy_enabled", return_value=False):
+                    res_mac_http = system_proxy.check_proxy_conflict(8124)
+                    assert res_mac_http == "手动 HTTP 代理 (127.0.0.1:7890)"
+
+                # 4d. Multiple conflicts (HTTP + SOCKS)
+                def mock_networksetup_multi(cmd, **kwargs):
+                    if "-getwebproxy" in cmd:
+                        return mock.Mock(returncode=0, stdout="Enabled: Yes\nServer: 127.0.0.1\nPort: 7890\n")
+                    if "-getsocksfirewallproxy" in cmd:
+                        return mock.Mock(returncode=0, stdout="Enabled: Yes\nServer: 127.0.0.1\nPort: 1080\n")
+                    return mock.Mock(returncode=0, stdout="Enabled: No\n")
+
+                with mock.patch.object(system_proxy.subprocess, "run", side_effect=mock_networksetup_multi), \
+                     mock.patch.object(system_proxy, "get_current_pac_url", return_value=None), \
+                     mock.patch.object(system_proxy, "is_pac_proxy_enabled", return_value=False):
+                    res_mac_multi = system_proxy.check_proxy_conflict(8124)
+                    assert "手动 HTTP 代理 (127.0.0.1:7890)" in res_mac_multi
+                    assert "手动 SOCKS 代理 (127.0.0.1:1080)" in res_mac_multi
+                    assert " • " in res_mac_multi
+
+            print("Test 74 - macOS ACGP Process Detection, Path Normalization & Proxy Conflict Contract: OK", flush=True)
+
+            print("\n[+] ALL 74 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()

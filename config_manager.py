@@ -168,9 +168,14 @@ def normalize_cache_dir(path: Any) -> Path:
     if (p / "gbf" / "https" / "assets").is_dir() or (p.name.lower() == "cache" and (p / "gbf" / "https").is_dir()):
         return (p / "gbf" / "https").resolve()
 
-    # Case C: User selected ACGPower root folder (e.g. D:\acgpower)
+    # Case C: User selected ACGPower root folder (e.g. D:\acgpower or /Applications/ACGPOWER-MAC-2)
+    acgp_exes = (
+        "ACGPower.exe", "acgpower.exe",
+        "ACGPower.app", "acgpower.app",
+        "ACGPOWER-MAC", "ACGPOWER-MAC-2", "ACGPower", "acgpower",
+    )
     if (p / "cache" / "gbf" / "https" / "assets").is_dir() or (
-        (p / "cache" / "gbf" / "https").is_dir() and any((p / exe).is_file() for exe in ("ACGPower.exe", "acgpower.exe"))
+        (p / "cache" / "gbf" / "https").is_dir() and any((p / exe).exists() for exe in acgp_exes)
     ):
         return (p / "cache" / "gbf" / "https").resolve()
 
@@ -181,71 +186,121 @@ def normalize_cache_dir(path: Any) -> Path:
     # Case E: Mac ACGPower structure (cache/gbf/assets) without 'https' subfolder
     if (p / "cache" / "gbf" / "assets").is_dir():
         return (p / "cache" / "gbf").resolve()
+    if (p / "cache" / "gbf").is_dir() and any((p / exe).exists() for exe in acgp_exes):
+        return (p / "cache" / "gbf").resolve()
     if (p / "gbf" / "assets").is_dir() or (p.name.lower() == "cache" and (p / "gbf" / "assets").is_dir()):
         return (p / "gbf").resolve()
 
     return p
 
 def _get_running_acgpower_path() -> Optional[Path]:
-    """Lightweight check if ACGPower.exe is currently running.
-    Uses kernel32 CreateToolhelp32Snapshot (pure ctypes, ~2ms, zero dependencies, no console window).
+    """Lightweight check if ACGPower is currently running.
+    - Windows: Uses kernel32 CreateToolhelp32Snapshot (pure ctypes, ~2ms, zero dependencies, no console window).
+    - macOS: Uses /bin/ps to detect active ACGPower processes and returns installation root.
     """
-    if sys.platform != "win32":
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
 
-        kernel32 = ctypes.windll.kernel32
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-        class PROCESSENTRY32(ctypes.Structure):
-            _fields_ = [
-                ("dwSize", wintypes.DWORD),
-                ("cntUsage", wintypes.DWORD),
-                ("th32ProcessID", wintypes.DWORD),
-                ("th32DefaultHeapID", ctypes.c_void_p),
-                ("th32ModuleID", wintypes.DWORD),
-                ("cntThreads", wintypes.DWORD),
-                ("th32ParentProcessID", wintypes.DWORD),
-                ("pcPriClassBase", wintypes.LONG),
-                ("dwFlags", wintypes.DWORD),
-                ("szExeFile", ctypes.c_wchar * 260),
-            ]
+            class PROCESSENTRY32(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", wintypes.DWORD),
+                    ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_void_p),
+                    ("th32ModuleID", wintypes.DWORD),
+                    ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD),
+                    ("pcPriClassBase", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260),
+                ]
 
-        hSnapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
-        if hSnapshot == -1 or not hSnapshot:
-            return None
+            hSnapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)
+            if hSnapshot == -1 or not hSnapshot:
+                return None
 
-        pe = PROCESSENTRY32()
-        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+            pe = PROCESSENTRY32()
+            pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
 
-        matched_pid = None
-        if kernel32.Process32FirstW(hSnapshot, ctypes.byref(pe)):
-            while True:
-                if "acgpower" in pe.szExeFile.lower():
-                    matched_pid = pe.th32ProcessID
-                    break
-                if not kernel32.Process32NextW(hSnapshot, ctypes.byref(pe)):
-                    break
-        kernel32.CloseHandle(hSnapshot)
+            matched_pid = None
+            if kernel32.Process32FirstW(hSnapshot, ctypes.byref(pe)):
+                while True:
+                    if "acgpower" in pe.szExeFile.lower():
+                        matched_pid = pe.th32ProcessID
+                        break
+                    if not kernel32.Process32NextW(hSnapshot, ctypes.byref(pe)):
+                        break
+            kernel32.CloseHandle(hSnapshot)
 
-        if matched_pid:
-            hProc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, matched_pid)
-            if hProc:
-                buf = ctypes.create_unicode_buffer(1024)
-                size = wintypes.DWORD(1024)
-                if kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size)):
+            if matched_pid:
+                hProc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, matched_pid)
+                if hProc:
+                    buf = ctypes.create_unicode_buffer(1024)
+                    size = wintypes.DWORD(1024)
+                    if kernel32.QueryFullProcessImageNameW(hProc, 0, buf, ctypes.byref(size)):
+                        kernel32.CloseHandle(hProc)
+                        return Path(buf.value).parent.resolve()
                     kernel32.CloseHandle(hProc)
-                    return Path(buf.value).parent.resolve()
-                kernel32.CloseHandle(hProc)
-    except Exception:
-        pass
+        except Exception:
+            pass
+        return None
+    elif sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["ps", "-ax", "-o", "command="],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2,
+            )
+            if res.returncode == 0:
+                import shlex
+                for line in res.stdout.splitlines():
+                    lower = line.lower()
+                    if "acgpower" in lower:
+                        # 1. Quick check for .app bundle (handles paths with spaces cleanly)
+                        app_idx = lower.find(".app")
+                        if app_idx != -1:
+                            app_path_str = line[:app_idx + 4].strip().strip('"').strip("'")
+                            app_bundle = Path(app_path_str)
+                            if app_bundle.is_dir():
+                                if (app_bundle / "cache").is_dir():
+                                    return app_bundle.resolve()
+                                return app_bundle.parent.resolve()
+
+                        # 2. General executable parsing
+                        cand_exe_str = ""
+                        try:
+                            tokens = shlex.split(line)
+                            if tokens:
+                                cand_exe_str = tokens[0]
+                        except Exception:
+                            parts = line.strip().split()
+                            if parts:
+                                cand_exe_str = parts[0]
+
+                        if cand_exe_str:
+                            exe = Path(cand_exe_str)
+                            if exe.exists():
+                                exe_str = str(exe)
+                                if ".app/Contents/MacOS" in exe_str:
+                                    app_bundle = exe.parent.parent.parent
+                                    if (app_bundle / "cache").is_dir():
+                                        return app_bundle.resolve()
+                                    return app_bundle.parent.resolve()
+                                return exe.parent.resolve()
+        except Exception:
+            pass
     return None
 
 def auto_detect_acgpower_cache() -> Optional[Path]:
     """Check running process, relative paths, and common drive paths for ACGPower cache."""
-    # 1. Check if ACGPower.exe is actively running in background (instant 100% precision)
+    # 1. Check if ACGPower is actively running in background (instant 100% precision)
     running_dir = _get_running_acgpower_path()
     if running_dir:
         cand = normalize_cache_dir(running_dir)
@@ -298,17 +353,43 @@ def auto_detect_acgpower_cache() -> Optional[Path]:
                 Path(r"F:\acgpower"),
             ]
     elif sys.platform == "darwin":
-        mac_downloads = Path.home() / "Downloads"
-        for sub in (
+        search_dirs: List[Path] = [
+            Path.home() / "Downloads",
+            Path.home() / "Desktop",
+            Path.home() / "Documents",
+            Path.home(),
+            Path("/Applications"),
+            Path.home() / "Applications",
+            Path.home() / "Library" / "Application Support",
+            Path.home() / "Library" / "Caches",
+        ]
+
+        # Scan external volumes mounted under /Volumes
+        volumes_dir = Path("/Volumes")
+        if volumes_dir.is_dir():
+            try:
+                for vol in volumes_dir.iterdir():
+                    if vol.is_dir() and vol.name not in ("Macintosh HD",):
+                        search_dirs.append(vol)
+            except Exception:
+                pass
+
+        sub_names = (
             "ACGPOWER-MAC-2",
+            "ACGPOWER-MAC",
             "acgpower",
             "ACGPower",
-            "ACGPOWER-MAC",
-        ):
-            if (mac_downloads / sub).is_dir():
-                candidate_roots.append(mac_downloads / sub)
-            if (Path.home() / sub).is_dir():
-                candidate_roots.append(Path.home() / sub)
+        )
+        for base in search_dirs:
+            if not base.is_dir():
+                continue
+            if any(k in base.name.lower() for k in ("acgpower",)):
+                candidate_roots.append(base)
+            for sub in sub_names:
+                target = base / sub
+                if target.is_dir():
+                    candidate_roots.append(target)
+
         if (Path.home() / "Library" / "Application Support" / "GBF-Accelerator" / "cache").is_dir():
             candidate_roots.append(Path.home() / "Library" / "Application Support" / "GBF-Accelerator" / "cache")
 
