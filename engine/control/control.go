@@ -19,6 +19,7 @@ import (
 	"gbf-proxy/config"
 	"gbf-proxy/proxy"
 	"gbf-proxy/telemetry"
+	"gbf-proxy/ui"
 )
 
 type ControlServer struct {
@@ -513,27 +514,73 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 }
 
 func (c *ControlServer) handleStaticWeb(w http.ResponseWriter, req *http.Request) {
-	cleanPath := strings.TrimPrefix(filepath.Clean(filepath.FromSlash(req.URL.Path)), "/")
+	cleanPath := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(req.URL.Path)), "/")
 	if cleanPath == "." {
 		cleanPath = ""
 	}
 
+	// 1. If external dist directory is configured on disk and file exists, prefer disk
 	if c.distDir != "" {
-		candidate := filepath.Join(c.distDir, cleanPath)
+		candidate := filepath.Join(c.distDir, filepath.FromSlash(cleanPath))
 		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			w.Header().Set("Content-Type", ui.MIMEType(cleanPath))
+			if strings.HasPrefix(cleanPath, "assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else if cleanPath == "index.html" || cleanPath == "" {
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			}
 			http.ServeFile(w, req, candidate)
 			return
 		}
 		if cleanPath == "" || cleanPath == "index.html" || cleanPath == "dashboard" || !strings.Contains(cleanPath, ".") {
 			indexFile := filepath.Join(c.distDir, "index.html")
 			if fi, err := os.Stat(indexFile); err == nil && !fi.IsDir() {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 				http.ServeFile(w, req, indexFile)
 				return
 			}
 		}
 	}
 
-	// Fallback minimal HTML dashboard only for root or index.html / dashboard
+	// 2. Serve from Go embedded FS (self-contained single binary)
+	target := cleanPath
+	if target == "" || target == "dashboard" {
+		target = "index.html"
+	}
+
+	// Direct match in embedded assets
+	if data, err := ui.ReadFile(target); err == nil {
+		w.Header().Set("Content-Type", ui.MIMEType(target))
+		if strings.HasPrefix(target, "assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else if target == "index.html" {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		w.WriteHeader(http.StatusOK)
+		if req.Method != http.MethodHead {
+			_, _ = w.Write(data)
+		}
+		return
+	}
+
+	// SPA fallback: routes without file extensions map to embedded index.html
+	baseName := filepath.Base(cleanPath)
+	if !strings.Contains(baseName, ".") || cleanPath == "index.html" {
+		if data, err := ui.ReadFile("index.html"); err == nil {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			w.WriteHeader(http.StatusOK)
+			if req.Method != http.MethodHead {
+				_, _ = w.Write(data)
+			}
+			return
+		}
+	}
+
+	// 3. Fallback minimal HTML dashboard only for root or index.html / dashboard
 	if cleanPath == "" || cleanPath == "index.html" || cleanPath == "dashboard" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

@@ -6,15 +6,63 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 
 	"gbf-proxy/cache"
 	"gbf-proxy/cert"
 	"gbf-proxy/config"
 	"gbf-proxy/control"
+	"gbf-proxy/desktop"
 	"gbf-proxy/proxy"
 	"gbf-proxy/telemetry"
+	"gbf-proxy/ui"
 )
+
+type appController struct {
+	cfgMgr   *config.Manager
+	proxySrv *proxy.ProxyServer
+	quitChan chan struct{}
+	quitOnce sync.Once
+}
+
+func (a *appController) IsRunning() bool {
+	return a.proxySrv.IsRunning()
+}
+
+func (a *appController) StartProxy() error {
+	return a.proxySrv.Start()
+}
+
+func (a *appController) StopProxy() {
+	a.proxySrv.Stop()
+}
+
+func (a *appController) GetListenPort() int {
+	return a.cfgMgr.Get().ListenPort
+}
+
+func (a *appController) GetControlPort() int {
+	return a.cfgMgr.Get().ControlPort
+}
+
+func (a *appController) GetCacheDir() string {
+	return a.cfgMgr.Get().CacheDir
+}
+
+func (a *appController) OpenBrowser(url string) error {
+	return desktop.OpenBrowser(url)
+}
+
+func (a *appController) OpenFolder(path string) error {
+	return desktop.OpenFolder(path)
+}
+
+func (a *appController) Quit() {
+	a.quitOnce.Do(func() {
+		close(a.quitChan)
+	})
+}
 
 func main() {
 	proxyPort := flag.Int("proxy-port", 8124, "Target proxy listen port")
@@ -25,6 +73,9 @@ func main() {
 	allowLAN := flag.Bool("allow-lan", false, "Allow connections from LAN devices")
 	directMode := flag.Bool("direct-mode", false, "Force direct connection mode")
 	verifyUpstreamTLS := flag.Bool("verify-upstream-tls", false, "Verify upstream TLS certificates")
+	noGUI := flag.Bool("nogui", false, "Run in headless CLI mode without system tray")
+	headless := flag.Bool("headless", false, "Alias for -nogui")
+	openBrowser := flag.Bool("open-browser", false, "Automatically open Web console in browser on startup")
 
 	flag.Parse()
 
@@ -99,12 +150,44 @@ func main() {
 		fmt.Printf("    Upstream proxy       : %s\n", curCfg.UpstreamProxy)
 	}
 
-	// 6. Wait for Shutdown Signals
+	// 6. Setup Desktop Integration & System Tray
+	quitChan := make(chan struct{})
+	appCtrl := &appController{
+		cfgMgr:   cfgMgr,
+		proxySrv: proxySrv,
+		quitChan: quitChan,
+	}
+
+	var tray desktop.Tray
+	if !*noGUI && !*headless {
+		tray = desktop.NewTray(appCtrl, ui.AppIconBytes)
+		if err := tray.Start(); err != nil {
+			fmt.Printf("[*] Desktop tray not available in current session: %v\n", err)
+		} else {
+			defer tray.Stop()
+		}
+	}
+
+	if *openBrowser {
+		consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", curCfg.ControlPort)
+		_ = desktop.OpenBrowser(consoleURL)
+	}
+
+	// 7. Wait for Shutdown Signals (OS signal or Tray quit)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	<-sigCh
 
-	fmt.Println("\n[*] Shutting down GBF Accelerator Go Core...")
+	select {
+	case <-sigCh:
+		fmt.Println("\n[*] Received shutdown signal...")
+	case <-quitChan:
+		fmt.Println("\n[*] Received desktop quit command...")
+	}
+
+	fmt.Println("[*] Shutting down GBF Accelerator Go Core...")
+	if tray != nil {
+		tray.Stop()
+	}
 	ctrlSrv.Stop()
 	proxySrv.Stop()
 	fmt.Println("[+] Shutdown complete.")
