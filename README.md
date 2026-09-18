@@ -4,12 +4,12 @@
 
 [![Release](https://img.shields.io/github/v/release/Sagisawa/GBF-Accelerator?color=blue&logo=github)](https://github.com/Sagisawa/GBF-Accelerator/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-lightgrey.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-通过将游戏静态资源（立绘、音频、战斗动画、脚本）本地化缓存至 SSD / 内存中，减少静态资源的跨海重复下载，降低重复加载延迟与流量消耗；同时透明联动 Clash / v2rayN 等上游代理，核心游戏 API（抽卡、编队、结算、多人战等）原样转发、不做修改。
+通过将游戏静态资源（立绘、音频、战斗动画、脚本）本地化缓存至 SSD / 内存中，减少静态资源的跨海重复下载，降低重复加载延迟与流量消耗；同时透明联动 Clash / v2rayN / Surge 等上游代理，核心游戏 API（抽卡、编队、结算、多人战等）原样转发、不做修改。
 
-> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新绿色便携包 `GBF_Accelerator_v1.7.2_GUI.zip`，解压即用，无需配置 Python 环境。各版本改动参见 [CHANGELOG.md](CHANGELOG.md)。
+> 📥 **下载开箱即用版**：前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新便携发布包（Windows 下载 `GBF_Accelerator_v1.7.2_GUI.zip`，macOS 下载 Universal 2 双架构免安装版 `GBF_Accelerator_v1.7.2_macOS_universal2.zip`），解压即用，无需配置 Python 环境。各版本改动参见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -32,14 +32,14 @@
 - **资源预加载 (Prefetch)**：自动解析场景 JS/JSON 及 CreateJS 动画引用的素材路径，使用协议合规的最小标头在后台低并发预热落盘，让首次进入新副本/活动时的大部分素材提前就位。
 - **素材 Magic Bytes 二进制校验与一键体检自愈**：极速校验 PNG / JPEG / WebP / GIF / MP3 / WOFF 等二进制文件头（纳秒级），杜绝 0 字节损坏文件及 502/503 伪装 HTML 落盘；GUI 提供“一键体检缓存”按钮支持一键扫描与坏件自愈。
 - **CDN 静态资源 HTTP/2 多路复用**：针对 Akamai CDN 静态资源与后台预加载启用 HTTP/2，复用连接并发拉取资源，减少逐条 TCP+TLS 跨海握手。
-- **上游延迟测试**：一键测量经当前上游代理到游戏服务器的真实往返延迟，辅助选择最优 Clash 节点。
+- **上游延迟测试**：一键测量经当前上游代理到游戏服务器的真实往返延迟，辅助选择最优节点。
 - **支持复用现有缓存**：支持自定义缓存存储路径，可自动检测并无缝复用已有缓存目录（如 ACGPower 等工具的历史缓存）。
 - **系统 PAC 代理支持**：
-  - 支持一键开启 Windows 系统 PAC 自动配置，开启后无需在浏览器安装任何插件即可生效。
+  - 支持一键开启 Windows / macOS 系统 PAC 自动配置，开启后无需在浏览器安装任何插件即可生效。
   - 内置 PAC 服务（默认 `http://127.0.0.1:8124/proxy.pac`），精准收敛分流规则，也支持配合 SwitchyOmega / ZeroOmega 等扩展使用。
-- **图形界面与系统托盘**：Windows 原生控件风格美化与 DPI 自适应清晰渲染；支持自定义监听端口（默认 8124）及上游代理，支持最小化至系统托盘后台静默运行。
+- **原生风格界面、系统托盘与菜单栏**：自适应各系统原生控件风格与清晰渲染；支持自定义监听端口（默认 8124）及上游代理，支持最小化至后台静默运行（Windows 系统托盘 / macOS 顶部菜单栏）。
 - **局域网共享与移动端支持**：可在 GUI 中勾选“允许局域网连接”，支持同一 Wi-Fi 下的 iPhone / iPad / Android 设备接入（内置私网 ACL 防护与 PAC 分流指引）。
-- **开机自启**：可在 GUI 中选择随 Windows 启动，启动后自动隐藏到系统托盘；默认关闭。
+- **开机自启**：可在 GUI 中选择随系统启动，启动后自动在后台运行（Windows 托盘 / macOS 顶部菜单栏）；默认关闭。
 - **直连模式**：在 GUI 中勾选后，动态请求和长连接改用本机网络直连，同时继续使用本地静态缓存；取消勾选即可立即恢复上游代理模式。
 - **透明代理与原始内容准则 (v1.7.1)**：动态请求与官方心跳直达游戏服务器，静态脚本保持原始内容交付；移除发往浏览器的内部调试标头，减少代理干预，运行更轻量稳定。
 
