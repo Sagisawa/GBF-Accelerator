@@ -328,6 +328,11 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		if val, ok := patch["enable_prefetch"].(bool); ok {
 			cfg.EnablePrefetch = val
 		}
+		if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
+			cfg.ListenPort = int(val)
+		} else if val, ok := patch["port"].(float64); ok && val > 0 && val < 65536 {
+			cfg.ListenPort = int(val)
+		}
 	})
 	_ = c.cfgMgr.Save()
 
