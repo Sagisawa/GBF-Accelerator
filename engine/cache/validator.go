@@ -15,6 +15,7 @@ func IsValidCacheContent(cleanPath, contentType string, data []byte) bool {
 	cleanLower := strings.ToLower(cleanPath)
 	nonHtmlExts := []string{
 		".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp3", ".wav", ".webm",
+		".ogg", ".m4a",
 		".js", ".css", ".wasm", ".woff", ".woff2", ".ttf", ".otf", ".mp4",
 	}
 
@@ -103,6 +104,10 @@ func IsValidCacheContent(cleanPath, contentType string, data []byte) bool {
 		}
 	} else if strings.HasSuffix(cleanLower, ".woff") {
 		if !bytes.HasPrefix(rawSample, []byte("wOFF")) {
+			return false
+		}
+	} else if strings.HasSuffix(cleanLower, ".wasm") {
+		if !bytes.HasPrefix(rawSample, []byte("\x00asm")) {
 			return false
 		}
 	} else if strings.HasSuffix(cleanLower, ".ttf") || strings.HasSuffix(cleanLower, ".otf") {

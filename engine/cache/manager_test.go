@@ -1,4 +1,4 @@
-﻿package cache
+package cache
 
 import (
 	"encoding/json"
@@ -115,5 +115,93 @@ func TestCacheManager(t *testing.T) {
 	}
 	if _, err := os.Stat(corruptFile); !os.IsNotExist(err) {
 		t.Error("corrupted file should have been deleted by audit")
+	}
+}
+
+func TestLegacyTamperedJSQuarantine(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_quarantine_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+
+	// 1. Verify quarantine triggers on tampered file
+	tamperedFile := filepath.Join(tempDir, "set-error-handler.js")
+	tamperedContent := []byte("window.onerror=function(t,a){void 0}; console.log('error handler');")
+	if err := os.WriteFile(tamperedFile, tamperedContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(tamperedFile+".ext", []byte("{}"), 0644)
+
+	isQuarantined := mgr.CheckAndQuarantineTamperedJS(tamperedFile)
+	if !isQuarantined {
+		t.Fatal("Must quarantine tampered set-error-handler.js")
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(tempDir, "set-error-handler.js.quarantine.*"))
+	if len(matches) != 1 {
+		t.Fatalf("Must find exactly one .quarantine backup file, found %d", len(matches))
+	}
+	if _, err := os.Stat(tamperedFile); !os.IsNotExist(err) {
+		t.Fatal("Original tampered file must be renamed out of place")
+	}
+
+	// 2. Verify negative case: legitimate modern minified JS using `void 0` is NOT quarantined
+	legitFile := filepath.Join(tempDir, "legit-set-error-handler.js")
+	legitContent := []byte("if(foo === void 0) { console.error('not set'); } window.onerror=function(e){ alert(e); window.location.reload(); }")
+	_ = os.WriteFile(legitFile, legitContent, 0644)
+
+	if mgr.CheckAndQuarantineTamperedJS(legitFile) {
+		t.Fatal("Must NOT quarantine legitimate JS using void 0")
+	}
+
+	// 3. Verify negative case: original official script with alert/reload is NOT quarantined
+	origContent := []byte("window.onerror=function(t,a){ t && alert(t); a && window.location.reload(); };")
+	origFile := filepath.Join(tempDir, "official-set-error-handler.js")
+	_ = os.WriteFile(origFile, origContent, 0644)
+
+	if mgr.CheckAndQuarantineTamperedJS(origFile) {
+		t.Fatal("Must NOT quarantine original official script")
+	}
+}
+
+func TestHasCacheAndAutoRepair(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_hascache_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+
+	// HasCache returns false for non-existent
+	if mgr.HasCache("assets/test/missing.png") {
+		t.Error("expected false for missing asset")
+	}
+
+	// Save valid asset
+	mgr.Save("assets/test/sample.png", map[string]string{
+		"content-type": "image/png",
+	}, []byte("\x89PNG\r\n\x1a\nheader"))
+
+	if !mgr.HasCache("assets/test/sample.png") {
+		t.Error("expected true for cached asset")
+	}
+
+	// Corrupt content on disk is deleted on Get()
+	corruptDisk := filepath.Join(tempDir, "assets", "test", "bad.png")
+	_ = os.MkdirAll(filepath.Dir(corruptDisk), 0755)
+	_ = os.WriteFile(corruptDisk, []byte("not_png_bytes"), 0644)
+	_ = os.WriteFile(corruptDisk+".ext", []byte("{}"), 0644)
+
+	mgr.ClearRAM()
+	item, _ := mgr.Get("assets/test/bad.png")
+	if item != nil {
+		t.Error("corrupt content should return nil")
+	}
+	if _, err := os.Stat(corruptDisk); !os.IsNotExist(err) {
+		t.Error("corrupt file should be unlinked on Get auto-repair")
 	}
 }

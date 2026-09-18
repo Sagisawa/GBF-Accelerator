@@ -54,6 +54,13 @@ func (c *LRUCache) Get(key string) (*CacheItem, bool) {
 	return nil, false
 }
 
+func (c *LRUCache) Contains(key string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.items[key]
+	return ok
+}
+
 func (c *LRUCache) Set(key string, item *CacheItem) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

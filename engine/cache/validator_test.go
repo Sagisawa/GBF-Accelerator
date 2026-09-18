@@ -1,4 +1,4 @@
-﻿package cache
+package cache
 
 import (
 	"bytes"
@@ -94,5 +94,32 @@ func TestIsValidCacheContent(t *testing.T) {
 	// 14. Zero length data
 	if IsValidCacheContent("/assets/test.png", "image/png", []byte{}) {
 		t.Error("expected empty data to fail")
+	}
+
+	// 15. Valid WASM
+	validWasm := []byte("\x00asm\x01\x00\x00\x00")
+	if !IsValidCacheContent("/assets/wasm/engine.wasm", "application/wasm", validWasm) {
+		t.Error("expected valid WASM to pass")
+	}
+
+	// 16. Corrupted WASM
+	if IsValidCacheContent("/assets/wasm/engine.wasm", "application/wasm", []byte("invalid_wasm")) {
+		t.Error("expected invalid WASM to fail")
+	}
+
+	// 17. Valid OGG
+	validOgg := []byte("OggS\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00")
+	if !IsValidCacheContent("/assets/sound/bgm.ogg", "audio/ogg", validOgg) {
+		t.Error("expected valid OGG to pass")
+	}
+
+	// 18. Corrupted OGG
+	if IsValidCacheContent("/assets/sound/bgm.ogg", "audio/ogg", []byte("corrupt_ogg_bytes")) {
+		t.Error("expected invalid OGG to fail")
+	}
+
+	// 19. M4A HTML error page rejection
+	if IsValidCacheContent("/assets/sound/voice.m4a", "text/html", htmlErr) {
+		t.Error("expected HTML error page for M4A to fail")
 	}
 }

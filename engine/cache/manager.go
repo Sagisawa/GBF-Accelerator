@@ -1,10 +1,13 @@
 package cache
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"os"
 	"path/filepath"
@@ -86,6 +89,10 @@ func (m *Manager) resolvePath(urlPath string) (string, bool) {
 	clean := strings.TrimSpace(strings.Split(urlPath, "?")[0])
 	clean = filepath.Clean(filepath.FromSlash(strings.TrimPrefix(clean, "/")))
 
+	if clean == "" || clean == "." {
+		return "", false
+	}
+
 	// Security: Prevent path traversal, Windows drive letters, and UNC paths
 	if strings.HasPrefix(clean, "..") || strings.Contains(clean, ".."+string(filepath.Separator)) {
 		return "", false
@@ -104,6 +111,82 @@ func (m *Manager) resolvePath(urlPath string) (string, bool) {
 		return "", false
 	}
 	return target, true
+}
+
+func (m *Manager) HasCache(urlPath string) bool {
+	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	if cleanKey == "" {
+		return false
+	}
+	if m.ramCache.Contains(cleanKey) {
+		return true
+	}
+	m.missingMu.RLock()
+	_, missing := m.missingCache[cleanKey]
+	m.missingMu.RUnlock()
+	if missing {
+		return false
+	}
+	filePath, ok := m.resolvePath(cleanKey)
+	if !ok {
+		return false
+	}
+	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+		return true
+	}
+	// Fallback check
+	var altPath string
+	if !strings.HasPrefix(cleanKey, "assets") {
+		altPath, _ = m.resolvePath("assets/" + cleanKey)
+	} else {
+		altPath, _ = m.resolvePath(strings.TrimPrefix(cleanKey, "assets/"))
+	}
+	if altPath != "" {
+		if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+var reHollowedFunc = regexp.MustCompile(`(?:function(?:\s+[a-zA-Z0-9_]+)?\s*\([a-zA-Z0-9_,\s]*\)\s*|\([a-zA-Z0-9_,\s]*\)\s*=>\s*)\{\s*(?:void\s+0\s*;?|;?)\s*\}`)
+
+func (m *Manager) CheckAndQuarantineTamperedJS(filePath string) bool {
+	if !strings.HasSuffix(filePath, "set-error-handler.js") {
+		return false
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil || len(data) == 0 {
+		return false
+	}
+
+	rawBytes := data
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		if gr, err := gzip.NewReader(bytes.NewReader(data)); err == nil {
+			if decompressed, err := io.ReadAll(gr); err == nil {
+				rawBytes = decompressed
+			}
+			_ = gr.Close()
+		}
+	}
+	rawText := string(rawBytes)
+	rawLower := strings.ToLower(rawText)
+
+	hasHollowed := reHollowedFunc.MatchString(rawText)
+	hasErrorSig := strings.Contains(rawLower, "error") || strings.Contains(rawLower, "onerror")
+	isMissingOriginal := !strings.Contains(rawText, "window.location.reload") && !strings.Contains(rawText, "alert(")
+
+	if hasHollowed && hasErrorSig && isMissingOriginal {
+		ts := time.Now().Unix()
+		quarantineTarget := fmt.Sprintf("%s.quarantine.%d", filePath, ts)
+		_ = os.Rename(filePath, quarantineTarget)
+		extPath := filePath + ".ext"
+		if fi, err := os.Stat(extPath); err == nil && !fi.IsDir() {
+			_ = os.Rename(extPath, fmt.Sprintf("%s.ext.quarantine.%d", filePath, ts))
+		}
+		return true
+	}
+	return false
 }
 
 func (m *Manager) Get(urlPath string) (*CacheItem, string) {
@@ -146,6 +229,13 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 				return nil, ""
 			}
 		} else {
+			m.markMissing(cleanKey)
+			return nil, ""
+		}
+	}
+
+	if strings.HasSuffix(cleanKey, "set-error-handler.js") {
+		if m.CheckAndQuarantineTamperedJS(filePath) {
 			m.markMissing(cleanKey)
 			return nil, ""
 		}
@@ -195,6 +285,8 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 
 	if !IsValidCacheContent(cleanKey, contentType, data) {
 		m.markMissing(cleanKey)
+		_ = os.Remove(filePath)
+		_ = os.Remove(extPath)
 		return nil, ""
 	}
 
@@ -326,7 +418,10 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 		_ = os.Remove(tmpDataPath)
 		return false
 	}
-	_ = os.Rename(tmpDataPath, filePath)
+	if err := os.Rename(tmpDataPath, filePath); err != nil {
+		_ = os.Remove(tmpDataPath)
+		return false
+	}
 
 	// Write .ext
 	extPath := filePath + ".ext"
@@ -343,7 +438,9 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
 	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d", extPath, pid, ts)
 	if err := os.WriteFile(tmpExtPath, metaBytes, 0644); err == nil {
-		_ = os.Rename(tmpExtPath, extPath)
+		if err := os.Rename(tmpExtPath, extPath); err != nil {
+			_ = os.Remove(tmpExtPath)
+		}
 	}
 
 	// Update RAM cache
@@ -427,6 +524,12 @@ func (m *Manager) AuditAndRepair() map[string]interface{} {
 			return nil
 		}
 		scanned++
+		if strings.HasSuffix(p, "set-error-handler.js") {
+			if m.CheckAndQuarantineTamperedJS(p) {
+				corrupted++
+				return nil
+			}
+		}
 		if fi.Size() == 0 {
 			corrupted++
 			_ = os.Remove(p)
@@ -472,7 +575,7 @@ func (m *Manager) PruneStaleVersions(keepCount int) (int, int, int64) {
 	var deletedDirs, deletedFiles int
 	var freedBytes int64
 
-	for _, prefix := range []string{"assets", "assets_en"} {
+	for _, prefix := range []string{"assets", "assets_en", "assets_jp"} {
 		prefixDir := filepath.Join(base, prefix)
 		entries, err := os.ReadDir(prefixDir)
 		if err != nil {

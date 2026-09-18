@@ -28,19 +28,22 @@ type Stats struct {
 	ActiveForegroundAssets int32
 	LastError              string
 
-	mu          sync.RWMutex
-	logs        []LogEntry
-	subMu       sync.RWMutex
-	subscribers []chan LogEntry
+	mu            sync.RWMutex
+	logs          []LogEntry
+	subMu         sync.RWMutex
+	subscribers   []chan LogEntry
+	prefetchMu    sync.RWMutex
+	prefetchSaved map[string]struct{}
 }
 
 var GlobalStats = NewStats()
 
 func NewStats() *Stats {
 	return &Stats{
-		StartTime:   time.Now(),
-		logs:        make([]LogEntry, 0, 1000),
-		subscribers: make([]chan LogEntry, 0),
+		StartTime:     time.Now(),
+		logs:          make([]LogEntry, 0, 1000),
+		subscribers:   make([]chan LogEntry, 0),
+		prefetchSaved: make(map[string]struct{}),
 	}
 }
 
@@ -76,6 +79,44 @@ func (s *Stats) AddActiveAPI(delta int32) {
 
 func (s *Stats) AddActiveFG(delta int32) {
 	atomic.AddInt32(&s.ActiveForegroundAssets, delta)
+}
+
+func (s *Stats) IncPrefetchRequest() {
+	atomic.AddInt64(&s.PrefetchRequests, 1)
+}
+
+func (s *Stats) IncPrefetchSuccess() {
+	atomic.AddInt64(&s.PrefetchSuccesses, 1)
+}
+
+func (s *Stats) IncPrefetchReused() {
+	atomic.AddInt64(&s.PrefetchReused, 1)
+}
+
+func (s *Stats) MarkPrefetchSaved(path string) {
+	s.prefetchMu.Lock()
+	defer s.prefetchMu.Unlock()
+	s.prefetchSaved[path] = struct{}{}
+	if len(s.prefetchSaved) > 2000 {
+		for k := range s.prefetchSaved {
+			delete(s.prefetchSaved, k)
+			if len(s.prefetchSaved) <= 1500 {
+				break
+			}
+		}
+	}
+}
+
+func (s *Stats) CheckAndRecordPrefetchReused(path string) {
+	s.prefetchMu.Lock()
+	_, ok := s.prefetchSaved[path]
+	if ok {
+		delete(s.prefetchSaved, path)
+	}
+	s.prefetchMu.Unlock()
+	if ok {
+		atomic.AddInt64(&s.PrefetchReused, 1)
+	}
 }
 
 func (s *Stats) Log(level, msg string) {

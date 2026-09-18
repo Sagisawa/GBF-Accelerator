@@ -396,11 +396,15 @@ func (c *ControlServer) handleCacheSlim(w http.ResponseWriter, req *http.Request
 
 func (c *ControlServer) handlePrefetchStatus(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()
-	yielding := atomic.LoadInt32(&c.stats.ActiveAPICount) > 0
+	queueSize := 0
+	if c.proxySrv != nil {
+		queueSize = c.proxySrv.PrefetchQueueLen()
+	}
+	yielding := atomic.LoadInt32(&c.stats.ActiveAPICount) > 0 || atomic.LoadInt32(&c.stats.ActiveForegroundAssets) > 0
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                 true,
 		"enabled":            cfg.EnablePrefetch,
-		"queue_size":         0,
+		"queue_size":         queueSize,
 		"is_yielding":        yielding,
 		"active_api_count":   atomic.LoadInt32(&c.stats.ActiveAPICount),
 		"prefetch_requests":  atomic.LoadInt64(&c.stats.PrefetchRequests),
