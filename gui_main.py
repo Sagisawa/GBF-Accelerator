@@ -5,6 +5,7 @@ import datetime
 import re
 import threading
 import subprocess
+import queue
 import urllib.parse
 import webbrowser
 import collections
@@ -154,6 +155,7 @@ _MAC_MAIN_NSWINDOW = None
 _MAC_GUI_INSTANCE = None
 _MAC_TK_CATEGORY_INSTALLED = False
 _MAC_STATUS_BAR_MANAGER = None
+_MAC_TRAY_QUEUE: "queue.Queue[str]" = queue.Queue()
 
 def _is_main_mac_window(ns_window) -> bool:
     global _MAC_MAIN_NSWINDOW, _MAC_GUI_INSTANCE
@@ -190,8 +192,7 @@ def _ensure_mac_tk_category():
         class TKWindow(objc.Category(TKWindowClass)):
             def performMiniaturize_(self, sender):
                 if _is_main_mac_window(self):
-                    if _MAC_GUI_INSTANCE and hasattr(_MAC_GUI_INSTANCE, "root"):
-                        _MAC_GUI_INSTANCE.root.after(10, lambda: _MAC_GUI_INSTANCE.hide_to_tray(notify=False))
+                    _MAC_TRAY_QUEUE.put("hide")
                     return
                 try:
                     objc.super(TKWindow, self).performMiniaturize_(sender)
@@ -200,8 +201,7 @@ def _ensure_mac_tk_category():
 
             def miniaturize_(self, sender):
                 if _is_main_mac_window(self):
-                    if _MAC_GUI_INSTANCE and hasattr(_MAC_GUI_INSTANCE, "root"):
-                        _MAC_GUI_INSTANCE.root.after(10, lambda: _MAC_GUI_INSTANCE.hide_to_tray(notify=False))
+                    _MAC_TRAY_QUEUE.put("hide")
                     return
                 try:
                     objc.super(TKWindow, self).miniaturize_(sender)
@@ -215,8 +215,9 @@ def _ensure_mac_tk_category():
 class MacStatusBarManager:
     """Native macOS Menu Bar Status Item integration via PyObjC AppKit.
     Integrates directly with the main Cocoa event loop on the main thread,
-    attaching a native NSMenu to NSStatusItem to ensure 100% thread safety
-    and crash-free operation across Python 3.14 / macOS Sequoia.
+    attaching a native NSMenu to NSStatusItem. Actions are queued into
+    _MAC_TRAY_QUEUE and processed asynchronously by the Tk event loop, ensuring
+    100% thread safety and zero GIL corruption across Python 3.14 / macOS Sequoia.
     """
     def __init__(self, gui: "GBFAcceleratorGUI"):
         global _MAC_STATUS_BAR_MANAGER
@@ -233,25 +234,23 @@ class MacStatusBarManager:
             status_bar = AppKit.NSStatusBar.systemStatusBar()
             self.status_item = status_bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
 
-            gui_ref = self.gui
-
-            # Context menu actions (decoupled from Cocoa tracking loop via root.after)
+            # Context menu actions: push to thread-safe queue, zero Tkinter/Tcl calls inside Cocoa callback
             class MacMenuActions(AppKit.NSObject):
                 @objc.IBAction
                 def toggleWindow_(self, sender):
-                    gui_ref.root.after(50, gui_ref.toggle_from_tray)
+                    _MAC_TRAY_QUEUE.put("toggle")
 
                 @objc.IBAction
                 def toggleProxy_(self, sender):
-                    gui_ref.root.after(50, gui_ref.toggle_proxy_from_tray)
+                    _MAC_TRAY_QUEUE.put("toggle_proxy")
 
                 @objc.IBAction
                 def openCache_(self, sender):
-                    gui_ref.root.after(50, gui_ref.open_cache_folder)
+                    _MAC_TRAY_QUEUE.put("open_cache")
 
                 @objc.IBAction
                 def quitApp_(self, sender):
-                    gui_ref.root.after(50, gui_ref.quit_app)
+                    _MAC_TRAY_QUEUE.put("quit")
 
             self.menu_actions = MacMenuActions.alloc().init()
             self.menu = AppKit.NSMenu.alloc().init()
@@ -422,11 +421,12 @@ class GBFAcceleratorGUI:
             self.root.bind("<Button-4>", self._on_main_mousewheel, add="+")
             self.root.bind("<Button-5>", self._on_main_mousewheel, add="+")
             try:
-                self.root.createcommand("::tk::mac::ReopenApplication", self.show_from_tray)
+                self.root.createcommand("::tk::mac::ReopenApplication", lambda: _MAC_TRAY_QUEUE.put("show"))
                 self.root.createcommand("::tk::mac::Quit", self.quit_app)
             except Exception:
                 pass
             self.setup_mac_window_buttons()
+            self._tray_poll_job = None
             try:
                 for pat in ("<Command-a>", "<Command-A>"):
                     self.root.bind_class("TEntry", pat, lambda e: (e.widget.select_range(0, "end"), e.widget.icursor("end"), "break"))
@@ -487,12 +487,35 @@ class GBFAcceleratorGUI:
                 except Exception:
                     pass
 
-            self.root.update_idletasks()
             _hook_window()
-            self.root.after(50, _hook_window)
-            self.root.after(300, _hook_window)
+            self.root.after(100, _hook_window)
+            self.root.after(400, _hook_window)
         except Exception:
             pass
+
+    def _poll_mac_tray_queue(self):
+        """Poll queued actions from the macOS menu bar and system events on the main Tk thread."""
+        if sys.platform != "darwin":
+            return
+        try:
+            while not _MAC_TRAY_QUEUE.empty():
+                action = _MAC_TRAY_QUEUE.get_nowait()
+                if action == "toggle":
+                    self.toggle_from_tray()
+                elif action == "show":
+                    self.show_from_tray()
+                elif action == "hide":
+                    self.hide_to_tray(notify=False)
+                elif action == "toggle_proxy":
+                    self.toggle_proxy()
+                elif action == "open_cache":
+                    self.open_cache_folder()
+                elif action == "quit":
+                    self.quit_app()
+        except Exception:
+            pass
+        finally:
+            self._tray_poll_job = self.root.after(80, self._poll_mac_tray_queue)
 
     def setup_styles(self):
         style = ttk.Style(self.root)
@@ -2751,6 +2774,7 @@ class GBFAcceleratorGUI:
     def setup_tray(self):
         if sys.platform == "darwin":
             self.tray_icon = MacStatusBarManager(self)
+            self._poll_mac_tray_queue()
             return
 
         try:
@@ -2771,14 +2795,6 @@ class GBFAcceleratorGUI:
     def hide_to_tray(self, notify=True):
         if self.tray_icon or sys.platform == "darwin":
             self.root.withdraw()
-            if sys.platform == "darwin":
-                try:
-                    import AppKit
-                    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
-                        AppKit.NSApplicationActivationPolicyAccessory
-                    )
-                except Exception:
-                    pass
             # Cancel running stats timer so CPU stays at absolute 0.0% in background
             if getattr(self, "_stats_job", None):
                 try:
@@ -2806,22 +2822,16 @@ class GBFAcceleratorGUI:
             self.show_from_tray()
 
     def show_from_tray(self, *args):
+        if getattr(self, "_is_restoring_window", False):
+            return
+        self._is_restoring_window = True
         try:
-            if sys.platform == "darwin":
-                try:
-                    import AppKit
-                    AppKit.NSApplication.sharedApplication().setActivationPolicy_(
-                        AppKit.NSApplicationActivationPolicyRegular
-                    )
-                except Exception:
-                    pass
             self.root.deiconify()
             self.root.lift()
             if sys.platform == "darwin":
                 try:
                     import AppKit
                     AppKit.NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
-                    self.setup_mac_window_buttons()
                 except Exception:
                     pass
             self.root.attributes("-topmost", True)
@@ -2832,6 +2842,8 @@ class GBFAcceleratorGUI:
                 self.update_stats_loop()
         except Exception:
             pass
+        finally:
+            self._is_restoring_window = False
 
     def toggle_proxy_from_tray(self, *args):
         try:
@@ -2882,6 +2894,12 @@ class GBFAcceleratorGUI:
             except Exception:
                 pass
             self._stats_job = None
+        if getattr(self, "_tray_poll_job", None):
+            try:
+                self.root.after_cancel(self._tray_poll_job)
+            except Exception:
+                pass
+            self._tray_poll_job = None
 
         # 4. Stop tray icon (immediately removes icon from Windows notification tray)
         tray = getattr(self, "tray_icon", None)
