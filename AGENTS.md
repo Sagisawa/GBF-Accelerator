@@ -176,7 +176,7 @@ Windows     macOS
      .\.venv\Scripts\python.exe test_proxy.py
      .\.venv\Scripts\python.exe test_update_manager.py
      ```
-   - 验证 73 项代理测试与 9 项更新测试全部通过（100% Pass）。
+   - 验证 73 项代理测试与 10 项更新测试全部通过（100% Pass）。
 5. **Diff 自检核对 (Self-Review via Diff)**：
    - 运行 `git diff`，逐行审查所有变动行，确认未引入非预期的副作用和违反规范的代码。
 
@@ -205,12 +205,12 @@ Windows     macOS
 - **Release 说明**：保存在 `docs/releases/vX.Y.Z.md`，使用规范客观的中文 Markdown。
 - **发布压缩包**：
   - Windows 客户端：严格命名为 `GBF_Accelerator_vX.Y.Z_GUI.zip`；
-  - macOS 客户端：严格命名为 `GBF_Accelerator_vX.Y.Z_mac_GUI.zip`（包含 `mac`/`darwin`/`osx` 标识，以配合 `update_manager.py` 跨平台匹配与过滤逻辑）。
+  - macOS 客户端：命名为 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`（Universal 2 双架构包，或包含 `mac`/`darwin`/`osx` 标识的命名如 `GBF_Accelerator_vX.Y.Z_mac_GUI.zip`，以配合 `update_manager.py` 跨平台匹配与过滤逻辑）。
 
 ### 3. 版本发布检查清单 (Release Checklist)
 每次发布版本前，必须严格核对以下 5 项，严禁将 Release 标题混淆复制给 Commit：
 1. `update_manager.py` 中的 `APP_VERSION = "X.Y.Z"`；
-2. `build_exe.py` 中的 `zip_path` 指向 `GBF_Accelerator_vX.Y.Z_GUI.zip`（macOS 独立发布包命名为 `GBF_Accelerator_vX.Y.Z_mac_GUI.zip`）；
+2. `build_exe.py` 中的 `zip_path` 指向 `GBF_Accelerator_vX.Y.Z_GUI.zip`（macOS 独立发布包命名规范为 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`，或包含 `mac`/`darwin`/`osx` 关键词以配合 `update_manager.py` 跨平台匹配）；
 3. `CHANGELOG.md` 与 `README.md` 包含对应版本的更新说明；
 4. **Git Commit 信息必须为纯英文**；
 5. **GitHub Release 标题必须为 `vX.Y.Z - 主要功能/修复`（中文）**。

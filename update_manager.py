@@ -119,10 +119,16 @@ def check_for_updates(
             continue
         lower_name = name.lower()
         if is_mac:
-            # macOS: 优先匹配带 mac/darwin/osx 的 zip
-            if any(k in lower_name for k in ("mac", "darwin", "osx")):
+            # macOS: 避开 windows/linux，优先匹配 universal2，其次任意 mac 专用 zip
+            if any(k in lower_name for k in ("windows", "win32", "win64", "linux")):
+                continue
+            if not any(k in lower_name for k in ("mac", "darwin", "osx")):
+                continue
+            if "universal" in lower_name:
                 download_url = asset.get("browser_download_url")
                 break
+            elif not download_url:
+                download_url = asset.get("browser_download_url")
         else:
             # Windows: 避开 mac/linux，优先匹配 GUI.zip
             if any(k in lower_name for k in ("mac", "darwin", "osx", "linux")):
@@ -166,6 +172,8 @@ def get_asset_filename(url: str, fallback_version: str = "") -> str:
         if part.endswith(".zip"):
             return part
     ver = f"v{fallback_version}" if fallback_version else "latest"
+    if sys.platform == "darwin":
+        return f"GBF_Accelerator_{ver}_macOS_universal2.zip"
     return f"GBF_Accelerator_{ver}_GUI.zip"
 
 def _safe_unlink(p: Path):

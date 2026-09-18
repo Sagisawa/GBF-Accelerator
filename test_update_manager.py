@@ -51,9 +51,27 @@ class TestUpdateManager(unittest.TestCase):
             "GBF_Accelerator_v1.7.0_GUI.zip"
         )
         self.assertEqual(
-            update_manager.get_asset_filename("", fallback_version="1.7.0"),
-            "GBF_Accelerator_v1.7.0_GUI.zip"
+            update_manager.get_asset_filename("https://github.com/Sagisawa/GBF-Accelerator/releases/download/v1.7.3/GBF_Accelerator_v1.7.3_macOS_universal2.zip"),
+            "GBF_Accelerator_v1.7.3_macOS_universal2.zip"
         )
+        with patch("sys.platform", "win32"):
+            self.assertEqual(
+                update_manager.get_asset_filename("", fallback_version="1.7.0"),
+                "GBF_Accelerator_v1.7.0_GUI.zip"
+            )
+            self.assertEqual(
+                update_manager.get_asset_filename(""),
+                "GBF_Accelerator_latest_GUI.zip"
+            )
+        with patch("sys.platform", "darwin"):
+            self.assertEqual(
+                update_manager.get_asset_filename("", fallback_version="1.7.3"),
+                "GBF_Accelerator_v1.7.3_macOS_universal2.zip"
+            )
+            self.assertEqual(
+                update_manager.get_asset_filename(""),
+                "GBF_Accelerator_latest_macOS_universal2.zip"
+            )
 
     def test_download_empty_url(self):
         from pathlib import Path
@@ -110,6 +128,97 @@ class TestUpdateManager(unittest.TestCase):
             with patch("sys.platform", "darwin"):
                 info_mac_none = update_manager.check_for_updates(current_ver="1.7.2")
                 self.assertIsNone(info_mac_none.download_url)
+
+    def test_macos_universal2_asset_filtering(self):
+        mock_release = {
+            "tag_name": "v1.7.3",
+            "name": "v1.7.3 - macOS Universal 2 Release",
+            "body": "Universal 2 build notes",
+            "html_url": "https://github.com/Sagisawa/GBF-Accelerator/releases/tag/v1.7.3",
+            "published_at": "2026-09-18T00:00:00Z",
+            "assets": [
+                {
+                    "name": "GBF_Accelerator_v1.7.3_macOS_universal2.zip",
+                    "browser_download_url": "https://example.com/GBF_Accelerator_v1.7.3_macOS_universal2.zip",
+                },
+                {
+                    "name": "GBF_Accelerator_v1.7.3_GUI.zip",
+                    "browser_download_url": "https://example.com/GBF_Accelerator_v1.7.3_GUI.zip",
+                },
+            ],
+        }
+        with patch("httpx.Client") as mock_client:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = mock_release
+            mock_client.return_value.__enter__.return_value.get.return_value = mock_resp
+
+            # Case 1: macOS platform matches GBF_Accelerator_v1.7.3_macOS_universal2.zip
+            with patch("sys.platform", "darwin"):
+                info_mac = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertTrue(info_mac.has_update)
+                self.assertEqual(info_mac.latest_version, "1.7.3")
+                self.assertEqual(info_mac.download_url, "https://example.com/GBF_Accelerator_v1.7.3_macOS_universal2.zip")
+
+            # Case 2: Windows platform ignores macOS_universal2 and picks Windows GUI package
+            with patch("sys.platform", "win32"):
+                info_win = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertTrue(info_win.has_update)
+                self.assertEqual(info_win.latest_version, "1.7.3")
+                self.assertEqual(info_win.download_url, "https://example.com/GBF_Accelerator_v1.7.3_GUI.zip")
+
+            # Case 3: Reverse asset order in release list (Windows asset first, macOS asset second)
+            mock_release_reversed = dict(mock_release, assets=[mock_release["assets"][1], mock_release["assets"][0]])
+            mock_resp.json.return_value = mock_release_reversed
+            with patch("sys.platform", "darwin"):
+                info_mac_rev = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertEqual(info_mac_rev.download_url, "https://example.com/GBF_Accelerator_v1.7.3_macOS_universal2.zip")
+            with patch("sys.platform", "win32"):
+                info_win_rev = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertEqual(info_win_rev.download_url, "https://example.com/GBF_Accelerator_v1.7.3_GUI.zip")
+
+            # Case 4: Windows platform with only macOS universal2 package -> download_url is None
+            mock_release_mac_only = dict(mock_release, assets=[mock_release["assets"][0]])
+            mock_resp.json.return_value = mock_release_mac_only
+            with patch("sys.platform", "win32"):
+                info_win_none = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertIsNone(info_win_none.download_url)
+
+            # Case 5: Release has BOTH legacy mac_GUI.zip (first) and macOS_universal2.zip (second)
+            # macOS MUST prioritize universal2 over legacy mac_GUI even if mac_GUI appears earlier
+            mock_release_multi_mac = dict(mock_release, assets=[
+                {
+                    "name": "GBF_Accelerator_v1.7.3_mac_GUI.zip",
+                    "browser_download_url": "https://example.com/GBF_Accelerator_v1.7.3_mac_GUI.zip",
+                },
+                {
+                    "name": "GBF_Accelerator_v1.7.3_macOS_universal2.zip",
+                    "browser_download_url": "https://example.com/GBF_Accelerator_v1.7.3_macOS_universal2.zip",
+                },
+                {
+                    "name": "GBF_Accelerator_v1.7.3_GUI.zip",
+                    "browser_download_url": "https://example.com/GBF_Accelerator_v1.7.3_GUI.zip",
+                },
+            ])
+            mock_resp.json.return_value = mock_release_multi_mac
+            with patch("sys.platform", "darwin"):
+                info_mac_prio = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertEqual(info_mac_prio.download_url, "https://example.com/GBF_Accelerator_v1.7.3_macOS_universal2.zip")
+            with patch("sys.platform", "win32"):
+                info_win_prio = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertEqual(info_win_prio.download_url, "https://example.com/GBF_Accelerator_v1.7.3_GUI.zip")
+
+            # Case 6: Fallback when only legacy mac_GUI.zip is available on macOS (no universal2 package)
+            mock_release_legacy_mac = dict(mock_release, assets=[
+                {
+                    "name": "GBF_Accelerator_v1.7.3_mac_GUI.zip",
+                    "browser_download_url": "https://example.com/GBF_Accelerator_v1.7.3_mac_GUI.zip",
+                },
+            ])
+            mock_resp.json.return_value = mock_release_legacy_mac
+            with patch("sys.platform", "darwin"):
+                info_mac_legacy = update_manager.check_for_updates(current_ver="1.7.2")
+                self.assertEqual(info_mac_legacy.download_url, "https://example.com/GBF_Accelerator_v1.7.3_mac_GUI.zip")
 
 if __name__ == "__main__":
     unittest.main()
