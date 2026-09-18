@@ -1,65 +1,64 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import {
   RuntimeStatus,
-  TelemetrySummary,
   CacheStats,
-  PrefetchStatus,
   LogItem,
 } from './types'
 import {
   fetchStatus,
   fetchConfig,
-  fetchTelemetry,
   fetchCacheStats,
-  fetchPrefetchStatus,
   fetchLogs,
   toggleProxy,
   applyConfig,
   openCacheFolder,
+  browseDirectory,
 } from './api'
-
-import { Sidebar } from './components/cockpit/Sidebar'
-import { HeaderBar } from './components/cockpit/HeaderBar'
-import { TelemetryStrip } from './components/cockpit/TelemetryStrip'
-import { CacheDeck } from './components/cockpit/CacheDeck'
-import { UpstreamDeck } from './components/cockpit/UpstreamDeck'
-import { NetworkDeck } from './components/cockpit/NetworkDeck'
-import { AdvancedDisclosure } from './components/cockpit/AdvancedDisclosure'
-import { UtilityDock } from './components/cockpit/UtilityDock'
 
 import { LogTerminalDrawer } from './components/modals/LogTerminalDrawer'
 import { MobileGuideModal } from './components/modals/MobileGuideModal'
 import { ClearCacheModal } from './components/modals/ClearCacheModal'
 import { ShortcutsModal } from './components/modals/ShortcutsModal'
+import { RoutingGuideModal } from './components/modals/RoutingGuideModal'
+import { LatencyTestModal } from './components/modals/LatencyTestModal'
+import { AuditModal } from './components/modals/AuditModal'
+import { SlimModal } from './components/modals/SlimModal'
+import { CaCertModal } from './components/modals/CaCertModal'
+import { UpdateModal } from './components/modals/UpdateModal'
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import {
-  AlertTriangle,
   CheckCircle2,
   Info,
   XCircle,
-  Play,
-  Square,
   Zap,
-  FolderOpen,
-  Sparkles,
 } from 'lucide-react'
 
 export const App: React.FC = () => {
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
-  const [telemetry, setTelemetry] = useState<TelemetrySummary | null>(null)
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
-  const [prefetch, setPrefetch] = useState<PrefetchStatus | null>(null)
   const [config, setConfig] = useState<Record<string, any>>({})
   const [logs, setLogs] = useState<LogItem[]>([])
   const [loadingProxy, setLoadingProxy] = useState<boolean>(false)
-  const [activeSection, setActiveSection] = useState<string>('overview')
+
+  // Editable Form Inputs
+  const [cacheDirInput, setCacheDirInput] = useState<string>('D:\\acgpower\\cache\\gbf\\https')
+  const [upstreamInput, setUpstreamInput] = useState<string>('http://127.0.0.1:8099')
+  const [portInput, setPortInput] = useState<string>('8124')
+  const [ramMbInput, setRamMbInput] = useState<string>('256')
 
   // Modals and Drawers
   const [isLogDrawerOpen, setIsLogDrawerOpen] = useState<boolean>(false)
   const [isMobileModalOpen, setIsMobileModalOpen] = useState<boolean>(false)
   const [isClearModalOpen, setIsClearModalOpen] = useState<boolean>(false)
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState<boolean>(false)
+  const [isRoutingModalOpen, setIsRoutingModalOpen] = useState<boolean>(false)
+  const [isLatencyModalOpen, setIsLatencyModalOpen] = useState<boolean>(false)
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false)
+  const [isSlimModalOpen, setIsSlimModalOpen] = useState<boolean>(false)
+  const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false)
+  const [caModalAction, setCaModalAction] = useState<'install' | 'uninstall' | null>(null)
+  const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version: string } | null>(null)
 
   // Floating Toast
   const [toast, setToast] = useState<{
@@ -75,22 +74,24 @@ export const App: React.FC = () => {
     []
   )
 
-  // Refresh functions
+  // Refresh data from API
   const loadState = useCallback(async () => {
     try {
-      const [s, c, t, cs, pf, lg] = await Promise.allSettled([
+      const [s, c, cs, lg] = await Promise.allSettled([
         fetchStatus(),
         fetchConfig(),
-        fetchTelemetry(),
         fetchCacheStats(),
-        fetchPrefetchStatus(),
         fetchLogs(),
       ])
       if (s.status === 'fulfilled') setStatus(s.value)
-      if (c.status === 'fulfilled') setConfig(c.value)
-      if (t.status === 'fulfilled') setTelemetry(t.value)
+      if (c.status === 'fulfilled') {
+        setConfig(c.value)
+        if (c.value.cache_dir) setCacheDirInput(c.value.cache_dir)
+        if (c.value.upstream_proxy) setUpstreamInput(c.value.upstream_proxy)
+        if (c.value.listen_port) setPortInput(String(c.value.listen_port))
+        if (c.value.ram_cache_max_mb) setRamMbInput(String(c.value.ram_cache_max_mb))
+      }
       if (cs.status === 'fulfilled') setCacheStats(cs.value)
-      if (pf.status === 'fulfilled') setPrefetch(pf.value)
       if (lg.status === 'fulfilled') setLogs(lg.value)
     } catch (e) {
       console.error('Failed to fetch initial state', e)
@@ -112,13 +113,6 @@ export const App: React.FC = () => {
         } catch {}
       })
 
-      es.addEventListener('metrics', (e) => {
-        try {
-          const data = JSON.parse(e.data)
-          if (data.telemetry) setTelemetry(data.telemetry)
-        } catch {}
-      })
-
       es.addEventListener('log', (e) => {
         try {
           const item: LogItem = JSON.parse(e.data)
@@ -129,10 +123,24 @@ export const App: React.FC = () => {
       console.warn('SSE connection failed, falling back to polling', e)
     }
 
-    // Safety net polling
+    // Background check for newer version on startup
+    fetch('https://api.github.com/repos/Sagisawa/GBF-Accelerator/releases/latest')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data?.tag_name) return
+        const latest = data.tag_name.replace(/^v/, '').trim()
+        fetchStatus().then((cur) => {
+          const current = (cur?.version || '1.8.0').replace(/^v/, '').trim()
+          if (latest && latest !== current) {
+            setUpdateInfo({ available: true, version: latest })
+          }
+        }).catch(() => {})
+      })
+      .catch(() => {})
+
     const interval = setInterval(() => {
       fetchStatus().then(setStatus).catch(() => {})
-      fetchTelemetry().then(setTelemetry).catch(() => {})
+      fetchCacheStats().then(setCacheStats).catch(() => {})
     }, 4000)
 
     return () => {
@@ -149,7 +157,8 @@ export const App: React.FC = () => {
     try {
       const newStatus = await toggleProxy(targetRunning)
       setStatus(newStatus)
-      showToast(targetRunning ? '代理加速服务已启动' : '代理加速服务已停止', 'success')
+      showToast(targetRunning ? '加速代理服务已成功启动' : '加速代理服务已停止', 'success')
+      loadState()
     } catch (e: any) {
       showToast(`代理操作失败: ${e.message}`, 'error')
     } finally {
@@ -157,7 +166,7 @@ export const App: React.FC = () => {
     }
   }
 
-  // Toggle Direct Mode via shortcut or UI
+  // Toggle Direct Mode
   const handleToggleDirect = async () => {
     const currentDirect = Boolean(config.direct_mode ?? status?.direct_mode)
     const nextDirect = !currentDirect
@@ -165,7 +174,7 @@ export const App: React.FC = () => {
       await applyConfig({ direct_mode: nextDirect })
       setConfig((prev) => ({ ...prev, direct_mode: nextDirect }))
       showToast(
-        nextDirect ? '已开启日本官方直连 (Direct Mode)' : '已恢复上游代理链路',
+        nextDirect ? '已开启直连模式 (使用本机网络，不经过上游代理)' : '已恢复上游代理转发链路',
         'info'
       )
       loadState()
@@ -174,7 +183,21 @@ export const App: React.FC = () => {
     }
   }
 
-  // Open Cache folder directly
+  // Toggle Shimakaze Mode
+  const handleToggleShimakaze = async () => {
+    const current = Boolean(config.shimakaze_mode ?? true)
+    const next = !current
+    try {
+      await applyConfig({ shimakaze_mode: next })
+      setConfig((prev) => ({ ...prev, shimakaze_mode: next }))
+      showToast(next ? '已开启岛风GO 兼容优化模式' : '已关闭岛风GO 兼容优化模式', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置岛风GO模式失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Open Cache Folder
   const handleOpenCacheFolder = async () => {
     try {
       await openCacheFolder()
@@ -184,27 +207,256 @@ export const App: React.FC = () => {
     }
   }
 
-  // Close all modals / drawers
+  // Browse Directory
+  const handleBrowseDir = async () => {
+    try {
+      const chosen = await browseDirectory()
+      if (chosen) {
+        setCacheDirInput(chosen)
+        await applyConfig({ cache_dir: chosen })
+        setConfig((prev) => ({ ...prev, cache_dir: chosen }))
+        showToast(`缓存目录已成功更改为：${chosen}`, 'success')
+        loadState()
+      }
+    } catch (e: any) {
+      showToast(`选择目录失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Detect ACGPower Cache
+  const handleDetectAcgp = async () => {
+    try {
+      await applyConfig({ cache_dir: 'auto' })
+      showToast('已自动探测并关联电脑中存在的 ACGPower 静态缓存', 'success')
+      loadState()
+    } catch (e: any) {
+      showToast(`检测 ACGP 失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Save Upstream Proxy
+  const handleSaveUpstream = async () => {
+    const trimmed = upstreamInput.trim()
+    if (!trimmed) {
+      showToast('上游代理地址不能为空', 'error')
+      return
+    }
+    try {
+      await applyConfig({ upstream_proxy: trimmed })
+      setConfig((prev) => ({ ...prev, upstream_proxy: trimmed }))
+      showToast(`上游代理地址已保存并切换至：${trimmed}`, 'success')
+      loadState()
+    } catch (e: any) {
+      showToast(`保存上游代理失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Auto Probe Upstream Proxy
+  const handleProbeUpstream = async () => {
+    try {
+      await applyConfig({ upstream_proxy: 'auto' })
+      showToast('已自动探测并应用上游代理 (Clash / v2rayN / 岛风GO)', 'success')
+      loadState()
+    } catch (e: any) {
+      showToast(`探测上游代理失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Save Listen Port
+  const handleSavePort = async () => {
+    const p = parseInt(portInput.trim(), 10)
+    if (isNaN(p) || p < 1 || p > 65535) {
+      showToast('请输入 1 到 65535 之间的有效端口号', 'error')
+      return
+    }
+    try {
+      await applyConfig({ listen_port: p, port: p })
+      setConfig((prev) => ({ ...prev, listen_port: p }))
+      showToast(`本地监听端口已更新为 ${p} (重启代理生效)`, 'success')
+      loadState()
+    } catch (e: any) {
+      showToast(`保存端口失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Reset Listen Port Default
+  const handleResetPort = async () => {
+    setPortInput('8124')
+    try {
+      await applyConfig({ listen_port: 8124, port: 8124 })
+      setConfig((prev) => ({ ...prev, listen_port: 8124 }))
+      showToast('监听端口已恢复默认 (8124)', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`恢复端口失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Toggle Allow LAN
+  const handleToggleAllowLan = async () => {
+    const current = Boolean(config.allow_lan ?? status?.allow_lan ?? false)
+    const next = !current
+    try {
+      await applyConfig({ allow_lan: next })
+      setConfig((prev) => ({ ...prev, allow_lan: next }))
+      showToast(next ? '允许局域网连接已开启 (绑定 0.0.0.0)' : '局域网连接已关闭', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置局域网共享失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Toggle System Proxy PAC
+  const handleToggleAutoPac = async () => {
+    const current = Boolean(config.auto_system_proxy ?? config.auto_pac ?? true)
+    const next = !current
+    try {
+      await applyConfig({ auto_system_proxy: next, auto_pac: next })
+      setConfig((prev) => ({ ...prev, auto_system_proxy: next, auto_pac: next }))
+      showToast(next ? '自动配置 Windows 系统 PAC 代理已开启' : '系统 PAC 代理已关闭', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置系统 PAC 代理失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Toggle Auto Start
+  const handleToggleAutoStart = async () => {
+    const current = Boolean(config.auto_start ?? false)
+    const next = !current
+    try {
+      await applyConfig({ auto_start: next })
+      setConfig((prev) => ({ ...prev, auto_start: next }))
+      showToast(next ? '开机自启已开启' : '开机自启已关闭', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置开机自启失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Toggle Auto Check Update
+  const handleToggleAutoUpdate = async () => {
+    const current = Boolean(config.auto_check_update ?? true)
+    const next = !current
+    try {
+      await applyConfig({ auto_check_update: next })
+      setConfig((prev) => ({ ...prev, auto_check_update: next }))
+      showToast(next ? '启动时自动检测新版本已开启' : '自动检测更新已关闭', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置自动更新失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Performance Options
+  const handleToggleRamCache = async () => {
+    const current = Boolean(config.enable_ram_cache ?? true)
+    const next = !current
+    try {
+      await applyConfig({ enable_ram_cache: next })
+      setConfig((prev) => ({ ...prev, enable_ram_cache: next }))
+      showToast(next ? '启用内存热点缓存 (RAM Cache)' : '已关闭内存热点缓存', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置内存缓存失败: ${e.message}`, 'error')
+    }
+  }
+
+  const handleApplyRamMb = async () => {
+    const mb = parseInt(ramMbInput.trim(), 10)
+    if (isNaN(mb) || mb < 64 || mb > 2048) {
+      showToast('请输入 64 到 2048 MB 之间的有效内存上限', 'error')
+      return
+    }
+    try {
+      await applyConfig({ ram_cache_max_mb: mb })
+      setConfig((prev) => ({ ...prev, ram_cache_max_mb: mb }))
+      showToast(`内存缓存上限已设置为 ${mb} MB`, 'success')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置内存上限失败: ${e.message}`, 'error')
+    }
+  }
+
+  const handleToggleBrowserCache = async () => {
+    const current = Boolean(config.enable_browser_cache ?? false)
+    const next = !current
+    try {
+      await applyConfig({ enable_browser_cache: next })
+      setConfig((prev) => ({ ...prev, enable_browser_cache: next }))
+      showToast(next ? '浏览器强缓存与渲染留存已开启' : '浏览器强缓存已关闭', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置浏览器强缓存失败: ${e.message}`, 'error')
+    }
+  }
+
+  const handleToggleAutoRepair = async () => {
+    const current = Boolean(config.enable_auto_repair ?? true)
+    const next = !current
+    try {
+      await applyConfig({ enable_auto_repair: next })
+      setConfig((prev) => ({ ...prev, enable_auto_repair: next }))
+      showToast(next ? '自动检测并修复损坏/空缓存已开启' : '自动修复已关闭', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置自动修复失败: ${e.message}`, 'error')
+    }
+  }
+
+  const handleTogglePrefetch = async () => {
+    const current = Boolean(config.enable_prefetch ?? true)
+    const next = !current
+    try {
+      await applyConfig({ enable_prefetch: next })
+      setConfig((prev) => ({ ...prev, enable_prefetch: next }))
+      showToast(next ? '场景素材智能预加载已开启' : '素材预加载已关闭', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置预加载失败: ${e.message}`, 'error')
+    }
+  }
+
+  const handleToggleRamWarmup = async () => {
+    const current = Boolean(config.enable_ram_warmup ?? true)
+    const next = !current
+    try {
+      await applyConfig({ enable_ram_warmup: next })
+      setConfig((prev) => ({ ...prev, enable_ram_warmup: next }))
+      showToast(next ? '启动时预热内存缓存已开启' : '预热内存已关闭', 'info')
+      loadState()
+    } catch (e: any) {
+      showToast(`设置预热内存失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Close all modals
   const handleCloseAll = () => {
     setIsLogDrawerOpen(false)
     setIsMobileModalOpen(false)
     setIsClearModalOpen(false)
     setIsShortcutsModalOpen(false)
+    setIsRoutingModalOpen(false)
+    setIsLatencyModalOpen(false)
+    setIsAuditModalOpen(false)
+    setIsSlimModalOpen(false)
+    setIsUpdateModalOpen(false)
+    setCaModalAction(null)
   }
 
   const isAnyModalOpen =
-    isLogDrawerOpen || isMobileModalOpen || isClearModalOpen || isShortcutsModalOpen
+    isLogDrawerOpen ||
+    isMobileModalOpen ||
+    isClearModalOpen ||
+    isShortcutsModalOpen ||
+    isRoutingModalOpen ||
+    isLatencyModalOpen ||
+    isAuditModalOpen ||
+    isSlimModalOpen ||
+    isUpdateModalOpen ||
+    caModalAction !== null
 
-  // Scroll to section
-  const handleSelectSection = (sectionId: string) => {
-    setActiveSection(sectionId)
-    const element = document.getElementById(sectionId)
-    if (element) {
-      element.scrollIntoView({ behavior: 'smooth' })
-    }
-  }
-
-  // Keyboard Shortcuts Registration
+  // Keyboard Shortcuts
   useKeyboardShortcuts({
     onToggleProxy: handleToggleProxy,
     onToggleLogs: () => setIsLogDrawerOpen((prev) => !prev),
@@ -215,198 +467,622 @@ export const App: React.FC = () => {
     isModalOpen: isAnyModalOpen,
   })
 
+  // State derivation
   const isRunning = Boolean(status?.proxy_running)
-  const isDirect = Boolean(config.direct_mode ?? status?.direct_mode)
+  const isDirect = Boolean(config.direct_mode ?? status?.direct_mode ?? false)
+  const isShimakaze = Boolean(config.shimakaze_mode ?? true)
+  const isAllowLan = Boolean(config.allow_lan ?? status?.allow_lan ?? false)
+  const isAutoPac = Boolean(config.auto_system_proxy ?? config.auto_pac ?? true)
+  const isAutoStart = Boolean(config.auto_start ?? false)
+  const isAutoUpdate = Boolean(config.auto_check_update ?? true)
+  const isRamCache = Boolean(config.enable_ram_cache ?? true)
+  const isBrowserCache = Boolean(config.enable_browser_cache ?? false)
+  const isAutoRepair = Boolean(config.enable_auto_repair ?? true)
+  const isPrefetch = Boolean(config.enable_prefetch ?? true)
+  const isRamWarmup = Boolean(config.enable_ram_warmup ?? true)
+
+  const isCaInstalled = Boolean(status?.ca_installed ?? true)
+  const caFingerprint =
+    status?.ca_thumbprint ||
+    '8D:7A:35:CA:F9:19:9B:C5:EE:3B:B4:0D:F9:41:15:F4:F3:57:12:65:94:3D:8B:14:D4:0A:43:19:20:B7:5E:75'
+
+  const currentListenPort = config.listen_port ?? status?.listen_port ?? 8124
+  const hitsCount = status?.requests?.total_hits ?? 0
+  const ramHitsCount = status?.requests?.ram_hits ?? 0
+  const downloadsCount = status?.requests?.cache_misses ?? 0
+  const apisCount = status?.requests?.total_apis ?? 0
+  const ramUsageMb = Math.round(cacheStats?.ram_mb ?? (status?.cache?.ram_mb ?? 0))
+  const ramMaxMb = config.ram_cache_max_mb ?? 256
 
   return (
-    <div className="min-h-screen bg-canvas text-label-primary flex font-sans selection:bg-apple-red/30">
-      {/* Toast Notification (Apple Floating Capsule) */}
+    <div className="min-h-screen bg-[#f1f5f9] flex flex-col items-center justify-start py-6 px-3 sm:px-6 font-sans antialiased text-slate-800 selection:bg-blue-200">
+      {/* Toast Notification */}
       {toast && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-3 duration-200">
-          <div className="px-4 py-2.5 rounded-full bg-[#1c1c1e]/95 backdrop-blur-2xl border border-white/[0.14] shadow-apple-pop flex items-center gap-2.5 text-xs">
-            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-apple-green shrink-0" />}
-            {toast.type === 'error' && <XCircle className="w-4 h-4 text-apple-red shrink-0" />}
-            {toast.type === 'info' && <Info className="w-4 h-4 text-apple-blue shrink-0" />}
-            <span className="font-semibold text-white tracking-tight">{toast.msg}</span>
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-3 duration-200">
+          <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
+            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+            {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
+            {toast.type === 'info' && <Info className="w-4 h-4 text-blue-400 shrink-0" />}
+            <span className="font-medium tracking-tight">{toast.msg}</span>
           </div>
         </div>
       )}
 
-      {/* 1. Left Navigation Sidebar (Apple Music Web Desktop Standard) */}
-      <Sidebar
-        activeSection={activeSection}
-        onSelectSection={handleSelectSection}
-        status={status}
-        config={config}
-        onToggleLogs={() => setIsLogDrawerOpen((prev) => !prev)}
-        onOpenMobileGuide={() => setIsMobileModalOpen(true)}
-        onOpenClearModal={() => setIsClearModalOpen(true)}
-        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
-        logCount={logs.length}
-      />
-
-      {/* Main Content Pane */}
-      <div className="flex-1 flex flex-col min-w-0 lg:pl-60">
-        {/* 2. Apple Music Style Persistent Top Player Bar */}
-        <HeaderBar
-          status={status}
-          telemetry={telemetry}
-          config={config}
-          loading={loadingProxy}
-          onToggleProxy={handleToggleProxy}
-          onToggleDirect={handleToggleDirect}
-          onOpenMobileGuide={() => setIsMobileModalOpen(true)}
-          onToggleLogs={() => setIsLogDrawerOpen((prev) => !prev)}
-          onOpenClearModal={() => setIsClearModalOpen(true)}
-          onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
-          onRefresh={loadState}
-          logCount={logs.length}
-        />
-
-        {/* 3. Main Editorial Canvas Area */}
-        <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
-          {/* Error Alert if any */}
-          {status?.last_error && (
-            <div className="p-4 bg-apple-red/10 border border-apple-red/30 rounded-2xl text-xs text-apple-red flex items-center gap-3 animate-in fade-in">
-              <AlertTriangle className="w-4 h-4 shrink-0" />
-              <span>代理核心运行异常: {status.last_error}</span>
+      {/* Main Desktop Window Frame */}
+      <div className="w-full max-w-[800px] bg-white rounded-lg shadow-xl border border-slate-300 overflow-hidden flex flex-col">
+        {/* Windows Simulated Title Bar */}
+        <div className="bg-white border-b border-slate-200 h-8 pl-3 pr-0 flex items-center justify-between select-none">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
+              <Zap className="w-2.5 h-2.5 fill-current" />
             </div>
-          )}
+            <span className="text-xs font-normal text-slate-700">GBF 加速器</span>
+          </div>
 
-          {/* Apple Music Hero Featured Banner ("今日聚焦 / 浏览" Style) */}
-          <div
-            id="overview"
-            className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#1c1c1e] via-[#161618] to-black border border-white/[0.08] p-6 sm:p-8 shadow-apple select-none scroll-mt-24"
-          >
-            {/* Ambient Lighting Gradient */}
-            <div className="absolute -right-12 -top-12 w-64 h-64 bg-apple-red/15 rounded-full blur-3xl pointer-events-none" />
-            <div className="absolute -left-12 -bottom-12 w-64 h-64 bg-apple-blue/10 rounded-full blur-3xl pointer-events-none" />
+          <div className="flex items-center h-full">
+            <button
+              type="button"
+              onClick={() => showToast('GBF 加速代理正在后台运行', 'info')}
+              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
+              title="最小化"
+            >
+              —
+            </button>
+            <button
+              type="button"
+              onClick={() => showToast('窗口已处于最大适配尺寸', 'info')}
+              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
+              title="最大化"
+            >
+              □
+            </button>
+            <button
+              type="button"
+              onClick={() => showToast('如需退出请关闭浏览器标签或使用托盘菜单', 'info')}
+              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-[#e81123] hover:text-white text-xs transition-colors"
+              title="关闭"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
 
-            <div className="relative z-10 max-w-2xl space-y-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-apple-red tracking-wider uppercase flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  GBF-ACCELERATOR · 本地极速与安全分流
+        {/* Window Client Area */}
+        <div className="p-4 sm:p-5 flex flex-col space-y-3 bg-white">
+          {/* 1. Header Card */}
+          <div className="flex items-center justify-between gap-4 pb-1">
+            <div className="flex flex-col space-y-1">
+              <div className="flex items-baseline gap-2">
+                <h1 className="text-lg sm:text-[19px] font-bold text-slate-900 tracking-tight">
+                  碧蓝幻想 GBF 加速器
+                </h1>
+                <span className="text-xs font-mono text-slate-500">
+                  v{status?.version || '1.8.0'}
                 </span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/[0.08] text-label-secondary border border-white/[0.06]">
-                  v{status?.version || '2.0'}
-                </span>
+                {updateInfo?.available && (
+                  <button
+                    type="button"
+                    onClick={() => setIsUpdateModalOpen(true)}
+                    className="ml-1 px-1.5 py-0.5 rounded-[3px] bg-[#ffc107] hover:bg-[#e0a800] text-[#212529] text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
+                  >
+                    <span>🔥</span>
+                    <span>发现新版 v{updateInfo.version}</span>
+                  </button>
+                )}
               </div>
 
-              <h1 className="text-2xl sm:text-4xl font-bold tracking-tight text-white leading-tight">
-                沉浸式空之物语，零卡顿静态加载
-              </h1>
-
-              <p className="text-xs sm:text-sm text-label-secondary leading-relaxed">
-                基于 HTTP/2 多路复用与本地多级 RAM/SSD 智能缓存，静态资源微秒直达；游戏动态 API 与官方探测 100% 原样穿透，杜绝风控风险与重发隐患。
-              </p>
-
-              {/* Quick Action Pill Row */}
-              <div className="flex items-center gap-3 pt-2 flex-wrap">
-                <button
-                  type="button"
-                  disabled={loadingProxy}
-                  onClick={handleToggleProxy}
-                  className={`px-5 py-2.5 rounded-full font-semibold text-xs transition-all duration-200 shadow-apple active:scale-95 flex items-center gap-2 ${
-                    isRunning
-                      ? 'bg-apple-red text-white hover:bg-apple-redHover'
-                      : 'bg-white text-black hover:bg-white/90'
+              <div className="flex items-center gap-2">
+                <span
+                  className={`text-xs font-medium ${
+                    isRunning ? 'text-[#28a745]' : 'text-[#6c757d]'
                   }`}
                 >
-                  {isRunning ? (
-                    <>
-                      <Square className="w-3.5 h-3.5 fill-current" />
-                      <span>停止加速服务</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-3.5 h-3.5 fill-current translate-x-0.5" />
-                      <span>启动加速服务</span>
-                    </>
-                  )}
-                </button>
+                  {isRunning
+                    ? `● 运行中 (监听端口 ${currentListenPort})`
+                    : '● 已停止'}
+                </span>
+              </div>
+            </div>
 
-                <button
-                  type="button"
-                  onClick={handleToggleDirect}
-                  className={`px-4 py-2.5 rounded-full text-xs font-medium border transition-all active:scale-95 flex items-center gap-2 ${
-                    isDirect
-                      ? 'bg-apple-green/15 text-apple-green border-apple-green/30'
-                      : 'bg-white/[0.08] text-white border-white/[0.08] hover:bg-white/[0.14]'
-                  }`}
-                >
-                  <Zap className="w-3.5 h-3.5" />
-                  <span>{isDirect ? '日本官方直连 (开启)' : '直连模式 (未开启)'}</span>
-                </button>
+            {/* Top Right Start / Stop Button */}
+            <button
+              type="button"
+              disabled={loadingProxy}
+              onClick={handleToggleProxy}
+              className={`min-w-[96px] px-5 py-2 rounded-[3px] text-sm font-bold text-white shadow-xs transition-colors cursor-pointer select-none active:scale-[0.98] ${
+                isRunning
+                  ? 'bg-[#dc3545] hover:bg-[#c82333] active:bg-[#bd2130]'
+                  : 'bg-[#28a745] hover:bg-[#218838] active:bg-[#1e7e34]'
+              }`}
+            >
+              {loadingProxy ? '处理中...' : isRunning ? '停止加速' : '启动加速'}
+            </button>
+          </div>
 
-                <button
-                  type="button"
-                  onClick={handleOpenCacheFolder}
-                  className="px-4 py-2.5 rounded-full text-xs font-medium bg-white/[0.08] hover:bg-white/[0.14] text-white border border-white/[0.08] transition-all active:scale-95 flex items-center gap-2"
-                >
-                  <FolderOpen className="w-3.5 h-3.5 text-apple-blue" />
-                  <span>打开缓存目录</span>
-                </button>
+          {/* 2. Real-time Telemetry Stats (3-Column Strip) */}
+          <div className="border-y border-slate-200 py-3.5 px-2 grid grid-cols-3 text-center">
+            {/* Stat 1: Cache Hits */}
+            <div className="flex flex-col items-center justify-center">
+              <div className="text-2xl sm:text-3xl font-bold font-sans text-[#28a745] tracking-tight tnum">
+                {hitsCount.toLocaleString()}
+                {ramHitsCount > 0 && (
+                  <span className="text-xs font-normal text-slate-500 ml-1">
+                    (内存 {ramHitsCount.toLocaleString()})
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                <span>⚡</span>
+                <span>本地缓存命中</span>
+              </div>
+            </div>
+
+            {/* Stat 2: Remote Downloads */}
+            <div className="flex flex-col items-center justify-center">
+              <div className="text-2xl sm:text-3xl font-bold font-sans text-[#007bff] tracking-tight tnum">
+                {downloadsCount.toLocaleString()}
+              </div>
+              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                <span>📥</span>
+                <span>远程下载缓存</span>
+              </div>
+            </div>
+
+            {/* Stat 3: API Passthrough */}
+            <div className="flex flex-col items-center justify-center">
+              <div className="text-2xl sm:text-3xl font-bold font-sans text-[#6c757d] tracking-tight tnum">
+                {apisCount.toLocaleString()}
+              </div>
+              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                <span>🔄</span>
+                <span>游戏 API 转发</span>
               </div>
             </div>
           </div>
 
-          {/* Curated Editorial Feature Cards (Telemetry & Status) */}
-          <TelemetryStrip
-            status={status}
-            telemetry={telemetry}
-            prefetch={prefetch}
-          />
+          {/* 3. Settings Card ("配置选项") */}
+          <div className="space-y-3 pt-1">
+            <h2 className="text-sm sm:text-base font-bold text-slate-900">
+              配置选项
+            </h2>
 
-          {/* Inset Group 1: Storage & Cache */}
-          <CacheDeck
-            status={status}
-            cacheStats={cacheStats}
-            onRefresh={loadState}
-            onToast={showToast}
-          />
+            {/* Field 1: Local Cache Dir */}
+            <div className="space-y-1">
+              <label className="text-xs text-slate-700 block">
+                本地缓存目录（支持无缝复用 ACGPower 缓存）：
+              </label>
+              <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
+                <input
+                  type="text"
+                  value={cacheDirInput}
+                  onChange={(e) => setCacheDirInput(e.target.value)}
+                  className="flex-1 min-w-[200px] border border-slate-300 rounded px-2.5 py-1 text-xs font-mono bg-white text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
+                />
+                <button
+                  type="button"
+                  onClick={handleBrowseDir}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-3 py-1 rounded transition-colors shrink-0 cursor-pointer"
+                >
+                  浏览...
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDetectAcgp}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors shrink-0 cursor-pointer"
+                >
+                  检测 ACGP
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsAuditModalOpen(true)}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors shrink-0 cursor-pointer flex items-center gap-1"
+                >
+                  <span>🩺</span>
+                  <span>一键体检缓存</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsSlimModalOpen(true)}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors shrink-0 cursor-pointer flex items-center gap-1"
+                >
+                  <span>🧹</span>
+                  <span>缓存安全瘦身</span>
+                </button>
+              </div>
+            </div>
 
-          {/* Inset Group 2: Upstream & Network */}
-          <UpstreamDeck
-            status={status}
-            config={config}
-            onConfigUpdated={loadState}
-            onToast={showToast}
-          />
+            {/* Field 2: Upstream Proxy */}
+            <div className="space-y-1">
+              <label className="text-xs text-slate-700 block">
+                上游网络代理（Clash Verge / Clash / V2ray / 岛风GO 等）：
+              </label>
+              <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
+                <input
+                  type="text"
+                  disabled={isDirect}
+                  value={upstreamInput}
+                  onChange={(e) => setUpstreamInput(e.target.value)}
+                  className="flex-1 min-w-[200px] border border-slate-300 rounded px-2.5 py-1 text-xs font-mono bg-white text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs disabled:bg-slate-100 disabled:text-slate-400"
+                />
+                <button
+                  type="button"
+                  disabled={isDirect}
+                  onClick={handleSaveUpstream}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-3 py-1 rounded transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  确认
+                </button>
+                <button
+                  type="button"
+                  disabled={isDirect}
+                  onClick={handleProbeUpstream}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  自动探测
+                </button>
+              </div>
+            </div>
 
-          {/* Inset Group 3: Listen Port & Multi-Device */}
-          <NetworkDeck
-            status={status}
-            config={config}
-            onConfigUpdated={loadState}
-            onOpenMobileGuide={() => setIsMobileModalOpen(true)}
-            onToast={showToast}
-          />
+            {/* Checkbox 1: Direct Mode */}
+            <div className="pt-0.5">
+              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isDirect}
+                  onChange={handleToggleDirect}
+                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                />
+                <span>直连模式（使用本机网络，不经过上游代理；仍使用本地缓存）</span>
+              </label>
+            </div>
 
-          {/* Inset Group 4: Advanced Tuning */}
-          <AdvancedDisclosure
-            status={status}
-            config={config}
-            onConfigUpdated={loadState}
-            onToast={showToast}
-          />
+            {/* Checkbox 2: Shimakaze Mode */}
+            <div className="space-y-1">
+              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  disabled={isDirect}
+                  checked={isShimakaze}
+                  onChange={handleToggleShimakaze}
+                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer disabled:opacity-50"
+                />
+                <span className={isDirect ? 'text-slate-400' : 'text-slate-800'}>
+                  岛风GO 兼容优化模式（放宽超时、自愈重试、适配自签证书；默认关闭）
+                </span>
+              </label>
 
-          {/* Apple Music Style Footer */}
-          <UtilityDock
-            onOpenClearModal={() => setIsClearModalOpen(true)}
-            onToggleLogs={() => setIsLogDrawerOpen((prev) => !prev)}
-            onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
-            logCount={logs.length}
-          />
-        </main>
+              {/* Shimakaze Tip Box (Shown in screenshot) */}
+              {isShimakaze && !isDirect && (
+                <div className="ml-6 p-2 bg-[#f0f7ff] border border-[#bae0ff] rounded text-xs text-[#1971c2] leading-relaxed">
+                  提示：本软件架构升级后，日常使用可按需开启岛风GO【使用远端缓存】（可显著加快初次冷启动下载速度）；若遇游戏维护更新后新素材显示异常，在主界面点击【清理缓存】或临时关闭远端缓存即可。
+                </div>
+              )}
+            </div>
+
+            {/* Field 3: Local Listen Port */}
+            <div className="space-y-1">
+              <label className="text-xs text-slate-700 block">
+                本地监听端口（默认 8124，支持自定义）：
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={portInput}
+                  onChange={(e) => setPortInput(e.target.value)}
+                  className="w-20 border border-slate-300 rounded px-2.5 py-1 text-xs font-mono bg-white text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
+                />
+                <button
+                  type="button"
+                  onClick={handleResetPort}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-3 py-1 rounded transition-colors cursor-pointer"
+                >
+                  恢复默认 (8124)
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSavePort}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-3 py-1 rounded transition-colors cursor-pointer"
+                >
+                  保存配置
+                </button>
+              </div>
+            </div>
+
+            {/* Field 4: Allow LAN & Mobile Guide */}
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isAllowLan}
+                    onChange={handleToggleAllowLan}
+                    className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                  />
+                  <span>
+                    允许局域网连接 (Allow LAN) - 允许其他设备（iOS/iPad/安卓等）连接本代理（默认关闭）
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setIsMobileModalOpen(true)}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2 py-0.5 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+                >
+                  <span>📱</span>
+                  <span>移动端/iOS 连接指引...</span>
+                </button>
+              </div>
+              {isAllowLan && (
+                <div className="ml-6 text-[11px] text-blue-600 font-medium">
+                  本机局域网 IP: {status?.lan_ip || '192.168.x.x'} (端口 {currentListenPort}) | 移动设备请配置 Wi-Fi 代理为此 IP 与端口
+                </div>
+              )}
+            </div>
+
+            {/* Field 5: HTTPS Root CA Status */}
+            <div className="space-y-1">
+              <label className="text-xs text-slate-700 block">
+                HTTPS 根证书状态（游戏静态资源本地解析必需）：
+              </label>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span
+                  className={`text-xs font-bold ${
+                    isCaInstalled ? 'text-[#28a745]' : 'text-[#dc3545]'
+                  }`}
+                >
+                  {isCaInstalled ? '已信任 (正常工作)' : '未安装信任'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setCaModalAction('install')}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors cursor-pointer"
+                >
+                  一键安装/修复根证书
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCaModalAction('uninstall')}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors cursor-pointer"
+                >
+                  一键注销/卸载根证书
+                </button>
+              </div>
+              <div className="text-[11px] font-mono text-slate-500 pt-0.5 select-all">
+                SHA-256 指纹： {caFingerprint}
+              </div>
+            </div>
+
+            {/* System Checkboxes */}
+            <div className="space-y-1.5 pt-1">
+              <div>
+                <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isAutoPac}
+                    onChange={handleToggleAutoPac}
+                    className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                  />
+                  <span>
+                    自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）
+                  </span>
+                </label>
+              </div>
+
+              <div>
+                <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isAutoStart}
+                    onChange={handleToggleAutoStart}
+                    className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                  />
+                  <span>开机自启（启动后自动缩小到系统托盘，默认关闭）</span>
+                </label>
+              </div>
+
+              <div>
+                <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isAutoUpdate}
+                    onChange={handleToggleAutoUpdate}
+                    className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                  />
+                  <span>启动时自动检测新版本（发现新版时右上角提醒，默认开启）</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <hr className="border-slate-200" />
+
+          {/* 4. Performance & System Resource Options */}
+          <div className="space-y-2">
+            <h3 className="text-xs text-slate-700 font-normal">
+              性能与系统资源选项（默认开启；若需降低内存/显存占用可取消对应勾选）：
+            </h3>
+
+            {/* Perf 1: RAM Cache */}
+            <div className="space-y-1">
+              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isRamCache}
+                  onChange={handleToggleRamCache}
+                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                />
+                <span>
+                  启用内存热点缓存 (RAM Cache) - 占用约 256MB 内存，高频静态资源 0 磁盘 I/O 直接响应
+                </span>
+              </label>
+
+              <div className="ml-6 flex items-center gap-2 text-xs text-slate-700">
+                <span>内存缓存上限 (MB):</span>
+                <input
+                  type="text"
+                  value={ramMbInput}
+                  onChange={(e) => setRamMbInput(e.target.value)}
+                  className="w-16 border border-slate-300 rounded px-2 py-0.5 text-xs font-mono bg-white text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
+                />
+                <button
+                  type="button"
+                  onClick={handleApplyRamMb}
+                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-0.5 rounded transition-colors cursor-pointer"
+                >
+                  应用
+                </button>
+                <span className="text-slate-500 ml-2">
+                  使用中 {ramUsageMb} MB / {ramMaxMb} MB
+                </span>
+              </div>
+            </div>
+
+            {/* Perf 2: Browser Cache */}
+            <div>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isBrowserCache}
+                  onChange={handleToggleBrowserCache}
+                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                />
+                <span>
+                  启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认关闭）
+                </span>
+              </label>
+            </div>
+
+            {/* Perf 3: Auto Repair */}
+            <div>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isAutoRepair}
+                  onChange={handleToggleAutoRepair}
+                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                />
+                <span>
+                  自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防止黑屏卡死
+                </span>
+              </label>
+            </div>
+
+            {/* Perf 4: Prefetch */}
+            <div>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isPrefetch}
+                  onChange={handleTogglePrefetch}
+                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                />
+                <span>
+                  启用资源预加载 - 解析场景 JS 引用的素材并后台预热，首次进新副本/活动更流畅
+                </span>
+              </label>
+            </div>
+
+            {/* Perf 5: RAM Warmup */}
+            <div>
+              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={isRamWarmup}
+                  onChange={handleToggleRamWarmup}
+                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                />
+                <span>
+                  启动时预热内存缓存 - 把高频小文件预先载入 RAM，消除会话首读的磁盘延迟
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        {/* 5. Bottom Action Dock */}
+        <div className="bg-[#f8fafc] border-t border-slate-200 px-3.5 py-2.5 flex items-center justify-between flex-wrap gap-1 select-none">
+          <div className="flex items-center gap-1 flex-wrap">
+            <button
+              type="button"
+              onClick={handleOpenCacheFolder}
+              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>📁</span>
+              <span>缓存目录</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsClearModalOpen(true)}
+              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>🗑</span>
+              <span>清空缓存</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsRoutingModalOpen(true)}
+              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>🌐</span>
+              <span>分流说明</span>
+            </button>
+
+            <a
+              href="https://github.com/Sagisawa/GBF-Accelerator"
+              target="_blank"
+              rel="noreferrer"
+              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>⭐</span>
+              <span>GitHub</span>
+            </a>
+
+            <button
+              type="button"
+              onClick={() => setIsUpdateModalOpen(true)}
+              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>🔄</span>
+              <span>检查更新</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsLatencyModalOpen(true)}
+              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>📶</span>
+              <span>延迟测试</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsLogDrawerOpen((prev) => !prev)}
+              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <span>📜</span>
+              <span>实时日志</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => showToast('GBF 加速代理已在后台持续运行', 'info')}
+            className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+          >
+            <span>⬇</span>
+            <span>最小化到托盘</span>
+          </button>
+        </div>
       </div>
 
-      {/* Modals & Slide-Up Drawer */}
-      <LogTerminalDrawer
-        isOpen={isLogDrawerOpen}
-        onClose={() => setIsLogDrawerOpen(false)}
-        logs={logs}
-        onClearLogs={() => setLogs([])}
+      {/* Floating Modal Windows */}
+      <ClearCacheModal
+        isOpen={isClearModalOpen}
+        onClose={() => setIsClearModalOpen(false)}
+        onRefresh={loadState}
+        onToast={showToast}
       />
 
       <MobileGuideModal
@@ -417,16 +1093,57 @@ export const App: React.FC = () => {
         onToast={showToast}
       />
 
-      <ClearCacheModal
-        isOpen={isClearModalOpen}
-        onClose={() => setIsClearModalOpen(false)}
+      <ShortcutsModal
+        isOpen={isShortcutsModalOpen}
+        onClose={() => setIsShortcutsModalOpen(false)}
+      />
+
+      <RoutingGuideModal
+        isOpen={isRoutingModalOpen}
+        onClose={() => setIsRoutingModalOpen(false)}
+        listenPort={currentListenPort}
+      />
+
+      <LatencyTestModal
+        isOpen={isLatencyModalOpen}
+        onClose={() => setIsLatencyModalOpen(false)}
+        isDirect={isDirect}
+        upstreamProxy={config.upstream_proxy || status?.upstream_proxy}
+      />
+
+      <AuditModal
+        isOpen={isAuditModalOpen}
+        onClose={() => setIsAuditModalOpen(false)}
         onRefresh={loadState}
         onToast={showToast}
       />
 
-      <ShortcutsModal
-        isOpen={isShortcutsModalOpen}
-        onClose={() => setIsShortcutsModalOpen(false)}
+      <SlimModal
+        isOpen={isSlimModalOpen}
+        onClose={() => setIsSlimModalOpen(false)}
+        onRefresh={loadState}
+        onToast={showToast}
+      />
+
+      <CaCertModal
+        isOpen={caModalAction !== null}
+        onClose={() => setCaModalAction(null)}
+        isInstalled={isCaInstalled}
+        fingerprint={caFingerprint}
+        actionType={caModalAction || 'install'}
+      />
+
+      <UpdateModal
+        isOpen={isUpdateModalOpen}
+        onClose={() => setIsUpdateModalOpen(false)}
+        currentVersion={status?.version || '1.8.0'}
+      />
+
+      <LogTerminalDrawer
+        isOpen={isLogDrawerOpen}
+        onClose={() => setIsLogDrawerOpen(false)}
+        logs={logs}
+        onClearLogs={() => setLogs([])}
       />
     </div>
   )

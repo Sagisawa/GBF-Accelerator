@@ -29,7 +29,8 @@ export async function toggleProxy(start: boolean): Promise<RuntimeStatus> {
   const res = await fetch(`${BASE}${endpoint}`, { method: 'POST' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const data = await res.json()
-  return data.status
+  if (data.status) return data.status
+  return fetchStatus()
 }
 
 export async function fetchCacheStats(): Promise<CacheStats> {

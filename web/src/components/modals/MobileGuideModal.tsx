@@ -60,14 +60,14 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
     >
       <div className="space-y-4">
         {!isLanEnabled && (
-          <div className="p-3.5 bg-apple-amber/10 border border-apple-amber/30 rounded-2xl flex items-start gap-3 text-xs text-apple-amber">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3 text-xs text-amber-800">
+            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
             <div className="space-y-2 flex-1">
               <div>
                 <strong>当前尚未开启【允许局域网连接】</strong>：外部设备将无法通过 Wi-Fi 访问本机的加速代理端口。
               </div>
               <Button
-                variant="apple"
+                variant="primary"
                 size="xs"
                 onClick={handleEnableLan}
               >
@@ -78,14 +78,14 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
         )}
 
         {/* QR Code and Instructions */}
-        <div className="flex flex-col sm:flex-row items-center gap-5 p-4 bg-black/40 border border-white/[0.08] rounded-2xl">
-          <div className="bg-white p-3 rounded-2xl shadow-apple shrink-0">
-            <QRCodeSVG value={guideUrl} size={124} level="M" />
+        <div className="flex flex-col sm:flex-row items-center gap-4 p-4 bg-slate-50 border border-slate-200 rounded-lg">
+          <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
+            <QRCodeSVG value={guideUrl} size={120} level="M" />
           </div>
 
-          <div className="space-y-1.5 text-xs text-label-secondary">
-            <div className="font-semibold text-white flex items-center gap-1.5">
-              <Wifi className="w-3.5 h-3.5 text-apple-green" /> 扫码一键打开手机指引
+          <div className="space-y-1.5 text-xs text-slate-600">
+            <div className="font-bold text-slate-900 flex items-center gap-1.5">
+              <Wifi className="w-3.5 h-3.5 text-emerald-600" /> 扫码一键打开手机指引
             </div>
             <p className="leading-relaxed">
               1. 确保手机 / iPad 与电脑连入<strong>同一 Wi-Fi 网络</strong>；<br />
@@ -96,30 +96,30 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
         </div>
 
         {/* Manual Configuration Block */}
-        <div className="p-4 bg-black/40 border border-white/[0.08] rounded-2xl space-y-2.5 text-xs">
-          <div className="flex items-center justify-between text-label-secondary">
-            <span className="font-medium text-white">PAC 自动代理 URL (推荐):</span>
+        <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2 text-xs">
+          <div className="flex items-center justify-between text-slate-700">
+            <span className="font-semibold text-slate-900">PAC 自动代理 URL (推荐):</span>
             <Button
-              variant="ghost"
+              variant="desktop"
               size="xs"
               onClick={handleCopyPac}
-              icon={copied ? <Check className="w-3 h-3 text-apple-green" /> : <Copy className="w-3 h-3" />}
+              icon={copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
             >
               {copied ? '已复制' : '复制'}
             </Button>
           </div>
-          <div className="font-mono text-[12px] text-apple-blue bg-black/60 p-2.5 rounded-xl border border-white/[0.06] select-all break-all">
+          <div className="font-mono text-[11px] text-blue-600 bg-white p-2 rounded border border-slate-300 select-all break-all">
             {pacUrl}
           </div>
 
-          <div className="text-[11px] text-label-secondary pt-1 flex items-center justify-between">
-            <span>手动代理主机: <strong className="font-mono text-white">{host}</strong></span>
-            <span>端口: <strong className="font-mono text-white">{port}</strong></span>
+          <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+            <span>手动代理主机: <strong className="font-mono text-slate-800">{host}</strong></span>
+            <span>端口: <strong className="font-mono text-slate-800">{port}</strong></span>
           </div>
         </div>
 
-        <div className="flex justify-end pt-2">
-          <Button variant="secondary" size="sm" onClick={onClose}>
+        <div className="flex justify-end pt-1">
+          <Button variant="desktop" size="sm" onClick={onClose}>
             关闭指引 (Esc)
           </Button>
         </div>
@@ -127,3 +127,4 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
     </Modal>
   )
 }
+

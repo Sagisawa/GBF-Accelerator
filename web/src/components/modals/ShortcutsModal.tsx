@@ -24,7 +24,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
       onClose={onClose}
       title={
         <div className="flex items-center gap-2">
-          <Keyboard className="w-4 h-4 text-apple-blue" />
+          <Keyboard className="w-4 h-4 text-blue-600" />
           <span>键盘快捷键速查</span>
         </div>
       }
@@ -32,27 +32,27 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
       maxWidth="max-w-md"
     >
       <div className="space-y-4">
-        <div className="divide-y divide-white/[0.06] bg-black/40 border border-white/[0.08] rounded-2xl overflow-hidden">
+        <div className="divide-y divide-slate-200 bg-slate-50 border border-slate-200 rounded-lg overflow-hidden">
           {shortcuts.map((s) => (
             <div
               key={s.key}
-              className="px-4 py-2.5 flex items-center justify-between text-xs hover:bg-white/[0.04] transition-colors"
+              className="px-4 py-2 flex items-center justify-between text-xs hover:bg-slate-100 transition-colors"
             >
-              <span className="text-white font-medium">{s.desc}</span>
-              <kbd className="px-2 py-0.5 rounded-lg text-[11px] font-mono bg-white/[0.08] text-white border border-white/[0.1] shadow-sm">
+              <span className="text-slate-800 font-medium">{s.desc}</span>
+              <kbd className="px-2 py-0.5 rounded text-[11px] font-mono bg-white text-slate-800 border border-slate-300 shadow-xs">
                 {s.key}
               </kbd>
             </div>
           ))}
         </div>
 
-        <div className="p-3 bg-white/[0.04] border border-white/[0.06] rounded-2xl flex items-center gap-2 text-[11px] text-label-secondary">
-          <ShieldCheck className="w-4 h-4 text-apple-green shrink-0" />
+        <div className="p-3 bg-blue-50/60 border border-blue-100 rounded-lg flex items-center gap-2 text-[11px] text-blue-800">
+          <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
           <span>在任何文本输入框打字时，单键快捷键会自动屏蔽，彻底杜绝误触。</span>
         </div>
 
         <div className="flex justify-end pt-1">
-          <Button variant="secondary" size="sm" onClick={onClose}>
+          <Button variant="desktop" size="sm" onClick={onClose}>
             关闭 (Esc)
           </Button>
         </div>
@@ -60,3 +60,4 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
     </Modal>
   )
 }
+

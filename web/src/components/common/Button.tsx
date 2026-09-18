@@ -3,7 +3,7 @@ import { cn } from '../../utils/cn'
 import { Loader2 } from 'lucide-react'
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'success' | 'apple'
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'success' | 'apple' | 'desktop'
   size?: 'xs' | 'sm' | 'md' | 'lg'
   loading?: boolean
   icon?: React.ReactNode
@@ -13,8 +13,8 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 export const Button: React.FC<ButtonProps> = ({
   children,
   className,
-  variant = 'secondary',
-  size = 'md',
+  variant = 'desktop',
+  size = 'sm',
   loading = false,
   disabled,
   icon,
@@ -22,28 +22,30 @@ export const Button: React.FC<ButtonProps> = ({
   ...props
 }) => {
   const baseClasses =
-    'inline-flex items-center justify-center font-medium rounded-full select-none transition-all duration-150 ease-out focus:outline-none disabled:opacity-40 disabled:pointer-events-none active:scale-[0.96] tracking-tight'
+    'inline-flex items-center justify-center font-medium rounded select-none transition-colors duration-150 ease-out focus:outline-none disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]'
 
   const variantClasses = {
+    desktop:
+      'bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] text-slate-700 border border-slate-300 shadow-xs',
     primary:
-      'bg-white text-black font-semibold hover:bg-white/90 shadow-sm active:bg-white/80',
-    apple:
-      'bg-apple-red text-white font-semibold hover:bg-apple-redHover shadow-apple active:scale-[0.96]',
+      'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-xs',
     secondary:
-      'bg-white/[0.08] hover:bg-white/[0.14] text-white border border-white/[0.08] active:bg-white/[0.06]',
+      'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 border border-slate-300 shadow-xs',
     danger:
-      'bg-apple-red text-white font-medium hover:bg-apple-redHover shadow-apple active:scale-[0.96]',
-    ghost:
-      'bg-transparent hover:bg-white/[0.08] text-label-secondary hover:text-white active:bg-white/[0.04]',
+      'bg-[#dc3545] hover:bg-[#c82333] active:bg-[#bd2130] text-white font-bold shadow-xs',
     success:
-      'bg-apple-green text-white font-semibold hover:bg-apple-green/90 shadow-sm active:scale-[0.96]',
+      'bg-[#28a745] hover:bg-[#218838] active:bg-[#1e7e34] text-white font-bold shadow-xs',
+    ghost:
+      'bg-transparent hover:bg-slate-100 active:bg-slate-200 text-slate-600',
+    apple:
+      'bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs',
   }[variant]
 
   const sizeClasses = {
-    xs: 'text-[11px] px-2.5 py-1 gap-1.5',
-    sm: 'text-xs px-3.5 py-1.5 gap-1.5',
-    md: 'text-xs px-4 py-2 gap-2 font-medium',
-    lg: 'text-sm px-5 py-2.5 gap-2.5 font-semibold',
+    xs: 'text-[11px] px-2 py-0.5 gap-1',
+    sm: 'text-xs px-2.5 py-1 gap-1.5',
+    md: 'text-xs px-3.5 py-1.5 gap-1.5',
+    lg: 'text-sm px-5 py-2 gap-2 font-semibold',
   }[size]
 
   return (
@@ -59,10 +61,11 @@ export const Button: React.FC<ButtonProps> = ({
       )}
       <span>{children}</span>
       {shortcut && (
-        <kbd className="ml-1 px-1.5 py-0.5 text-[10px] uppercase font-mono rounded bg-white/10 text-label-tertiary border border-white/5 leading-none">
+        <kbd className="ml-1 px-1 py-0.2 text-[10px] uppercase font-mono rounded bg-slate-200/80 text-slate-600 border border-slate-300 leading-none">
           {shortcut}
         </kbd>
       )}
     </button>
   )
 }
+

@@ -28,6 +28,9 @@ type Config struct {
 	EnableRAMWarmup      bool    `json:"enable_ram_warmup"`
 	RAMWarmupMaxItems    int     `json:"ram_warmup_max_items"`
 	VerifyUpstreamTLS    bool    `json:"verify_upstream_tls"`
+	ShimakazeMode        bool    `json:"shimakaze_mode"`
+	AutoStart            bool    `json:"auto_start"`
+	AutoCheckUpdate      bool    `json:"auto_check_update"`
 	APIMaxConnections    int     `json:"api_max_connections"`
 	APIMaxKeepalive      int     `json:"api_max_keepalive"`
 	APIKeepaliveExpiry   float64 `json:"api_keepalive_expiry"`
@@ -63,6 +66,9 @@ func DefaultConfig() Config {
 		EnableRAMWarmup:      false,
 		RAMWarmupMaxItems:    1500,
 		VerifyUpstreamTLS:    true,
+		ShimakazeMode:        false,
+		AutoStart:            false,
+		AutoCheckUpdate:      true,
 		APIMaxConnections:    16,
 		APIMaxKeepalive:      4,
 		APIKeepaliveExpiry:   20.0,

@@ -8,6 +8,9 @@ export interface RuntimeStatus {
   direct_mode: boolean;
   allow_lan: boolean;
   lan_ip?: string | null;
+  ca_installed?: boolean;
+  ca_thumbprint?: string;
+  cache_dir?: string;
   active_api_count: number;
   active_foreground_assets: number;
   uptime_seconds: number;
@@ -29,6 +32,7 @@ export interface RuntimeStatus {
   };
   last_error: string;
 }
+
 
 export interface TelemetrySummary {
   enabled: boolean;

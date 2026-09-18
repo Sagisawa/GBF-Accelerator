@@ -203,6 +203,7 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.sendJSON(w, http.StatusOK, map[string]interface{}{
 				"ok":      true,
 				"message": "Proxy started",
+				"status":  c.getRuntimeStatus(),
 			})
 			return
 		}
@@ -212,6 +213,7 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.sendJSON(w, http.StatusOK, map[string]interface{}{
 				"ok":      true,
 				"message": "Proxy stopped",
+				"status":  c.getRuntimeStatus(),
 			})
 			return
 		}
@@ -327,6 +329,26 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		}
 		if val, ok := patch["enable_prefetch"].(bool); ok {
 			cfg.EnablePrefetch = val
+		}
+		if val, ok := patch["enable_auto_repair"].(bool); ok {
+			cfg.EnableAutoRepair = val
+		}
+		if val, ok := patch["enable_ram_warmup"].(bool); ok {
+			cfg.EnableRAMWarmup = val
+		}
+		if val, ok := patch["auto_system_proxy"].(bool); ok {
+			cfg.AutoSystemProxy = val
+		} else if val, ok := patch["auto_pac"].(bool); ok {
+			cfg.AutoSystemProxy = val
+		}
+		if val, ok := patch["auto_start"].(bool); ok {
+			cfg.AutoStart = val
+		}
+		if val, ok := patch["auto_check_update"].(bool); ok {
+			cfg.AutoCheckUpdate = val
+		}
+		if val, ok := patch["shimakaze_mode"].(bool); ok {
+			cfg.ShimakazeMode = val
 		}
 		if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
 			cfg.ListenPort = int(val)
