@@ -6,14 +6,9 @@ echo "========================================================"
 echo "  启动 GBF 加速代理 (GBF Accelerator for macOS)"
 echo "========================================================"
 
-if [ -f "$DIR/.venv/bin/python" ]; then
-    PYTHON_CMD="$DIR/.venv/bin/python"
+if [ -f "$DIR/bin/GBF_Accelerator" ]; then
+    "$DIR/bin/GBF_Accelerator" "$@"
 else
-    PYTHON_CMD="python3"
-fi
-
-if [ "$1" == "--cli" ]; then
-    "$PYTHON_CMD" app_main.py "${@:2}"
-else
-    "$PYTHON_CMD" gui_main.py "$@"
+    echo "[*] Binary not found in bin/, running Go engine directly..."
+    cd "$DIR/engine" && go run . "$@"
 fi

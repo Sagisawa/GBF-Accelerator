@@ -10,10 +10,16 @@ echo ""
 
 if [ ! -f "$CA_PATH" ]; then
     echo "[*] 未找到本地 ca.crt，正在自动生成本机专属唯一根证书..."
-    if [ -f "$DIR/.venv/bin/python" ]; then
-        "$DIR/.venv/bin/python" -c "from cert_manager import ensure_ca; ensure_ca()"
+    if [ -f "$DIR/bin/GBF_Accelerator" ]; then
+        "$DIR/bin/GBF_Accelerator" --headless &
+        BG_PID=$!
+        sleep 2
+        kill $BG_PID 2>/dev/null || true
     else
-        python3 -c "from cert_manager import ensure_ca; ensure_ca()"
+        (cd "$DIR/engine" && go run . --headless &)
+        BG_PID=$!
+        sleep 2
+        kill $BG_PID 2>/dev/null || true
     fi
 fi
 
