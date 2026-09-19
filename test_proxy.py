@@ -2478,6 +2478,12 @@ async def run_test():
             assert res_lower["Cache-Control"] == "no-cache"
             assert res_lower["Expires"] == "Wed, 01 Jan 2038 00:00:00 GMT"
 
+            # 1b. Fallback ETag Contract: when headers have no ETag, fallback_etag must be utilized
+            res_fallback = gbf_proxy._build_304_headers({}, fallback_etag='"test-fallback-3"')
+            assert res_fallback["ETag"] == '"test-fallback-3"'
+            assert res_fallback["Access-Control-Allow-Origin"] == "*"
+            assert res_fallback["Connection"] == "keep-alive"
+
             # 2. End-to-End Contract: 304 Not Modified with enable_browser_cache=False (RAM & Disk hit)
             orig_bc = config_manager.config_manager.config.get("enable_browser_cache", True)
             try:
@@ -2490,20 +2496,31 @@ async def run_test():
                 etag_val = resp_init.headers.get("etag")
                 assert etag_val, "Cached asset must return an ETag"
 
-                # Send conditional GET (If-None-Match) targeting RAM cache hit
+                # 2a. RAM Cache 304 Hit (covers Line 1298)
                 resp_304_ram = await client.get(test_304_url, headers={"If-None-Match": etag_val})
                 assert resp_304_ram.status_code == 304, f"Expected 304 Not Modified from RAM cache, got {resp_304_ram.status_code}"
                 assert "cache-control" not in resp_304_ram.headers, "When browser cache is disabled, 304 must not inject Cache-Control"
+                assert "x-cache-source" not in resp_304_ram.headers, "304 must not leak X-Cache-Source header"
+                assert not any(k.startswith("x-proxy-") for k in resp_304_ram.headers), "304 must not leak X-Proxy-* headers"
 
-                # Clear RAM cache and re-test 304 targeting Disk cache hit
+                # 2b. Disk Cache 304 Fast Path (covers Line 1321 peek_cache_meta)
                 cache_manager.clear_ram_cache()
                 resp_304_disk = await client.get(test_304_url, headers={"If-None-Match": etag_val})
                 assert resp_304_disk.status_code == 304, f"Expected 304 Not Modified from Disk cache, got {resp_304_disk.status_code}"
                 assert "cache-control" not in resp_304_disk.headers
+                assert "x-cache-source" not in resp_304_disk.headers
+
+                # 2c. Disk Cache 304 Fallback Path (covers Line 1340 by bypassing peek_cache_meta)
+                cache_manager.clear_ram_cache()
+                with mock.patch.object(gbf_proxy.cache_manager, "peek_cache_meta", return_value=None):
+                    resp_304_fallback = await client.get(test_304_url, headers={"If-None-Match": etag_val})
+                    assert resp_304_fallback.status_code == 304, f"Expected 304 Not Modified from Disk fallback path, got {resp_304_fallback.status_code}"
+                    assert "cache-control" not in resp_304_fallback.headers
+                    assert "x-cache-source" not in resp_304_fallback.headers
             finally:
                 config_manager.config_manager.config["enable_browser_cache"] = orig_bc
 
-            print("Test 76 - Conditional GET (304 Not Modified) Safety Contract (RAM & Disk Hit with Browser Cache Disabled): OK", flush=True)
+            print("Test 76 - Conditional GET (304 Not Modified) Safety Contract (RAM, Disk Meta & Disk Fallback Hit with Browser Cache Disabled): OK", flush=True)
 
             print("\n[+] ALL 76 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
