@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"gbf-proxy/cache"
 	"gbf-proxy/cert"
@@ -133,10 +134,15 @@ func main() {
 
 	curCfg := cfgMgr.Get()
 
+	stats := telemetry.GlobalStats
+
 	// 2. Clean stale zombie processes if port occupied
 	if curCfg.CleanZombies {
-		_, _ = process.KillProcessOnPort(curCfg.ListenPort)
-		_, _ = process.KillProcessOnPort(curCfg.ControlPort)
+		k1, _ := process.KillProcessOnPort(curCfg.ListenPort)
+		k2, _ := process.KillProcessOnPort(curCfg.ControlPort)
+		if k1 || k2 {
+			stats.Log("WARN", fmt.Sprintf("端口 %d 已被占用，正在检查并清理残留实例...", curCfg.ListenPort))
+		}
 	}
 
 	// 3. Ensure bundled helper files exist (proxy.pac, SwitchyOmega_GBF.bak, 使用说明.txt)
@@ -160,12 +166,15 @@ func main() {
 
 	// 5. Initialize Cache
 	cacheMgr := cache.NewManager(curCfg.CacheDir, curCfg.RAMCacheMaxMB)
-	stats := telemetry.GlobalStats
 
 	if curCfg.EnableRAMWarmup {
 		go func() {
+			start := time.Now()
 			loaded := cacheMgr.Warmup(curCfg.RAMWarmupMaxItems)
-			stats.Log("INFO", fmt.Sprintf("[RAM-WARMUP] Completed: %d items loaded into RAM cache", loaded))
+			_, bytes := cacheMgr.Stats()
+			mb := float64(bytes) / (1024 * 1024)
+			dur := time.Since(start).Seconds()
+			stats.Log("INFO", fmt.Sprintf("[RAM-WARM] Prewarm complete: loaded %d hot assets (%.1f MB) in %.2fs", loaded, mb, dur))
 		}()
 	}
 
@@ -175,6 +184,7 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "[-] Failed to start Proxy Server: %v\n", err)
 		os.Exit(1)
 	}
+	stats.Log("INFO", "[READY] 代理服务已成功启动！等待 GBF 请求接入...")
 
 	// 7. Initialize Control Server
 	ctrlSrv := control.NewControlServer(cfgMgr, certMgr, cacheMgr, proxySrv, stats)

@@ -172,13 +172,21 @@ func (s *ProxyServer) getAssetClient() *http.Client {
 // connection reuse for telemetry. It never mutates the request or its bytes.
 // The negotiated protocol is recorded separately from the response.
 func (s *ProxyServer) tracedRequest(req *http.Request) *http.Request {
+	return s.tracedRequestWithCallback(req, nil)
+}
+
+func (s *ProxyServer) tracedRequestWithCallback(req *http.Request, onGotConn func(reused bool)) *http.Request {
 	trace := &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
 			s.stats.RecordConnReuse(info.Reused)
+			if onGotConn != nil {
+				onGotConn(info.Reused)
+			}
 		},
 	}
 	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 }
+
 
 func (s *ProxyServer) Start() error {
 	s.mu.Lock()
@@ -335,11 +343,21 @@ func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.R
 		return
 	}
 
+	clientIP := "127.0.0.1"
+	if cAddr := conn.RemoteAddr(); cAddr != nil {
+		if ch, _, err := net.SplitHostPort(cAddr.String()); err == nil {
+			clientIP = ch
+		}
+	}
+
 	// Check if this host should be MITM'd or Passthrough
 	if isPassthroughHost(host) || !isGBFDomain(host) {
+		s.stats.Log("INFO", fmt.Sprintf("[CONNECT] [%s] %s -> TUNNEL", clientIP, target))
 		s.handlePassthroughTunnel(conn, br, target)
 		return
 	}
+
+	s.stats.Log("INFO", fmt.Sprintf("[CONNECT] [%s] %s -> MITM", clientIP, target))
 
 	// Send 200 Connection Established for MITM
 	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
@@ -819,6 +837,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 
 	var resp *http.Response
 	var fetchErr error
+	var reqReused bool
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		upReq, err := http.NewRequestWithContext(context.Background(), req.Method, upURL, bytes.NewReader(bodyBytes))
@@ -843,7 +862,9 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		}
 		upReq.Host = req.Host
 
-		resp, fetchErr = s.getAPIClient().Do(s.tracedRequest(upReq))
+		resp, fetchErr = s.getAPIClient().Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
+			reqReused = reused
+		}))
 		if fetchErr == nil {
 			break
 		}
@@ -865,7 +886,19 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	elapsed := time.Since(startTime).Milliseconds()
 	s.stats.RecordProtocol(resp.Proto)
 	s.stats.RecordLatency(float64(elapsed))
-	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-PLAIN-API] %d %s %s (%dms)", resp.StatusCode, req.Method, req.URL.Path, elapsed))
+	reusedStr := "new"
+	if reqReused {
+		reusedStr = "reused"
+	}
+	protoStr := resp.Proto
+	if protoStr == "" {
+		protoStr = "HTTP/1.1"
+	}
+	uri := req.URL.RequestURI()
+	if !strings.HasPrefix(uri, "/") {
+		uri = "/" + uri
+	}
+	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-PLAIN-API] %d %s %s (%dms, %s, %s)", resp.StatusCode, req.Method, uri, elapsed, protoStr, reusedStr))
 	return !req.Close
 }
 
@@ -1056,6 +1089,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 
 		// Conditional GET: 304 Not Modified check
 		if isClientNotModified(req, item) {
+			s.stats.Log("INFO", fmt.Sprintf("[%s] 304 Not Modified -> %s", "CACHE-"+hitSrc, cleanPath))
 			s.sendNotModifiedResponse(w, item, req.URL.Path, req.Close)
 			return !req.Close
 		}
@@ -1215,6 +1249,7 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	upURL := fmt.Sprintf("https://%s%s", targetHost, req.URL.RequestURI())
 	var resp *http.Response
 	var fetchErr error
+	var reqReused bool
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		upReq, err := http.NewRequestWithContext(context.Background(), req.Method, upURL, bytes.NewReader(bodyBytes))
@@ -1239,7 +1274,9 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		}
 		upReq.Host = targetHost
 
-		resp, fetchErr = s.getAPIClient().Do(s.tracedRequest(upReq))
+		resp, fetchErr = s.getAPIClient().Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
+			reqReused = reused
+		}))
 		if fetchErr == nil {
 			break
 		}
@@ -1261,7 +1298,19 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	elapsed := time.Since(startTime).Milliseconds()
 	s.stats.RecordProtocol(resp.Proto)
 	s.stats.RecordLatency(float64(elapsed))
-	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-API] %d %s %s%s (%dms)", resp.StatusCode, req.Method, targetHost, req.URL.Path, elapsed))
+	reusedStr := "new"
+	if reqReused {
+		reusedStr = "reused"
+	}
+	protoStr := resp.Proto
+	if protoStr == "" {
+		protoStr = "HTTP/1.1"
+	}
+	uri := req.URL.RequestURI()
+	if !strings.HasPrefix(uri, "/") {
+		uri = "/" + uri
+	}
+	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-API] %d %s %s%s (%dms, %s, %s)", resp.StatusCode, req.Method, targetHost, uri, elapsed, protoStr, reusedStr))
 	return !req.Close
 }
 

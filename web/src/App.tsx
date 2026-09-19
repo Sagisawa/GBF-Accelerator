@@ -19,7 +19,7 @@ import {
   checkForUpdate,
 } from './api'
 
-import { LogTerminalDrawer } from './components/modals/LogTerminalDrawer'
+import { LiveLogsWindow } from './components/logs/LiveLogsWindow'
 import { MobileGuideModal } from './components/modals/MobileGuideModal'
 import { ClearCacheModal } from './components/modals/ClearCacheModal'
 import { ShortcutsModal } from './components/modals/ShortcutsModal'
@@ -53,6 +53,26 @@ export const App: React.FC = () => {
   const [upstreamInput, setUpstreamInput] = useState<string>('http://127.0.0.1:8099')
   const [portInput, setPortInput] = useState<string>('8124')
   const [ramMbInput, setRamMbInput] = useState<string>('256')
+
+  // Standalone window detection and popup window opener
+  const isStandaloneLogsPage =
+    typeof window !== 'undefined' &&
+    (window.location.pathname.startsWith('/logs') ||
+      window.location.search.includes('view=logs'))
+
+  const openLogsWindow = () => {
+    const w = 1220
+    const h = 740
+    const left = Math.max(0, Math.floor((window.screen.width - w) / 2))
+    const top = Math.max(0, Math.floor((window.screen.height - h) / 2))
+    const features = `width=${w},height=${h},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`
+    const win = window.open('/logs', 'GBFLiveLogsWindow', features)
+    if (win) {
+      win.focus()
+    } else {
+      setIsLogDrawerOpen(true)
+    }
+  }
 
   // Modals and Drawers
   const [isLogDrawerOpen, setIsLogDrawerOpen] = useState<boolean>(false)
@@ -584,13 +604,28 @@ export const App: React.FC = () => {
   // Keyboard Shortcuts
   useKeyboardShortcuts({
     onToggleProxy: handleToggleProxy,
-    onToggleLogs: () => setIsLogDrawerOpen((prev) => !prev),
+    onToggleLogs: openLogsWindow,
     onToggleDirect: handleToggleDirect,
     onOpenClearModal: () => setIsClearModalOpen(true),
     onOpenShortcutsModal: () => setIsShortcutsModalOpen(true),
     onCloseAll: handleCloseAll,
     isModalOpen: isAnyModalOpen,
   })
+
+  // If navigated to standalone logs page, render ONLY the full-screen live logs window!
+  if (isStandaloneLogsPage) {
+    return (
+      <LiveLogsWindow
+        isOpen={true}
+        onClose={() => window.close()}
+        logs={logs}
+        onClearLogs={() => setLogs([])}
+        telemetry={status?.telemetry}
+        hitRatioPercent={cacheStats?.hit_ratio_percent ?? 100.0}
+        isStandalone={true}
+      />
+    )
+  }
 
   // State derivation
   const isRunning = Boolean(status?.proxy_running)
@@ -1426,12 +1461,8 @@ export const App: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setIsLogDrawerOpen((prev) => !prev)}
-            className={`px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium border active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs ${
-              isLogDrawerOpen
-                ? 'bg-sky-50 border-sky-300 text-sky-700 shadow-sky-100'
-                : 'text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border-slate-200'
-            }`}
+            onClick={openLogsWindow}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
           >
             <span className="text-base">📜</span>
             <span>实时日志</span>
@@ -1517,11 +1548,13 @@ export const App: React.FC = () => {
         currentVersion={status?.version || '1.8.0'}
       />
 
-      <LogTerminalDrawer
+      <LiveLogsWindow
         isOpen={isLogDrawerOpen}
         onClose={() => setIsLogDrawerOpen(false)}
         logs={logs}
         onClearLogs={() => setLogs([])}
+        telemetry={status?.telemetry}
+        hitRatioPercent={cacheStats?.hit_ratio_percent ?? 100.0}
       />
     </div>
   )
