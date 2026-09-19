@@ -990,7 +990,7 @@ class GBFAcceleratorGUI:
 
         chk_browser = ttk.Checkbutton(
             f_perf,
-            text="启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认关闭）",
+            text="启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，推荐开启）",
             variable=self.var_browser_cache,
             command=self.toggle_perf_settings,
         )

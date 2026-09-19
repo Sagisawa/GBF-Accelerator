@@ -176,7 +176,7 @@ Windows     macOS
      .\.venv\Scripts\python.exe test_proxy.py
      .\.venv\Scripts\python.exe test_update_manager.py
      ```
-   - 验证 75 项代理测试与 10 项更新测试全部通过（100% Pass）。
+   - 验证 76 项代理测试与 10 项更新测试全部通过（100% Pass）。
 5. **Diff 自检核对 (Self-Review via Diff)**：
    - 运行 `git diff`，逐行审查所有变动行，确认未引入非预期的副作用和违反规范的代码。
 

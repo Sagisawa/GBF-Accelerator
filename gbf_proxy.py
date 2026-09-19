@@ -1104,6 +1104,21 @@ async def read_http_request(reader: asyncio.StreamReader) -> Optional[Tuple[str,
 
     return method, path, version, headers, body
 
+def _build_304_headers(c_headers: Dict[str, str], fallback_etag: str = "") -> Dict[str, str]:
+    """Construct 304 Not Modified headers safely without assuming presence of optional headers."""
+    headers = {
+        "ETag": c_headers.get("ETag") or c_headers.get("etag") or fallback_etag,
+        "Access-Control-Allow-Origin": "*",
+        "Connection": "keep-alive",
+    }
+    cc = c_headers.get("Cache-Control") or c_headers.get("cache-control")
+    if cc:
+        headers["Cache-Control"] = cc
+    exp = c_headers.get("Expires") or c_headers.get("expires")
+    if exp:
+        headers["Expires"] = exp
+    return headers
+
 async def send_cached_response(
     writer: asyncio.StreamWriter,
     status_code: int,
@@ -1280,12 +1295,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                 if ram_hit:
                     c_headers, c_data = ram_hit
                     if req_etag and req_etag == c_headers.get("ETag"):
-                        not_mod_headers = {
-                            "ETag": c_headers["ETag"],
-                            "Cache-Control": c_headers["Cache-Control"],
-                            "Access-Control-Allow-Origin": "*",
-                            "Connection": "keep-alive",
-                        }
+                        not_mod_headers = _build_304_headers(c_headers, req_etag)
                         await send_cached_response(writer, 304, "Not Modified", not_mod_headers, b"", is_head=is_head)
                         PROXY_STATS["hits"] += 1
                         PROXY_STATS["ram_hits"] += 1
@@ -1327,12 +1337,7 @@ async def handle_mitm_session(reader: asyncio.StreamReader, writer: asyncio.Stre
                     c_headers, c_data = cache_hit
                     # Fallback 304 check
                     if req_etag and req_etag == c_headers.get("ETag"):
-                        not_mod_headers = {
-                            "ETag": c_headers["ETag"],
-                            "Cache-Control": c_headers["Cache-Control"],
-                            "Access-Control-Allow-Origin": "*",
-                            "Connection": "keep-alive",
-                        }
+                        not_mod_headers = _build_304_headers(c_headers, req_etag)
                         await send_cached_response(writer, 304, "Not Modified", not_mod_headers, b"", is_head=is_head)
                         PROXY_STATS["hits"] += 1
                         PROXY_STATS["cache_disk_hit"] += 1

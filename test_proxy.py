@@ -2464,9 +2464,48 @@ async def run_test():
                         with mock.patch.object(config_manager.subprocess, "run", return_value=same_sha_out):
                             assert config_manager.is_ca_installed() is True, "Matching SHA-1 must return True"
 
-            print("Test 75 - macOS Process Isolation, Startup & Strict CA Security Contract: OK", flush=True)
+            # Test 76: 304 Not Modified Safety Contract (RAM & Disk Hit with Browser Cache Disabled)
+            # 1. Unit Contract: _build_304_headers must never raise KeyError even when Cache-Control / Expires are absent
+            h_empty = {"ETag": '"test-etag-1"'}
+            res_empty = gbf_proxy._build_304_headers(h_empty)
+            assert res_empty["ETag"] == '"test-etag-1"'
+            assert "Cache-Control" not in res_empty
+            assert "Expires" not in res_empty
 
-            print("\n[+] ALL 75 TESTS PASSED SUCCESSFULLY!", flush=True)
+            h_lower = {"etag": '"test-etag-2"', "cache-control": "no-cache", "expires": "Wed, 01 Jan 2038 00:00:00 GMT"}
+            res_lower = gbf_proxy._build_304_headers(h_lower)
+            assert res_lower["ETag"] == '"test-etag-2"'
+            assert res_lower["Cache-Control"] == "no-cache"
+            assert res_lower["Expires"] == "Wed, 01 Jan 2038 00:00:00 GMT"
+
+            # 2. End-to-End Contract: 304 Not Modified with enable_browser_cache=False (RAM & Disk hit)
+            orig_bc = config_manager.config_manager.config.get("enable_browser_cache", True)
+            try:
+                config_manager.config_manager.config["enable_browser_cache"] = False
+                test_304_url = "https://prd-game-a-granbluefantasy.akamaized.net/assets/1772717316/css/arousal/form.css"
+
+                # Fetch initial response to get genuine ETag and ensure it's in RAM cache
+                resp_init = await client.get(test_304_url)
+                assert resp_init.status_code == 200
+                etag_val = resp_init.headers.get("etag")
+                assert etag_val, "Cached asset must return an ETag"
+
+                # Send conditional GET (If-None-Match) targeting RAM cache hit
+                resp_304_ram = await client.get(test_304_url, headers={"If-None-Match": etag_val})
+                assert resp_304_ram.status_code == 304, f"Expected 304 Not Modified from RAM cache, got {resp_304_ram.status_code}"
+                assert "cache-control" not in resp_304_ram.headers, "When browser cache is disabled, 304 must not inject Cache-Control"
+
+                # Clear RAM cache and re-test 304 targeting Disk cache hit
+                cache_manager.clear_ram_cache()
+                resp_304_disk = await client.get(test_304_url, headers={"If-None-Match": etag_val})
+                assert resp_304_disk.status_code == 304, f"Expected 304 Not Modified from Disk cache, got {resp_304_disk.status_code}"
+                assert "cache-control" not in resp_304_disk.headers
+            finally:
+                config_manager.config_manager.config["enable_browser_cache"] = orig_bc
+
+            print("Test 76 - Conditional GET (304 Not Modified) Safety Contract (RAM & Disk Hit with Browser Cache Disabled): OK", flush=True)
+
+            print("\n[+] ALL 76 TESTS PASSED SUCCESSFULLY!", flush=True)
     except Exception as e:
         import traceback
         traceback.print_exc()

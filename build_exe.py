@@ -75,7 +75,12 @@ def build():
 
     # Prepare Release Package
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = RELEASE_DIR / "GBF_Accelerator_v1.8.0_GUI.zip"
+    try:
+        from update_manager import APP_VERSION
+        app_ver = APP_VERSION
+    except Exception:
+        app_ver = "1.8.1"
+    zip_path = RELEASE_DIR / f"GBF_Accelerator_v{app_ver}_GUI.zip"
     readme_path = BASE_DIR / "使用说明.txt"
     if not readme_path.is_file():
         from app_main import ensure_bundled_files
