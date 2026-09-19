@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gbf-proxy/cache"
 	"gbf-proxy/cert"
@@ -204,14 +207,14 @@ func TestPrefetchExtraction(t *testing.T) {
 		var sound1 = '/sound/se/se_100.mp3';
 		var cjs = "sp/cjs/npc_3040001000.png";
 	`
-	refs := pe.extractAssetRefs("/assets/js/bundle.js", sampleJS, "prd-game-a-granbluefantasy.akamaized.net")
+	refs := pe.extractAssetRefs("/assets/js/bundle.js", []byte(sampleJS), "prd-game-a-granbluefantasy.akamaized.net")
 	if len(refs) < 2 {
 		t.Fatalf("expected at least 2 extracted refs, got %d", len(refs))
 	}
 
 	// Twin CreateJS deduction test
 	twinManifestPath := "/assets/123456/js/model/manifest/npc_3040001000.js"
-	twinRefs := pe.extractAssetRefs(twinManifestPath, "{}", "prd-game-a-granbluefantasy.akamaized.net")
+	twinRefs := pe.extractAssetRefs(twinManifestPath, []byte("{}"), "prd-game-a-granbluefantasy.akamaized.net")
 	foundTwin := false
 	for _, r := range twinRefs {
 		if r[1] == "/assets/123456/js/cjs/npc_3040001000.js" {
@@ -224,7 +227,7 @@ func TestPrefetchExtraction(t *testing.T) {
 	}
 
 	// English asset prefix test
-	enRefs := pe.extractAssetRefs("/assets_en/123456/js/manifest.js", `var s = "sp/cjs/tex.png";`, "prd-game-a-granbluefantasy.akamaized.net")
+	enRefs := pe.extractAssetRefs("/assets_en/123456/js/manifest.js", []byte(`var s = "sp/cjs/tex.png";`), "prd-game-a-granbluefantasy.akamaized.net")
 	foundEn := false
 	for _, r := range enRefs {
 		if r[1] == "/assets_en/img/sp/cjs/tex.png" {
@@ -533,3 +536,104 @@ func TestConditionalAsset304AndCacheControl(t *testing.T) {
 		t.Errorf("expected 200 OK response to include Last-Modified, got: %s", resp2Str)
 	}
 }
+
+func TestHandleStaticAsset_SingleFlightResilience(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	certMgr, _ := cert.NewManager(filepath.Join(tempDir, "certs"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Millisecond) // Ensure flight is in progress
+		w.Header().Set("Content-Type", "image/png")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"))
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+	srv.assetClient = ts.Client()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Client 1: Context cancels early after 10ms
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel1()
+	req1, _ := http.NewRequestWithContext(ctx1, http.MethodGet, "https://"+u.Host+"/assets/shared_flight.png", nil)
+	var buf1 bytes.Buffer
+
+	// Client 2: Context remains active
+	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+u.Host+"/assets/shared_flight.png", nil)
+	var buf2 bytes.Buffer
+
+	go func() {
+		defer wg.Done()
+		srv.handleStaticAsset(&buf1, req1, u.Host)
+	}()
+
+	// Stagger slightly so Client 1 starts the flight
+	time.Sleep(5 * time.Millisecond)
+
+	go func() {
+		defer wg.Done()
+		srv.handleStaticAsset(&buf2, req2, u.Host)
+	}()
+
+	wg.Wait()
+
+	// Client 2 MUST receive 200 OK, never 502 Bad Gateway
+	resp2Str := buf2.String()
+	if !strings.HasPrefix(resp2Str, "HTTP/1.1 200 OK") {
+		t.Fatalf("expected Client 2 to receive HTTP/1.1 200 OK despite Client 1 context abort, got: %s", resp2Str)
+	}
+}
+
+func TestDynamicAPI_ClientContextCancellation(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	certMgr, _ := cert.NewManager(filepath.Join(tempDir, "certs"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+
+	upstreamGotCancel := make(chan bool, 1)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			upstreamGotCancel <- true
+		case <-time.After(300 * time.Millisecond):
+			upstreamGotCancel <- false
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+	srv.apiClient = ts.Client()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+u.Host+"/rest/multiraid/condition.json", nil)
+	var buf bytes.Buffer
+	srv.handleDynamicAPI(&buf, req, u.Host)
+
+	select {
+	case cancelled := <-upstreamGotCancel:
+		if !cancelled {
+			t.Error("expected upstream request to receive context cancellation from client")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for upstream handler to observe context cancellation")
+	}
+}
+

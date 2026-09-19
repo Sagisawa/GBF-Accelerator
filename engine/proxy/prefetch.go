@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gbf-proxy/cache"
@@ -191,7 +190,7 @@ func getPrefetchPriority(urlPath string) int {
 	return 4
 }
 
-func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body string, defaultHost string) [][2]string {
+func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultHost string) [][2]string {
 	seen := make(map[string]struct{})
 	var refs [][2]string
 
@@ -206,19 +205,19 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body string, defaultH
 	}
 
 	// 2. Standard asset references
-	matches := assetRefRe.FindAllStringSubmatch(body, -1)
+	matches := assetRefRe.FindAllSubmatch(body, -1)
 	for _, m := range matches {
 		if len(m) < 3 {
 			continue
 		}
-		refHost := strings.ToLower(m[1])
+		refHost := strings.ToLower(string(m[1]))
 		if refHost != "" && !isGBFAkamaiHost(refHost) && !isDomainOrSubdomain(refHost, "granbluefantasy.jp") && !isDomainOrSubdomain(refHost, "granbluefantasy.com") {
 			continue
 		}
 		if refHost == "" {
 			refHost = defaultHost
 		}
-		refPath := "/" + strings.TrimPrefix(m[2], "/")
+		refPath := "/" + strings.TrimPrefix(string(m[2]), "/")
 		if len(refPath) > 200 {
 			continue
 		}
@@ -238,12 +237,12 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body string, defaultH
 		if strings.HasPrefix(cleanURL, "/assets_en/") {
 			imgPrefix = "/assets_en/img"
 		}
-		cjsMatches := cjsImgRefRe.FindAllStringSubmatch(body, -1)
+		cjsMatches := cjsImgRefRe.FindAllSubmatch(body, -1)
 		for _, m := range cjsMatches {
 			if len(m) < 2 {
 				continue
 			}
-			raw := m[1]
+			raw := string(m[1])
 			var imgPath string
 			if strings.HasPrefix(raw, "sp/") {
 				imgPath = imgPrefix + "/" + raw
@@ -282,7 +281,7 @@ func (pe *PrefetchEngine) discoveryWorker() {
 					_ = gr.Close()
 				}
 			}
-			refs := pe.extractAssetRefs(cand.path, string(raw), cand.host)
+			refs := pe.extractAssetRefs(cand.path, raw, cand.host)
 
 			for _, r := range refs {
 				h, p := r[0], r[1]
@@ -326,12 +325,8 @@ func (pe *PrefetchEngine) fetchWorker() {
 
 func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	// P1 Dynamic yielding: pause if active dynamic API or foreground assets
-	for atomic.LoadInt32(&pe.srv.stats.ActiveAPICount) > 0 || atomic.LoadInt32(&pe.srv.stats.ActiveForegroundAssets) > 0 {
-		select {
-		case <-pe.stopChan:
-			return
-		case <-time.After(50 * time.Millisecond):
-		}
+	if !pe.srv.stats.WaitForegroundIdle(pe.stopChan) {
+		return
 	}
 
 	if !pe.srv.cfgMgr.Get().EnablePrefetch {

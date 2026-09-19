@@ -31,6 +31,8 @@ type LogEntry struct {
 	Msg   string `json:"msg"`
 }
 
+const maxLogEntries = 1000
+
 type Stats struct {
 	StartTime              time.Time
 	TotalAPIs              int64
@@ -54,12 +56,19 @@ type Stats struct {
 	ProtoH2     int64
 
 	mu            sync.RWMutex
-	logs          []LogEntry
+	logBuf        []LogEntry
+	logIdx        int
+	logCount      int
 	subMu         sync.RWMutex
 	subscribers   []chan LogEntry
 	prefetchMu    sync.RWMutex
 	prefetchSaved map[string]struct{}
 	logChan       chan LogEntry
+
+	idleMu     sync.Mutex
+	idleChan   chan struct{}
+	closedChan chan struct{}
+	closed     bool
 
 	// Fixed-capacity ring buffer of upstream request latencies (milliseconds).
 	latMu    sync.Mutex
@@ -75,10 +84,12 @@ var GlobalStats = NewStats()
 func NewStats() *Stats {
 	s := &Stats{
 		StartTime:     time.Now(),
-		logs:          make([]LogEntry, 0, 1000),
+		logBuf:        make([]LogEntry, maxLogEntries),
 		subscribers:   make([]chan LogEntry, 0),
 		prefetchSaved: make(map[string]struct{}),
 		logChan:       make(chan LogEntry, 1024),
+		idleChan:      make(chan struct{}),
+		closedChan:    make(chan struct{}),
 	}
 	go s.logWorker()
 	return s
@@ -112,10 +123,74 @@ func (s *Stats) IncAPIRetry() {
 
 func (s *Stats) AddActiveAPI(delta int32) {
 	atomic.AddInt32(&s.ActiveAPICount, delta)
+	if delta < 0 && s.IsForegroundIdle() {
+		s.NotifyForegroundIdle()
+	}
 }
 
 func (s *Stats) AddActiveFG(delta int32) {
 	atomic.AddInt32(&s.ActiveForegroundAssets, delta)
+	if delta < 0 && s.IsForegroundIdle() {
+		s.NotifyForegroundIdle()
+	}
+}
+
+func (s *Stats) IsForegroundIdle() bool {
+	return atomic.LoadInt32(&s.ActiveAPICount) <= 0 && atomic.LoadInt32(&s.ActiveForegroundAssets) <= 0
+}
+
+func (s *Stats) NotifyForegroundIdle() {
+	if !s.IsForegroundIdle() {
+		return
+	}
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	if s.closed {
+		return
+	}
+	if !s.IsForegroundIdle() {
+		return
+	}
+	if s.idleChan != nil {
+		select {
+		case <-s.idleChan:
+		default:
+			close(s.idleChan)
+		}
+		s.idleChan = make(chan struct{})
+	}
+}
+
+func (s *Stats) WaitForegroundIdle(stopChan <-chan struct{}) bool {
+	for !s.IsForegroundIdle() {
+		s.idleMu.Lock()
+		if s.closed {
+			s.idleMu.Unlock()
+			return false
+		}
+		if s.closedChan == nil {
+			s.closedChan = make(chan struct{})
+		}
+		closedCh := s.closedChan
+		if s.idleChan == nil {
+			s.idleChan = make(chan struct{})
+		}
+		idleCh := s.idleChan
+		s.idleMu.Unlock()
+
+		if s.IsForegroundIdle() {
+			return true
+		}
+
+		select {
+		case <-stopChan:
+			return false
+		case <-closedCh:
+			return false
+		case <-idleCh:
+		}
+	}
+	return true
 }
 
 func (s *Stats) IncPrefetchRequest() {
@@ -174,9 +249,13 @@ func (s *Stats) Log(level, msg string) {
 func (s *Stats) logWorker() {
 	for entry := range s.logChan {
 		s.mu.Lock()
-		s.logs = append(s.logs, entry)
-		if len(s.logs) > 1000 {
-			s.logs = s.logs[len(s.logs)-1000:]
+		if s.logBuf == nil {
+			s.logBuf = make([]LogEntry, maxLogEntries)
+		}
+		s.logBuf[s.logIdx] = entry
+		s.logIdx = (s.logIdx + 1) % maxLogEntries
+		if s.logCount < maxLogEntries {
+			s.logCount++
 		}
 		s.mu.Unlock()
 
@@ -198,6 +277,23 @@ func (s *Stats) logWorker() {
 func (s *Stats) Close() {
 	s.closeOnce.Do(func() {
 		close(s.logChan)
+		s.idleMu.Lock()
+		s.closed = true
+		if s.closedChan != nil {
+			select {
+			case <-s.closedChan:
+			default:
+				close(s.closedChan)
+			}
+		}
+		if s.idleChan != nil {
+			select {
+			case <-s.idleChan:
+			default:
+				close(s.idleChan)
+			}
+		}
+		s.idleMu.Unlock()
 	})
 }
 
@@ -224,8 +320,17 @@ func (s *Stats) SubscribeLogs() (chan LogEntry, func()) {
 func (s *Stats) GetLogs() []LogEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	res := make([]LogEntry, len(s.logs))
-	copy(res, s.logs)
+	n := s.logCount
+	if n == 0 {
+		return []LogEntry{}
+	}
+	res := make([]LogEntry, n)
+	if n < maxLogEntries {
+		copy(res, s.logBuf[:n])
+	} else {
+		tail := copy(res, s.logBuf[s.logIdx:])
+		copy(res[tail:], s.logBuf[:s.logIdx])
+	}
 	return res
 }
 

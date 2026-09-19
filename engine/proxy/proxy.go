@@ -840,7 +840,11 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	var reqReused bool
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		upReq, err := http.NewRequestWithContext(context.Background(), req.Method, upURL, bytes.NewReader(bodyBytes))
+		reqCtx := req.Context()
+		if reqCtx == nil {
+			reqCtx = context.Background()
+		}
+		upReq, err := http.NewRequestWithContext(reqCtx, req.Method, upURL, bytes.NewReader(bodyBytes))
 		if err != nil {
 			fetchErr = err
 			break
@@ -1252,7 +1256,11 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	var reqReused bool
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		upReq, err := http.NewRequestWithContext(context.Background(), req.Method, upURL, bytes.NewReader(bodyBytes))
+		reqCtx := req.Context()
+		if reqCtx == nil {
+			reqCtx = context.Background()
+		}
+		upReq, err := http.NewRequestWithContext(reqCtx, req.Method, upURL, bytes.NewReader(bodyBytes))
 		if err != nil {
 			fetchErr = err
 			break
@@ -1314,24 +1322,47 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	return !req.Close
 }
 
+var responseBufferPool = sync.Pool{
+	New: func() interface{} {
+		return bytes.NewBuffer(make([]byte, 0, 1024))
+	},
+}
+
 // writeHTTPResponse serializes an RFC-compliant HTTP/1.1 response to w.
 // It ensures standard Date header presence, P0-compliant header filtering
 // (zero proxy-fingerprint pollution, hop-by-hop stripping, Set-Cookie line-by-line
 // preservation), RFC 7230 content-length rules (omitted for 1xx, 204, 304), and HEAD body suppression.
 func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []byte, isHead bool, reqClose bool) {
-	var buf bytes.Buffer
+	buf := responseBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= 64*1024 {
+			responseBufferPool.Put(buf)
+		}
+	}()
+
 	statusPhrase := http.StatusText(statusCode)
 	if statusPhrase == "" {
 		statusPhrase = "OK"
 	}
-	fmt.Fprintf(&buf, "HTTP/1.1 %d %s\r\n", statusCode, statusPhrase)
+
+	var numBuf [32]byte
+
+	buf.WriteString("HTTP/1.1 ")
+	buf.Write(strconv.AppendInt(numBuf[:0], int64(statusCode), 10))
+	buf.WriteByte(' ')
+	buf.WriteString(statusPhrase)
+	buf.WriteString("\r\n")
 
 	hasDate := false
 	if header != nil && header.Get("Date") != "" {
 		hasDate = true
 	}
 	if !hasDate {
-		fmt.Fprintf(&buf, "Date: %s\r\n", time.Now().UTC().Format(http.TimeFormat))
+		buf.WriteString("Date: ")
+		var dateBuf [32]byte
+		buf.Write(time.Now().UTC().AppendFormat(dateBuf[:0], http.TimeFormat))
+		buf.WriteString("\r\n")
 	}
 
 	if header != nil {
@@ -1352,19 +1383,27 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 			if strings.HasPrefix(kLower, "x-proxy-") || strings.HasPrefix(kLower, "x-cache-") || strings.HasPrefix(kLower, "x-acceleration-") {
 				continue
 			}
+			formattedKey := formatHeaderKey(k)
 			for _, v := range vv {
-				fmt.Fprintf(&buf, "%s: %s\r\n", formatHeaderKey(k), v)
+				buf.WriteString(formattedKey)
+				buf.WriteString(": ")
+				buf.WriteString(v)
+				buf.WriteString("\r\n")
 			}
 		}
 
 		// P0: Multi-line Set-Cookie preservation (never fold into single line with commas)
 		for _, cookie := range cookies {
-			fmt.Fprintf(&buf, "Set-Cookie: %s\r\n", cookie)
+			buf.WriteString("Set-Cookie: ")
+			buf.WriteString(cookie)
+			buf.WriteString("\r\n")
 		}
 	}
 
 	if statusCode != http.StatusNoContent && statusCode != http.StatusNotModified && (statusCode < 100 || statusCode >= 200) {
-		fmt.Fprintf(&buf, "Content-Length: %d\r\n", len(body))
+		buf.WriteString("Content-Length: ")
+		buf.Write(strconv.AppendInt(numBuf[:0], int64(len(body)), 10))
+		buf.WriteString("\r\n")
 	}
 	if reqClose {
 		buf.WriteString("Connection: close\r\n\r\n")

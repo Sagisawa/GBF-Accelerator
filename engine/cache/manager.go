@@ -746,11 +746,18 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		if iErr != nil || info.Size() == 0 {
 			isBad = true
 		} else {
-			data, err := os.ReadFile(p)
-			if err != nil || len(data) == 0 {
+			f, err := os.Open(p)
+			if err != nil {
 				isBad = true
-			} else if !IsValidCacheContent(p, "", data) {
-				isBad = true
+			} else {
+				var header [512]byte
+				n, rErr := io.ReadFull(f, header[:])
+				_ = f.Close()
+				if (rErr != nil && rErr != io.EOF && rErr != io.ErrUnexpectedEOF) || n == 0 {
+					isBad = true
+				} else if !IsValidCacheContent(p, "", header[:n]) {
+					isBad = true
+				}
 			}
 		}
 

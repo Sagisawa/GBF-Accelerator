@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -134,3 +135,124 @@ func TestCloseIsIdempotentAndSafe(t *testing.T) {
 	// Logging after close must be dropped safely, not panic.
 	s.Log("INFO", "after close")
 }
+
+func TestLogRingBuffer_ChronologicalOrderAndCap(t *testing.T) {
+	s := NewStats()
+	defer s.Close()
+
+	for i := 0; i < 1500; i++ {
+		s.Log("INFO", fmt.Sprintf("msg-%04d", i))
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for len(s.logChan) > 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	logs := s.GetLogs()
+	if len(logs) != maxLogEntries {
+		t.Fatalf("expected exactly %d logs, got %d", maxLogEntries, len(logs))
+	}
+
+	if logs[len(logs)-1].Msg != "msg-1499" {
+		t.Errorf("expected newest log to be msg-1499, got %s", logs[len(logs)-1].Msg)
+	}
+	if logs[0].Msg != "msg-0500" {
+		t.Errorf("expected oldest log to be msg-0500, got %s", logs[0].Msg)
+	}
+}
+
+func TestWaitForegroundIdle_EventNotification(t *testing.T) {
+	s := NewStats()
+	defer s.Close()
+
+	if !s.IsForegroundIdle() {
+		t.Fatal("expected initially idle")
+	}
+
+	s.AddActiveAPI(1)
+	if s.IsForegroundIdle() {
+		t.Fatal("expected not idle when ActiveAPICount=1")
+	}
+
+	wokeUp := make(chan bool, 1)
+	go func() {
+		ok := s.WaitForegroundIdle(nil)
+		wokeUp <- ok
+	}()
+
+	select {
+	case <-wokeUp:
+		t.Fatal("WaitForegroundIdle returned prematurely while active API > 0")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	s.AddActiveAPI(-1)
+
+	select {
+	case ok := <-wokeUp:
+		if !ok {
+			t.Errorf("expected true from WaitForegroundIdle, got false")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for WaitForegroundIdle to unblock on idle notification")
+	}
+}
+
+func TestWaitForegroundIdle_CloseUnblocks(t *testing.T) {
+	s := NewStats()
+	s.AddActiveAPI(1) // not idle
+
+	done := make(chan bool, 1)
+	go func() {
+		ok := s.WaitForegroundIdle(nil)
+		done <- ok
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	s.Close()
+
+	select {
+	case ok := <-done:
+		if ok {
+			t.Errorf("expected false when WaitForegroundIdle is terminated by Close()")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("WaitForegroundIdle did not unblock upon s.Close() (likely busy-loop or deadlock)")
+	}
+}
+
+func TestWaitForegroundIdle_ConcurrentInterleaved(t *testing.T) {
+	s := NewStats()
+	defer s.Close()
+
+	s.AddActiveAPI(1)
+	s.AddActiveFG(1)
+
+	wokeUp := make(chan bool, 1)
+	go func() {
+		ok := s.WaitForegroundIdle(nil)
+		wokeUp <- ok
+	}()
+
+	// Decrement API first; still active FG, so worker must stay blocked
+	s.AddActiveAPI(-1)
+	select {
+	case <-wokeUp:
+		t.Fatal("worker woke up while FG asset was still active")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	// Decrement FG; now both are 0, worker must wake up
+	s.AddActiveFG(-1)
+	select {
+	case ok := <-wokeUp:
+		if !ok {
+			t.Errorf("expected true, got false")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for worker to wake up after both API and FG completed")
+	}
+}
+
