@@ -709,16 +709,16 @@ export const App: React.FC = () => {
                   <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
                     碧蓝幻想 GBF 加速器
                   </span>
-                  <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200">
+                  <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
                     v{status?.version || '1.8.0'}
                   </span>
                   {updateInfo?.available && (
                     <button
                       type="button"
                       onClick={() => setIsUpdateModalOpen(true)}
-                      className="px-2.5 py-0.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300/80 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-all shadow-2xs"
+                      className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
                     >
-                      <span>🔥</span>
+                      <span className="text-sm">🔥</span>
                       <span>发现新版 v{updateInfo.version}</span>
                     </button>
                   )}
