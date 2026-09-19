@@ -1,4 +1,4 @@
-import { RuntimeStatus, TelemetrySummary, CacheStats, PrefetchStatus, LogItem } from './types'
+import { RuntimeStatus, TelemetrySummary, CacheStats, PrefetchStatus, LogItem, UpdateInfo } from './types'
 
 const BASE = ''
 
@@ -27,7 +27,10 @@ export async function applyConfig(patch: Record<string, any>): Promise<void> {
 export async function toggleProxy(start: boolean): Promise<RuntimeStatus> {
   const endpoint = start ? '/api/proxy/start' : '/api/proxy/stop'
   const res = await fetch(`${BASE}${endpoint}`, { method: 'POST' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.message || data.error || `HTTP ${res.status}`)
+  }
   const data = await res.json()
   if (data.status) return data.status
   return fetchStatus()
@@ -166,7 +169,7 @@ export async function cancelCacheTask(): Promise<any> {
   return res.json()
 }
 
-export async function checkForUpdate(): Promise<any> {
+export async function checkForUpdate(): Promise<UpdateInfo> {
   const res = await fetch(`${BASE}/api/update/check`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()

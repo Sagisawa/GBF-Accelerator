@@ -150,6 +150,25 @@ func makeRAMKey(ns, cleanKey string) string {
 	return sanitizeNamespace(ns) + "/" + cleanKey
 }
 
+func extractNamespaceAndKey(base, path string) (ns string, cleanKey string, ramKey string, ok bool) {
+	rel, err := filepath.Rel(base, path)
+	if err != nil {
+		return "", "", "", false
+	}
+	slashRel := filepath.ToSlash(rel)
+	ns = "gbf"
+	cleanKey = slashRel
+	if strings.HasPrefix(slashRel, "hosts/") {
+		parts := strings.SplitN(slashRel, "/", 3)
+		if len(parts) == 3 {
+			ns = parts[1]
+			cleanKey = parts[2]
+		}
+	}
+	ramKey = makeRAMKey(ns, cleanKey)
+	return ns, cleanKey, ramKey, true
+}
+
 func (m *Manager) resolvePath(urlPath string) (string, bool) {
 	return m.resolvePathWithNamespace("gbf", urlPath)
 }
@@ -409,6 +428,8 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	return item, "DISK"
 }
 
+var fallbackTimestampRe = regexp.MustCompile(`^(assets(?:_(?:en|jp))?)/(\d+)/(.+)$`)
+
 func (m *Manager) GetFallback(urlPath string) (*CacheItem, string) {
 	// First check direct
 	if item, src := m.Get(urlPath); item != nil {
@@ -418,8 +439,7 @@ func (m *Manager) GetFallback(urlPath string) (*CacheItem, string) {
 	clean := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
 
 	// Versioned asset fallback: /(assets(?:_(?:en|jp))?)/(\d+)/(.+)
-	reVer := regexp.MustCompile(`^(assets(?:_(?:en|jp))?)/(\d+)/(.+)$`)
-	if mVer := reVer.FindStringSubmatch(clean); len(mVer) == 4 {
+	if mVer := fallbackTimestampRe.FindStringSubmatch(clean); len(mVer) == 4 {
 		prefix, reqVer, subpath := mVer[1], mVer[2], mVer[3]
 		m.mu.RLock()
 		base := m.cacheBase
@@ -695,16 +715,23 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		if err != nil || fi.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") {
+		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
 			if strings.Contains(p, ".tmp.") {
 				_ = os.Remove(p)
 			}
 			return nil
 		}
 		scanned++
+
+		_, _, ramKey, ok := extractNamespaceAndKey(base, p)
+		if !ok {
+			return nil
+		}
+
 		if strings.HasSuffix(p, "set-error-handler.js") {
 			if m.CheckAndQuarantineTamperedJS(p) {
 				corrupted++
+				m.ramCache.Delete(ramKey)
 				return nil
 			}
 		}
@@ -725,9 +752,7 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			corrupted++
 			_ = os.Remove(p)
 			_ = os.Remove(p + ".ext")
-			if rel, err := filepath.Rel(base, p); err == nil {
-				m.ramCache.Delete("/" + filepath.ToSlash(rel))
-			}
+			m.ramCache.Delete(ramKey)
 		} else {
 			healthy++
 		}
@@ -916,19 +941,9 @@ func (m *Manager) Warmup(maxItems int) int {
 
 	loaded := 0
 	for _, c := range candidates {
-		rel, err := filepath.Rel(base, c.path)
-		if err != nil {
+		ns, cleanKey, _, ok := extractNamespaceAndKey(base, c.path)
+		if !ok {
 			continue
-		}
-		slashRel := filepath.ToSlash(rel)
-		ns := "gbf"
-		cleanKey := slashRel
-		if strings.HasPrefix(slashRel, "hosts/") {
-			parts := strings.SplitN(slashRel, "/", 3)
-			if len(parts) == 3 {
-				ns = parts[1]
-				cleanKey = parts[2]
-			}
 		}
 		if item, _ := m.GetWithNamespace(ns, cleanKey); item != nil {
 			loaded++

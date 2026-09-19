@@ -101,6 +101,24 @@ func TestDownloadReleaseAsset(t *testing.T) {
 	}
 	_ = zr.Close()
 
+	// Test overwriting existing file with retry loop under momentary file lock
+	// Simulate antivirus / indexer holding a read/write handle on destFile
+	lockFile, lockErr := os.OpenFile(destFile, os.O_RDWR, 0666)
+	if lockErr == nil {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			_ = lockFile.Close()
+		}()
+	}
+
+	finalPath2, err := DownloadReleaseAsset(ts.URL, destFile, "", nil, context.Background())
+	if err != nil {
+		t.Fatalf("DownloadReleaseAsset overwriting locked file failed: %v", err)
+	}
+	if finalPath2 != destFile {
+		t.Errorf("expected final path %s, got %s", destFile, finalPath2)
+	}
+
 	// Test cancellation
 	ctxCancel, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -136,5 +154,45 @@ func TestCheckForUpdateMock(t *testing.T) {
 	// info will have HasUpdate or Error, and never panic.
 	if info == nil {
 		t.Fatalf("expected non-nil UpdateInfo")
+	}
+}
+
+func TestDownloadReleaseAsset_RetryContextCancellation(t *testing.T) {
+	tempDir := t.TempDir()
+	destFile := filepath.Join(tempDir, "lock_cancel.zip")
+	_ = os.WriteFile(destFile, []byte("existing"), 0644)
+
+	// Lock the file permanently
+	lockFile, err := os.OpenFile(destFile, os.O_RDWR, 0666)
+	if err != nil {
+		t.Skip("unable to lock file on this platform")
+	}
+	defer lockFile.Close()
+
+	// Server returning valid zip
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	w, _ := zw.Create("test.txt")
+	_, _ = w.Write([]byte("hello"))
+	_ = zw.Close()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/zip")
+		_, _ = rw.Write(buf.Bytes())
+	}))
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = DownloadReleaseAsset(ts.URL, destFile, "", nil, ctx)
+	if err == nil {
+		t.Errorf("expected error due to context cancellation during lock, got nil")
+	}
+
+	// Verify .part file was cleaned up
+	partFile := destFile + ".part"
+	if _, err := os.Stat(partFile); !os.IsNotExist(err) {
+		t.Errorf("expected .part file to be removed on error, but it still exists")
 	}
 }

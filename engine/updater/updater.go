@@ -341,6 +341,10 @@ func DownloadReleaseAsset(
 		destPath = filepath.Join(GetDefaultDownloadDir(), filename)
 	}
 
+	if cancelCtx == nil {
+		cancelCtx = context.Background()
+	}
+
 	_ = os.MkdirAll(filepath.Dir(destPath), 0755)
 	partPath := destPath + ".part"
 	_ = os.Remove(partPath)
@@ -440,10 +444,26 @@ func DownloadReleaseAsset(
 		}
 		_ = zr.Close()
 
-		// Success: rename .part to final destPath
-		_ = os.Remove(destPath)
-		if err := os.Rename(partPath, destPath); err != nil {
-			return "", fmt.Errorf("failed to finalize downloaded file: %w", err)
+		// Success: rename .part to final destPath.
+		// On Windows, antivirus or indexing services frequently lock newly downloaded archives
+		// momentarily, so retry with backoff before giving up.
+		var renameErr error
+		for attempt := 0; attempt < 5; attempt++ {
+			_ = os.Remove(destPath)
+			renameErr = os.Rename(partPath, destPath)
+			if renameErr == nil {
+				break
+			}
+			select {
+			case <-cancelCtx.Done():
+				_ = os.Remove(partPath)
+				return "", cancelCtx.Err()
+			case <-time.After(150 * time.Millisecond):
+			}
+		}
+		if renameErr != nil {
+			_ = os.Remove(partPath)
+			return "", fmt.Errorf("failed to finalize downloaded file: %w", renameErr)
 		}
 
 		return destPath, nil

@@ -12,7 +12,7 @@ export interface RuntimeStatus {
   ca_thumbprint?: string;
   ca_fingerprint?: string;
   system_proxy_enabled?: boolean;
-  system_proxy_conflict?: boolean;
+  system_proxy_conflict?: string | null;
   startup_enabled?: boolean;
   startup_supported?: boolean;
   is_auditing_cache?: boolean;
@@ -90,4 +90,18 @@ export interface LogItem {
   time: string;
   level: string;
   msg: string;
+}
+
+export interface UpdateInfo {
+  has_update: boolean;
+  latest_version: string;
+  current_version: string;
+  release_title?: string;
+  release_notes?: string;
+  html_url?: string;
+  release_url?: string;
+  download_url?: string;
+  asset_download_url?: string;
+  published_at?: string;
+  error?: string;
 }

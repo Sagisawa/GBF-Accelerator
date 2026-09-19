@@ -3,6 +3,7 @@ import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Download, XCircle } from 'lucide-react'
 import { checkForUpdate, downloadUpdate, fetchDownloadStatus, cancelDownload } from '../../api'
+import { isNewerVersion } from '../../utils/version'
 
 export interface UpdateModalProps {
   isOpen: boolean
@@ -17,6 +18,8 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 }) => {
   const [checking, setChecking] = useState(false)
   const [latestVersion, setLatestVersion] = useState<string>('')
+  const [hasUpdate, setHasUpdate] = useState<boolean>(false)
+  const [checkError, setCheckError] = useState<string | null>(null)
   const [releaseUrl, setReleaseUrl] = useState<string>('https://github.com/Sagisawa/GBF-Accelerator/releases')
   const [assetDownloadUrl, setAssetDownloadUrl] = useState<string>('')
   const [bodyText, setBodyText] = useState<string>('')
@@ -43,33 +46,47 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
   const checkUpdates = async () => {
     setChecking(true)
+    setCheckError(null)
     try {
       const data = await checkForUpdate()
+      if (data?.error) {
+        throw new Error(data.error)
+      }
       if (data) {
+        setHasUpdate(Boolean(data.has_update))
         setLatestVersion(data.latest_version || currentVersion)
-        setReleaseUrl(data.release_url || 'https://github.com/Sagisawa/GBF-Accelerator/releases')
+        setReleaseUrl(data.release_url || data.html_url || 'https://github.com/Sagisawa/GBF-Accelerator/releases')
         setBodyText(data.release_notes || '暂无详细更新日志。')
-        setAssetDownloadUrl(data.asset_download_url || '')
+        setAssetDownloadUrl(data.asset_download_url || data.download_url || '')
+        setCheckError(null)
       } else {
+        setHasUpdate(false)
         setLatestVersion(currentVersion)
         setBodyText('已连接到当前稳定版。')
+        setCheckError(null)
       }
-    } catch {
+    } catch (backendErr: any) {
       // Fallback: direct browser fetch to GitHub
       try {
         const res = await fetch('https://api.github.com/repos/Sagisawa/GBF-Accelerator/releases/latest')
         if (res.ok) {
           const data = await res.json()
-          const tag = (data.tag_name || '').replace(/^v/, '')
+          const tag = (data.tag_name || '').replace(/^v/, '').trim()
           setLatestVersion(tag)
           setReleaseUrl(data.html_url || 'https://github.com/Sagisawa/GBF-Accelerator/releases')
           setBodyText(data.body || '暂无详细更新日志。')
+          setHasUpdate(isNewerVersion(tag, currentVersion))
+          setCheckError(null)
         } else {
-          setLatestVersion(currentVersion)
-          setBodyText('已连接到当前稳定版。')
+          setHasUpdate(false)
+          setLatestVersion('')
+          setCheckError(backendErr?.message || `GitHub API 响应异常 (HTTP ${res.status})`)
+          setBodyText('未能获取最新版本信息，请检查网络连接或直接访问 Releases 页面。')
         }
-      } catch {
-        setLatestVersion(currentVersion)
+      } catch (browserErr: any) {
+        setHasUpdate(false)
+        setLatestVersion('')
+        setCheckError(backendErr?.message || browserErr?.message || '网络请求失败，未能连接到 GitHub Releases')
         setBodyText('未能获取最新版本信息，请检查网络连接或直接访问 Releases 页面。')
       }
     } finally {
@@ -137,7 +154,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     return () => stopPolling()
   }, [isOpen])
 
-  const hasNew = latestVersion && latestVersion !== currentVersion
+  const hasNew = Boolean(hasUpdate)
 
   return (
     <Modal
@@ -177,36 +194,48 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         </div>
 
         {hasChecked && !checking && (
-          <div
-            className={`p-3 rounded-lg border ${
-              hasNew
-                ? 'bg-amber-50 border-amber-200 text-amber-900'
-                : 'bg-emerald-50 border-emerald-200 text-emerald-900'
-            } space-y-1.5`}
-          >
-            <div className="font-bold flex items-center gap-1.5">
+          checkError ? (
+            <div className="p-3 rounded-lg border bg-rose-50 border-rose-200 text-rose-900 space-y-1.5">
+              <div className="font-bold flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-rose-600" />
+                <span>检查更新失败</span>
+              </div>
+              <p className="text-[11px] text-rose-700 leading-relaxed">
+                {checkError}。请检查本地网络或上游代理配置，亦可直接访问下方 GitHub 链接查看最新版本。
+              </p>
+            </div>
+          ) : (
+            <div
+              className={`p-3 rounded-lg border ${
+                hasNew
+                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              } space-y-1.5`}
+            >
+              <div className="font-bold flex items-center gap-1.5">
+                {hasNew ? (
+                  <>
+                    <AlertCircle className="w-4 h-4 text-amber-600" />
+                    <span>发现新版本 v{latestVersion}</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                    <span>当前已是最新版本 (v{currentVersion})</span>
+                  </>
+                )}
+              </div>
               {hasNew ? (
-                <>
-                  <AlertCircle className="w-4 h-4 text-amber-600" />
-                  <span>发现新版本 v{latestVersion}</span>
-                </>
+                <p className="text-[11px] text-amber-800">
+                  建议升级以获得最新的性能优化、协议修复与稳定性提升。
+                </p>
               ) : (
-                <>
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                  <span>当前已是最新版本 (v{currentVersion})</span>
-                </>
+                <p className="text-[11px] text-emerald-700">
+                  当前运行的核心加速代理服务与静态缓存模块处于最新状态。
+                </p>
               )}
             </div>
-            {hasNew ? (
-              <p className="text-[11px] text-amber-800">
-                建议升级以获得最新的性能优化、协议修复与稳定性提升。
-              </p>
-            ) : (
-              <p className="text-[11px] text-emerald-700">
-                当前运行的核心加速代理服务与静态缓存模块处于最新状态。
-              </p>
-            )}
-          </div>
+          )
         )}
 
         {/* Download Progress / Result Banner */}

@@ -380,6 +380,14 @@ func (d *dummyConn) Close() error {
 	return nil
 }
 
+func (d *dummyConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8124}
+}
+
+func (d *dummyConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 54321}
+}
+
 func TestHandlePlainHTTP_DirectLocalAndPAC(t *testing.T) {
 	tempDir := t.TempDir()
 	cfgPath := filepath.Join(tempDir, "config.json")

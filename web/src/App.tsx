@@ -30,6 +30,7 @@ import { CaCertModal } from './components/modals/CaCertModal'
 import { UpdateModal } from './components/modals/UpdateModal'
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { isNewerVersion } from './utils/version'
 import {
   CheckCircle2,
   Info,
@@ -129,6 +130,9 @@ export const App: React.FC = () => {
     // Background check for newer version on startup
     checkForUpdate()
       .then((data) => {
+        if (data?.error) {
+          throw new Error(data.error)
+        }
         if (data?.has_update && data?.latest_version) {
           setUpdateInfo({ available: true, version: data.latest_version })
         }
@@ -141,7 +145,7 @@ export const App: React.FC = () => {
             const latest = data.tag_name.replace(/^v/, '').trim()
             fetchStatus().then((cur) => {
               const current = (cur?.version || '1.8.0').replace(/^v/, '').trim()
-              if (latest && latest !== current) {
+              if (latest && isNewerVersion(latest, current)) {
                 setUpdateInfo({ available: true, version: latest })
               }
             }).catch(() => {})
@@ -196,7 +200,7 @@ export const App: React.FC = () => {
 
   // Toggle Shimakaze Mode
   const handleToggleShimakaze = async () => {
-    const current = Boolean(config.shimakaze_mode ?? true)
+    const current = Boolean(config.shimakaze_mode ?? false)
     const next = !current
     try {
       await applyConfig({ shimakaze_mode: next })
@@ -494,7 +498,7 @@ export const App: React.FC = () => {
   // State derivation
   const isRunning = Boolean(status?.proxy_running)
   const isDirect = Boolean(config.direct_mode ?? status?.direct_mode ?? false)
-  const isShimakaze = Boolean(config.shimakaze_mode ?? true)
+  const isShimakaze = Boolean(config.shimakaze_mode ?? false)
   const isAllowLan = Boolean(config.allow_lan ?? status?.allow_lan ?? false)
   const isAutoPac = Boolean(config.auto_system_proxy ?? config.auto_pac ?? true)
   const isAutoStart = Boolean(config.auto_start ?? false)

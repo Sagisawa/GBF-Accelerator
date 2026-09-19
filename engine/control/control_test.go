@@ -1,6 +1,8 @@
 package control
 
 import (
+	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 
 	"gbf-proxy/cache"
 	"gbf-proxy/config"
+	"gbf-proxy/proxy"
 	"gbf-proxy/telemetry"
 )
 
@@ -278,16 +281,24 @@ func TestNewControlAPIs(t *testing.T) {
 		t.Errorf("/api/cache/detect-acgpower expected 200, got %d", wAcg.Code)
 	}
 
-	// 3. /api/update/check
+	// 3. /api/update/check and /api/updater/check alias
 	wUpd := testRoute(http.MethodGet, "/api/update/check", "")
 	if wUpd.Code != http.StatusOK {
 		t.Errorf("/api/update/check expected 200, got %d", wUpd.Code)
 	}
+	wUpdater := testRoute(http.MethodGet, "/api/updater/check", "")
+	if wUpdater.Code != http.StatusOK {
+		t.Errorf("/api/updater/check expected 200, got %d", wUpdater.Code)
+	}
 
-	// 4. /api/update/download-status
+	// 4. /api/update/download-status and /api/updater/download-status alias
 	wUpdStat := testRoute(http.MethodGet, "/api/update/download-status", "")
 	if wUpdStat.Code != http.StatusOK {
 		t.Errorf("/api/update/download-status expected 200, got %d", wUpdStat.Code)
+	}
+	wUpdaterStat := testRoute(http.MethodGet, "/api/updater/download-status", "")
+	if wUpdaterStat.Code != http.StatusOK {
+		t.Errorf("/api/updater/download-status expected 200, got %d", wUpdaterStat.Code)
 	}
 
 	// 5. /api/cert/status
@@ -392,3 +403,99 @@ func TestGetTelemetrySummaryRealData(t *testing.T) {
 		t.Errorf("expected min_ms 10.0, got %v", pct["min_ms"])
 	}
 }
+
+func TestControlProxyStartFailureAndSuccess(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+
+	// Pick a free port and keep it occupied to force proxy listen failure
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	defer l.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = port
+	})
+
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+
+	// 1. Calling /api/proxy/start when port is occupied should fail with 500
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy/start", nil)
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected HTTP 500 when proxy cannot bind port, got %d", w.Code)
+	}
+
+	var failResp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &failResp); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+	if failResp["ok"] != false {
+		t.Errorf("expected ok=false in error response, got %v", failResp["ok"])
+	}
+	if errMsg, ok := failResp["error"].(string); !ok || errMsg == "" {
+		t.Errorf("expected non-empty error message, got %v", failResp["error"])
+	}
+
+	// 2. Free the port and try again -> should succeed with 200
+	_ = l.Close()
+
+	wSuccess := httptest.NewRecorder()
+	ctrl.handleRoute(wSuccess, req)
+
+	if wSuccess.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200 when proxy starts successfully, got %d", wSuccess.Code)
+	}
+
+	var okResp map[string]interface{}
+	if err := json.Unmarshal(wSuccess.Body.Bytes(), &okResp); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+	if okResp["ok"] != true {
+		t.Errorf("expected ok=true, got %v", okResp["ok"])
+	}
+}
+
+func TestControlProxyStartNilProxyServer(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	// ControlServer with nil ProxyServer
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy/start", nil)
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected HTTP 500 when proxy server is nil, got %d", w.Code)
+	}
+
+	var failResp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &failResp); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+	if failResp["ok"] != false {
+		t.Errorf("expected ok=false in error response, got %v", failResp["ok"])
+	}
+}
+

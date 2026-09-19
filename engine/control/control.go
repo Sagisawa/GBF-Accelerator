@@ -333,22 +333,22 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleLatencyTest(w, req)
 			return
 		}
-	case "/api/update/check":
+	case "/api/update/check", "/api/updater/check":
 		if req.Method == http.MethodGet {
 			c.handleUpdateCheck(w, req)
 			return
 		}
-	case "/api/update/download":
+	case "/api/update/download", "/api/updater/download":
 		if req.Method == http.MethodPost {
 			c.handleUpdateDownload(w, req)
 			return
 		}
-	case "/api/update/download-status":
+	case "/api/update/download-status", "/api/updater/download-status":
 		if req.Method == http.MethodGet {
 			c.handleUpdateDownloadStatus(w, req)
 			return
 		}
-	case "/api/update/download-cancel":
+	case "/api/update/download-cancel", "/api/updater/download-cancel":
 		if req.Method == http.MethodPost {
 			c.handleUpdateDownloadCancel(w, req)
 			return
@@ -415,8 +415,23 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 		}
 	case "/api/proxy/start":
 		if req.Method == http.MethodPost {
-			if c.proxySrv != nil {
-				_ = c.proxySrv.Start()
+			if c.proxySrv == nil {
+				c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+					"ok":      false,
+					"error":   "proxy server not initialized",
+					"message": "Failed to start proxy: server not initialized",
+					"status":  c.getRuntimeStatus(),
+				})
+				return
+			}
+			if err := c.proxySrv.Start(); err != nil {
+				c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+					"ok":      false,
+					"error":   err.Error(),
+					"message": fmt.Sprintf("Failed to start proxy: %v", err),
+					"status":  c.getRuntimeStatus(),
+				})
+				return
 			}
 			c.sendJSON(w, http.StatusOK, map[string]interface{}{
 				"ok":      true,

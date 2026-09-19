@@ -10,16 +10,37 @@ echo ""
 
 if [ ! -f "$CA_PATH" ]; then
     echo "[*] 未找到本地 ca.crt，正在自动生成本机专属唯一根证书..."
-    if [ -f "$DIR/bin/GBF_Accelerator" ]; then
-        "$DIR/bin/GBF_Accelerator" --headless &
+    BG_BIN=""
+    if [ -f "$DIR/GBF_Accelerator_darwin_universal" ]; then
+        BG_BIN="$DIR/GBF_Accelerator_darwin_universal"
+    elif [ -f "$DIR/GBF_Accelerator" ]; then
+        BG_BIN="$DIR/GBF_Accelerator"
+    elif [ -f "$DIR/GBF_Accelerator_darwin_arm64" ]; then
+        BG_BIN="$DIR/GBF_Accelerator_darwin_arm64"
+    elif [ -f "$DIR/GBF_Accelerator_darwin_amd64" ]; then
+        BG_BIN="$DIR/GBF_Accelerator_darwin_amd64"
+    elif [ -f "$DIR/bin/GBF_Accelerator" ]; then
+        BG_BIN="$DIR/bin/GBF_Accelerator"
+    fi
+
+    if [ -n "$BG_BIN" ]; then
+        "$BG_BIN" --headless &
+        BG_PID=$!
+        sleep 2
+        kill $BG_PID 2>/dev/null || true
+    elif [ -f "$DIR/engine/main.go" ]; then
+        (cd "$DIR/engine" && go run . --headless) &
         BG_PID=$!
         sleep 2
         kill $BG_PID 2>/dev/null || true
     else
-        (cd "$DIR/engine" && go run . --headless &)
-        BG_PID=$!
-        sleep 2
-        kill $BG_PID 2>/dev/null || true
+        echo "[-] 未找到 GBF_Accelerator 可执行文件，无法自动生成根证书。" >&2
+        exit 1
+    fi
+
+    if [ ! -f "$CA_PATH" ]; then
+        echo "[-] 错误：未能生成根证书文件 ($CA_PATH)。" >&2
+        exit 1
     fi
 fi
 

@@ -57,13 +57,14 @@ if [[ "$(uname -s)" == "Darwin" ]] || [[ "${1:-}" == "--release" ]] || [[ "${2:-
     ZIP_PATH="${RELEASE_DIR}/GBF_Accelerator_v${APP_VERSION}_macOS_universal2.zip"
     rm -f "${ZIP_PATH}"
     echo "[*] Packaging macOS release zip: ${ZIP_PATH}..."
-    AUX_FILES=("SwitchyOmega_GBF.bak" "proxy.pac" "使用说明.txt" "LICENSE")
+    AUX_FILES=("SwitchyOmega_GBF.bak" "proxy.pac" "install_ca.sh" "start_proxy.sh" "使用说明.txt" "LICENSE")
     FILES_TO_PACK=("${MAC_BIN}")
     for aux in "${AUX_FILES[@]}"; do
         if [[ -f "${ROOT_DIR}/${aux}" ]]; then
             FILES_TO_PACK+=("${ROOT_DIR}/${aux}")
         fi
     done
+    chmod +x "${ROOT_DIR}/start_proxy.sh" "${ROOT_DIR}/install_ca.sh" "${MAC_BIN}" 2>/dev/null || true
     if command -v zip >/dev/null 2>&1; then
         zip -j "${ZIP_PATH}" "${FILES_TO_PACK[@]}"
         echo "[***] MAC RELEASE READY: ${ZIP_PATH}"

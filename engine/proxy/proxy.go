@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -109,7 +110,7 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 		Proxy:       proxyFunc,
 		DialContext: dialer.DialContext,
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: !c.VerifyUpstreamTLS,
+			InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode,
 		},
 		MaxConnsPerHost:     apiMaxConn,
 		MaxIdleConns:        apiMaxConn,
@@ -128,7 +129,7 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 		Proxy:       proxyFunc,
 		DialContext: dialer.DialContext,
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: !c.VerifyUpstreamTLS,
+			InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode,
 		},
 		MaxConnsPerHost:     assetMaxConn,
 		MaxIdleConns:        assetMaxConn,
@@ -491,8 +492,8 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 	effProxy := s.cfgMgr.GetEffectiveUpstreamProxy()
 
 	targetHost := target
-	if !strings.Contains(targetHost, ":") {
-		targetHost += ":443"
+	if _, _, err := net.SplitHostPort(targetHost); err != nil {
+		targetHost = net.JoinHostPort(strings.Trim(targetHost, "[]"), "443")
 	}
 
 	var upConn net.Conn
@@ -501,13 +502,15 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 
 	if effProxy != "" {
 		if u, parseErr := url.Parse(effProxy); parseErr == nil {
-			proxyAddr := u.Host
 			scheme := strings.ToLower(u.Scheme)
 
 			if strings.HasPrefix(scheme, "socks") {
-				if !strings.Contains(proxyAddr, ":") {
-					proxyAddr += ":1080"
+				proxyHost := u.Hostname()
+				proxyPort := u.Port()
+				if proxyPort == "" {
+					proxyPort = "1080"
 				}
+				proxyAddr := net.JoinHostPort(proxyHost, proxyPort)
 				user := ""
 				pass := ""
 				if u.User != nil {
@@ -516,11 +519,35 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 				}
 				upConn, err = dialSOCKS5(proxyAddr, targetHost, user, pass, 10*time.Second)
 			} else if scheme == "http" || scheme == "https" {
-				if !strings.Contains(proxyAddr, ":") {
-					proxyAddr += ":80"
+				proxyHost := u.Hostname()
+				proxyPort := u.Port()
+				if proxyPort == "" {
+					if scheme == "https" {
+						proxyPort = "443"
+					} else {
+						proxyPort = "80"
+					}
 				}
+				proxyAddr := net.JoinHostPort(proxyHost, proxyPort)
 				upConn, err = net.DialTimeout("tcp", proxyAddr, 10*time.Second)
-				if err == nil {
+				if err == nil && scheme == "https" {
+					cfg := s.cfgMgr.Get()
+					tlsCfg := &tls.Config{
+						ServerName:         proxyHost,
+						InsecureSkipVerify: !cfg.VerifyUpstreamTLS || cfg.ShimakazeMode,
+					}
+					tlsConn := tls.Client(upConn, tlsCfg)
+					_ = upConn.SetDeadline(time.Now().Add(10 * time.Second))
+					if hErr := tlsConn.Handshake(); hErr != nil {
+						_ = upConn.Close()
+						upConn = nil
+						err = hErr
+					} else {
+						_ = upConn.SetDeadline(time.Time{})
+						upConn = tlsConn
+					}
+				}
+				if err == nil && upConn != nil {
 					var authHeader string
 					if u.User != nil {
 						user := u.User.Username()
@@ -529,6 +556,7 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 						authHeader = fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth)
 					}
 					connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", targetHost, targetHost, authHeader)
+					_ = upConn.SetDeadline(time.Now().Add(10 * time.Second))
 					if _, wErr := upConn.Write([]byte(connectReq)); wErr != nil {
 						_ = upConn.Close()
 						upConn = nil
@@ -545,6 +573,7 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 								err = fmt.Errorf("proxy returned %d", resp.StatusCode)
 							}
 						} else {
+							_ = upConn.SetDeadline(time.Time{})
 							upReader = br
 						}
 					}
@@ -572,26 +601,57 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 	}
 	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-TCP] Tunneling %s via upstream", targetHost))
 
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			_ = clientConn.Close()
+			_ = upConn.Close()
+		})
+	}
+	defer closeBoth()
+
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
+		defer closeBoth()
 		_, _ = io.Copy(clientConn, upReader)
-		_ = clientConn.Close()
 	}()
 
-	_, _ = io.Copy(upConn, clientReader)
-	if cw, ok := upConn.(interface{ CloseWrite() error }); ok {
-		_ = cw.CloseWrite()
-	}
+	go func() {
+		defer wg.Done()
+		defer closeBoth()
+		_, _ = io.Copy(upConn, clientReader)
+	}()
+
 	wg.Wait()
+}
+
+func safeLocalAddr(conn net.Conn) (localIP string, localPort string) {
+	if conn == nil {
+		return "", ""
+	}
+	defer func() {
+		_ = recover()
+	}()
+	if la := conn.LocalAddr(); la != nil {
+		if tcpAddr, ok := la.(*net.TCPAddr); ok && tcpAddr != nil {
+			return tcpAddr.IP.String(), strconv.Itoa(tcpAddr.Port)
+		}
+		if h, p, err := net.SplitHostPort(la.String()); err == nil {
+			return strings.Trim(h, "[]"), p
+		}
+	}
+	return "", ""
 }
 
 func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	host := req.Host
-	if h, _, err := net.SplitHostPort(req.Host); err == nil {
+	reqPort := ""
+	if h, p, err := net.SplitHostPort(req.Host); err == nil {
 		host = h
+		reqPort = p
 	}
 	hostTrimmed := strings.Trim(host, "[]")
 	if isTelemetryHost(hostTrimmed) {
@@ -601,12 +661,39 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
-	// Check if this is a direct local request to the proxy itself (not a proxied HTTP request)
-	isDirectLocal := !req.URL.IsAbs() && (req.Host == "" ||
-		hostTrimmed == "127.0.0.1" ||
-		hostTrimmed == "localhost" ||
-		hostTrimmed == "::1" ||
-		(s.cfgMgr.Get().AllowLAN && config.GetLANIP() != "" && hostTrimmed == config.GetLANIP()))
+	// Check if this request targets local internal proxy endpoints
+	cfg := s.cfgMgr.Get()
+	listenPortStr := strconv.Itoa(cfg.ListenPort)
+	localIP, localPort := safeLocalAddr(conn)
+	if localPort == "" {
+		localPort = listenPortStr
+	}
+
+	effectivePort := reqPort
+	if effectivePort == "" {
+		effectivePort = "80"
+	}
+
+	isProxyPort := reqPort == listenPortStr || reqPort == localPort || effectivePort == listenPortStr || effectivePort == localPort
+
+	isInternalCertOrPac := cleanPath == "/ca.crt" || cleanPath == "/ca.pem" ||
+		cleanPath == "/proxy.pac" ||
+		((strings.HasSuffix(cleanPath, "/ca.crt") || strings.HasSuffix(cleanPath, "/proxy.pac")) && (!req.URL.IsAbs() || isProxyPort))
+	isLandingPage := cleanPath == "" || cleanPath == "/" || cleanPath == "/index.html"
+
+	isLocalHost := hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
+		hostTrimmed == "::1" || hostTrimmed == "proxy" || hostTrimmed == "gbf-proxy" ||
+		(localIP != "" && hostTrimmed == localIP) ||
+		(config.GetLANIP() != "" && hostTrimmed == config.GetLANIP())
+
+	isDirectLocal := false
+	if !isExternalGBFDomain(hostTrimmed) {
+		if isInternalCertOrPac {
+			isDirectLocal = true
+		} else if isLandingPage {
+			isDirectLocal = !req.URL.IsAbs() || isLocalHost || isProxyPort
+		}
+	}
 
 	// 1. Root CA Certificate download (only for direct requests to proxy host itself)
 	if isDirectLocal && (cleanPath == "/ca.crt" || cleanPath == "/ca.pem" || strings.HasSuffix(cleanPath, "/ca.crt")) {
@@ -649,7 +736,9 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	if isDirectLocal && (cleanPath == "" || cleanPath == "/" || cleanPath == "/index.html") {
 		cfg := s.cfgMgr.Get()
 		lanIP := config.GetLANIP()
-		if lanIP == "" {
+		if hostTrimmed != "127.0.0.1" && hostTrimmed != "localhost" && hostTrimmed != "::1" && hostTrimmed != "" && !isExternalGBFDomain(hostTrimmed) {
+			lanIP = hostTrimmed
+		} else if lanIP == "" {
 			lanIP = "127.0.0.1"
 		}
 		html := GetLandingHTML(lanIP, cfg.ListenPort)
@@ -661,8 +750,8 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	}
 
 	// 4. Plain HTTP proxy request (e.g. GET http://gbf.game.mbga.jp/)
-	if isStaticTarget(req.Host, req.URL.Path) && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
-		return s.handleStaticAsset(conn, req, req.Host)
+	if isGBFDomain(hostTrimmed) && isStaticTarget(hostTrimmed, req.URL.Path) && (req.Method == http.MethodGet || req.Method == http.MethodHead) {
+		return s.handleStaticAsset(conn, req, hostTrimmed)
 	}
 	return s.forwardPlainProxy(conn, req)
 }
@@ -671,6 +760,37 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	s.stats.IncAPI()
 	s.stats.AddActiveAPI(1)
 	defer s.stats.AddActiveAPI(-1)
+
+	// Loop prevention: do not forward requests targeted at the proxy itself
+	hostOnly := req.Host
+	reqPort := ""
+	if h, p, err := net.SplitHostPort(req.Host); err == nil {
+		hostOnly = h
+		reqPort = p
+	}
+	hostTrimmed := strings.Trim(hostOnly, "[]")
+	effectivePort := reqPort
+	if effectivePort == "" {
+		effectivePort = "80"
+	}
+
+	cfg := s.cfgMgr.Get()
+	listenPortStr := strconv.Itoa(cfg.ListenPort)
+	localIP, localPort := safeLocalAddr(conn)
+	if localPort == "" {
+		localPort = listenPortStr
+	}
+
+	isProxyPort := effectivePort == listenPortStr || effectivePort == localPort
+	isSelfHost := hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
+		hostTrimmed == "::1" || hostTrimmed == "proxy" || hostTrimmed == "gbf-proxy" ||
+		(localIP != "" && hostTrimmed == localIP) ||
+		(config.GetLANIP() != "" && hostTrimmed == config.GetLANIP())
+
+	if isProxyPort && isSelfHost {
+		writeHTTPResponse(conn, http.StatusNotFound, nil, nil, req.Method == http.MethodHead, true)
+		return false
+	}
 
 	startTime := time.Now()
 	upURL := req.URL.String()
@@ -845,8 +965,53 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	cleanPath := strings.Split(req.URL.Path, "?")[0]
 
 	// Security: Reject path traversal sequences immediately
+	// Extract the path portion from raw req.RequestURI before unescaping
+	// (so that query parameters like ?t=12:34:56 do not falsely trigger colon checks,
+	// and encoded %3F in path is not confused with query delimiter).
+	rawURIPath := strings.Split(req.RequestURI, "?")[0]
+	rawURIPath = strings.Split(rawURIPath, "#")[0]
+
+	if idx := strings.Index(rawURIPath, "://"); idx != -1 {
+		afterScheme := rawURIPath[idx+3:]
+		if slashIdx := strings.Index(afterScheme, "/"); slashIdx != -1 {
+			rawURIPath = afterScheme[slashIdx:]
+		} else {
+			rawURIPath = "/"
+		}
+	} else if strings.HasPrefix(rawURIPath, "//") {
+		afterSlashes := strings.TrimPrefix(rawURIPath, "//")
+		if slashIdx := strings.Index(afterSlashes, "/"); slashIdx != -1 {
+			rawURIPath = afterSlashes[slashIdx:]
+		} else {
+			rawURIPath = "/"
+		}
+	}
+
+	unescapedPath, _ := url.PathUnescape(rawURIPath)
 	unescapedURI, _ := url.PathUnescape(req.RequestURI)
+
+	thHost := targetHost
+	thHostHasColon := false
+	if hp, port, err := net.SplitHostPort(targetHost); err == nil {
+		thHost = hp
+		if _, pErr := strconv.Atoi(port); pErr != nil {
+			thHostHasColon = true
+		}
+	}
+	thHost = strings.Trim(thHost, "[]")
+	if strings.Contains(thHost, ":") && net.ParseIP(thHost) == nil {
+		thHostHasColon = true
+	}
+
+	// Normalize targetHost: strip standard ports so upstream https://targetHost connects to 443
+	if hp, port, err := net.SplitHostPort(targetHost); err == nil {
+		if port == "80" || port == "443" {
+			targetHost = hp
+		}
+	}
+
 	unescapedLower := strings.ToLower(unescapedURI)
+	unescapedPathLower := strings.ToLower(unescapedPath)
 	reqURILower := strings.ToLower(req.RequestURI)
 	pathLower := strings.ToLower(req.URL.Path)
 	cleanLower := strings.ToLower(cleanPath)
@@ -856,13 +1021,16 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		isBlockedWindowsPath(reqURILower) ||
 		isBlockedWindowsPath(pathLower) ||
 		isBlockedWindowsPath(unescapedLower) ||
+		isBlockedWindowsPath(unescapedPathLower) ||
 		strings.Contains(reqURILower, "passwd") ||
 		strings.Contains(pathLower, "passwd") ||
 		strings.Contains(unescapedLower, "passwd") ||
 		strings.Contains(cleanPath, ":") ||
-		strings.Contains(unescapedURI, ":") ||
+		strings.Contains(unescapedPath, ":") ||
+		thHostHasColon ||
 		strings.HasPrefix(cleanLower, "\\") ||
-		strings.HasPrefix(unescapedLower, "\\") {
+		strings.HasPrefix(unescapedLower, "\\") ||
+		strings.HasPrefix(unescapedPathLower, "\\") {
 		writeHTTPResponse(w, http.StatusBadRequest, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}
@@ -924,13 +1092,19 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 			s.stats.RecordProtocol(resp.Proto)
 			s.stats.RecordLatency(float64(time.Since(fetchStart).Milliseconds()))
 		}
-		if err != nil || resp.StatusCode != http.StatusOK {
+		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
 			// Check offline cache fallback
 			if fb, _ := s.cacheMgr.GetFallback(req.URL.Path); fb != nil {
 				return fb, nil
 			}
 			if err != nil {
 				return nil, err
+			}
+			if resp == nil {
+				return nil, errors.New("upstream returned nil response")
 			}
 			return nil, fmt.Errorf("upstream returned %d", resp.StatusCode)
 		}
@@ -1320,6 +1494,32 @@ func isGBFDomain(host string) bool {
 		isDomainOrSubdomain(host, "connect.mobage.jp") ||
 		isDomainOrSubdomain(host, "sp.mbga.jp") ||
 		host == "localhost" || host == "127.0.0.1"
+}
+
+func isExternalGBFDomain(host string) bool {
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return false
+	}
+	return isGBFDomain(host)
+}
+
+func isPrivateOrLocalHost(host string) bool {
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast()
+	}
+	return host == "proxy" || host == "proxy.pac" || host == "ca.crt" || host == "gbf-proxy"
 }
 
 func isStaticTarget(host, path string) bool {
