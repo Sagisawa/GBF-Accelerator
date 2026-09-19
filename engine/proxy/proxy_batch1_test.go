@@ -68,7 +68,7 @@ func TestBug13_HandleStaticAsset_ResponseBodyClosedOnNon200(t *testing.T) {
 				Reader: strings.NewReader("upstream error response"),
 			}
 
-			srv.assetClient = &http.Client{
+			srv.assetClient.Store(&http.Client{
 				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 					return &http.Response{
 						StatusCode: statusCode,
@@ -77,7 +77,7 @@ func TestBug13_HandleStaticAsset_ResponseBodyClosedOnNon200(t *testing.T) {
 						Proto:      "HTTP/1.1",
 					}, nil
 				}),
-			}
+			})
 
 			req, _ := http.NewRequest(http.MethodGet, "https://game.granbluefantasy.jp/assets/nonexistent.png", nil)
 			var buf bytes.Buffer
@@ -99,11 +99,11 @@ func TestBug13_HandleStaticAsset_ResponseBodyClosedOnNon200(t *testing.T) {
 		stats := telemetry.NewStats()
 		srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
 
-		srv.assetClient = &http.Client{
+		srv.assetClient.Store(&http.Client{
 			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				return nil, errors.New("simulated network failure")
 			}),
-		}
+		})
 
 		req, _ := http.NewRequest(http.MethodGet, "https://game.granbluefantasy.jp/assets/failed.png", nil)
 		var buf bytes.Buffer
@@ -132,7 +132,7 @@ func TestBug1_HandleStaticAsset_AbsoluteURISchemeAllowed(t *testing.T) {
 
 	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
 
-	srv.assetClient = &http.Client{
+	srv.assetClient.Store(&http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			h := make(http.Header)
 			h.Set("Content-Type", "image/png")
@@ -143,7 +143,7 @@ func TestBug1_HandleStaticAsset_AbsoluteURISchemeAllowed(t *testing.T) {
 				Proto:      "HTTP/1.1",
 			}, nil
 		}),
-	}
+	})
 
 	// 1. Plain HTTP absolute URI sent through proxy
 	req1 := &http.Request{
@@ -277,7 +277,7 @@ func TestBug1_HandleStaticAsset_AbsoluteURISchemeAllowed(t *testing.T) {
 
 	// 10. TargetHost with port 80 stripped before upstream HTTPS connection
 	var capturedUpstreamURL string
-	srv.assetClient = &http.Client{
+	srv.assetClient.Store(&http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			capturedUpstreamURL = r.URL.String()
 			h := make(http.Header)
@@ -289,7 +289,7 @@ func TestBug1_HandleStaticAsset_AbsoluteURISchemeAllowed(t *testing.T) {
 				Proto:      "HTTP/1.1",
 			}, nil
 		}),
-	}
+	})
 	req10 := &http.Request{
 		Method:     http.MethodGet,
 		RequestURI: "http://gbf.game.mbga.jp:80/assets/port_test_icon.png",
@@ -409,7 +409,7 @@ func TestBug2_HandlePlainHTTP_ProxyRequestsForInternalAssets(t *testing.T) {
 		},
 	}
 
-	srv.apiClient = &http.Client{
+	srv.apiClient.Store(&http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			body := "upstream-ok"
 			if r.Host == "192.168.1.1" {
@@ -424,7 +424,7 @@ func TestBug2_HandlePlainHTTP_ProxyRequestsForInternalAssets(t *testing.T) {
 				Proto:      "HTTP/1.1",
 			}, nil
 		}),
-	}
+	})
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -570,14 +570,14 @@ func TestBug16_HandlePlainHTTP_NonGBFStaticRequestsNotForcedHTTPS(t *testing.T) 
 	var assetClientCalled atomic.Bool
 	var apiClientCalled atomic.Bool
 
-	srv.assetClient = &http.Client{
+	srv.assetClient.Store(&http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			assetClientCalled.Store(true)
 			return nil, errors.New("assetClient should not be called for non-GBF")
 		}),
-	}
+	})
 
-	srv.apiClient = &http.Client{
+	srv.apiClient.Store(&http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			apiClientCalled.Store(true)
 			h := make(http.Header)
@@ -589,7 +589,7 @@ func TestBug16_HandlePlainHTTP_NonGBFStaticRequestsNotForcedHTTPS(t *testing.T) 
 				Proto:      "HTTP/1.1",
 			}, nil
 		}),
-	}
+	})
 
 	// 1. Non-GBF request for static file (e.g. http://example.com/logo.png)
 	conn1 := &dummyConn{}
@@ -615,7 +615,7 @@ func TestBug16_HandlePlainHTTP_NonGBFStaticRequestsNotForcedHTTPS(t *testing.T) 
 	assetClientCalled.Store(false)
 	apiClientCalled.Store(false)
 
-	srv.assetClient = &http.Client{
+	srv.assetClient.Store(&http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			assetClientCalled.Store(true)
 			h := make(http.Header)
@@ -627,7 +627,7 @@ func TestBug16_HandlePlainHTTP_NonGBFStaticRequestsNotForcedHTTPS(t *testing.T) 
 				Proto:      "HTTP/1.1",
 			}, nil
 		}),
-	}
+	})
 
 	conn2 := &dummyConn{}
 	req2 := &http.Request{

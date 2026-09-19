@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"regexp"
 	"strings"
@@ -389,7 +389,7 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 
 	// Pacing jitter (15~35ms)
 	if pe.QueueLen() > 0 {
-		jitter := 15 + rand.Intn(21)
+		jitter := 15 + rand.IntN(21)
 		select {
 		case <-pe.stopChan:
 			return

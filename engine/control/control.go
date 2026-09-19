@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -523,8 +522,8 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"startup_supported":        startup.IsStartupSupported(),
 		"is_auditing_cache":        isAuditing,
 		"is_slimming_cache":        isSlimming,
-		"active_api_count":         atomic.LoadInt32(&c.stats.ActiveAPICount),
-		"active_foreground_assets": atomic.LoadInt32(&c.stats.ActiveForegroundAssets),
+		"active_api_count":         c.stats.ActiveAPICount.Load(),
+		"active_foreground_assets": c.stats.ActiveForegroundAssets.Load(),
 		"uptime_seconds":           uptime,
 		"requests":                 c.stats.RequestsMap(),
 		"telemetry":                c.getTelemetrySummary(),
@@ -681,10 +680,10 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 func (c *ControlServer) handleCacheStats(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()
 	items, bytes := c.cacheMgr.Stats()
-	totalLookups := atomic.LoadInt64(&c.stats.TotalHits) + atomic.LoadInt64(&c.stats.CacheMisses)
+	totalLookups := c.stats.TotalHits.Load() + c.stats.CacheMisses.Load()
 	hitRatio := 0.0
 	if totalLookups > 0 {
-		hitRatio = math.Round(float64(atomic.LoadInt64(&c.stats.TotalHits))/float64(totalLookups)*1000) / 10
+		hitRatio = math.Round(float64(c.stats.TotalHits.Load())/float64(totalLookups)*1000) / 10
 	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
@@ -694,10 +693,10 @@ func (c *ControlServer) handleCacheStats(w http.ResponseWriter, req *http.Reques
 		"ram_bytes":          bytes,
 		"ram_mb":             math.Round(float64(bytes)/(1024*1024)*100) / 100,
 		"ram_max_mb":         cfg.RAMCacheMaxMB,
-		"hits_total":         atomic.LoadInt64(&c.stats.TotalHits),
-		"hits_ram":           atomic.LoadInt64(&c.stats.RAMHits),
-		"hits_disk":          atomic.LoadInt64(&c.stats.DiskHits),
-		"misses":             atomic.LoadInt64(&c.stats.CacheMisses),
+		"hits_total":         c.stats.TotalHits.Load(),
+		"hits_ram":           c.stats.RAMHits.Load(),
+		"hits_disk":          c.stats.DiskHits.Load(),
+		"misses":             c.stats.CacheMisses.Load(),
 		"hit_ratio_percent": hitRatio,
 	})
 }
@@ -1284,27 +1283,27 @@ func (c *ControlServer) handlePrefetchStatus(w http.ResponseWriter, req *http.Re
 	if c.proxySrv != nil {
 		queueSize = c.proxySrv.PrefetchQueueLen()
 	}
-	yielding := atomic.LoadInt32(&c.stats.ActiveAPICount) > 0 || atomic.LoadInt32(&c.stats.ActiveForegroundAssets) > 0
+	yielding := c.stats.ActiveAPICount.Load() > 0 || c.stats.ActiveForegroundAssets.Load() > 0
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                 true,
 		"enabled":            cfg.EnablePrefetch,
 		"queue_size":         queueSize,
 		"is_yielding":        yielding,
-		"active_api_count":   atomic.LoadInt32(&c.stats.ActiveAPICount),
-		"prefetch_requests":  atomic.LoadInt64(&c.stats.PrefetchRequests),
-		"prefetch_successes": atomic.LoadInt64(&c.stats.PrefetchSuccesses),
-		"prefetch_reused":    atomic.LoadInt64(&c.stats.PrefetchReused),
+		"active_api_count":   c.stats.ActiveAPICount.Load(),
+		"prefetch_requests":  c.stats.PrefetchRequests.Load(),
+		"prefetch_successes": c.stats.PrefetchSuccesses.Load(),
+		"prefetch_reused":    c.stats.PrefetchReused.Load(),
 	})
 }
 
 func (c *ControlServer) getTelemetrySummary() map[string]interface{} {
-	totalAPIs := atomic.LoadInt64(&c.stats.TotalAPIs)
-	totalAssets := atomic.LoadInt64(&c.stats.TotalAssets)
+	totalAPIs := c.stats.TotalAPIs.Load()
+	totalAssets := c.stats.TotalAssets.Load()
 	totalReqs := totalAPIs + totalAssets
 
 	// Real connection-pool behaviour observed via httptrace.GotConn hooks.
-	reused := atomic.LoadInt64(&c.stats.ReusedConns)
-	newConns := atomic.LoadInt64(&c.stats.NewConns)
+	reused := c.stats.ReusedConns.Load()
+	newConns := c.stats.NewConns.Load()
 	connTotal := reused + newConns
 	reuseRate := 0.0
 	if connTotal > 0 {
@@ -1312,8 +1311,8 @@ func (c *ControlServer) getTelemetrySummary() map[string]interface{} {
 	}
 
 	// Real negotiated protocol distribution observed from upstream responses.
-	h1 := atomic.LoadInt64(&c.stats.ProtoH1)
-	h2 := atomic.LoadInt64(&c.stats.ProtoH2)
+	h1 := c.stats.ProtoH1.Load()
+	h2 := c.stats.ProtoH2.Load()
 
 	// Real latency percentiles over the most recent upstream request samples.
 	lat := c.stats.LatencySnapshot()
@@ -1323,7 +1322,7 @@ func (c *ControlServer) getTelemetrySummary() map[string]interface{} {
 		"reused_connections": reused,
 		"new_connections":    newConns,
 		"reuse_rate_percent": reuseRate,
-		"retry_count":        atomic.LoadInt64(&c.stats.APIRetries),
+		"retry_count":        c.stats.APIRetries.Load(),
 		"percentiles": map[string]interface{}{
 			"p50_ms":  round1(lat.P50),
 			"p95_ms":  round1(lat.P95),
@@ -1438,11 +1437,11 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 			pulseData, _ := json.Marshal(map[string]interface{}{
 				"time":       now.Format("15:04:05"),
 				"uptime":     math.Round(time.Since(c.stats.StartTime).Seconds()*10) / 10,
-				"active_api": atomic.LoadInt32(&c.stats.ActiveAPICount),
-				"active_fg":  atomic.LoadInt32(&c.stats.ActiveForegroundAssets),
+				"active_api": c.stats.ActiveAPICount.Load(),
+				"active_fg":  c.stats.ActiveForegroundAssets.Load(),
 				"telemetry":  c.getTelemetrySummary(),
-				"hits":       atomic.LoadInt64(&c.stats.TotalHits),
-				"misses":     atomic.LoadInt64(&c.stats.CacheMisses),
+				"hits":       c.stats.TotalHits.Load(),
+				"misses":     c.stats.CacheMisses.Load(),
 			})
 			if _, err := fmt.Fprintf(w, "event: metrics\ndata: %s\n\n", pulseData); err != nil {
 				return

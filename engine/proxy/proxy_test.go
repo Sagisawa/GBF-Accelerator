@@ -496,7 +496,7 @@ func TestConditionalAsset304AndCacheControl(t *testing.T) {
 	defer ts.Close()
 
 	u, _ := url.Parse(ts.URL)
-	srv.assetClient = ts.Client()
+	srv.assetClient.Store(ts.Client())
 
 	// Client sends conditional request (If-None-Match matching CDN ETag) on cache miss
 	req, _ := http.NewRequest(http.MethodGet, "https://"+u.Host+"/assets/test_conditional.png", nil)
@@ -557,7 +557,7 @@ func TestHandleStaticAsset_SingleFlightResilience(t *testing.T) {
 	defer ts.Close()
 
 	u, _ := url.Parse(ts.URL)
-	srv.assetClient = ts.Client()
+	srv.assetClient.Store(ts.Client())
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -594,6 +594,73 @@ func TestHandleStaticAsset_SingleFlightResilience(t *testing.T) {
 	}
 }
 
+func TestHandleStaticAsset_FollowerContextCancellation(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	certMgr, _ := cert.NewManager(filepath.Join(tempDir, "certs"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(80 * time.Millisecond) // Slow upstream
+		w.Header().Set("Content-Type", "image/png")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\nfollower_cancel_test"))
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+	srv.assetClient.Store(ts.Client())
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Client 1 (Leader): Context remains active
+	req1, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+u.Host+"/assets/follower_cancel.png", nil)
+	var buf1 bytes.Buffer
+
+	// Client 2 (Follower): Context cancels after 15ms
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 15*time.Millisecond)
+	defer cancel2()
+	req2, _ := http.NewRequestWithContext(ctx2, http.MethodGet, "https://"+u.Host+"/assets/follower_cancel.png", nil)
+	var buf2 bytes.Buffer
+
+	go func() {
+		defer wg.Done()
+		srv.handleStaticAsset(&buf1, req1, u.Host)
+	}()
+
+	// Stagger slightly so Client 1 is definitely the leader
+	time.Sleep(5 * time.Millisecond)
+
+	followerDone := make(chan struct{})
+	go func() {
+		defer wg.Done()
+		srv.handleStaticAsset(&buf2, req2, u.Host)
+		close(followerDone)
+	}()
+
+	// Follower must unblock within ~35ms, long before the 80ms upstream finishes
+	select {
+	case <-followerDone:
+		// Follower unblocked promptly on context cancellation
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("follower did not unblock on context cancellation, blocked on singleflight leader")
+	}
+
+	wg.Wait()
+
+	// Client 1 MUST still succeed with 200 OK
+	resp1Str := buf1.String()
+	if !strings.HasPrefix(resp1Str, "HTTP/1.1 200 OK") {
+		t.Fatalf("expected Client 1 to receive HTTP/1.1 200 OK, got: %s", resp1Str)
+	}
+}
+
 func TestDynamicAPI_ClientContextCancellation(t *testing.T) {
 	tempDir := t.TempDir()
 	cfgPath := filepath.Join(tempDir, "config.json")
@@ -618,7 +685,7 @@ func TestDynamicAPI_ClientContextCancellation(t *testing.T) {
 	defer ts.Close()
 
 	u, _ := url.Parse(ts.URL)
-	srv.apiClient = ts.Client()
+	srv.apiClient.Store(ts.Client())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()

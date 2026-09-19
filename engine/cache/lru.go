@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"container/list"
 	"sync"
 )
 
@@ -15,25 +14,64 @@ type CacheItem struct {
 	Size            int64
 }
 
+type lruNode struct {
+	key  string
+	item *CacheItem
+	prev *lruNode
+	next *lruNode
+}
+
 type LRUCache struct {
 	mu       sync.RWMutex
 	maxBytes int64
 	curBytes int64
-	items    map[string]*list.Element
-	evictList *list.List
-}
-
-type entry struct {
-	key  string
-	item *CacheItem
+	items    map[string]*lruNode
+	head     *lruNode // dummy sentinel head
+	tail     *lruNode // dummy sentinel tail
 }
 
 func NewLRUCache(maxBytes int64) *LRUCache {
+	head := &lruNode{}
+	tail := &lruNode{}
+	head.next = tail
+	tail.prev = head
 	return &LRUCache{
-		maxBytes:  maxBytes,
-		items:     make(map[string]*list.Element),
-		evictList: list.New(),
+		maxBytes: maxBytes,
+		items:    make(map[string]*lruNode),
+		head:     head,
+		tail:     tail,
 	}
+}
+
+func (c *LRUCache) removeNode(n *lruNode) {
+	n.prev.next = n.next
+	n.next.prev = n.prev
+	n.prev = nil
+	n.next = nil
+}
+
+func (c *LRUCache) pushFront(n *lruNode) {
+	n.next = c.head.next
+	n.prev = c.head
+	c.head.next.prev = n
+	c.head.next = n
+}
+
+func (c *LRUCache) moveToFront(n *lruNode) {
+	if c.head.next == n {
+		return
+	}
+	c.removeNode(n)
+	c.pushFront(n)
+}
+
+func (c *LRUCache) popTail() *lruNode {
+	if c.tail.prev == c.head {
+		return nil
+	}
+	n := c.tail.prev
+	c.removeNode(n)
+	return n
 }
 
 func (c *LRUCache) SetMaxBytes(maxBytes int64) {
@@ -47,9 +85,9 @@ func (c *LRUCache) Get(key string) (*CacheItem, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if elem, ok := c.items[key]; ok {
-		c.evictList.MoveToFront(elem)
-		return elem.Value.(*entry).item, true
+	if node, ok := c.items[key]; ok {
+		c.moveToFront(node)
+		return node.item, true
 	}
 	return nil, false
 }
@@ -62,58 +100,56 @@ func (c *LRUCache) Contains(key string) bool {
 }
 
 func (c *LRUCache) Set(key string, item *CacheItem) {
+	if item == nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	item.Size = int64(len(item.Data))
 	if c.maxBytes > 0 && item.Size > c.maxBytes {
-		if elem, ok := c.items[key]; ok {
-			c.evictList.Remove(elem)
-			oldEntry := elem.Value.(*entry)
+		if node, ok := c.items[key]; ok {
+			c.removeNode(node)
 			delete(c.items, key)
-			c.curBytes -= oldEntry.item.Size
+			c.curBytes -= node.item.Size
 		}
 		return
 	}
 
-	if elem, ok := c.items[key]; ok {
-		c.evictList.MoveToFront(elem)
-		oldEntry := elem.Value.(*entry)
-		c.curBytes -= oldEntry.item.Size
-		oldEntry.item = item
+	if node, ok := c.items[key]; ok {
+		c.moveToFront(node)
+		c.curBytes -= node.item.Size
+		node.item = item
 		c.curBytes += item.Size
 		c.evict()
 		return
 	}
 
-	ent := &entry{key: key, item: item}
-	elem := c.evictList.PushFront(ent)
-	c.items[key] = elem
+	node := &lruNode{key: key, item: item}
+	c.pushFront(node)
+	c.items[key] = node
 	c.curBytes += item.Size
 	c.evict()
 }
 
 func (c *LRUCache) evict() {
-	for c.maxBytes > 0 && c.curBytes > c.maxBytes && c.evictList.Len() > 0 {
-		back := c.evictList.Back()
-		if back == nil {
+	for c.maxBytes > 0 && c.curBytes > c.maxBytes && len(c.items) > 0 {
+		node := c.popTail()
+		if node == nil {
 			break
 		}
-		c.evictList.Remove(back)
-		ent := back.Value.(*entry)
-		delete(c.items, ent.key)
-		c.curBytes -= ent.item.Size
+		delete(c.items, node.key)
+		c.curBytes -= node.item.Size
 	}
 }
 
 func (c *LRUCache) Delete(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if elem, ok := c.items[key]; ok {
-		c.evictList.Remove(elem)
-		ent := elem.Value.(*entry)
+	if node, ok := c.items[key]; ok {
+		c.removeNode(node)
 		delete(c.items, key)
-		c.curBytes -= ent.item.Size
+		c.curBytes -= node.item.Size
 		return true
 	}
 	return false
@@ -122,8 +158,9 @@ func (c *LRUCache) Delete(key string) bool {
 func (c *LRUCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.items = make(map[string]*list.Element)
-	c.evictList.Init()
+	c.items = make(map[string]*lruNode)
+	c.head.next = c.tail
+	c.tail.prev = c.head
 	c.curBytes = 0
 }
 

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,6 +62,10 @@ var mimeFallbacks = map[string]string{
 	".wasm":  "application/wasm",
 }
 
+const defaultPersistWorkers = 4
+
+var tmpFileSeq atomic.Int64
+
 func NewManager(cacheBase string, ramMaxMB int) *Manager {
 	if ramMaxMB <= 0 {
 		ramMaxMB = 256
@@ -74,7 +79,15 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 		stopPersist:  make(chan struct{}),
 		persistDone:  make(chan struct{}),
 	}
-	go m.persistWorker()
+	var wg sync.WaitGroup
+	for i := 0; i < defaultPersistWorkers; i++ {
+		wg.Add(1)
+		go m.persistWorker(&wg)
+	}
+	go func() {
+		wg.Wait()
+		close(m.persistDone)
+	}()
 	return m
 }
 
@@ -88,8 +101,8 @@ func (m *Manager) Close() {
 	})
 }
 
-func (m *Manager) persistWorker() {
-	defer close(m.persistDone)
+func (m *Manager) persistWorker(wg *sync.WaitGroup) {
+	defer wg.Done()
 	for {
 		select {
 		case <-m.stopPersist:
@@ -551,6 +564,13 @@ func (m *Manager) SaveRAMWithNamespace(ns, urlPath string, headers map[string]st
 		return nil, false
 	}
 
+	// Guard against enqueuing when manager is stopping/stopped
+	select {
+	case <-m.stopPersist:
+		return item, true
+	default:
+	}
+
 	// Enqueue async disk persistence (bounded, non-blocking)
 	select {
 	case m.persistQueue <- &persistTask{
@@ -586,7 +606,7 @@ func renameWithRetry(src, dst string, maxAttempts int) error {
 		if err == nil {
 			return nil
 		}
-		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	return err
 }
@@ -609,7 +629,8 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 
 	pid := os.Getpid()
 	ts := time.Now().UnixNano()
-	tmpDataPath := fmt.Sprintf("%s.tmp.%d.%d", filePath, pid, ts)
+	seq := tmpFileSeq.Add(1)
+	tmpDataPath := fmt.Sprintf("%s.tmp.%d.%d.%d", filePath, pid, ts, seq)
 	if err := os.WriteFile(tmpDataPath, data, 0644); err != nil {
 		_ = os.Remove(tmpDataPath)
 		return false
@@ -632,7 +653,7 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 		"v":            1,
 	}
 	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
-	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d", extPath, pid, ts)
+	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d.%d", extPath, pid, ts, seq)
 	if err := os.WriteFile(tmpExtPath, metaBytes, 0644); err == nil {
 		if err := renameWithRetry(tmpExtPath, extPath, 3); err != nil {
 			_ = os.Remove(tmpExtPath)

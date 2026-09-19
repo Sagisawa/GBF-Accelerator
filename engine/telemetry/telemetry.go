@@ -35,25 +35,25 @@ const maxLogEntries = 1000
 
 type Stats struct {
 	StartTime              time.Time
-	TotalAPIs              int64
-	TotalAssets            int64
-	TotalHits              int64
-	RAMHits                int64
-	DiskHits               int64
-	CacheMisses            int64
-	PrefetchRequests       int64
-	PrefetchSuccesses      int64
-	PrefetchReused         int64
-	APIRetries             int64
-	ActiveAPICount         int32
-	ActiveForegroundAssets int32
+	TotalAPIs              atomic.Int64
+	TotalAssets            atomic.Int64
+	TotalHits              atomic.Int64
+	RAMHits                atomic.Int64
+	DiskHits               atomic.Int64
+	CacheMisses            atomic.Int64
+	PrefetchRequests       atomic.Int64
+	PrefetchSuccesses      atomic.Int64
+	PrefetchReused         atomic.Int64
+	APIRetries             atomic.Int64
+	ActiveAPICount         atomic.Int32
+	ActiveForegroundAssets atomic.Int32
 	LastError              string
 
 	// Real connection-pool behaviour, fed from httptrace.GotConn hooks.
-	ReusedConns int64
-	NewConns    int64
-	ProtoH1     int64
-	ProtoH2     int64
+	ReusedConns atomic.Int64
+	NewConns    atomic.Int64
+	ProtoH1     atomic.Int64
+	ProtoH2     atomic.Int64
 
 	mu            sync.RWMutex
 	logBuf        []LogEntry
@@ -96,47 +96,47 @@ func NewStats() *Stats {
 }
 
 func (s *Stats) IncAPI() {
-	atomic.AddInt64(&s.TotalAPIs, 1)
+	s.TotalAPIs.Add(1)
 }
 
 func (s *Stats) IncAsset() {
-	atomic.AddInt64(&s.TotalAssets, 1)
+	s.TotalAssets.Add(1)
 }
 
 func (s *Stats) IncRAMHit() {
-	atomic.AddInt64(&s.TotalHits, 1)
-	atomic.AddInt64(&s.RAMHits, 1)
+	s.TotalHits.Add(1)
+	s.RAMHits.Add(1)
 }
 
 func (s *Stats) IncDiskHit() {
-	atomic.AddInt64(&s.TotalHits, 1)
-	atomic.AddInt64(&s.DiskHits, 1)
+	s.TotalHits.Add(1)
+	s.DiskHits.Add(1)
 }
 
 func (s *Stats) IncMiss() {
-	atomic.AddInt64(&s.CacheMisses, 1)
+	s.CacheMisses.Add(1)
 }
 
 func (s *Stats) IncAPIRetry() {
-	atomic.AddInt64(&s.APIRetries, 1)
+	s.APIRetries.Add(1)
 }
 
 func (s *Stats) AddActiveAPI(delta int32) {
-	atomic.AddInt32(&s.ActiveAPICount, delta)
+	s.ActiveAPICount.Add(delta)
 	if delta < 0 && s.IsForegroundIdle() {
 		s.NotifyForegroundIdle()
 	}
 }
 
 func (s *Stats) AddActiveFG(delta int32) {
-	atomic.AddInt32(&s.ActiveForegroundAssets, delta)
+	s.ActiveForegroundAssets.Add(delta)
 	if delta < 0 && s.IsForegroundIdle() {
 		s.NotifyForegroundIdle()
 	}
 }
 
 func (s *Stats) IsForegroundIdle() bool {
-	return atomic.LoadInt32(&s.ActiveAPICount) <= 0 && atomic.LoadInt32(&s.ActiveForegroundAssets) <= 0
+	return s.ActiveAPICount.Load() <= 0 && s.ActiveForegroundAssets.Load() <= 0
 }
 
 func (s *Stats) NotifyForegroundIdle() {
@@ -194,15 +194,15 @@ func (s *Stats) WaitForegroundIdle(stopChan <-chan struct{}) bool {
 }
 
 func (s *Stats) IncPrefetchRequest() {
-	atomic.AddInt64(&s.PrefetchRequests, 1)
+	s.PrefetchRequests.Add(1)
 }
 
 func (s *Stats) IncPrefetchSuccess() {
-	atomic.AddInt64(&s.PrefetchSuccesses, 1)
+	s.PrefetchSuccesses.Add(1)
 }
 
 func (s *Stats) IncPrefetchReused() {
-	atomic.AddInt64(&s.PrefetchReused, 1)
+	s.PrefetchReused.Add(1)
 }
 
 func (s *Stats) MarkPrefetchSaved(path string) {
@@ -227,7 +227,7 @@ func (s *Stats) CheckAndRecordPrefetchReused(path string) {
 	}
 	s.prefetchMu.Unlock()
 	if ok {
-		atomic.AddInt64(&s.PrefetchReused, 1)
+		s.PrefetchReused.Add(1)
 	}
 }
 
@@ -336,15 +336,15 @@ func (s *Stats) GetLogs() []LogEntry {
 
 func (s *Stats) RequestsMap() map[string]interface{} {
 	return map[string]interface{}{
-		"total_apis":        atomic.LoadInt64(&s.TotalAPIs),
-		"total_assets":      atomic.LoadInt64(&s.TotalAssets),
-		"total_hits":        atomic.LoadInt64(&s.TotalHits),
-		"ram_hits":          atomic.LoadInt64(&s.RAMHits),
-		"disk_hits":         atomic.LoadInt64(&s.DiskHits),
-		"cache_misses":      atomic.LoadInt64(&s.CacheMisses),
-		"prefetch_requests": atomic.LoadInt64(&s.PrefetchRequests),
-		"prefetch_reused":   atomic.LoadInt64(&s.PrefetchReused),
-		"api_retries":       atomic.LoadInt64(&s.APIRetries),
+		"total_apis":        s.TotalAPIs.Load(),
+		"total_assets":      s.TotalAssets.Load(),
+		"total_hits":        s.TotalHits.Load(),
+		"ram_hits":          s.RAMHits.Load(),
+		"disk_hits":         s.DiskHits.Load(),
+		"cache_misses":      s.CacheMisses.Load(),
+		"prefetch_requests": s.PrefetchRequests.Load(),
+		"prefetch_reused":   s.PrefetchReused.Load(),
+		"api_retries":       s.APIRetries.Load(),
 	}
 }
 
@@ -352,9 +352,9 @@ func (s *Stats) RequestsMap() map[string]interface{} {
 // an httptrace.GotConn hook) came from the keep-alive pool or was newly dialed.
 func (s *Stats) RecordConnReuse(reused bool) {
 	if reused {
-		atomic.AddInt64(&s.ReusedConns, 1)
+		s.ReusedConns.Add(1)
 	} else {
-		atomic.AddInt64(&s.NewConns, 1)
+		s.NewConns.Add(1)
 	}
 }
 
@@ -362,9 +362,9 @@ func (s *Stats) RecordConnReuse(reused bool) {
 // (resp.Proto), e.g. "HTTP/1.1" or "HTTP/2.0".
 func (s *Stats) RecordProtocol(proto string) {
 	if strings.HasPrefix(proto, "HTTP/2") {
-		atomic.AddInt64(&s.ProtoH2, 1)
+		s.ProtoH2.Add(1)
 	} else {
-		atomic.AddInt64(&s.ProtoH1, 1)
+		s.ProtoH1.Add(1)
 	}
 }
 

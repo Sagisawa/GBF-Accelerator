@@ -22,15 +22,11 @@ import (
 )
 
 func setTestAssetClient(s *ProxyServer, client *http.Client) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.assetClient = client
+	s.assetClient.Store(client)
 }
 
 func setTestAPIClient(s *ProxyServer, client *http.Client) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.apiClient = client
+	s.apiClient.Store(client)
 }
 
 // extractHTTPResponseBody extracts the response payload after the HTTP header separator (\r\n\r\n).
@@ -193,7 +189,7 @@ func TestProxy_FullLifecycleCacheIntegration(t *testing.T) {
 	// Verify client gets 200 OK with identical bytes and preserved metadata;
 	// RAM hit counter increments; upstream hit count stays at 1 (no re-fetch).
 	// -------------------------------------------------------------
-	ramHitsBefore := atomic.LoadInt64(&stats.RAMHits)
+	ramHitsBefore := stats.RAMHits.Load()
 
 	req2, err := http.NewRequest(http.MethodGet, "https://"+targetHost+assetPath, nil)
 	if err != nil {
@@ -229,7 +225,7 @@ func TestProxy_FullLifecycleCacheIntegration(t *testing.T) {
 	if hits := upstreamHitCount.Load(); hits != 1 {
 		t.Fatalf("Step 2 (RAM Cache HIT): upstream was re-fetched, hit count is %d (expected 1)", hits)
 	}
-	if ramHitsAfter := atomic.LoadInt64(&stats.RAMHits); ramHitsAfter != ramHitsBefore+1 {
+	if ramHitsAfter := stats.RAMHits.Load(); ramHitsAfter != ramHitsBefore+1 {
 		t.Fatalf("Step 2 (RAM Cache HIT): expected RAMHits to increase by 1, before=%d, after=%d", ramHitsBefore, ramHitsAfter)
 	}
 
@@ -297,7 +293,7 @@ func TestProxy_FullLifecycleCacheIntegration(t *testing.T) {
 	// metadata (ETag, Last-Modified, Content-Type); client gets 200 OK
 	// with identical bytes; upstream hit count stays strictly at 1 throughout.
 	// -------------------------------------------------------------
-	diskHitsBefore := atomic.LoadInt64(&stats.DiskHits)
+	diskHitsBefore := stats.DiskHits.Load()
 	cacheMgr.ClearRAM()
 
 	req4, err := http.NewRequest(http.MethodGet, "https://"+targetHost+assetPath, nil)
@@ -332,7 +328,7 @@ func TestProxy_FullLifecycleCacheIntegration(t *testing.T) {
 		t.Fatalf("Step 4 (Disk Cache HIT): body mismatch: expected %d bytes, got %d bytes", len(sampleBytes), len(body4))
 	}
 
-	diskHitsAfter := atomic.LoadInt64(&stats.DiskHits)
+	diskHitsAfter := stats.DiskHits.Load()
 	if diskHitsAfter != diskHitsBefore+1 {
 		t.Fatalf("Step 4 (Disk Cache HIT): expected DiskHits to increase by 1, before=%d, after=%d", diskHitsBefore, diskHitsAfter)
 	}
@@ -437,7 +433,7 @@ func TestProxy_P0_PostWriteRequestsStrictZeroRetry(t *testing.T) {
 	}
 
 	// Verify zero retries recorded in telemetry stats
-	if retries := atomic.LoadInt64(&stats.APIRetries); retries != 0 {
+	if retries := stats.APIRetries.Load(); retries != 0 {
 		t.Fatalf("expected 0 api_retries in stats, got %d", retries)
 	}
 
@@ -458,7 +454,7 @@ func TestProxy_P0_PostWriteRequestsStrictZeroRetry(t *testing.T) {
 	if attempts := upstreamAttempts.Load(); attempts != 1 {
 		t.Fatalf("CRITICAL P0 VIOLATION: expected strictly 1 attempt on ability result write (zero retries), got %d attempts", attempts)
 	}
-	if retries := atomic.LoadInt64(&stats.APIRetries); retries != 0 {
+	if retries := stats.APIRetries.Load(); retries != 0 {
 		t.Fatalf("expected 0 api_retries in stats after ability POST, got %d", retries)
 	}
 
@@ -476,7 +472,7 @@ func TestProxy_P0_PostWriteRequestsStrictZeroRetry(t *testing.T) {
 	if attempts := upstreamAttempts.Load(); attempts != 1 {
 		t.Fatalf("CRITICAL P0 VIOLATION: expected strictly 1 attempt on PUT write (zero retries), got %d attempts", attempts)
 	}
-	if retries := atomic.LoadInt64(&stats.APIRetries); retries != 0 {
+	if retries := stats.APIRetries.Load(); retries != 0 {
 		t.Fatalf("expected 0 api_retries in stats after PUT write, got %d", retries)
 	}
 
@@ -493,7 +489,7 @@ func TestProxy_P0_PostWriteRequestsStrictZeroRetry(t *testing.T) {
 	if attempts := upstreamAttempts.Load(); attempts != 1 {
 		t.Fatalf("CRITICAL P0 VIOLATION: expected strictly 1 attempt on DELETE write (zero retries), got %d attempts", attempts)
 	}
-	if retries := atomic.LoadInt64(&stats.APIRetries); retries != 0 {
+	if retries := stats.APIRetries.Load(); retries != 0 {
 		t.Fatalf("expected 0 api_retries in stats after DELETE write, got %d", retries)
 	}
 
@@ -539,7 +535,7 @@ func TestProxy_P0_PostWriteRequestsStrictZeroRetry(t *testing.T) {
 	if att := getAttempts.Load(); att != 2 {
 		t.Fatalf("expected retryable GET to perform exactly 2 attempts, got %d", att)
 	}
-	if retries := atomic.LoadInt64(&stats.APIRetries); retries != 1 {
+	if retries := stats.APIRetries.Load(); retries != 1 {
 		t.Fatalf("expected stats.APIRetries == 1 after successful GET retry, got %d", retries)
 	}
 }

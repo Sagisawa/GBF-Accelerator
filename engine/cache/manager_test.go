@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -750,6 +752,60 @@ func TestCacheManagerExtVersionGuard(t *testing.T) {
 		t.Errorf("expected non-empty fallback ETag, got empty")
 	}
 }
+
+func TestConcurrentSaveSameFileNoCollision(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	// 20 goroutines simultaneously write to the exact same file path
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			data := []byte(fmt.Sprintf("\x89PNG\r\n\x1a\nconcurrent_data_worker_%d", id))
+			mgr.Save("assets/shared_concurrent.png", map[string]string{"content-type": "image/png"}, data)
+		}(i)
+	}
+
+	wg.Wait()
+
+	// File must exist on disk and be readable without corruption
+	filePath := filepath.Join(tempDir, "assets", "shared_concurrent.png")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("expected file to exist after concurrent writes: %v", err)
+	}
+	if !strings.HasPrefix(string(data), "\x89PNG\r\n\x1a\nconcurrent_data_worker_") {
+		t.Fatalf("unexpected content in concurrent file: %q", string(data))
+	}
+}
+
+func TestMultiTaskDrainOnClose(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+
+	const taskCount = 30
+	for i := 0; i < taskCount; i++ {
+		path := fmt.Sprintf("assets/drain_multi_%d.png", i)
+		data := []byte(fmt.Sprintf("\x89PNG\r\n\x1a\ndrain_data_%d", i))
+		mgr.SaveRAMWithNamespace("gbf", path, map[string]string{"content-type": "image/png"}, data)
+	}
+
+	// Close immediately: all 30 tasks must be drained and written to disk
+	mgr.Close()
+
+	for i := 0; i < taskCount; i++ {
+		filePath := filepath.Join(tempDir, "assets", fmt.Sprintf("drain_multi_%d.png", i))
+		if _, err := os.Stat(filePath); err != nil {
+			t.Fatalf("task %d was not drained to disk before Close() returned: %v", i, err)
+		}
+	}
+}
+
 
 
 

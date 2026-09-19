@@ -44,16 +44,16 @@ func TestRecordConnReuseAndProtocol(t *testing.T) {
 	s.RecordProtocol("HTTP/1.1")
 	s.RecordProtocol("HTTP/1.1")
 
-	if got := s.ReusedConns; got != 2 {
+	if got := s.ReusedConns.Load(); got != 2 {
 		t.Errorf("expected 2 reused conns, got %d", got)
 	}
-	if got := s.NewConns; got != 1 {
+	if got := s.NewConns.Load(); got != 1 {
 		t.Errorf("expected 1 new conn, got %d", got)
 	}
-	if got := s.ProtoH2; got != 1 {
+	if got := s.ProtoH2.Load(); got != 1 {
 		t.Errorf("expected 1 HTTP/2, got %d", got)
 	}
-	if got := s.ProtoH1; got != 2 {
+	if got := s.ProtoH1.Load(); got != 2 {
 		t.Errorf("expected 2 HTTP/1.1, got %d", got)
 	}
 }
@@ -122,7 +122,7 @@ func TestLatencyConcurrentSafety(t *testing.T) {
 	if lat.Samples == 0 || lat.Samples > latencySampleCap {
 		t.Errorf("concurrent recording produced invalid sample count %d", lat.Samples)
 	}
-	if got := s.ProtoH2; got != 8*200 {
+	if got := s.ProtoH2.Load(); got != 8*200 {
 		t.Errorf("expected %d HTTP/2 records, got %d", 8*200, got)
 	}
 }

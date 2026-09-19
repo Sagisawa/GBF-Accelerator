@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gbf-proxy/cache"
@@ -42,8 +43,8 @@ type ProxyServer struct {
 	prefetch    *PrefetchEngine
 	listener    net.Listener
 	mu          sync.RWMutex
-	apiClient   *http.Client
-	assetClient *http.Client
+	apiClient   atomic.Pointer[http.Client]
+	assetClient atomic.Pointer[http.Client]
 	running     bool
 	closedChan  chan struct{}
 }
@@ -69,8 +70,8 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	oldAPI := s.apiClient
-	oldAsset := s.assetClient
+	oldAPI := s.apiClient.Load()
+	oldAsset := s.assetClient.Load()
 
 	var proxyFunc func(*http.Request) (*url.URL, error)
 	effProxy := c.UpstreamProxy
@@ -120,10 +121,11 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 		ForceAttemptHTTP2:   false, // Dedicated HTTP/1.1 pool for dynamic APIs
 		DisableCompression: true,  // P0: Business semantic transparency
 	}
-	s.apiClient = &http.Client{
+	newAPI := &http.Client{
 		Transport: apiTransport,
 		Timeout:   45 * time.Second,
 	}
+	s.apiClient.Store(newAPI)
 
 	assetTransport := &http.Transport{
 		Proxy:       proxyFunc,
@@ -139,10 +141,11 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 		ForceAttemptHTTP2:   true, // HTTP/2 multiplexed for Akamai CDN
 		DisableCompression: true,  // P0: Byte-for-byte fidelity
 	}
-	s.assetClient = &http.Client{
+	newAsset := &http.Client{
 		Transport: assetTransport,
 		Timeout:   45 * time.Second,
 	}
+	s.assetClient.Store(newAsset)
 
 	if oldAPI != nil {
 		if tr, ok := oldAPI.Transport.(*http.Transport); ok {
@@ -157,15 +160,11 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 }
 
 func (s *ProxyServer) getAPIClient() *http.Client {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.apiClient
+	return s.apiClient.Load()
 }
 
 func (s *ProxyServer) getAssetClient() *http.Client {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.assetClient
+	return s.assetClient.Load()
 }
 
 // tracedRequest attaches a non-intrusive httptrace hook that records real
@@ -229,13 +228,13 @@ func (s *ProxyServer) Stop() {
 	if s.prefetch != nil {
 		s.prefetch.Stop()
 	}
-	if s.apiClient != nil {
-		if tr, ok := s.apiClient.Transport.(*http.Transport); ok {
+	if api := s.apiClient.Load(); api != nil {
+		if tr, ok := api.Transport.(*http.Transport); ok {
 			tr.CloseIdleConnections()
 		}
 	}
-	if s.assetClient != nil {
-		if tr, ok := s.assetClient.Transport.(*http.Transport); ok {
+	if asset := s.assetClient.Load(); asset != nil {
+		if tr, ok := asset.Transport.(*http.Transport); ok {
 			tr.CloseIdleConnections()
 		}
 	}
@@ -506,6 +505,13 @@ func dialSOCKS5(proxyAddr, targetAddr, username, password string, timeout time.D
 	return conn, nil
 }
 
+var tunnelBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
 func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader io.Reader, target string) {
 	effProxy := s.cfgMgr.GetEffectiveUpstreamProxy()
 
@@ -634,13 +640,17 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 	go func() {
 		defer wg.Done()
 		defer closeBoth()
-		_, _ = io.Copy(clientConn, upReader)
+		bufPtr := tunnelBufferPool.Get().(*[]byte)
+		defer tunnelBufferPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(clientConn, upReader, *bufPtr)
 	}()
 
 	go func() {
 		defer wg.Done()
 		defer closeBoth()
-		_, _ = io.Copy(upConn, clientReader)
+		bufPtr := tunnelBufferPool.Get().(*[]byte)
+		defer tunnelBufferPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(upConn, clientReader, *bufPtr)
 	}()
 
 	wg.Wait()
@@ -1106,7 +1116,12 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	s.stats.IncMiss()
 	flightKey := ns + ":" + cleanPath
 
-	res, err := s.cacheMgr.SingleFlight().Do(flightKey, func() (interface{}, error) {
+	reqCtx := req.Context()
+	if reqCtx == nil {
+		reqCtx = context.Background()
+	}
+
+	res, err := s.cacheMgr.SingleFlight().DoContext(reqCtx, flightKey, func() (interface{}, error) {
 		upURL := fmt.Sprintf("https://%s%s", targetHost, req.URL.RequestURI())
 		upReq, err := http.NewRequestWithContext(context.Background(), "GET", upURL, nil)
 		if err != nil {
@@ -1193,6 +1208,9 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	})
 
 	if err != nil || res == nil {
+		if reqCtx.Err() != nil {
+			return false
+		}
 		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, isHead, req.Close)
 		return !req.Close
 	}
@@ -1336,7 +1354,7 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 	buf := responseBufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer func() {
-		if buf.Cap() <= 64*1024 {
+		if buf.Cap() <= 128*1024 {
 			responseBufferPool.Put(buf)
 		}
 	}()
@@ -1413,11 +1431,14 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 
 	if isHead || statusCode == http.StatusNoContent || statusCode == http.StatusNotModified || (statusCode >= 100 && statusCode < 200) {
 		_, _ = w.Write(buf.Bytes())
-	} else {
+	} else if len(body) == 0 {
 		_, _ = w.Write(buf.Bytes())
-		if len(body) > 0 {
-			_, _ = w.Write(body)
-		}
+	} else if buf.Len()+len(body) <= 64*1024 {
+		buf.Write(body)
+		_, _ = w.Write(buf.Bytes())
+	} else {
+		bufs := net.Buffers{buf.Bytes(), body}
+		_, _ = bufs.WriteTo(w)
 	}
 }
 

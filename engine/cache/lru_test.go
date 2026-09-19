@@ -86,3 +86,89 @@ func TestLRUCacheOversizedItem(t *testing.T) {
 	}
 }
 
+func TestLRUCacheDelete(t *testing.T) {
+	lru := NewLRUCache(100)
+	lru.Set("a", &CacheItem{Key: "a", Data: make([]byte, 20)})
+	lru.Set("b", &CacheItem{Key: "b", Data: make([]byte, 20)})
+	lru.Set("c", &CacheItem{Key: "c", Data: make([]byte, 20)})
+
+	// Delete non-existent
+	if lru.Delete("non-existent") {
+		t.Error("expected Delete(non-existent) to return false")
+	}
+
+	// Delete middle
+	if !lru.Delete("b") {
+		t.Error("expected Delete(b) to return true")
+	}
+	if lru.Contains("b") {
+		t.Error("b should have been deleted")
+	}
+	items, bytes := lru.Stats()
+	if items != 2 || bytes != 40 {
+		t.Fatalf("expected 2 items, 40 bytes; got %d items, %d bytes", items, bytes)
+	}
+
+	// Delete head (c)
+	if !lru.Delete("c") {
+		t.Error("expected Delete(c) to return true")
+	}
+	// Delete tail (a)
+	if !lru.Delete("a") {
+		t.Error("expected Delete(a) to return true")
+	}
+
+	items, bytes = lru.Stats()
+	if items != 0 || bytes != 0 {
+		t.Fatalf("expected 0 items, 0 bytes; got %d items, %d bytes", items, bytes)
+	}
+}
+
+func TestLRUCacheUpdateExisting(t *testing.T) {
+	lru := NewLRUCache(100)
+	lru.Set("a", &CacheItem{Key: "a", Data: make([]byte, 30)})
+	lru.Set("b", &CacheItem{Key: "b", Data: make([]byte, 30)})
+
+	// Update "a" with larger data (40 bytes)
+	lru.Set("a", &CacheItem{Key: "a", Data: make([]byte, 40)})
+	items, bytes := lru.Stats()
+	if items != 2 || bytes != 70 {
+		t.Fatalf("expected 2 items, 70 bytes; got %d items, %d bytes", items, bytes)
+	}
+
+	// Update "a" with data exceeding total capacity (110 bytes)
+	lru.Set("a", &CacheItem{Key: "a", Data: make([]byte, 110)})
+	// "a" should be removed because it exceeds capacity, leaving only "b"
+	if lru.Contains("a") {
+		t.Error("a should be removed after update with oversized item")
+	}
+	if !lru.Contains("b") {
+		t.Error("b should still remain")
+	}
+	items, bytes = lru.Stats()
+	if items != 1 || bytes != 30 {
+		t.Fatalf("expected 1 item, 30 bytes; got %d items, %d bytes", items, bytes)
+	}
+}
+
+func TestLRUCacheNilItem(t *testing.T) {
+	lru := NewLRUCache(100)
+	// Setting a nil item should safely return without panicking
+	lru.Set("nil_key", nil)
+	if lru.Contains("nil_key") {
+		t.Error("nil item should not be stored in cache")
+	}
+}
+
+func BenchmarkLRUGetSet(b *testing.B) {
+	lru := NewLRUCache(1024 * 1024)
+	item := &CacheItem{Key: "bench", Data: make([]byte, 64)}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		lru.Set("bench", item)
+		_, _ = lru.Get("bench")
+	}
+}
+
