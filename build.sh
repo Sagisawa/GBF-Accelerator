@@ -32,5 +32,33 @@ fi
 
 echo "[*] Compiling native binary..."
 (cd "${ENGINE_DIR}" && CGO_ENABLED=0 go build -ldflags "-s -w" -o "${BIN_DIR}/GBF_Accelerator" .)
-
 echo "[+] Compilation complete: ${BIN_DIR}/GBF_Accelerator"
+
+# If running on macOS or requested, build macOS universal / releases
+if [[ "$(uname -s)" == "Darwin" ]] || [[ "${1:-}" == "--release" ]] || [[ "${2:-}" == "--release" ]]; then
+    echo "[*] Compiling macOS arm64 and amd64 binaries..."
+    (cd "${ENGINE_DIR}" && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o "${BIN_DIR}/GBF_Accelerator_darwin_arm64" .)
+    (cd "${ENGINE_DIR}" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o "${BIN_DIR}/GBF_Accelerator_darwin_amd64" .)
+
+    MAC_BIN="${BIN_DIR}/GBF_Accelerator_darwin_arm64"
+    if command -v lipo >/dev/null 2>&1; then
+        echo "[*] Combining universal2 binary via lipo..."
+        lipo -create -output "${BIN_DIR}/GBF_Accelerator_darwin_universal" "${BIN_DIR}/GBF_Accelerator_darwin_arm64" "${BIN_DIR}/GBF_Accelerator_darwin_amd64"
+        MAC_BIN="${BIN_DIR}/GBF_Accelerator_darwin_universal"
+    fi
+
+    ZIP_PATH="${RELEASE_DIR}/GBF_Accelerator_v${APP_VERSION}_macOS_universal2.zip"
+    rm -f "${ZIP_PATH}"
+    echo "[*] Packaging macOS release zip: ${ZIP_PATH}..."
+    AUX_FILES=("SwitchyOmega_GBF.bak" "proxy.pac" "使用说明.txt" "LICENSE")
+    FILES_TO_PACK=("${MAC_BIN}")
+    for aux in "${AUX_FILES[@]}"; do
+        if [[ -f "${ROOT_DIR}/${aux}" ]]; then
+            FILES_TO_PACK+=("${ROOT_DIR}/${aux}")
+        fi
+    done
+    if command -v zip >/dev/null 2>&1; then
+        zip -j "${ZIP_PATH}" "${FILES_TO_PACK[@]}"
+        echo "[***] MAC RELEASE READY: ${ZIP_PATH}"
+    fi
+fi

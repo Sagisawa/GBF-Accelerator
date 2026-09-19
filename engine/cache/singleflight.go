@@ -33,9 +33,9 @@ func (g *SingleFlight) Do(key string, fn func() (interface{}, error)) (interface
 	g.mu.Unlock()
 
 	defer func() {
-		c.wg.Done()
 		g.mu.Lock()
 		delete(g.m, key)
+		c.wg.Done()
 		g.mu.Unlock()
 	}()
 

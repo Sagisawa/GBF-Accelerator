@@ -66,6 +66,16 @@ func (c *LRUCache) Set(key string, item *CacheItem) {
 	defer c.mu.Unlock()
 
 	item.Size = int64(len(item.Data))
+	if c.maxBytes > 0 && item.Size > c.maxBytes {
+		if elem, ok := c.items[key]; ok {
+			c.evictList.Remove(elem)
+			oldEntry := elem.Value.(*entry)
+			delete(c.items, key)
+			c.curBytes -= oldEntry.item.Size
+		}
+		return
+	}
+
 	if elem, ok := c.items[key]; ok {
 		c.evictList.MoveToFront(elem)
 		oldEntry := elem.Value.(*entry)
@@ -94,6 +104,19 @@ func (c *LRUCache) evict() {
 		delete(c.items, ent.key)
 		c.curBytes -= ent.item.Size
 	}
+}
+
+func (c *LRUCache) Delete(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if elem, ok := c.items[key]; ok {
+		c.evictList.Remove(elem)
+		ent := elem.Value.(*entry)
+		delete(c.items, key)
+		c.curBytes -= ent.item.Size
+		return true
+	}
+	return false
 }
 
 func (c *LRUCache) Clear() {

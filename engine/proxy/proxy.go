@@ -67,6 +67,9 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	oldAPI := s.apiClient
+	oldAsset := s.assetClient
+
 	var proxyFunc func(*http.Request) (*url.URL, error)
 	effProxy := c.UpstreamProxy
 	if c.DirectMode {
@@ -96,11 +99,18 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 		assetMaxIdle = 16
 	}
 
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+
 	apiTransport := &http.Transport{
-		Proxy: proxyFunc,
+		Proxy:       proxyFunc,
+		DialContext: dialer.DialContext,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: !c.VerifyUpstreamTLS,
 		},
+		MaxConnsPerHost:     apiMaxConn,
 		MaxIdleConns:        apiMaxConn,
 		MaxIdleConnsPerHost: apiMaxIdle,
 		IdleConnTimeout:     time.Duration(c.APIKeepaliveExpiry) * time.Second,
@@ -114,10 +124,12 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	}
 
 	assetTransport := &http.Transport{
-		Proxy: proxyFunc,
+		Proxy:       proxyFunc,
+		DialContext: dialer.DialContext,
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: !c.VerifyUpstreamTLS,
 		},
+		MaxConnsPerHost:     assetMaxConn,
 		MaxIdleConns:        assetMaxConn,
 		MaxIdleConnsPerHost: assetMaxIdle,
 		IdleConnTimeout:     time.Duration(c.AssetKeepaliveExpiry) * time.Second,
@@ -128,6 +140,17 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	s.assetClient = &http.Client{
 		Transport: assetTransport,
 		Timeout:   45 * time.Second,
+	}
+
+	if oldAPI != nil {
+		if tr, ok := oldAPI.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
+	if oldAsset != nil {
+		if tr, ok := oldAsset.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
 	}
 }
 
@@ -145,8 +168,8 @@ func (s *ProxyServer) getAssetClient() *http.Client {
 
 func (s *ProxyServer) Start() error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.running {
-		s.mu.Unlock()
 		return nil
 	}
 
@@ -156,33 +179,49 @@ func (s *ProxyServer) Start() error {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		s.mu.Unlock()
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
 	s.listener = ln
 	s.running = true
-	s.mu.Unlock()
+	s.closedChan = make(chan struct{})
+	if s.prefetch == nil || s.prefetch.IsStopped() {
+		s.prefetch = newPrefetchEngine(s)
+	}
 
-	go s.serveLoop()
+	go s.serveLoop(ln)
 	return nil
 }
 
 func (s *ProxyServer) Stop() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.running {
-		s.mu.Unlock()
 		return
 	}
 	s.running = false
 	if s.listener != nil {
 		_ = s.listener.Close()
+		s.listener = nil
 	}
 	if s.prefetch != nil {
 		s.prefetch.Stop()
 	}
-	close(s.closedChan)
-	s.mu.Unlock()
+	if s.apiClient != nil {
+		if tr, ok := s.apiClient.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
+	if s.assetClient != nil {
+		if tr, ok := s.assetClient.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
+	select {
+	case <-s.closedChan:
+	default:
+		close(s.closedChan)
+	}
 }
 
 func (s *ProxyServer) PrefetchQueueLen() int {
@@ -198,9 +237,9 @@ func (s *ProxyServer) IsRunning() bool {
 	return s.running
 }
 
-func (s *ProxyServer) serveLoop() {
+func (s *ProxyServer) serveLoop(ln net.Listener) {
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			s.mu.RLock()
 			running := s.running
@@ -520,16 +559,20 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 	}
 	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-TCP] Tunneling %s via upstream", targetHost))
 
-	done := make(chan struct{}, 2)
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	go func() {
-		_, _ = io.Copy(upConn, clientReader)
-		done <- struct{}{}
-	}()
-	go func() {
+		defer wg.Done()
 		_, _ = io.Copy(clientConn, upReader)
-		done <- struct{}{}
+		_ = clientConn.Close()
 	}()
-	<-done
+
+	_, _ = io.Copy(upConn, clientReader)
+	if cw, ok := upConn.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	}
+	wg.Wait()
 }
 
 func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
@@ -537,15 +580,23 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	if h, _, err := net.SplitHostPort(req.Host); err == nil {
 		host = h
 	}
-	if isTelemetryHost(host) {
+	hostTrimmed := strings.Trim(host, "[]")
+	if isTelemetryHost(hostTrimmed) {
 		_, _ = conn.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
 		return false
 	}
 
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
-	// 1. Root CA Certificate download
-	if cleanPath == "/ca.crt" || cleanPath == "/ca.pem" || strings.HasSuffix(cleanPath, "/ca.crt") {
+	// Check if this is a direct local request to the proxy itself (not a proxied HTTP request)
+	isDirectLocal := !req.URL.IsAbs() && (req.Host == "" ||
+		hostTrimmed == "127.0.0.1" ||
+		hostTrimmed == "localhost" ||
+		hostTrimmed == "::1" ||
+		(s.cfgMgr.Get().AllowLAN && config.GetLANIP() != "" && hostTrimmed == config.GetLANIP()))
+
+	// 1. Root CA Certificate download (only for direct requests to proxy host itself)
+	if isDirectLocal && (cleanPath == "/ca.crt" || cleanPath == "/ca.pem" || strings.HasSuffix(cleanPath, "/ca.crt")) {
 		caBytes := s.certMgr.GetCAPEM()
 		res := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
 			"Content-Type: application/x-x509-ca-cert\r\n"+
@@ -559,15 +610,16 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		return false
 	}
 
-	// 2. Dynamic PAC script
-	if cleanPath == "/proxy.pac" || strings.HasSuffix(cleanPath, "/proxy.pac") {
+	// 2. Dynamic PAC script (only for direct requests to proxy host itself)
+	if isDirectLocal && (cleanPath == "/proxy.pac" || strings.HasSuffix(cleanPath, "/proxy.pac")) {
 		cfg := s.cfgMgr.Get()
 		h := "127.0.0.1"
-		if req.Host != "" {
-			hostNoPort, _, err := net.SplitHostPort(req.Host)
-			if err == nil && hostNoPort != "127.0.0.1" && hostNoPort != "localhost" {
-				h = hostNoPort
-			}
+		hostNoPort := req.Host
+		if hp, _, err := net.SplitHostPort(req.Host); err == nil {
+			hostNoPort = hp
+		}
+		if hostNoPort != "" && hostNoPort != "127.0.0.1" && hostNoPort != "localhost" && hostNoPort != "::1" {
+			h = hostNoPort
 		}
 		if cfg.AllowLAN && h == "127.0.0.1" {
 			if lanIP := config.GetLANIP(); lanIP != "" {
@@ -587,11 +639,6 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	}
 
 	// 3. Mobile LAN landing guide (only for direct requests to proxy host itself)
-	isDirectLocal := !req.URL.IsAbs() && (req.Host == "" ||
-		strings.HasPrefix(req.Host, "127.0.0.1") ||
-		strings.HasPrefix(req.Host, "localhost") ||
-		(s.cfgMgr.Get().AllowLAN && strings.HasPrefix(req.Host, config.GetLANIP())))
-
 	if isDirectLocal && (cleanPath == "" || cleanPath == "/" || cleanPath == "/index.html") {
 		cfg := s.cfgMgr.Get()
 		lanIP := config.GetLANIP()
@@ -617,6 +664,11 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 }
 
 func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
+	s.stats.IncAPI()
+	s.stats.AddActiveAPI(1)
+	defer s.stats.AddActiveAPI(-1)
+
+	startTime := time.Now()
 	upURL := req.URL.String()
 	if !strings.HasPrefix(upURL, "http://") && !strings.HasPrefix(upURL, "https://") {
 		host := req.Host
@@ -626,32 +678,72 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		upURL = "http://" + host + req.URL.RequestURI()
 	}
 
-	bodyBytes, _ := io.ReadAll(req.Body)
-	upReq, err := http.NewRequestWithContext(context.Background(), req.Method, upURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
-		return false
+	var bodyBytes []byte
+	if req.Body != nil {
+		bodyBytes, _ = io.ReadAll(req.Body)
+	}
+	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
+
+	// Strict P0 Safe Retry Rule:
+	// Only read-only idempotent GET requests to whitelisted paths may be retried on connection drop.
+	// All POST/PUT/DELETE requests have maxAttempts = 1 (strictly zero retry).
+	isRetryable := (req.Method == http.MethodGet && isRetryableAPI(cleanPath))
+	maxAttempts := 1
+	if isRetryable {
+		maxAttempts = 2
 	}
 
-	for k, vv := range req.Header {
-		if isHopByHop(strings.ToLower(k)) {
+	var resp *http.Response
+	var fetchErr error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		upReq, err := http.NewRequestWithContext(context.Background(), req.Method, upURL, bytes.NewReader(bodyBytes))
+		if err != nil {
+			fetchErr = err
+			break
+		}
+
+		// P0: Business semantic transparency & strictly zero retry on write requests
+		// Explicitly disable GetBody for non-retryable requests to prevent Go Transport from silently replaying
+		if !isRetryable {
+			upReq.GetBody = nil
+		}
+
+		for k, vv := range req.Header {
+			if isHopByHop(strings.ToLower(k)) {
+				continue
+			}
+			for _, v := range vv {
+				upReq.Header.Add(k, v)
+			}
+		}
+		upReq.Host = req.Host
+
+		resp, fetchErr = s.getAPIClient().Do(upReq)
+		if fetchErr == nil {
+			break
+		}
+		if attempt+1 < maxAttempts && isConnectionDropError(fetchErr) {
+			s.stats.IncAPIRetry()
 			continue
 		}
-		for _, v := range vv {
-			upReq.Header.Add(k, v)
-		}
+		break
 	}
-	upReq.Host = req.Host
 
-	resp, err := s.getAPIClient().Do(upReq)
-	if err != nil {
-		_, _ = conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
-		return false
+	if fetchErr != nil || resp == nil {
+		connHdr := "keep-alive"
+		if req.Close {
+			connHdr = "close"
+		}
+		_, _ = fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: %s\r\n\r\n", connHdr)
+		return !req.Close
 	}
 	defer resp.Body.Close()
 
 	respBytes, _ := io.ReadAll(resp.Body)
 	s.forwardDynamicResponse(conn, resp, respBytes, req.Method == http.MethodHead, req.Close)
+	elapsed := time.Since(startTime).Milliseconds()
+	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-PLAIN-API] %d %s %s (%dms)", resp.StatusCode, req.Method, req.URL.Path, elapsed))
 	return !req.Close
 }
 
@@ -683,6 +775,81 @@ func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, tar
 
 var reVersioned = regexp.MustCompile(`/(?:assets(?:_(?:en|jp))?)/\d+/|/\d{8,}/`)
 
+func isBlockedWindowsPath(s string) bool {
+	s = strings.ToLower(s)
+	if strings.HasPrefix(s, "windows/") || strings.HasPrefix(s, "windows\\") ||
+		s == "windows" ||
+		strings.HasPrefix(s, "/windows/") || strings.HasPrefix(s, `\windows\`) ||
+		strings.HasPrefix(s, "/windows\\") || strings.HasPrefix(s, `\windows/`) ||
+		s == "/windows" || s == `\windows` ||
+		strings.Contains(s, "/windows/") || strings.Contains(s, `\windows\`) ||
+		strings.Contains(s, "/windows\\") || strings.Contains(s, `\windows/`) ||
+		strings.HasSuffix(s, "/windows") || strings.HasSuffix(s, `\windows`) {
+		return true
+	}
+	if len(s) >= 2 && s[1] == ':' && ((s[0] >= 'a' && s[0] <= 'z') || (s[0] >= 'A' && s[0] <= 'Z')) {
+		rest := s[2:]
+		if rest == `\windows` || rest == `/windows` ||
+			strings.HasPrefix(rest, `\windows\`) || strings.HasPrefix(rest, `/windows/`) ||
+			strings.HasPrefix(rest, `\windows/`) || strings.HasPrefix(rest, `/windows\`) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ProxyServer) getCacheControlHeader(urlPath string) string {
+	cfg := s.cfgMgr.Get()
+	if !cfg.EnableBrowserCache {
+		return "no-cache"
+	} else if reVersioned.MatchString(urlPath) {
+		return "public, max-age=31536000, immutable"
+	}
+	return "public, max-age=3600"
+}
+
+func isClientNotModified(req *http.Request, item *cache.CacheItem) bool {
+	if item == nil {
+		return false
+	}
+	reqETag := req.Header.Get("If-None-Match")
+	if reqETag != "" {
+		return matchETag(reqETag, item.ETag)
+	}
+	reqIMS := req.Header.Get("If-Modified-Since")
+	if reqIMS != "" && item.LastModified != "" {
+		if reqIMS == item.LastModified {
+			return true
+		}
+		tIMS, err1 := http.ParseTime(reqIMS)
+		tLM, err2 := http.ParseTime(item.LastModified)
+		if err1 == nil && err2 == nil {
+			return !tLM.After(tIMS)
+		}
+	}
+	return false
+}
+
+func (s *ProxyServer) sendNotModifiedResponse(w io.Writer, item *cache.CacheItem, urlPath string, reqClose bool) {
+	connHdr := "keep-alive"
+	if reqClose {
+		connHdr = "close"
+	}
+	cc := s.getCacheControlHeader(urlPath)
+	var buf bytes.Buffer
+	buf.WriteString("HTTP/1.1 304 Not Modified\r\n")
+	if item.ETag != "" {
+		fmt.Fprintf(&buf, "ETag: %s\r\n", item.ETag)
+	}
+	if item.LastModified != "" {
+		fmt.Fprintf(&buf, "Last-Modified: %s\r\n", item.LastModified)
+	}
+	fmt.Fprintf(&buf, "Cache-Control: %s\r\n", cc)
+	buf.WriteString("Access-Control-Allow-Origin: *\r\n")
+	fmt.Fprintf(&buf, "Connection: %s\r\n\r\n", connHdr)
+	_, _ = w.Write(buf.Bytes())
+}
+
 func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHost string) bool {
 	cleanPath := strings.Split(req.URL.Path, "?")[0]
 
@@ -695,9 +862,9 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	if strings.Contains(req.RequestURI, "..") ||
 		strings.Contains(req.URL.Path, "..") ||
 		strings.Contains(unescapedURI, "..") ||
-		strings.Contains(reqURILower, "windows") ||
-		strings.Contains(pathLower, "windows") ||
-		strings.Contains(unescapedLower, "windows") ||
+		isBlockedWindowsPath(reqURILower) ||
+		isBlockedWindowsPath(pathLower) ||
+		isBlockedWindowsPath(unescapedLower) ||
 		strings.Contains(reqURILower, "passwd") ||
 		strings.Contains(pathLower, "passwd") ||
 		strings.Contains(unescapedLower, "passwd") ||
@@ -718,30 +885,23 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	defer s.stats.AddActiveFG(-1)
 
 	isHead := (req.Method == http.MethodHead)
-	reqETag := req.Header.Get("If-None-Match")
+	ns, _ := NormalizeAssetNamespace(targetHost)
 
 	// 1. Cache Lookup (RAM first, then SSD)
-	item, hitSrc := s.cacheMgr.Get(req.URL.Path)
+	item, hitSrc := s.cacheMgr.GetWithNamespace(ns, req.URL.Path)
 	if item != nil {
 		s.stats.CheckAndRecordPrefetchReused(cleanPath)
 		if hitSrc == "RAM" {
 			s.stats.IncRAMHit()
-			s.stats.Log("INFO", fmt.Sprintf("[CACHE-RAM] HIT -> %s (%d B)", cleanPath, len(item.Data)))
+			// P2: Hot path optimization: lightweight atomic counters only for RAM hits
 		} else {
 			s.stats.IncDiskHit()
 			s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] HIT -> %s (%d B)", cleanPath, len(item.Data)))
 		}
 
 		// Conditional GET: 304 Not Modified check
-		if matchETag(reqETag, item.ETag) {
-			connHdr := "keep-alive"
-			if req.Close {
-				connHdr = "close"
-			}
-			_, _ = fmt.Fprintf(w, "HTTP/1.1 304 Not Modified\r\n"+
-				"ETag: %s\r\n"+
-				"Access-Control-Allow-Origin: *\r\n"+
-				"Connection: %s\r\n\r\n", item.ETag, connHdr)
+		if isClientNotModified(req, item) {
+			s.sendNotModifiedResponse(w, item, req.URL.Path, req.Close)
 			return !req.Close
 		}
 
@@ -749,9 +909,9 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		return !req.Close
 	}
 
-	// 2. Cache Miss: Coalesce concurrent fetches using SingleFlight
+	// 2. Cache Miss: Coalesce concurrent fetches using SingleFlight with normalized key
 	s.stats.IncMiss()
-	flightKey := targetHost + cleanPath
+	flightKey := ns + ":" + cleanPath
 
 	res, err := s.cacheMgr.SingleFlight().Do(flightKey, func() (interface{}, error) {
 		upURL := fmt.Sprintf("https://%s%s", targetHost, req.URL.RequestURI())
@@ -761,7 +921,8 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		}
 
 		for k, vv := range req.Header {
-			if isHopByHop(strings.ToLower(k)) {
+			kLower := strings.ToLower(k)
+			if isHopByHop(kLower) || kLower == "if-none-match" || kLower == "if-modified-since" {
 				continue
 			}
 			for _, v := range vv {
@@ -801,7 +962,6 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		if etag == "" {
 			etag = resp.Header.Get("Etag")
 		}
-		ce := resp.Header.Get("Content-Encoding")
 
 		// Persist to cache with lowercase header keys
 		headersMap := make(map[string]string)
@@ -813,19 +973,19 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		if etag != "" {
 			headersMap["etag"] = etag
 		}
-		s.cacheMgr.Save(req.URL.Path, headersMap, data)
+
+		// Respond-First: Instant RAM cache write & non-blocking background disk persistence
+		savedItem, ok := s.cacheMgr.SaveRAMWithNamespace(ns, req.URL.Path, headersMap, data)
+		if !ok || savedItem == nil {
+			return nil, fmt.Errorf("failed to store asset in cache")
+		}
+
 		if s.prefetch != nil {
 			s.prefetch.MaybeEnqueueDiscovery(targetHost, req.URL.Path, data)
 		}
-		s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 OK -> %s (%d B)", cleanPath, len(data)))
+		s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 OK -> %s%s (%d B)", targetHost, cleanPath, len(data)))
 
-		return &cache.CacheItem{
-			Data:            data,
-			ContentType:     ct,
-			ContentEncoding: ce,
-			ETag:            etag,
-			Size:            int64(len(data)),
-		}, nil
+		return savedItem, nil
 	})
 
 	if err != nil || res == nil {
@@ -838,15 +998,8 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	}
 
 	cachedItem := res.(*cache.CacheItem)
-	if matchETag(reqETag, cachedItem.ETag) {
-		connHdr := "keep-alive"
-		if req.Close {
-			connHdr = "close"
-		}
-		_, _ = fmt.Fprintf(w, "HTTP/1.1 304 Not Modified\r\n"+
-			"ETag: %s\r\n"+
-			"Access-Control-Allow-Origin: *\r\n"+
-			"Connection: %s\r\n\r\n", cachedItem.ETag, connHdr)
+	if isClientNotModified(req, cachedItem) {
+		s.sendNotModifiedResponse(w, cachedItem, req.URL.Path, req.Close)
 		return !req.Close
 	}
 
@@ -858,9 +1011,22 @@ func matchETag(clientETag, serverETag string) bool {
 	if clientETag == "" || serverETag == "" {
 		return false
 	}
-	c := strings.Trim(strings.TrimPrefix(clientETag, "W/"), "\"")
-	s := strings.Trim(strings.TrimPrefix(serverETag, "W/"), "\"")
-	return c == s || clientETag == serverETag
+	clientETag = strings.TrimSpace(clientETag)
+	if clientETag == "*" {
+		return true
+	}
+	sNorm := strings.Trim(strings.TrimPrefix(serverETag, "W/"), "\"")
+	for _, part := range strings.Split(clientETag, ",") {
+		part = strings.TrimSpace(part)
+		if part == "*" {
+			return true
+		}
+		cNorm := strings.Trim(strings.TrimPrefix(part, "W/"), "\"")
+		if cNorm == sNorm || part == serverETag {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHost string) bool {
@@ -869,7 +1035,10 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	defer s.stats.AddActiveAPI(-1)
 
 	startTime := time.Now()
-	bodyBytes, _ := io.ReadAll(req.Body)
+	var bodyBytes []byte
+	if req.Body != nil {
+		bodyBytes, _ = io.ReadAll(req.Body)
+	}
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
 	// Strict P0 Safe Retry Rule:
@@ -892,6 +1061,12 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 			break
 		}
 
+		// P0: Business semantic transparency & strictly zero retry on write requests
+		// Explicitly disable GetBody for non-retryable requests to prevent Go Transport from silently replaying the request
+		if !isRetryable {
+			upReq.GetBody = nil
+		}
+
 		for k, vv := range req.Header {
 			if isHopByHop(strings.ToLower(k)) {
 				continue
@@ -906,10 +1081,11 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		if fetchErr == nil {
 			break
 		}
-		if attempt+1 < maxAttempts {
+		if attempt+1 < maxAttempts && isConnectionDropError(fetchErr) {
 			s.stats.IncAPIRetry()
 			continue
 		}
+		break
 	}
 
 	if fetchErr != nil || resp == nil {
@@ -930,7 +1106,6 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 }
 
 func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.CacheItem, isHead bool, urlPath string, reqClose bool) {
-	cfg := s.cfgMgr.Get()
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "HTTP/1.1 %d OK\r\n", status)
 	if item.ContentType != "" {
@@ -940,19 +1115,16 @@ func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.Cac
 	if item.ETag != "" {
 		fmt.Fprintf(&buf, "ETag: %s\r\n", item.ETag)
 	}
+	if item.LastModified != "" {
+		fmt.Fprintf(&buf, "Last-Modified: %s\r\n", item.LastModified)
+	}
 	if item.ContentEncoding != "" {
 		fmt.Fprintf(&buf, "Content-Encoding: %s\r\n", item.ContentEncoding)
 	}
 	buf.WriteString("Access-Control-Allow-Origin: *\r\n")
 
 	// P1: Safe browser cache policy - immutable ONLY for versioned assets
-	if !cfg.EnableBrowserCache {
-		buf.WriteString("Cache-Control: no-cache\r\n")
-	} else if reVersioned.MatchString(urlPath) {
-		buf.WriteString("Cache-Control: public, max-age=31536000, immutable\r\n")
-	} else {
-		buf.WriteString("Cache-Control: public, max-age=3600\r\n")
-	}
+	fmt.Fprintf(&buf, "Cache-Control: %s\r\n", s.getCacheControlHeader(urlPath))
 	if reqClose {
 		buf.WriteString("Connection: close\r\n\r\n")
 	} else {
@@ -982,7 +1154,7 @@ func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, b
 			continue
 		}
 		// P0: Zero header pollution
-		if strings.HasPrefix(kLower, "x-proxy-") || strings.HasPrefix(kLower, "x-cache-") {
+		if strings.HasPrefix(kLower, "x-proxy-") || strings.HasPrefix(kLower, "x-cache-") || strings.HasPrefix(kLower, "x-acceleration-") {
 			continue
 		}
 		for _, v := range vv {
@@ -1051,18 +1223,50 @@ func isTelemetryHost(host string) bool {
 	return false
 }
 
+func isConnectionDropError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "closed network connection") ||
+		strings.Contains(msg, "connection refused")
+}
+
+func NormalizeAssetNamespace(host string) (string, bool) {
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
+	h := strings.ToLower(strings.TrimRight(host, "."))
+	if isGBFAkamaiHost(h) || strings.HasPrefix(h, "game-a") {
+		return "gbf", true
+	}
+	return h, false
+}
+
 func isPassthroughHost(host string) bool {
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
 	h := strings.ToLower(host)
 	return h == "ws.game.granbluefantasy.jp" || strings.HasPrefix(h, "ws.game.")
 }
 
 func isDomainOrSubdomain(host, domain string) bool {
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
 	h := strings.ToLower(strings.TrimRight(host, "."))
 	d := strings.ToLower(strings.TrimRight(domain, "."))
 	return h == d || strings.HasSuffix(h, "."+d)
 }
 
 func isGBFAkamaiHost(host string) bool {
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
 	h := strings.ToLower(strings.TrimRight(host, "."))
 	if !strings.HasSuffix(h, ".akamaized.net") {
 		return false
@@ -1086,10 +1290,17 @@ func isGBFAkamaiHost(host string) bool {
 		isDomainOrSubdomain(h, "gbf.akamaized.net") {
 		return true
 	}
-	return strings.Contains(h, "granbluefantasy")
+	// Strict prefix matching for future Akamai CDN shards
+	if strings.HasPrefix(h, "prd-game-a") && strings.HasSuffix(h, "-granbluefantasy.akamaized.net") {
+		return true
+	}
+	return false
 }
 
 func isGBFDomain(host string) bool {
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
 	if isPassthroughHost(host) {
 		return false
 	}
@@ -1098,12 +1309,16 @@ func isGBFDomain(host string) bool {
 	}
 	return isDomainOrSubdomain(host, "granbluefantasy.jp") ||
 		isDomainOrSubdomain(host, "granbluefantasy.com") ||
-		isDomainOrSubdomain(host, "mbga.jp") ||
-		isDomainOrSubdomain(host, "mobage.jp") ||
+		isDomainOrSubdomain(host, "gbf.game.mbga.jp") ||
+		isDomainOrSubdomain(host, "connect.mobage.jp") ||
+		isDomainOrSubdomain(host, "sp.mbga.jp") ||
 		host == "localhost" || host == "127.0.0.1"
 }
 
 func isStaticTarget(host, path string) bool {
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
 	p := strings.ToLower(path)
 
 	// Dynamic prefixes are strictly non-static

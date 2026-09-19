@@ -1,4 +1,4 @@
-﻿package cache
+package cache
 
 import (
 	"testing"
@@ -60,3 +60,29 @@ func TestLRUCache(t *testing.T) {
 		t.Fatalf("expected empty cache after Clear(), got %d items, %d bytes", items, bytes)
 	}
 }
+
+func TestLRUCacheOversizedItem(t *testing.T) {
+	// 100 bytes max limit
+	lru := NewLRUCache(100)
+
+	item1 := &CacheItem{Key: "item1", Data: make([]byte, 50)}
+	lru.Set("item1", item1)
+
+	// An item larger than maxBytes (120 > 100) must be rejected and must NOT evict item1
+	oversized := &CacheItem{Key: "huge", Data: make([]byte, 120)}
+	lru.Set("huge", oversized)
+
+	if _, ok := lru.Get("huge"); ok {
+		t.Error("oversized item should not be admitted to RAM cache")
+	}
+
+	if _, ok := lru.Get("item1"); !ok {
+		t.Error("existing item1 should not have been evicted by oversized item")
+	}
+
+	items, bytes := lru.Stats()
+	if items != 1 || bytes != 50 {
+		t.Fatalf("expected 1 item with 50 bytes, got %d items with %d bytes", items, bytes)
+	}
+}
+

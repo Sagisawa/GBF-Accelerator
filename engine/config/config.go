@@ -2,11 +2,16 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
+	"time"
 )
+
 
 const AppVersion = "1.8.0"
 
@@ -147,6 +152,16 @@ func (m *Manager) Load(cfgPath string) error {
 	if loaded.AssetMaxKeepalive > 0 {
 		m.cfg.AssetMaxKeepalive = loaded.AssetMaxKeepalive
 	}
+	m.cfg.ShimakazeMode = loaded.ShimakazeMode
+	m.cfg.AutoStart = loaded.AutoStart
+	m.cfg.AutoCheckUpdate = loaded.AutoCheckUpdate
+	m.cfg.EnableAPITelemetry = loaded.EnableAPITelemetry
+	if loaded.APIKeepaliveExpiry > 0 {
+		m.cfg.APIKeepaliveExpiry = loaded.APIKeepaliveExpiry
+	}
+	if loaded.AssetKeepaliveExpiry > 0 {
+		m.cfg.AssetKeepaliveExpiry = loaded.AssetKeepaliveExpiry
+	}
 	return nil
 }
 
@@ -164,6 +179,7 @@ func (m *Manager) Update(fn func(c *Config)) Config {
 	copy(callbacks, m.onSave)
 	m.mu.Unlock()
 
+	_ = m.Save()
 	for _, cb := range callbacks {
 		cb(&updated)
 	}
@@ -186,7 +202,21 @@ func (m *Manager) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(m.path, data, 0644)
+	tmpPath := fmt.Sprintf("%s.tmp.%d", m.path, time.Now().UnixNano())
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	var renameErr error
+	for i := 0; i < 3; i++ {
+		renameErr = os.Rename(tmpPath, m.path)
+		if renameErr == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = os.Remove(tmpPath)
+	return renameErr
 }
 
 func (m *Manager) GetEffectiveListenHost() string {
@@ -217,27 +247,80 @@ func GetLANIP() string {
 	return localAddr.IP.String()
 }
 
+// GetBaseDir returns the base directory for writable user data (config.json, certs, cache).
+// On macOS, if the executable is inside a .app bundle (e.g. .../GBF_Accelerator.app/Contents/MacOS/...),
+// writable user data must live in ~/Library/Application Support/GBF-Accelerator to satisfy Gatekeeper.
+func GetBaseDir() string {
+	if runtime.GOOS == "darwin" {
+		if exe, err := os.Executable(); err == nil {
+			exeLower := strings.ToLower(filepath.ToSlash(exe))
+			if strings.Contains(exeLower, ".app/contents/macos") {
+				if home, err := os.UserHomeDir(); err == nil {
+					appSupport := filepath.Join(home, "Library", "Application Support", "GBF-Accelerator")
+					_ = os.MkdirAll(appSupport, 0755)
+					return appSupport
+				}
+			}
+		}
+	}
+	return "."
+}
+
 func NormalizeCacheDir(rawPath string) string {
 	if rawPath == "" {
 		return filepath.Join("cache", "gbf", "https")
 	}
 	abs, err := filepath.Abs(rawPath)
 	if err != nil {
-		return rawPath
+		abs = rawPath
 	}
 
-	// If directory contains "assets", it's the root
+	// 0. If user selected 'assets' folder directly, its parent is the actual cache root
+	if strings.EqualFold(filepath.Base(abs), "assets") {
+		parent := filepath.Dir(abs)
+		if fi, err := os.Stat(filepath.Join(parent, "assets")); err == nil && fi.IsDir() {
+			return parent
+		}
+	}
+
+	// 1. If directory contains "assets", it is already the exact target root
 	if fi, err := os.Stat(filepath.Join(abs, "assets")); err == nil && fi.IsDir() {
 		return abs
 	}
-	// If subpath https/assets exists
+
+	// 2. Check .../https/assets
 	if fi, err := os.Stat(filepath.Join(abs, "https", "assets")); err == nil && fi.IsDir() {
 		return filepath.Join(abs, "https")
 	}
-	// If subpath gbf/https exists
+	if strings.EqualFold(filepath.Base(abs), "gbf") {
+		if fi, err := os.Stat(filepath.Join(abs, "https")); err == nil && fi.IsDir() {
+			return filepath.Join(abs, "https")
+		}
+	}
+
+	// 3. Check .../gbf/https/assets (or .../gbf/https)
 	if fi, err := os.Stat(filepath.Join(abs, "gbf", "https", "assets")); err == nil && fi.IsDir() {
 		return filepath.Join(abs, "gbf", "https")
+	}
+	if strings.EqualFold(filepath.Base(abs), "cache") {
+		if fi, err := os.Stat(filepath.Join(abs, "gbf", "https")); err == nil && fi.IsDir() {
+			return filepath.Join(abs, "gbf", "https")
+		}
+	}
+
+	// 4. Check ACGPower root: .../cache/gbf/https/assets (or .../cache/gbf/https)
+	if fi, err := os.Stat(filepath.Join(abs, "cache", "gbf", "https", "assets")); err == nil && fi.IsDir() {
+		return filepath.Join(abs, "cache", "gbf", "https")
+	}
+	if fi, err := os.Stat(filepath.Join(abs, "cache", "gbf", "https")); err == nil && fi.IsDir() {
+		return filepath.Join(abs, "cache", "gbf", "https")
+	}
+
+	// 5. Check Mac ACGPower: .../cache/gbf/assets
+	if fi, err := os.Stat(filepath.Join(abs, "cache", "gbf", "assets")); err == nil && fi.IsDir() {
+		return filepath.Join(abs, "cache", "gbf")
 	}
 
 	return abs
 }
+

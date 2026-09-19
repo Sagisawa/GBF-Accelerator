@@ -1,4 +1,4 @@
-﻿package config
+package config
 
 import (
 	"os"
@@ -60,4 +60,30 @@ func TestConfigManager(t *testing.T) {
 	if norm != filepath.Join("cache", "gbf", "https") {
 		t.Errorf("expected default cache dir, got %s", norm)
 	}
+
+	tempRoot := t.TempDir()
+	acgpPath := filepath.Join(tempRoot, "cache", "gbf", "https", "assets")
+	if err := os.MkdirAll(acgpPath, 0755); err != nil {
+		t.Fatalf("failed to create dummy acgp structure: %v", err)
+	}
+
+	// Given ACGPower root folder
+	resRoot := NormalizeCacheDir(tempRoot)
+	expectedRoot := filepath.Join(tempRoot, "cache", "gbf", "https")
+	if resRoot != expectedRoot {
+		t.Errorf("NormalizeCacheDir(%q) = %q; expected %q", tempRoot, resRoot, expectedRoot)
+	}
+
+	// Given cache folder directly
+	resCache := NormalizeCacheDir(filepath.Join(tempRoot, "cache"))
+	if resCache != expectedRoot {
+		t.Errorf("NormalizeCacheDir(cache) = %q; expected %q", resCache, expectedRoot)
+	}
+
+	// Given assets folder directly
+	resAssets := NormalizeCacheDir(acgpPath)
+	if resAssets != expectedRoot {
+		t.Errorf("NormalizeCacheDir(assets) = %q; expected %q", resAssets, expectedRoot)
+	}
 }
+

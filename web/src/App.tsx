@@ -13,6 +13,9 @@ import {
   applyConfig,
   openCacheFolder,
   browseDirectory,
+  detectACGPower,
+  detectUpstream,
+  checkForUpdate,
 } from './api'
 
 import { LogTerminalDrawer } from './components/modals/LogTerminalDrawer'
@@ -124,19 +127,27 @@ export const App: React.FC = () => {
     }
 
     // Background check for newer version on startup
-    fetch('https://api.github.com/repos/Sagisawa/GBF-Accelerator/releases/latest')
-      .then((r) => (r.ok ? r.json() : null))
+    checkForUpdate()
       .then((data) => {
-        if (!data?.tag_name) return
-        const latest = data.tag_name.replace(/^v/, '').trim()
-        fetchStatus().then((cur) => {
-          const current = (cur?.version || '1.8.0').replace(/^v/, '').trim()
-          if (latest && latest !== current) {
-            setUpdateInfo({ available: true, version: latest })
-          }
-        }).catch(() => {})
+        if (data?.has_update && data?.latest_version) {
+          setUpdateInfo({ available: true, version: data.latest_version })
+        }
       })
-      .catch(() => {})
+      .catch(() => {
+        fetch('https://api.github.com/repos/Sagisawa/GBF-Accelerator/releases/latest')
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (!data?.tag_name) return
+            const latest = data.tag_name.replace(/^v/, '').trim()
+            fetchStatus().then((cur) => {
+              const current = (cur?.version || '1.8.0').replace(/^v/, '').trim()
+              if (latest && latest !== current) {
+                setUpdateInfo({ available: true, version: latest })
+              }
+            }).catch(() => {})
+          })
+          .catch(() => {})
+      })
 
     const interval = setInterval(() => {
       fetchStatus().then(setStatus).catch(() => {})
@@ -226,8 +237,14 @@ export const App: React.FC = () => {
   // Detect ACGPower Cache
   const handleDetectAcgp = async () => {
     try {
-      await applyConfig({ cache_dir: 'auto' })
-      showToast('已自动探测并关联电脑中存在的 ACGPower 静态缓存', 'success')
+      const data = await detectACGPower()
+      if (data && data.found && data.path) {
+        setCacheDirInput(data.path)
+        await applyConfig({ cache_dir: data.path })
+        showToast(`已检测并关联 ACGPower 缓存目录: ${data.path}`, 'success')
+      } else {
+        showToast(data?.message || '未检测到正在运行的 ACGPower 或默认缓存目录', 'info')
+      }
       loadState()
     } catch (e: any) {
       showToast(`检测 ACGP 失败: ${e.message}`, 'error')
@@ -254,8 +271,15 @@ export const App: React.FC = () => {
   // Auto Probe Upstream Proxy
   const handleProbeUpstream = async () => {
     try {
-      await applyConfig({ upstream_proxy: 'auto' })
-      showToast('已自动探测并应用上游代理 (Clash / v2rayN / 岛风GO)', 'success')
+      const data = await detectUpstream()
+      if (data && data.found && data.primary) {
+        setUpstreamInput(data.primary)
+        await applyConfig({ upstream_proxy: data.primary })
+        showToast(`已探测并应用上游代理: ${data.primary}`, 'success')
+      } else {
+        await applyConfig({ upstream_proxy: 'auto' })
+        showToast('未检测到活跃上游代理端口，已重置为 auto 模式', 'info')
+      }
       loadState()
     } catch (e: any) {
       showToast(`探测上游代理失败: ${e.message}`, 'error')
@@ -483,6 +507,7 @@ export const App: React.FC = () => {
 
   const isCaInstalled = Boolean(status?.ca_installed ?? true)
   const caFingerprint =
+    status?.ca_fingerprint ||
     status?.ca_thumbprint ||
     '8D:7A:35:CA:F9:19:9B:C5:EE:3B:B4:0D:F9:41:15:F4:F3:57:12:65:94:3D:8B:14:D4:0A:43:19:20:B7:5E:75'
 
@@ -1139,6 +1164,8 @@ export const App: React.FC = () => {
         isInstalled={isCaInstalled}
         fingerprint={caFingerprint}
         actionType={caModalAction || 'install'}
+        onRefresh={loadState}
+        onToast={showToast}
       />
 
       <UpdateModal

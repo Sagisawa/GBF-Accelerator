@@ -89,3 +89,108 @@ export async function browseDirectory(): Promise<string> {
   return data.path || ''
 }
 
+export async function testLatency(): Promise<any> {
+  const res = await fetch(`${BASE}/api/latency-test`, { cache: 'no-store' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function detectUpstream(): Promise<any> {
+  const res = await fetch(`${BASE}/api/upstream/detect`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function detectACGPower(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cache/detect-acgpower`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchCertStatus(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cert/status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function installCert(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cert/install`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function uninstallCert(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cert/uninstall`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function cleanLegacyCert(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cert/clean-legacy`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchStartupStatus(): Promise<any> {
+  const res = await fetch(`${BASE}/api/startup/status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function setStartup(enabled: boolean): Promise<any> {
+  const res = await fetch(`${BASE}/api/startup/set`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function toggleSysProxy(enable: boolean): Promise<any> {
+  const endpoint = enable ? '/api/sysproxy/enable' : '/api/sysproxy/disable'
+  const res = await fetch(`${BASE}${endpoint}`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchCacheTaskStatus(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cache/task-status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function cancelCacheTask(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cache/cancel-task`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function checkForUpdate(): Promise<any> {
+  const res = await fetch(`${BASE}/api/update/check`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function downloadUpdate(url?: string, dest?: string): Promise<any> {
+  const res = await fetch(`${BASE}/api/update/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: url || '', dest: dest || '' }),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function fetchDownloadStatus(): Promise<any> {
+  const res = await fetch(`${BASE}/api/update/download-status`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function cancelDownload(): Promise<any> {
+  const res = await fetch(`${BASE}/api/update/download-cancel`, { method: 'POST' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+

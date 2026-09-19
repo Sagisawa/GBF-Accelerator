@@ -1,7 +1,8 @@
-﻿package cert
+package cert
 
 import (
 	"crypto/tls"
+	"fmt"
 	"os"
 	"testing"
 )
@@ -55,5 +56,42 @@ func TestCertManager(t *testing.T) {
 	helloCert, err := tlsCfg.GetCertificate(clientHello)
 	if err != nil || helloCert == nil {
 		t.Fatalf("GetCertificate failed: %v", err)
+	}
+}
+
+func TestCertCacheCapping(t *testing.T) {
+	tempCertsDir, err := os.MkdirTemp("", "gbf_certs_cap_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempCertsDir)
+
+	mgr, err := NewManager(tempCertsDir)
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+
+	// Pre-populate certCache to 512 entries
+	dummyCert := &tls.Certificate{}
+	mgr.mu.Lock()
+	for i := 0; i < 512; i++ {
+		mgr.certCache[fmt.Sprintf("host%d.granbluefantasy.jp", i)] = dummyCert
+	}
+	mgr.mu.Unlock()
+
+	// Add 10 more certs via GetOrCreateCert
+	for i := 0; i < 10; i++ {
+		_, err := mgr.GetOrCreateCert(fmt.Sprintf("newhost%d.granbluefantasy.jp", i))
+		if err != nil {
+			t.Fatalf("GetOrCreateCert failed: %v", err)
+		}
+	}
+
+	mgr.mu.RLock()
+	cacheSize := len(mgr.certCache)
+	mgr.mu.RUnlock()
+
+	if cacheSize > 512 {
+		t.Errorf("expected certCache to be capped at 512 entries, got %d", cacheSize)
 	}
 }

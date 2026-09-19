@@ -14,7 +14,11 @@ import (
 	"gbf-proxy/config"
 	"gbf-proxy/control"
 	"gbf-proxy/desktop"
+	"gbf-proxy/process"
 	"gbf-proxy/proxy"
+	"gbf-proxy/res"
+	"gbf-proxy/startup"
+	"gbf-proxy/sysproxy"
 	"gbf-proxy/telemetry"
 	"gbf-proxy/ui"
 )
@@ -93,8 +97,14 @@ func main() {
 		os.Exit(0)
 	}
 
+	baseDir := config.GetBaseDir()
+	actualCfgPath := *configPath
+	if *configPath == "config.json" && baseDir != "." {
+		actualCfgPath = filepath.Join(baseDir, "config.json")
+	}
+
 	// 1. Initialize Configuration
-	cfgMgr := config.NewManager(*configPath)
+	cfgMgr := config.NewManager(actualCfgPath)
 	cfgMgr.Update(func(c *config.Config) {
 		if *proxyPort > 0 {
 			c.ListenPort = *proxyPort
@@ -123,12 +133,23 @@ func main() {
 
 	curCfg := cfgMgr.Get()
 
-	// 2. Initialize Certificates
-	certsDir := "certs"
-	if fi, err := os.Stat("certs"); err != nil || !fi.IsDir() {
-		// check if ../certs exists
-		if fi2, err2 := os.Stat("../certs"); err2 == nil && fi2.IsDir() {
-			certsDir = "../certs"
+	// 2. Clean stale zombie processes if port occupied
+	if curCfg.CleanZombies {
+		_, _ = process.KillProcessOnPort(curCfg.ListenPort)
+		_, _ = process.KillProcessOnPort(curCfg.ControlPort)
+	}
+
+	// 3. Ensure bundled helper files exist (proxy.pac, SwitchyOmega_GBF.bak, 使用说明.txt)
+	_ = res.EnsureHelperFiles(baseDir, curCfg.ListenPort)
+
+	// 4. Initialize Certificates
+	certsDir := filepath.Join(baseDir, "certs")
+	if baseDir == "." {
+		if fi, err := os.Stat("certs"); err != nil || !fi.IsDir() {
+			// check if ../certs exists
+			if fi2, err2 := os.Stat("../certs"); err2 == nil && fi2.IsDir() {
+				certsDir = "../certs"
+			}
 		}
 	}
 	certMgr, err := cert.NewManager(certsDir)
@@ -137,23 +158,45 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 3. Initialize Cache
+	// 5. Initialize Cache
 	cacheMgr := cache.NewManager(curCfg.CacheDir, curCfg.RAMCacheMaxMB)
 	stats := telemetry.GlobalStats
 
-	// 4. Initialize Core Proxy
+	if curCfg.EnableRAMWarmup {
+		go func() {
+			loaded := cacheMgr.Warmup(curCfg.RAMWarmupMaxItems)
+			stats.Log("INFO", fmt.Sprintf("[RAM-WARMUP] Completed: %d items loaded into RAM cache", loaded))
+		}()
+	}
+
+	// 6. Initialize Core Proxy
 	proxySrv := proxy.NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
 	if err := proxySrv.Start(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[-] Failed to start Proxy Server: %v\n", err)
 		os.Exit(1)
 	}
 
-	// 5. Initialize Control Server
-	ctrlSrv := control.NewControlServer(cfgMgr, cacheMgr, proxySrv, stats)
+	// 7. Initialize Control Server
+	ctrlSrv := control.NewControlServer(cfgMgr, certMgr, cacheMgr, proxySrv, stats)
 	if err := ctrlSrv.Start(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[-] Failed to start Control Server: %v\n", err)
 		proxySrv.Stop()
 		os.Exit(1)
+	}
+
+	// 8. Auto mount System PAC proxy if configured
+	if curCfg.AutoSystemProxy {
+		pacURL := fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", curCfg.ListenPort)
+		if err := sysproxy.EnablePACProxy(pacURL); err != nil {
+			stats.Log("WARN", fmt.Sprintf("[SYSPROXY] Failed to set system PAC proxy: %v", err))
+		} else {
+			stats.Log("INFO", fmt.Sprintf("[SYSPROXY] Mounted system PAC proxy: %s", pacURL))
+		}
+	}
+	defer sysproxy.CleanupOnExit()
+
+	if curCfg.AutoStart {
+		_ = startup.SetStartupEnabled(true)
 	}
 
 	fmt.Printf("[+] GBF Accelerator Go Core v%s started\n", config.AppVersion)
@@ -164,7 +207,7 @@ func main() {
 		fmt.Printf("    Upstream proxy       : %s\n", curCfg.UpstreamProxy)
 	}
 
-	// 6. Setup Desktop Integration & System Tray
+	// 9. Setup Desktop Integration & System Tray
 	quitChan := make(chan struct{})
 	appCtrl := &appController{
 		cfgMgr:   cfgMgr,
@@ -191,7 +234,7 @@ func main() {
 		_ = desktop.OpenBrowser(consoleURL)
 	}
 
-	// 7. Wait for Shutdown Signals (OS signal or Tray quit)
+	// 10. Wait for Shutdown Signals (OS signal or Tray quit)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
@@ -203,10 +246,12 @@ func main() {
 	}
 
 	fmt.Println("[*] Shutting down GBF Accelerator Go Core...")
+	sysproxy.CleanupOnExit()
 	if tray != nil {
 		tray.Stop()
 	}
 	ctrlSrv.Stop()
 	proxySrv.Stop()
+	cacheMgr.Close()
 	fmt.Println("[+] Shutdown complete.")
 }

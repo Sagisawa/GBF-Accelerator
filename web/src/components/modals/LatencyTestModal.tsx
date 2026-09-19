@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { Activity, RefreshCw } from 'lucide-react'
+import { testLatency } from '../../api'
 
 export interface LatencyTestModalProps {
   isOpen: boolean
@@ -20,9 +21,10 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
   const [coldMs, setColdMs] = useState<number | null>(null)
   const [warmList, setWarmList] = useState<number[]>([])
   const [errorMsg, setErrorMsg] = useState<string>('')
+  const [currentRoute, setCurrentRoute] = useState<string>('')
+  const [currentTarget, setCurrentTarget] = useState<string>('https://game.granbluefantasy.jp/')
 
-  const target = 'https://game.granbluefantasy.jp/'
-  const routeDesc = isDirect
+  const fallbackRouteDesc = isDirect
     ? '直连模式（不经过上游代理）'
     : `经上游代理 ${upstreamProxy || '（未配置）'}`
 
@@ -33,31 +35,19 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
     setWarmList([])
 
     try {
-      // Test 1: Cold connect
-      const t0 = performance.now()
-      try {
-        await fetch(target, { mode: 'no-cors', cache: 'no-store' })
-      } catch {
-        // Even if no-cors or network error, measure duration or fallback to proxy status
-        await fetch('/api/status?_t=' + Date.now(), { cache: 'no-store' })
+      const res = await testLatency()
+      if (res.target) setCurrentTarget(res.target)
+      if (res.route_desc) setCurrentRoute(res.route_desc)
+      if (!res.ok) {
+        setErrorMsg(res.error || '测试失败')
+        return
       }
-      const cold = Math.round(performance.now() - t0)
-      setColdMs(cold)
-
-      // Tests 2-4: Warm keep-alive RTT
-      const warm: number[] = []
-      for (let i = 0; i < 3; i++) {
-        await new Promise((r) => setTimeout(r, 100))
-        const tw0 = performance.now()
-        try {
-          await fetch(target, { mode: 'no-cors', cache: 'no-store' })
-        } catch {
-          await fetch('/api/status?_t=' + Date.now(), { cache: 'no-store' })
-        }
-        warm.push(Math.round(performance.now() - tw0))
+      setColdMs(res.cold_ms !== undefined ? Math.round(res.cold_ms) : null)
+      if (res.warm_samples && res.warm_samples.length > 0) {
+        setWarmList(res.warm_samples.map((s: number) => Math.round(s)))
+      } else {
+        setWarmList([])
       }
-      warm.sort((a, b) => a - b)
-      setWarmList(warm)
     } catch (e: any) {
       setErrorMsg(e.message || '网络请求超时')
     } finally {
@@ -67,6 +57,7 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
+      setCurrentRoute('')
       runTest()
     }
   }, [isOpen])
@@ -108,11 +99,11 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
           <div className="space-y-1 text-slate-600">
             <div className="flex justify-between">
               <span className="font-bold text-slate-800">测试目标：</span>
-              <span className="font-mono text-slate-800">{target}</span>
+              <span className="font-mono text-slate-800">{currentTarget}</span>
             </div>
             <div className="flex justify-between">
               <span className="font-bold text-slate-800">路由通道：</span>
-              <span className="text-slate-700">{routeDesc}</span>
+              <span className="text-slate-700">{currentRoute || fallbackRouteDesc}</span>
             </div>
           </div>
 

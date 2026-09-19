@@ -1,16 +1,20 @@
 package control
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,15 +23,20 @@ import (
 	"time"
 
 	"gbf-proxy/cache"
+	"gbf-proxy/cert"
 	"gbf-proxy/config"
 	"gbf-proxy/desktop"
 	"gbf-proxy/proxy"
+	"gbf-proxy/startup"
+	"gbf-proxy/sysproxy"
 	"gbf-proxy/telemetry"
 	"gbf-proxy/ui"
+	"gbf-proxy/updater"
 )
 
 type ControlServer struct {
 	cfgMgr     *config.Manager
+	certMgr    *cert.Manager
 	cacheMgr   *cache.Manager
 	proxySrv   *proxy.ProxyServer
 	stats      *telemetry.Stats
@@ -37,9 +46,35 @@ type ControlServer struct {
 	distDir    string
 	running    bool
 	closedChan chan struct{}
+
+	// Background Cache Task state
+	cacheTaskMu     sync.Mutex
+	isAuditing      bool
+	isSlimming      bool
+	auditProgress   cache.AuditProgress
+	slimProgress    cache.SlimProgress
+	lastAuditResult map[string]interface{}
+	lastSlimResult  map[string]interface{}
+	cacheCancelCh   chan struct{}
+
+
+	// Background Download state
+	dlMu       sync.Mutex
+	dlActive   bool
+	dlProgress int64
+	dlTotal    int64
+	dlPercent  float64
+	dlDone     bool
+	dlDest     string
+	dlError    string
+	dlCancelFn context.CancelFunc
+
+	// Broadcasters for SSE custom events
+	sseMu      sync.RWMutex
+	sseClients []chan []byte
 }
 
-func NewControlServer(cfgMgr *config.Manager, cacheMgr *cache.Manager, proxySrv *proxy.ProxyServer, stats *telemetry.Stats) *ControlServer {
+func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cache.Manager, proxySrv *proxy.ProxyServer, stats *telemetry.Stats) *ControlServer {
 	// Locate web/dist
 	distDir := ""
 	candidates := []string{
@@ -63,6 +98,7 @@ func NewControlServer(cfgMgr *config.Manager, cacheMgr *cache.Manager, proxySrv 
 
 	return &ControlServer{
 		cfgMgr:     cfgMgr,
+		certMgr:    certMgr,
 		cacheMgr:   cacheMgr,
 		proxySrv:   proxySrv,
 		stats:      stats,
@@ -73,8 +109,8 @@ func NewControlServer(cfgMgr *config.Manager, cacheMgr *cache.Manager, proxySrv 
 
 func (c *ControlServer) Start() error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.running {
-		c.mu.Unlock()
 		return nil
 	}
 
@@ -83,52 +119,113 @@ func (c *ControlServer) Start() error {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		c.mu.Unlock()
 		return fmt.Errorf("failed to bind control server on %s: %w", addr, err)
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", c.handleRoute)
 
-	c.listener = ln
-	c.server = &http.Server{
+	srv := &http.Server{
 		Handler: mux,
 	}
+	c.server = srv
+	c.listener = ln
 	c.running = true
-	c.mu.Unlock()
+	c.closedChan = make(chan struct{})
 
 	go func() {
-		_ = c.server.Serve(ln)
+		_ = srv.Serve(ln)
 	}()
 	return nil
 }
 
 func (c *ControlServer) Stop() {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	if !c.running {
-		c.mu.Unlock()
 		return
 	}
 	c.running = false
 	if c.server != nil {
 		_ = c.server.Close()
+		c.server = nil
 	}
-	close(c.closedChan)
-	c.mu.Unlock()
+	if c.listener != nil {
+		_ = c.listener.Close()
+		c.listener = nil
+	}
+	select {
+	case <-c.closedChan:
+	default:
+		close(c.closedChan)
+	}
+}
+
+func isAllowedOrigin(origin string) bool {
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	return h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
+func isAllowedControlHost(reqHost string, allowLAN bool) bool {
+	if reqHost == "" {
+		return false
+	}
+	host := reqHost
+	if h, _, err := net.SplitHostPort(reqHost); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.Trim(host, "[]"))
+	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		return true
+	}
+	if allowLAN {
+		lanIP := strings.ToLower(config.GetLANIP())
+		if lanIP != "" && host == lanIP {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
+	if !isAllowedControlHost(req.Host, c.cfgMgr.Get().AllowLAN) {
+		http.Error(w, "Forbidden: Invalid Host header (DNS Rebinding Protection)", http.StatusForbidden)
+		return
+	}
+
+	origin := req.Header.Get("Origin")
+	if origin != "" {
+		if !isAllowedOrigin(origin) {
+			http.Error(w, "Forbidden: Cross-Origin Request Blocked", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+	}
+
 	// CORS Preflight
 	if req.Method == http.MethodOptions {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if origin != "" && !isAllowedOrigin(origin) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 		w.Header().Set("Access-Control-Max-Age", "86400")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	path := req.URL.Path
 	switch path {
@@ -172,9 +269,128 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleCacheAudit(w, req)
 			return
 		}
-	case "/api/cache/slim":
+	case "/ca.crt", "/ca.pem":
+		if (req.Method == http.MethodGet || req.Method == http.MethodHead) && c.certMgr != nil {
+			caBytes := c.certMgr.GetCAPEM()
+			w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+			w.Header().Set("Content-Length", strconv.Itoa(len(caBytes)))
+			w.Header().Set("Content-Disposition", "attachment; filename=\"gbf_ca.crt\"")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			if req.Method != http.MethodHead {
+				_, _ = w.Write(caBytes)
+			}
+			return
+		}
+	case "/proxy.pac", "/pac":
+		if req.Method == http.MethodGet || req.Method == http.MethodHead {
+			cfg := c.cfgMgr.Get()
+			h := "127.0.0.1"
+			if cfg.AllowLAN {
+				if lanIP := config.GetLANIP(); lanIP != "" {
+					h = lanIP
+				}
+			}
+			pacText := proxy.GetPAC(h, cfg.ListenPort)
+			w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
+			w.Header().Set("Content-Length", strconv.Itoa(len(pacText)))
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			if req.Method != http.MethodHead {
+				_, _ = w.Write([]byte(pacText))
+			}
+			return
+		}
+	case "/api/cache/slim", "/api/cache/prune-stale":
 		if req.Method == http.MethodPost {
 			c.handleCacheSlim(w, req)
+			return
+		}
+	case "/api/cache/task-status":
+		if req.Method == http.MethodGet {
+			c.handleCacheTaskStatus(w, req)
+			return
+		}
+	case "/api/cache/cancel-task":
+		if req.Method == http.MethodPost {
+			c.handleCacheCancelTask(w, req)
+			return
+		}
+	case "/api/cache/detect-acgpower":
+		if req.Method == http.MethodGet || req.Method == http.MethodPost {
+			c.handleDetectACGPower(w, req)
+			return
+		}
+	case "/api/upstream/detect":
+		if req.Method == http.MethodGet || req.Method == http.MethodPost {
+			c.handleDetectUpstream(w, req)
+			return
+		}
+	case "/api/latency-test", "/api/utils/test-latency":
+		if req.Method == http.MethodGet || req.Method == http.MethodPost {
+			c.handleLatencyTest(w, req)
+			return
+		}
+	case "/api/update/check":
+		if req.Method == http.MethodGet {
+			c.handleUpdateCheck(w, req)
+			return
+		}
+	case "/api/update/download":
+		if req.Method == http.MethodPost {
+			c.handleUpdateDownload(w, req)
+			return
+		}
+	case "/api/update/download-status":
+		if req.Method == http.MethodGet {
+			c.handleUpdateDownloadStatus(w, req)
+			return
+		}
+	case "/api/update/download-cancel":
+		if req.Method == http.MethodPost {
+			c.handleUpdateDownloadCancel(w, req)
+			return
+		}
+	case "/api/cert/status":
+		if req.Method == http.MethodGet {
+			c.handleCertStatus(w, req)
+			return
+		}
+	case "/api/cert/install":
+		if req.Method == http.MethodPost {
+			c.handleCertInstall(w, req)
+			return
+		}
+	case "/api/cert/uninstall":
+		if req.Method == http.MethodPost {
+			c.handleCertUninstall(w, req)
+			return
+		}
+	case "/api/cert/clean-legacy":
+		if req.Method == http.MethodPost {
+			c.handleCertCleanLegacy(w, req)
+			return
+		}
+	case "/api/startup/status":
+		if req.Method == http.MethodGet {
+			c.handleStartupStatus(w, req)
+			return
+		}
+	case "/api/startup/set":
+		if req.Method == http.MethodPost {
+			c.handleStartupSet(w, req)
+			return
+		}
+	case "/api/sysproxy/enable":
+		if req.Method == http.MethodPost {
+			c.handleSysProxyEnable(w, req)
+			return
+		}
+	case "/api/sysproxy/disable":
+		if req.Method == http.MethodPost {
+			c.handleSysProxyDisable(w, req)
 			return
 		}
 	case "/api/prefetch/status":
@@ -199,7 +415,9 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 		}
 	case "/api/proxy/start":
 		if req.Method == http.MethodPost {
-			_ = c.proxySrv.Start()
+			if c.proxySrv != nil {
+				_ = c.proxySrv.Start()
+			}
 			c.sendJSON(w, http.StatusOK, map[string]interface{}{
 				"ok":      true,
 				"message": "Proxy started",
@@ -209,7 +427,9 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 		}
 	case "/api/proxy/stop":
 		if req.Method == http.MethodPost {
-			c.proxySrv.Stop()
+			if c.proxySrv != nil {
+				c.proxySrv.Stop()
+			}
 			c.sendJSON(w, http.StatusOK, map[string]interface{}{
 				"ok":      true,
 				"message": "Proxy stopped",
@@ -252,10 +472,27 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 
 	uptime := math.Round(time.Since(c.stats.StartTime).Seconds()*10) / 10
 
+	proxyRunning := false
+	if c.proxySrv != nil {
+		proxyRunning = c.proxySrv.IsRunning()
+	}
+
+	caInstalled := false
+	caFingerprint := ""
+	if c.certMgr != nil {
+		caInstalled = c.certMgr.IsInstalled()
+		caFingerprint = c.certMgr.GetFingerprintSHA256()
+	}
+
+	c.cacheTaskMu.Lock()
+	isAuditing := c.isAuditing
+	isSlimming := c.isSlimming
+	c.cacheTaskMu.Unlock()
+
 	return map[string]interface{}{
 		"version":                  config.AppVersion,
 		"engine":                   "go",
-		"proxy_running":            c.proxySrv.IsRunning(),
+		"proxy_running":            proxyRunning,
 		"listen_host":              c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":              cfg.ListenPort,
 		"control_port":             cfg.ControlPort,
@@ -263,6 +500,14 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"direct_mode":              cfg.DirectMode,
 		"allow_lan":                cfg.AllowLAN,
 		"lan_ip":                   lanIP,
+		"system_proxy_enabled":     sysproxy.IsPACProxyEnabled(cfg.ListenPort),
+		"system_proxy_conflict":    sysproxy.CheckProxyConflict(cfg.ListenPort),
+		"ca_installed":             caInstalled,
+		"ca_fingerprint":           caFingerprint,
+		"startup_enabled":          startup.IsStartupEnabled(),
+		"startup_supported":        startup.IsStartupSupported(),
+		"is_auditing_cache":        isAuditing,
+		"is_slimming_cache":        isSlimming,
 		"active_api_count":         atomic.LoadInt32(&c.stats.ActiveAPICount),
 		"active_foreground_assets": atomic.LoadInt32(&c.stats.ActiveForegroundAssets),
 		"uptime_seconds":           uptime,
@@ -301,7 +546,18 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	}
 
 	updated := c.cfgMgr.Update(func(cfg *config.Config) {
+		if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
+			cfg.ListenPort = int(val)
+		} else if val, ok := patch["port"].(float64); ok && val > 0 && val < 65536 {
+			cfg.ListenPort = int(val)
+		}
+		if val, ok := patch["control_port"].(float64); ok && val > 0 && val < 65536 {
+			cfg.ControlPort = int(val)
+		}
 		if val, ok := patch["upstream_proxy"].(string); ok {
+			if strings.EqualFold(val, "auto") {
+				val = config.AutoDetectUpstreamProxy()
+			}
 			cfg.UpstreamProxy = val
 		}
 		if val, ok := patch["direct_mode"].(bool); ok {
@@ -314,6 +570,11 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 			cfg.AllowLAN = val
 		}
 		if val, ok := patch["cache_dir"].(string); ok {
+			if strings.EqualFold(val, "auto") {
+				if detected := config.AutoDetectACGPowerCache(); detected != "" {
+					val = detected
+				}
+			}
 			cfg.CacheDir = config.NormalizeCacheDir(val)
 			c.cacheMgr.SetCacheBase(cfg.CacheDir)
 		}
@@ -338,11 +599,22 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		}
 		if val, ok := patch["auto_system_proxy"].(bool); ok {
 			cfg.AutoSystemProxy = val
+			if val {
+				_ = sysproxy.EnablePACProxy(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort))
+			} else {
+				_ = sysproxy.DisablePACProxy(false)
+			}
 		} else if val, ok := patch["auto_pac"].(bool); ok {
 			cfg.AutoSystemProxy = val
+			if val {
+				_ = sysproxy.EnablePACProxy(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort))
+			} else {
+				_ = sysproxy.DisablePACProxy(false)
+			}
 		}
 		if val, ok := patch["auto_start"].(bool); ok {
 			cfg.AutoStart = val
+			_ = startup.SetStartupEnabled(val)
 		}
 		if val, ok := patch["auto_check_update"].(bool); ok {
 			cfg.AutoCheckUpdate = val
@@ -350,10 +622,35 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		if val, ok := patch["shimakaze_mode"].(bool); ok {
 			cfg.ShimakazeMode = val
 		}
-		if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
-			cfg.ListenPort = int(val)
-		} else if val, ok := patch["port"].(float64); ok && val > 0 && val < 65536 {
-			cfg.ListenPort = int(val)
+		if val, ok := patch["control_port"].(float64); ok && val > 0 && val < 65536 {
+			cfg.ControlPort = int(val)
+		}
+		if val, ok := patch["api_max_connections"].(float64); ok && val > 0 {
+			cfg.APIMaxConnections = int(val)
+		}
+		if val, ok := patch["api_max_keepalive"].(float64); ok && val >= 0 {
+			cfg.APIMaxKeepalive = int(val)
+		}
+		if val, ok := patch["api_keepalive_expiry"].(float64); ok && val > 0 {
+			cfg.APIKeepaliveExpiry = val
+		}
+		if val, ok := patch["asset_max_connections"].(float64); ok && val > 0 {
+			cfg.AssetMaxConnections = int(val)
+		}
+		if val, ok := patch["asset_max_keepalive"].(float64); ok && val >= 0 {
+			cfg.AssetMaxKeepalive = int(val)
+		}
+		if val, ok := patch["asset_keepalive_expiry"].(float64); ok && val > 0 {
+			cfg.AssetKeepaliveExpiry = val
+		}
+		if val, ok := patch["ram_warmup_max_items"].(float64); ok && val > 0 {
+			cfg.RAMWarmupMaxItems = int(val)
+		}
+		if val, ok := patch["enable_api_telemetry"].(bool); ok {
+			cfg.EnableAPITelemetry = val
+		}
+		if val, ok := patch["clean_zombies"].(bool); ok {
+			cfg.CleanZombies = val
 		}
 	})
 	_ = c.cfgMgr.Save()
@@ -429,10 +726,65 @@ func (c *ControlServer) handleBrowseDir(w http.ResponseWriter, req *http.Request
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": chosen})
 }
 
+func (c *ControlServer) broadcastEvent(event string, data interface{}) {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
+	msg := []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, payload))
+
+	c.sseMu.RLock()
+	defer c.sseMu.RUnlock()
+	for _, ch := range c.sseClients {
+		select {
+		case ch <- msg:
+		default:
+		}
+	}
+}
+
 func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Request) {
+	c.cacheTaskMu.Lock()
+	if c.isAuditing || c.isSlimming {
+		c.cacheTaskMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成",
+		})
+		return
+	}
+	c.isAuditing = true
+	c.auditProgress = cache.AuditProgress{}
+	c.cacheCancelCh = make(chan struct{})
+	cancelCh := c.cacheCancelCh
+	c.cacheTaskMu.Unlock()
+
+	c.stats.Log("INFO", "[CACHE-AUDIT] Starting static cache audit and repair task...")
+
 	go func() {
-		_ = c.cacheMgr.AuditAndRepair()
+		defer func() {
+			c.cacheTaskMu.Lock()
+			c.isAuditing = false
+			c.cacheTaskMu.Unlock()
+		}()
+
+		res := c.cacheMgr.AuditAndRepairWithProgress(func(p cache.AuditProgress) {
+			c.cacheTaskMu.Lock()
+			c.auditProgress = p
+			c.cacheTaskMu.Unlock()
+			c.broadcastEvent("audit_progress", p)
+		}, cancelCh)
+
+		c.cacheTaskMu.Lock()
+		c.isAuditing = false
+		c.lastAuditResult = res
+		c.cacheTaskMu.Unlock()
+		c.broadcastEvent("audit_done", res)
+
+		c.stats.Log("INFO", fmt.Sprintf("[CACHE-AUDIT] Completed: scanned %v, healthy %v, repaired/cleaned %v",
+			res["scanned"], res["healthy"], res["corrupted"]))
 	}()
+
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "Cache audit started in background",
@@ -447,13 +799,454 @@ func (c *ControlServer) handleCacheSlim(w http.ResponseWriter, req *http.Request
 			keep = k
 		}
 	}
+
+	c.cacheTaskMu.Lock()
+	if c.isAuditing || c.isSlimming {
+		c.cacheTaskMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成",
+		})
+		return
+	}
+	c.isSlimming = true
+	c.slimProgress = cache.SlimProgress{}
+	c.cacheCancelCh = make(chan struct{})
+	cancelCh := c.cacheCancelCh
+	c.cacheTaskMu.Unlock()
+
+	c.stats.Log("INFO", fmt.Sprintf("[CACHE-SLIM] Starting cache pruning (keeping newest %d versions)...", keep))
+
 	go func() {
-		_, _, _ = c.cacheMgr.PruneStaleVersions(keep)
+		defer func() {
+			c.cacheTaskMu.Lock()
+			c.isSlimming = false
+			c.cacheTaskMu.Unlock()
+		}()
+
+		delDirs, delFiles, freedBytes := c.cacheMgr.PruneStaleVersionsWithProgress(keep, func(p cache.SlimProgress) {
+			c.cacheTaskMu.Lock()
+			c.slimProgress = p
+			c.cacheTaskMu.Unlock()
+			c.broadcastEvent("slim_progress", p)
+		}, cancelCh)
+
+		freedMB := math.Round(float64(freedBytes)/(1024*1024)*100) / 100
+		res := map[string]interface{}{
+			"deleted_dirs":  delDirs,
+			"deleted_files": delFiles,
+			"freed_bytes":   freedBytes,
+			"freed_mb":      freedMB,
+		}
+		c.cacheTaskMu.Lock()
+		c.isSlimming = false
+		c.lastSlimResult = res
+		c.cacheTaskMu.Unlock()
+		c.broadcastEvent("slim_done", res)
+
+		c.stats.Log("INFO", fmt.Sprintf("[CACHE-SLIM] Completed: pruned %d version dirs, deleted %d stale files, freed %.2f MB",
+			delDirs, delFiles, freedMB))
 	}()
+
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "Cache slim started in background",
 		"task":    "slim",
+		"keep":    keep,
+	})
+}
+
+func (c *ControlServer) handleCacheTaskStatus(w http.ResponseWriter, req *http.Request) {
+	c.cacheTaskMu.Lock()
+	defer c.cacheTaskMu.Unlock()
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":                true,
+		"is_auditing":       c.isAuditing,
+		"is_slimming":       c.isSlimming,
+		"audit_progress":    c.auditProgress,
+		"slim_progress":     c.slimProgress,
+		"last_audit_result": c.lastAuditResult,
+		"last_slim_result":  c.lastSlimResult,
+	})
+}
+
+func (c *ControlServer) handleCacheCancelTask(w http.ResponseWriter, req *http.Request) {
+	c.cacheTaskMu.Lock()
+	defer c.cacheTaskMu.Unlock()
+
+	if c.cacheCancelCh != nil {
+		select {
+		case <-c.cacheCancelCh:
+		default:
+			close(c.cacheCancelCh)
+		}
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "Active cache task cancellation requested",
+	})
+}
+
+func (c *ControlServer) handleDetectACGPower(w http.ResponseWriter, req *http.Request) {
+	detected := config.AutoDetectACGPowerCache()
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":    true,
+		"found": detected != "",
+		"path":  detected,
+	})
+}
+
+func (c *ControlServer) handleDetectUpstream(w http.ResponseWriter, req *http.Request) {
+	candidates := config.DetectUpstreamProxies()
+	rec := config.AutoDetectUpstreamProxy()
+	found := len(candidates) > 0
+	primary := ""
+	if found {
+		primary = candidates[0].URL
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":          true,
+		"found":       found,
+		"primary":     primary,
+		"candidates":  candidates,
+		"recommended": rec,
+	})
+}
+
+func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Request) {
+	cfg := c.cfgMgr.Get()
+	target := "https://game.granbluefantasy.jp/"
+	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
+
+	routeDesc := fmt.Sprintf("经上游代理 %s", proxyURL)
+	if cfg.DirectMode || proxyURL == "" {
+		routeDesc = "直连模式（不经过上游代理）"
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: !cfg.VerifyUpstreamTLS || cfg.ShimakazeMode,
+		},
+		DisableKeepAlives: false,
+		MaxIdleConns:      5,
+		IdleConnTimeout:   30 * time.Second,
+	}
+
+	if !cfg.DirectMode && proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		}
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   12 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// Probe 1: Cold connect
+	t0 := time.Now()
+	testReq, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":         false,
+			"target":     target,
+			"route_desc": routeDesc,
+			"error":      err.Error(),
+		})
+		return
+	}
+	testReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := client.Do(testReq)
+	if err != nil {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":         false,
+			"target":     target,
+			"route_desc": routeDesc,
+			"error":      fmt.Sprintf("网络连接异常: %v", err),
+		})
+		return
+	}
+	coldMs := math.Round(float64(time.Since(t0).Microseconds())/10.0) / 100.0
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+
+	// Probes 2-4: Warm keep-alive RTT
+	var warm []float64
+	for i := 0; i < 3; i++ {
+		time.Sleep(50 * time.Millisecond)
+		tw0 := time.Now()
+		warmReq, _ := http.NewRequest(http.MethodGet, target, nil)
+		warmReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		wResp, wErr := client.Do(warmReq)
+		if wErr == nil {
+			warmMs := math.Round(float64(time.Since(tw0).Microseconds())/10.0) / 100.0
+			warm = append(warm, warmMs)
+			_, _ = io.Copy(io.Discard, wResp.Body)
+			_ = wResp.Body.Close()
+		}
+	}
+
+	wMin := 0.0
+	wMid := 0.0
+	wMax := 0.0
+	if len(warm) > 0 {
+		sortedWarm := make([]float64, len(warm))
+		copy(sortedWarm, warm)
+		sort.Float64s(sortedWarm)
+		wMin = sortedWarm[0]
+		wMid = sortedWarm[len(sortedWarm)/2]
+		wMax = sortedWarm[len(sortedWarm)-1]
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":           true,
+		"target":       target,
+		"route_desc":   routeDesc,
+		"cold_ms":      coldMs,
+		"warm_samples": warm,
+		"warm_list":    warm,
+		"warm_min_ms":  wMin,
+		"warm_mid_ms":  wMid,
+		"warm_max_ms":  wMax,
+		"error":        "",
+	})
+}
+
+func (c *ControlServer) handleUpdateCheck(w http.ResponseWriter, req *http.Request) {
+	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
+	info := updater.CheckForUpdate(proxyURL, 8*time.Second, config.AppVersion)
+	c.sendJSON(w, http.StatusOK, info)
+}
+
+func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Request) {
+	c.dlMu.Lock()
+	if c.dlActive {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "下载任务已在进行中",
+		})
+		return
+	}
+
+	var reqBody struct {
+		URL  string `json:"url"`
+		Dest string `json:"dest"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&reqBody)
+
+	downloadURL := reqBody.URL
+	if downloadURL == "" {
+		proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
+		info := updater.CheckForUpdate(proxyURL, 8*time.Second, config.AppVersion)
+		if info.DownloadURL == "" {
+			c.dlMu.Unlock()
+			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"ok":    false,
+				"error": "未能获取到可用的下载地址",
+			})
+			return
+		}
+		downloadURL = info.DownloadURL
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.dlActive = true
+	c.dlDone = false
+	c.dlProgress = 0
+	c.dlTotal = 0
+	c.dlPercent = 0.0
+	c.dlError = ""
+	c.dlDest = ""
+	c.dlCancelFn = cancel
+	c.dlMu.Unlock()
+
+	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
+	destPath := reqBody.Dest
+
+	go func() {
+		finalPath, err := updater.DownloadReleaseAsset(
+			downloadURL,
+			destPath,
+			proxyURL,
+			func(downloaded, total int64) {
+				c.dlMu.Lock()
+				c.dlProgress = downloaded
+				c.dlTotal = total
+				if total > 0 {
+					c.dlPercent = math.Round(float64(downloaded)/float64(total)*1000) / 10
+				}
+				c.dlMu.Unlock()
+			},
+			ctx,
+		)
+
+		c.dlMu.Lock()
+		c.dlActive = false
+		c.dlDone = (err == nil)
+		if err != nil {
+			c.dlError = err.Error()
+		} else {
+			c.dlDest = finalPath
+		}
+		c.dlMu.Unlock()
+	}()
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "Download initiated in background",
+	})
+}
+
+func (c *ControlServer) handleUpdateDownloadStatus(w http.ResponseWriter, req *http.Request) {
+	c.dlMu.Lock()
+	defer c.dlMu.Unlock()
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":         true,
+		"active":     c.dlActive,
+		"done":       c.dlDone,
+		"downloaded": c.dlProgress,
+		"total":      c.dlTotal,
+		"percent":    c.dlPercent,
+		"dest":       c.dlDest,
+		"error":      c.dlError,
+	})
+}
+
+func (c *ControlServer) handleUpdateDownloadCancel(w http.ResponseWriter, req *http.Request) {
+	c.dlMu.Lock()
+	defer c.dlMu.Unlock()
+	if c.dlCancelFn != nil {
+		c.dlCancelFn()
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "Download cancelled",
+	})
+}
+
+func (c *ControlServer) handleCertStatus(w http.ResponseWriter, req *http.Request) {
+	installed := false
+	sha256 := ""
+	sha1 := ""
+	if c.certMgr != nil {
+		installed = c.certMgr.IsInstalled()
+		sha256 = c.certMgr.GetFingerprintSHA256()
+		sha1 = c.certMgr.GetFingerprintSHA1()
+	}
+	legacy := cert.CheckLegacyLeakedCAInstalled()
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":                      true,
+		"installed":               installed,
+		"sha256":                  sha256,
+		"sha1":                    sha1,
+		"legacy_leaked_installed": legacy,
+	})
+}
+
+func (c *ControlServer) handleCertInstall(w http.ResponseWriter, req *http.Request) {
+	if c.certMgr == nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": "certificate manager uninitialized"})
+		return
+	}
+	err := c.certMgr.Install("")
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "Root CA installed and trusted"})
+}
+
+func (c *ControlServer) handleCertUninstall(w http.ResponseWriter, req *http.Request) {
+	if c.certMgr == nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": "certificate manager uninitialized"})
+		return
+	}
+	err := c.certMgr.Uninstall()
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "Root CA uninstalled"})
+}
+
+func (c *ControlServer) handleCertCleanLegacy(w http.ResponseWriter, req *http.Request) {
+	err := cert.CleanLegacyLeakedCA()
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "Legacy leaked CA cleaned"})
+}
+
+func (c *ControlServer) handleStartupStatus(w http.ResponseWriter, req *http.Request) {
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":        true,
+		"supported": startup.IsStartupSupported(),
+		"enabled":   startup.IsStartupEnabled(),
+	})
+}
+
+func (c *ControlServer) handleStartupSet(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "invalid JSON"})
+		return
+	}
+	err := startup.SetStartupEnabled(body.Enabled)
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	c.cfgMgr.Update(func(cfg *config.Config) {
+		cfg.AutoStart = body.Enabled
+	})
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"enabled": body.Enabled,
+	})
+}
+
+func (c *ControlServer) handleSysProxyEnable(w http.ResponseWriter, req *http.Request) {
+	cfg := c.cfgMgr.Get()
+	pacURL := fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort)
+	err := sysproxy.EnablePACProxy(pacURL)
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	c.cfgMgr.Update(func(cfg *config.Config) {
+		cfg.AutoSystemProxy = true
+	})
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "System PAC proxy enabled",
+		"url":     pacURL,
+	})
+}
+
+func (c *ControlServer) handleSysProxyDisable(w http.ResponseWriter, req *http.Request) {
+	err := sysproxy.DisablePACProxy(false)
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	c.cfgMgr.Update(func(cfg *config.Config) {
+		cfg.AutoSystemProxy = false
+	})
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "System PAC proxy disabled",
 	})
 }
 
@@ -481,18 +1274,30 @@ func (c *ControlServer) getTelemetrySummary() map[string]interface{} {
 	totalAssets := atomic.LoadInt64(&c.stats.TotalAssets)
 	totalReqs := totalAPIs + totalAssets
 	reused := totalAPIs
-	reuseRate := 100.0
-	if totalReqs > 0 && totalAPIs == 0 {
-		reuseRate = 0.0
+	reuseRate := 0.0
+	newConns := int64(0)
+	if totalReqs > 0 {
+		newConns = 1
+		if totalAPIs > 0 {
+			reuseRate = 100.0
+		}
 	}
 
 	return map[string]interface{}{
 		"total_requests":     totalReqs,
 		"reused_connections": reused,
-		"new_connections":    1,
+		"new_connections":    newConns,
 		"reuse_rate":         reuseRate,
 		"retry_count":        atomic.LoadInt64(&c.stats.APIRetries),
-		"percentiles":        map[string]float64{"p50": 5.0, "p90": 15.0, "p99": 30.0},
+		"percentiles": map[string]interface{}{
+			"p50_ms":  0.0,
+			"p95_ms":  0.0,
+			"p99_ms":  0.0,
+			"avg_ms":  0.0,
+			"min_ms":  0.0,
+			"max_ms":  0.0,
+			"samples": 0,
+		},
 		"protocols":          map[string]int{"HTTP/1.1": int(totalAPIs), "HTTP/2": int(totalAssets)},
 		"exceptions":         map[string]int{},
 	}
@@ -526,7 +1331,9 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 
 	// 1. Send initial status event
 	statusData, _ := json.Marshal(c.getRuntimeStatus())
-	fmt.Fprintf(w, "event: status\ndata: %s\n\n", statusData)
+	if _, err := fmt.Fprintf(w, "event: status\ndata: %s\n\n", statusData); err != nil {
+		return
+	}
 
 	// 2. Send recent logs on connect (up to last 20)
 	recentLogs := c.stats.GetLogs()
@@ -536,13 +1343,30 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 	}
 	for _, l := range recentLogs[startIdx:] {
 		logData, _ := json.Marshal(l)
-		fmt.Fprintf(w, "event: log\ndata: %s\n\n", logData)
+		if _, err := fmt.Fprintf(w, "event: log\ndata: %s\n\n", logData); err != nil {
+			return
+		}
 	}
 	flusher.Flush()
 
-	// 3. Subscribe to real-time logs
+	// 3. Subscribe to real-time logs and custom events
 	logCh, unsubscribe := c.stats.SubscribeLogs()
 	defer unsubscribe()
+
+	sseCh := make(chan []byte, 64)
+	c.sseMu.Lock()
+	c.sseClients = append(c.sseClients, sseCh)
+	c.sseMu.Unlock()
+	defer func() {
+		c.sseMu.Lock()
+		for i, ch := range c.sseClients {
+			if ch == sseCh {
+				c.sseClients = append(c.sseClients[:i], c.sseClients[i+1:]...)
+				break
+			}
+		}
+		c.sseMu.Unlock()
+	}()
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -553,12 +1377,23 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 			return
 		case <-c.closedChan:
 			return
-		case logEnt, ok := <-logCh:
-			if ok {
-				logData, _ := json.Marshal(logEnt)
-				fmt.Fprintf(w, "event: log\ndata: %s\n\n", logData)
-				flusher.Flush()
+		case rawEvent, ok := <-sseCh:
+			if !ok {
+				return
 			}
+			if _, err := w.Write(rawEvent); err != nil {
+				return
+			}
+			flusher.Flush()
+		case logEnt, ok := <-logCh:
+			if !ok {
+				return
+			}
+			logData, _ := json.Marshal(logEnt)
+			if _, err := fmt.Fprintf(w, "event: log\ndata: %s\n\n", logData); err != nil {
+				return
+			}
+			flusher.Flush()
 		case now := <-ticker.C:
 			pulseData, _ := json.Marshal(map[string]interface{}{
 				"time":       now.Format("15:04:05"),
@@ -569,7 +1404,9 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 				"hits":       atomic.LoadInt64(&c.stats.TotalHits),
 				"misses":     atomic.LoadInt64(&c.stats.CacheMisses),
 			})
-			fmt.Fprintf(w, "event: metrics\ndata: %s\n\n", pulseData)
+			if _, err := fmt.Fprintf(w, "event: metrics\ndata: %s\n\n", pulseData); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}

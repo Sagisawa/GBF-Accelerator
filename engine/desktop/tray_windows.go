@@ -396,8 +396,8 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 		case cmdOpenCache:
 			_ = t.ctrl.OpenFolder(t.ctrl.GetCacheDir())
 		case cmdQuitApp:
-			t.Stop()
-			t.ctrl.Quit()
+			procDestroyWindow.Call(hwnd)
+			go t.ctrl.Quit()
 		}
 		return 0
 
@@ -448,7 +448,7 @@ func (t *WindowsTray) showContextMenu() {
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
 
 	// Quit
-	quitStr, _ := syscall.UTF16PtrFromString("彻底退出")
+	quitStr, _ := syscall.UTF16PtrFromString("退出程序")
 	procAppendMenuW.Call(hMenu, mfString, cmdQuitApp, uintptr(unsafe.Pointer(quitStr)))
 
 	var pt point

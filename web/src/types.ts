@@ -10,6 +10,13 @@ export interface RuntimeStatus {
   lan_ip?: string | null;
   ca_installed?: boolean;
   ca_thumbprint?: string;
+  ca_fingerprint?: string;
+  system_proxy_enabled?: boolean;
+  system_proxy_conflict?: boolean;
+  startup_enabled?: boolean;
+  startup_supported?: boolean;
+  is_auditing_cache?: boolean;
+  is_slimming_cache?: boolean;
   cache_dir?: string;
   active_api_count: number;
   active_foreground_assets: number;

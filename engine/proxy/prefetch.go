@@ -38,18 +38,23 @@ type prefetchItem struct {
 type PrefetchEngine struct {
 	srv           *ProxyServer
 	discoveryCh   chan prefetchCandidate
-	taskQueue     chan prefetchItem
+	prio1Queue    chan prefetchItem // High: JS / JSON
+	prio2Queue    chan prefetchItem // Medium: Images / Textures
+	prio3Queue    chan prefetchItem // Low: Audio / Other
 	inflightMu    sync.Mutex
 	inflight      map[string]struct{}
 	discoverySeen map[string]struct{}
 	stopChan      chan struct{}
+	stopOnce      sync.Once
 }
 
 func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 	pe := &PrefetchEngine{
 		srv:           srv,
 		discoveryCh:   make(chan prefetchCandidate, 128),
-		taskQueue:     make(chan prefetchItem, 512),
+		prio1Queue:    make(chan prefetchItem, 256),
+		prio2Queue:    make(chan prefetchItem, 256),
+		prio3Queue:    make(chan prefetchItem, 256),
 		inflight:      make(map[string]struct{}),
 		discoverySeen: make(map[string]struct{}),
 		stopChan:      make(chan struct{}),
@@ -60,11 +65,79 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 }
 
 func (pe *PrefetchEngine) Stop() {
-	close(pe.stopChan)
+	pe.stopOnce.Do(func() {
+		close(pe.stopChan)
+	})
+}
+
+func (pe *PrefetchEngine) IsStopped() bool {
+	select {
+	case <-pe.stopChan:
+		return true
+	default:
+		return false
+	}
+}
+
+func (pe *PrefetchEngine) removeInflight(key string) {
+	pe.inflightMu.Lock()
+	delete(pe.inflight, key)
+	pe.inflightMu.Unlock()
 }
 
 func (pe *PrefetchEngine) QueueLen() int {
-	return len(pe.taskQueue)
+	return len(pe.prio1Queue) + len(pe.prio2Queue) + len(pe.prio3Queue)
+}
+
+func (pe *PrefetchEngine) enqueueTask(item prefetchItem) bool {
+	var target chan prefetchItem
+	switch item.prio {
+	case 1:
+		target = pe.prio1Queue
+	case 2:
+		target = pe.prio2Queue
+	default:
+		target = pe.prio3Queue
+	}
+
+	select {
+	case target <- item:
+		return true
+	default:
+		return false
+	}
+}
+
+func (pe *PrefetchEngine) getNextTask() (prefetchItem, bool) {
+	// Strict Priority Scheduling: P1 (JS/JSON) > P2 (Textures) > P3 (Audio/Other)
+	select {
+	case <-pe.stopChan:
+		return prefetchItem{}, false
+	case item := <-pe.prio1Queue:
+		return item, true
+	default:
+	}
+
+	select {
+	case <-pe.stopChan:
+		return prefetchItem{}, false
+	case item := <-pe.prio1Queue:
+		return item, true
+	case item := <-pe.prio2Queue:
+		return item, true
+	default:
+	}
+
+	select {
+	case <-pe.stopChan:
+		return prefetchItem{}, false
+	case item := <-pe.prio1Queue:
+		return item, true
+	case item := <-pe.prio2Queue:
+		return item, true
+	case item := <-pe.prio3Queue:
+		return item, true
+	}
 }
 
 func (pe *PrefetchEngine) MaybeEnqueueDiscovery(host, path string, data []byte) {
@@ -208,7 +281,8 @@ func (pe *PrefetchEngine) discoveryWorker() {
 
 			for _, r := range refs {
 				h, p := r[0], r[1]
-				if pe.srv.cacheMgr.HasCache(p) {
+				ns, _ := NormalizeAssetNamespace(h)
+				if pe.srv.cacheMgr.HasCacheWithNamespace(ns, p) {
 					continue
 				}
 				key := h + p
@@ -224,10 +298,9 @@ func (pe *PrefetchEngine) discoveryWorker() {
 				pe.inflightMu.Unlock()
 
 				prio := getPrefetchPriority(p)
-				select {
-				case pe.taskQueue <- prefetchItem{prio: prio, host: h, path: p}:
-				default:
-					// Task queue full, drop
+				if !pe.enqueueTask(prefetchItem{prio: prio, host: h, path: p}) {
+					// Queue full, drop and release inflight key
+					pe.removeInflight(key)
 				}
 			}
 		}
@@ -236,84 +309,91 @@ func (pe *PrefetchEngine) discoveryWorker() {
 
 func (pe *PrefetchEngine) fetchWorker() {
 	for {
+		item, ok := pe.getNextTask()
+		if !ok {
+			return
+		}
+		key := item.host + item.path
+		pe.processFetchItem(item)
+		pe.removeInflight(key)
+	}
+}
+
+func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
+	// P1 Dynamic yielding: pause if active dynamic API or foreground assets
+	for atomic.LoadInt32(&pe.srv.stats.ActiveAPICount) > 0 || atomic.LoadInt32(&pe.srv.stats.ActiveForegroundAssets) > 0 {
 		select {
 		case <-pe.stopChan:
 			return
-		case item := <-pe.taskQueue:
-			// P1 Dynamic yielding: pause if active dynamic API or foreground assets
-			for atomic.LoadInt32(&pe.srv.stats.ActiveAPICount) > 0 || atomic.LoadInt32(&pe.srv.stats.ActiveForegroundAssets) > 0 {
-				select {
-				case <-pe.stopChan:
-					return
-				case <-time.After(50 * time.Millisecond):
-				}
-			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 
-			if !pe.srv.cfgMgr.Get().EnablePrefetch {
-				continue
-			}
-			if pe.srv.cacheMgr.HasCache(item.path) {
-				continue
-			}
+	if !pe.srv.cfgMgr.Get().EnablePrefetch {
+		return
+	}
+	ns, _ := NormalizeAssetNamespace(item.host)
+	if pe.srv.cacheMgr.HasCacheWithNamespace(ns, item.path) {
+		return
+	}
 
-			pe.srv.stats.IncPrefetchRequest()
-			upURL := fmt.Sprintf("https://%s%s", item.host, item.path)
-			req, err := http.NewRequestWithContext(context.Background(), "GET", upURL, nil)
-			if err != nil {
-				continue
-			}
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
-			req.Header.Set("Accept", "*/*")
-			req.Host = item.host
+	pe.srv.stats.IncPrefetchRequest()
+	upURL := fmt.Sprintf("https://%s%s", item.host, item.path)
+	req, err := http.NewRequestWithContext(context.Background(), "GET", upURL, nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Host = item.host
 
-			resp, err := pe.srv.getAssetClient().Do(req)
-			if err != nil || resp.StatusCode != http.StatusOK {
-				if resp != nil && resp.Body != nil {
-					_ = resp.Body.Close()
-				}
-				continue
-			}
-
-			data, err := io.ReadAll(resp.Body)
+	resp, err := pe.srv.getAssetClient().Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
-			if err != nil || len(data) == 0 {
-				continue
-			}
+		}
+		return
+	}
 
-			ct := resp.Header.Get("Content-Type")
-			if !cache.IsValidCacheContent(item.path, ct, data) {
-				continue
-			}
+	data, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil || len(data) == 0 {
+		return
+	}
 
-			headersMap := make(map[string]string)
-			for k, vv := range resp.Header {
-				if len(vv) > 0 {
-					headersMap[strings.ToLower(k)] = vv[0]
-				}
-			}
-			etag := resp.Header.Get("ETag")
-			if etag == "" {
-				etag = resp.Header.Get("Etag")
-			}
-			if etag != "" {
-				headersMap["etag"] = etag
-			}
+	ct := resp.Header.Get("Content-Type")
+	if !cache.IsValidCacheContent(item.path, ct, data) {
+		return
+	}
 
-			if pe.srv.cacheMgr.Save(item.path, headersMap, data) {
-				pe.srv.stats.IncPrefetchSuccess()
-				pe.srv.stats.MarkPrefetchSaved(item.path)
-				pe.srv.stats.Log("INFO", fmt.Sprintf("[PREFETCH] Warmed (P%d) -> %s%s (%d B)", item.prio, item.host, item.path, len(data)))
-			}
+	headersMap := make(map[string]string)
+	for k, vv := range resp.Header {
+		if len(vv) > 0 {
+			headersMap[strings.ToLower(k)] = vv[0]
+		}
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		etag = resp.Header.Get("Etag")
+	}
+	if etag != "" {
+		headersMap["etag"] = etag
+	}
 
-			// Pacing jitter (15~35ms)
-			if len(pe.taskQueue) > 0 {
-				jitter := 15 + rand.Intn(21)
-				select {
-				case <-pe.stopChan:
-					return
-				case <-time.After(time.Duration(jitter) * time.Millisecond):
-				}
-			}
+	if pe.srv.cacheMgr.SaveWithNamespace(ns, item.path, headersMap, data) {
+		pe.srv.stats.IncPrefetchSuccess()
+		pe.srv.stats.MarkPrefetchSaved(item.path)
+		pe.srv.stats.Log("INFO", fmt.Sprintf("[PREFETCH] Warmed (P%d) -> %s%s (%d B)", item.prio, item.host, item.path, len(data)))
+	}
+
+	// Pacing jitter (15~35ms)
+	if pe.QueueLen() > 0 {
+		jitter := 15 + rand.Intn(21)
+		select {
+		case <-pe.stopChan:
+			return
+		case <-time.After(time.Duration(jitter) * time.Millisecond):
 		}
 	}
 }

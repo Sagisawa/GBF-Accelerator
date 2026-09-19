@@ -23,7 +23,9 @@ type Manager struct {
 	caPEM     []byte
 	serverKey *rsa.PrivateKey
 	certCache map[string]*tls.Certificate
+	certsDir  string
 }
+
 
 func NewManager(certsDir string) (*Manager, error) {
 	if certsDir == "" {
@@ -73,6 +75,7 @@ func NewManager(certsDir string) (*Manager, error) {
 		caPEM:     caPEM,
 		serverKey: serverKey,
 		certCache: make(map[string]*tls.Certificate),
+		certsDir:  certsDir,
 	}, nil
 }
 
@@ -154,6 +157,9 @@ func (m *Manager) GetCAPEM() []byte {
 }
 
 func (m *Manager) GetOrCreateCert(host string) (*tls.Certificate, error) {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
 	m.mu.RLock()
 	if cert, ok := m.certCache[host]; ok {
 		m.mu.RUnlock()
@@ -201,6 +207,14 @@ func (m *Manager) GetOrCreateCert(host string) (*tls.Certificate, error) {
 	tlsCert := &tls.Certificate{
 		Certificate: [][]byte{certDER, m.caCert.Raw},
 		PrivateKey:  m.serverKey,
+	}
+
+	const maxCertCacheSize = 512
+	if len(m.certCache) >= maxCertCacheSize {
+		for k := range m.certCache {
+			delete(m.certCache, k)
+			break
+		}
 	}
 
 	m.certCache[host] = tlsCert

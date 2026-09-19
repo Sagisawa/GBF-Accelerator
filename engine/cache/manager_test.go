@@ -2,9 +2,11 @@ package cache
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestCacheManager(t *testing.T) {
@@ -205,3 +207,270 @@ func TestHasCacheAndAutoRepair(t *testing.T) {
 		t.Error("corrupt file should be unlinked on Get auto-repair")
 	}
 }
+
+func TestAsyncCacheSave(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_async_cache_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	item, ok := mgr.SaveRAM("assets/test/async_hero.png", map[string]string{
+		"content-type": "image/png",
+		"etag":         "\"async-etag-1\"",
+	}, validPng)
+	if !ok || item == nil {
+		t.Fatal("SaveRAM returned failure")
+	}
+
+	// Immediate RAM hit
+	ramItem, src := mgr.Get("assets/test/async_hero.png")
+	if ramItem == nil || src != "RAM" {
+		t.Fatalf("expected immediate RAM hit, got %v, src %s", ramItem, src)
+	}
+
+	// Wait for background persistWorker to flush to disk
+	diskFile := filepath.Join(tempDir, "assets", "test", "async_hero.png")
+	extFile := diskFile + ".ext"
+
+	persisted := false
+	for i := 0; i < 50; i++ {
+		time.Sleep(10 * time.Millisecond)
+		if fi, err := os.Stat(diskFile); err == nil && fi.Size() > 0 {
+			if fe, err2 := os.Stat(extFile); err2 == nil && fe.Size() > 0 {
+				persisted = true
+				break
+			}
+		}
+	}
+	if !persisted {
+		t.Fatal("expected background worker to persist file and .ext to disk within 500ms")
+	}
+
+	// Verify disk load after RAM cleared
+	mgr.ClearRAM()
+	diskItem, srcDisk := mgr.Get("assets/test/async_hero.png")
+	if diskItem == nil || srcDisk != "DISK" {
+		t.Fatalf("expected DISK hit after clearing RAM, got %v, src %s", diskItem, srcDisk)
+	}
+}
+
+func TestHostNamespaceIsolation(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_ns_cache_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	gbfData := []byte("\x89PNG\r\n\x1a\ngbf_official_data")
+	otherData := []byte("\x89PNG\r\n\x1a\nother_host_data")
+
+	// Save to gbf namespace (mirrors a, a1..a5)
+	mgr.SaveWithNamespace("gbf", "assets/common/img.png", map[string]string{"content-type": "image/png"}, gbfData)
+
+	// Save to isolated custom host
+	savedOther := mgr.SaveWithNamespace("other.example.com", "assets/common/img.png", map[string]string{"content-type": "image/png"}, otherData)
+	if !savedOther {
+		t.Fatalf("SaveWithNamespace failed for other.example.com")
+	}
+
+	// Verify isolation in GetWithNamespace
+	itemGBF, _ := mgr.GetWithNamespace("gbf", "assets/common/img.png")
+	if itemGBF == nil || string(itemGBF.Data) != string(gbfData) {
+		t.Errorf("expected GBF data, got %v", itemGBF)
+	}
+
+	itemOther, _ := mgr.GetWithNamespace("other.example.com", "assets/common/img.png")
+	if itemOther == nil || string(itemOther.Data) != string(otherData) {
+		t.Errorf("expected Other data, got %v", itemOther)
+	}
+
+	// Verify disk paths: GBF in base root, other in hosts/other.example.com/
+	gbfDisk := filepath.Join(tempDir, "assets", "common", "img.png")
+	otherDisk := filepath.Join(tempDir, "hosts", "other.example.com", "assets", "common", "img.png")
+
+	if _, err := os.Stat(gbfDisk); err != nil {
+		t.Errorf("GBF file must be in root cache dir: %v", err)
+	}
+	if _, err := os.Stat(otherDisk); err != nil {
+		t.Errorf("Other file must be in hosts/ subdir: %v", err)
+	}
+}
+
+func TestAsyncDrainOnClose(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_drain_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+
+	pngData := []byte("\x89PNG\r\n\x1a\ndrain_test_data")
+	mgr.SaveRAMWithNamespace("gbf", "assets/drain.png", map[string]string{"content-type": "image/png"}, pngData)
+
+	// Close immediately: Close() must wait for background persistQueue to drain
+	mgr.Close()
+
+	diskFile := filepath.Join(tempDir, "assets", "drain.png")
+	data, err := os.ReadFile(diskFile)
+	if err != nil {
+		t.Fatalf("file must be written to disk before Close() returns: %v", err)
+	}
+	if string(data) != string(pngData) {
+		t.Fatalf("expected %q, got %q", string(pngData), string(data))
+	}
+}
+
+func TestWarmup(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	pngData := []byte("\x89PNG\r\n\x1a\nwarmup_test")
+	// Save 5 files to disk
+	for i := 1; i <= 5; i++ {
+		path := fmt.Sprintf("assets/item%d.png", i)
+		mgr.Save(path, map[string]string{"content-type": "image/png"}, pngData)
+	}
+
+	// Also save a file under hosts/
+	mgr.SaveWithNamespace("example.com", "assets/host_item.png", map[string]string{"content-type": "image/png"}, pngData)
+
+	// Create a quarantined file on disk: Warmup must skip this!
+	quarantinedPath := filepath.Join(tempDir, "assets", "bad.js.quarantine.12345")
+	if err := os.WriteFile(quarantinedPath, []byte("tampered content"), 0644); err != nil {
+		t.Fatalf("failed to create quarantined file: %v", err)
+	}
+
+	// Clear RAM cache so it's empty
+	mgr.ClearRAM()
+	items, _ := mgr.Stats()
+	if items != 0 {
+		t.Fatalf("expected 0 items in RAM after ClearRAM, got %d", items)
+	}
+
+	// Warmup max 3 items
+	loaded := mgr.Warmup(3)
+	if loaded != 3 {
+		t.Fatalf("expected 3 items loaded during Warmup(3), got %d", loaded)
+	}
+
+	items, _ = mgr.Stats()
+	if items != 3 {
+		t.Fatalf("expected 3 items in RAM cache after Warmup(3), got %d", items)
+	}
+
+	// Warmup all items: must load exactly 6 valid items (5 gbf + 1 host) and NOT the quarantined file
+	loadedAll := mgr.Warmup(100)
+	if loadedAll != 6 {
+		t.Fatalf("expected exactly 6 items loaded during Warmup(100), got %d", loadedAll)
+	}
+}
+
+func TestPruneStaleVersionsHosts(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	pngData := []byte("\x89PNG\r\n\x1a\nprune_test")
+
+	// Create 5 versions in base assets
+	for v := 101; v <= 105; v++ {
+		p := fmt.Sprintf("assets/%d/img.png", v)
+		mgr.Save(p, map[string]string{"content-type": "image/png"}, pngData)
+	}
+
+	// Create 5 versions in hosts/prd-game-a.akamaized.net/assets
+	for v := 201; v <= 205; v++ {
+		p := fmt.Sprintf("assets/%d/img.png", v)
+		mgr.SaveWithNamespace("prd-game-a.akamaized.net", p, map[string]string{"content-type": "image/png"}, pngData)
+	}
+
+	// Prune keeping 2 versions
+	deletedDirs, deletedFiles, _ := mgr.PruneStaleVersions(2)
+	// Base should prune 3 versions (101, 102, 103), hosts should prune 3 versions (201, 202, 203)
+	if deletedDirs != 6 {
+		t.Errorf("expected 6 deleted dirs (3 in base + 3 in hosts), got %d", deletedDirs)
+	}
+	// Each version contains 1 asset file + 1 .ext metadata file = 2 files per version * 6 versions = 12 files
+	if deletedFiles != 12 {
+		t.Errorf("expected 12 deleted files (6 asset + 6 .ext files), got %d", deletedFiles)
+	}
+
+	// Verify latest versions still exist: 104, 105 in base, 204, 205 in hosts
+	if _, err := os.Stat(filepath.Join(tempDir, "assets", "105", "img.png")); err != nil {
+		t.Error("expected version 105 to be kept in base")
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "hosts", "prd-game-a.akamaized.net", "assets", "205", "img.png")); err != nil {
+		t.Error("expected version 205 to be kept in hosts")
+	}
+	// Verify stale versions deleted
+	if _, err := os.Stat(filepath.Join(tempDir, "assets", "101", "img.png")); !os.IsNotExist(err) {
+		t.Error("expected version 101 to be deleted from base")
+	}
+	if _, err := os.Stat(filepath.Join(tempDir, "hosts", "prd-game-a.akamaized.net", "assets", "201", "img.png")); !os.IsNotExist(err) {
+		t.Error("expected version 201 to be deleted from hosts")
+	}
+}
+
+func TestAuditAndSlimProgress(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	// 1. Setup sample files: 1 good png, 1 0-byte file, 1 corrupt file
+	goodPng := []byte("\x89PNG\r\n\x1a\nprogress_test")
+	mgr.Save("assets/test/good.png", map[string]string{"content-type": "image/png"}, goodPng)
+	_ = os.WriteFile(filepath.Join(tempDir, "assets", "test", "zero.png"), []byte{}, 0644)
+	_ = os.WriteFile(filepath.Join(tempDir, "assets", "test", "corrupt.png"), []byte("504 Gateway Timeout"), 0644)
+
+	var auditCallbacks []AuditProgress
+	res := mgr.AuditAndRepairWithProgress(func(p AuditProgress) {
+		auditCallbacks = append(auditCallbacks, p)
+	}, nil)
+
+	if res["corrupted"].(int) != 2 {
+		t.Errorf("expected 2 corrupted files detected, got %v", res["corrupted"])
+	}
+	if len(auditCallbacks) == 0 || !auditCallbacks[len(auditCallbacks)-1].Done {
+		t.Errorf("expected final audit callback with Done=true")
+	}
+
+	// Test cancellation in audit
+	cancelCh := make(chan struct{})
+	close(cancelCh) // already cancelled
+	resCancel := mgr.AuditAndRepairWithProgress(nil, cancelCh)
+	if resCancel == nil {
+		t.Fatalf("expected non-nil result on cancelled audit")
+	}
+
+	// 2. Test slim progress
+	for v := 1; v <= 5; v++ {
+		mgr.Save(fmt.Sprintf("assets/%d/test.png", v), map[string]string{"content-type": "image/png"}, goodPng)
+	}
+
+	var slimCallbacks []SlimProgress
+	delDirs, delFiles, _ := mgr.PruneStaleVersionsWithProgress(2, func(p SlimProgress) {
+		slimCallbacks = append(slimCallbacks, p)
+	}, nil)
+
+	if delDirs != 3 {
+		t.Errorf("expected 3 deleted dirs, got %d", delDirs)
+	}
+	if delFiles != 6 { // 3 png + 3 .ext
+		t.Errorf("expected 6 deleted files, got %d", delFiles)
+	}
+	if len(slimCallbacks) == 0 || !slimCallbacks[len(slimCallbacks)-1].Done {
+		t.Errorf("expected final slim callback with Done=true")
+	}
+}
+
+

@@ -34,17 +34,21 @@ type Stats struct {
 	subscribers   []chan LogEntry
 	prefetchMu    sync.RWMutex
 	prefetchSaved map[string]struct{}
+	logChan       chan LogEntry
 }
 
 var GlobalStats = NewStats()
 
 func NewStats() *Stats {
-	return &Stats{
+	s := &Stats{
 		StartTime:     time.Now(),
 		logs:          make([]LogEntry, 0, 1000),
 		subscribers:   make([]chan LogEntry, 0),
 		prefetchSaved: make(map[string]struct{}),
+		logChan:       make(chan LogEntry, 1024),
 	}
+	go s.logWorker()
+	return s
 }
 
 func (s *Stats) IncAPI() {
@@ -125,22 +129,32 @@ func (s *Stats) Log(level, msg string) {
 		Level: level,
 		Msg:   msg,
 	}
-	s.mu.Lock()
-	s.logs = append(s.logs, entry)
-	if len(s.logs) > 1000 {
-		s.logs = s.logs[len(s.logs)-1000:]
+	select {
+	case s.logChan <- entry:
+	default:
+		// Drop log entry when queue is congested to protect proxy datapath latency
 	}
-	s.mu.Unlock()
+}
 
-	// Fan-out to SSE subscribers
-	s.subMu.RLock()
-	for _, ch := range s.subscribers {
-		select {
-		case ch <- entry:
-		default:
+func (s *Stats) logWorker() {
+	for entry := range s.logChan {
+		s.mu.Lock()
+		s.logs = append(s.logs, entry)
+		if len(s.logs) > 1000 {
+			s.logs = s.logs[len(s.logs)-1000:]
 		}
+		s.mu.Unlock()
+
+		// Fan-out to SSE subscribers
+		s.subMu.RLock()
+		for _, ch := range s.subscribers {
+			select {
+			case ch <- entry:
+			default:
+			}
+		}
+		s.subMu.RUnlock()
 	}
-	s.subMu.RUnlock()
 }
 
 func (s *Stats) SubscribeLogs() (chan LogEntry, func()) {

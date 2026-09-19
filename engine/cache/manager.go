@@ -19,6 +19,14 @@ import (
 	"time"
 )
 
+type persistTask struct {
+	ns       string
+	cleanKey string
+	filePath string
+	headers  map[string]string
+	data     []byte
+}
+
 type Manager struct {
 	mu           sync.RWMutex
 	cacheBase    string
@@ -26,6 +34,10 @@ type Manager struct {
 	sf           *SingleFlight
 	missingCache map[string]struct{}
 	missingMu    sync.RWMutex
+	persistQueue chan *persistTask
+	stopPersist  chan struct{}
+	persistDone  chan struct{}
+	stopOnce     sync.Once
 }
 
 var mimeFallbacks = map[string]string{
@@ -53,11 +65,45 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 	if ramMaxMB <= 0 {
 		ramMaxMB = 256
 	}
-	return &Manager{
+	m := &Manager{
 		cacheBase:    cacheBase,
 		ramCache:     NewLRUCache(int64(ramMaxMB) * 1024 * 1024),
 		sf:           NewSingleFlight(),
 		missingCache: make(map[string]struct{}),
+		persistQueue: make(chan *persistTask, 1024),
+		stopPersist:  make(chan struct{}),
+		persistDone:  make(chan struct{}),
+	}
+	go m.persistWorker()
+	return m
+}
+
+func (m *Manager) Close() {
+	m.stopOnce.Do(func() {
+		close(m.stopPersist)
+		select {
+		case <-m.persistDone:
+		case <-time.After(3 * time.Second):
+		}
+	})
+}
+
+func (m *Manager) persistWorker() {
+	defer close(m.persistDone)
+	for {
+		select {
+		case <-m.stopPersist:
+			for {
+				select {
+				case task := <-m.persistQueue:
+					m.saveToDisk(task.filePath, task.headers, task.data)
+				default:
+					return
+				}
+			}
+		case task := <-m.persistQueue:
+			m.saveToDisk(task.filePath, task.headers, task.data)
+		}
 	}
 }
 
@@ -85,7 +131,30 @@ func (m *Manager) SingleFlight() *SingleFlight {
 	return m.sf
 }
 
+func sanitizeNamespace(ns string) string {
+	clean := strings.ToLower(strings.TrimSpace(ns))
+	clean = strings.ReplaceAll(clean, ":", "_")
+	clean = strings.ReplaceAll(clean, "/", "_")
+	clean = strings.ReplaceAll(clean, "\\", "_")
+	clean = strings.ReplaceAll(clean, "..", "")
+	if clean == "" {
+		return "gbf"
+	}
+	return clean
+}
+
+func makeRAMKey(ns, cleanKey string) string {
+	if ns == "" || ns == "gbf" {
+		return cleanKey
+	}
+	return sanitizeNamespace(ns) + "/" + cleanKey
+}
+
 func (m *Manager) resolvePath(urlPath string) (string, bool) {
+	return m.resolvePathWithNamespace("gbf", urlPath)
+}
+
+func (m *Manager) resolvePathWithNamespace(ns, urlPath string) (string, bool) {
 	clean := strings.TrimSpace(strings.Split(urlPath, "?")[0])
 	clean = filepath.Clean(filepath.FromSlash(strings.TrimPrefix(clean, "/")))
 
@@ -105,7 +174,13 @@ func (m *Manager) resolvePath(urlPath string) (string, bool) {
 	base := m.cacheBase
 	m.mu.RUnlock()
 
-	target := filepath.Join(base, clean)
+	var target string
+	if ns == "" || ns == "gbf" {
+		target = filepath.Join(base, clean)
+	} else {
+		target = filepath.Join(base, "hosts", sanitizeNamespace(ns), clean)
+	}
+
 	rel, err := filepath.Rel(base, target)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", false
@@ -114,36 +189,43 @@ func (m *Manager) resolvePath(urlPath string) (string, bool) {
 }
 
 func (m *Manager) HasCache(urlPath string) bool {
+	return m.HasCacheWithNamespace("gbf", urlPath)
+}
+
+func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
 	if cleanKey == "" {
 		return false
 	}
-	if m.ramCache.Contains(cleanKey) {
+	ramKey := makeRAMKey(ns, cleanKey)
+	if m.ramCache.Contains(ramKey) {
 		return true
 	}
 	m.missingMu.RLock()
-	_, missing := m.missingCache[cleanKey]
+	_, missing := m.missingCache[ramKey]
 	m.missingMu.RUnlock()
 	if missing {
 		return false
 	}
-	filePath, ok := m.resolvePath(cleanKey)
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
 		return false
 	}
 	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 {
 		return true
 	}
-	// Fallback check
-	var altPath string
-	if !strings.HasPrefix(cleanKey, "assets") {
-		altPath, _ = m.resolvePath("assets/" + cleanKey)
-	} else {
-		altPath, _ = m.resolvePath(strings.TrimPrefix(cleanKey, "assets/"))
-	}
-	if altPath != "" {
-		if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
-			return true
+	// Fallback check (only in gbf namespace)
+	if ns == "" || ns == "gbf" {
+		var altPath string
+		if !strings.HasPrefix(cleanKey, "assets") {
+			altPath, _ = m.resolvePathWithNamespace("gbf", "assets/"+cleanKey)
+		} else {
+			altPath, _ = m.resolvePathWithNamespace("gbf", strings.TrimPrefix(cleanKey, "assets/"))
+		}
+		if altPath != "" {
+			if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				return true
+			}
 		}
 	}
 	return false
@@ -190,60 +272,70 @@ func (m *Manager) CheckAndQuarantineTamperedJS(filePath string) bool {
 }
 
 func (m *Manager) Get(urlPath string) (*CacheItem, string) {
+	return m.GetWithNamespace("gbf", urlPath)
+}
+
+func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	ramKey := makeRAMKey(ns, cleanKey)
 
 	// 1. Check RAM Cache
-	if item, ok := m.ramCache.Get(cleanKey); ok {
+	if item, ok := m.ramCache.Get(ramKey); ok {
 		return item, "RAM"
 	}
 
 	// Negative cache check
 	m.missingMu.RLock()
-	_, missing := m.missingCache[cleanKey]
+	_, missing := m.missingCache[ramKey]
 	m.missingMu.RUnlock()
 	if missing {
 		return nil, ""
 	}
 
 	// 2. Check Disk Cache
-	filePath, ok := m.resolvePath(cleanKey)
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
 		return nil, ""
 	}
 
 	fi, err := os.Stat(filePath)
 	if err != nil || fi.IsDir() || fi.Size() == 0 {
-		// Try fallback: prepend or strip "assets"
-		var altPath string
-		if !strings.HasPrefix(cleanKey, "assets") {
-			altPath, _ = m.resolvePath("assets/" + cleanKey)
-		} else {
-			altPath, _ = m.resolvePath(strings.TrimPrefix(cleanKey, "assets/"))
-		}
-		if altPath != "" {
-			if fi2, err2 := os.Stat(altPath); err2 == nil && !fi2.IsDir() && fi2.Size() > 0 {
-				filePath = altPath
-				fi = fi2
+		if ns == "" || ns == "gbf" {
+			// Try fallback: prepend or strip "assets" for gbf namespace
+			var altPath string
+			if !strings.HasPrefix(cleanKey, "assets") {
+				altPath, _ = m.resolvePathWithNamespace("gbf", "assets/"+cleanKey)
 			} else {
-				m.markMissing(cleanKey)
+				altPath, _ = m.resolvePathWithNamespace("gbf", strings.TrimPrefix(cleanKey, "assets/"))
+			}
+			if altPath != "" {
+				if fi2, err2 := os.Stat(altPath); err2 == nil && !fi2.IsDir() && fi2.Size() > 0 {
+					filePath = altPath
+					fi = fi2
+				} else {
+					m.markMissing(ramKey)
+					return nil, ""
+				}
+			} else {
+				m.markMissing(ramKey)
 				return nil, ""
 			}
 		} else {
-			m.markMissing(cleanKey)
+			m.markMissing(ramKey)
 			return nil, ""
 		}
 	}
 
 	if strings.HasSuffix(cleanKey, "set-error-handler.js") {
 		if m.CheckAndQuarantineTamperedJS(filePath) {
-			m.markMissing(cleanKey)
+			m.markMissing(ramKey)
 			return nil, ""
 		}
 	}
 
 	data, err := os.ReadFile(filePath)
 	if err != nil || len(data) == 0 {
-		m.markMissing(cleanKey)
+		m.markMissing(ramKey)
 		return nil, ""
 	}
 
@@ -284,7 +376,7 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 	}
 
 	if !IsValidCacheContent(cleanKey, contentType, data) {
-		m.markMissing(cleanKey)
+		m.markMissing(ramKey)
 		_ = os.Remove(filePath)
 		_ = os.Remove(extPath)
 		return nil, ""
@@ -303,7 +395,7 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 	}
 
 	item := &CacheItem{
-		Key:             cleanKey,
+		Key:             ramKey,
 		Data:            data,
 		ContentType:     contentType,
 		ContentEncoding: contentEncoding,
@@ -313,7 +405,7 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 	}
 
 	// Store into RAM cache
-	m.ramCache.Set(cleanKey, item)
+	m.ramCache.Set(ramKey, item)
 	return item, "DISK"
 }
 
@@ -385,18 +477,98 @@ func getHeader(h map[string]string, key string) string {
 	return ""
 }
 
-func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) bool {
+func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, string, string, bool) {
 	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
 	ct := getHeader(headers, "content-type")
 	if !IsValidCacheContent(cleanKey, ct, data) {
-		return false
+		return nil, "", "", false
 	}
 
-	filePath, ok := m.resolvePath(cleanKey)
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
-		return false
+		return nil, "", "", false
 	}
 
+	ce := getHeader(headers, "content-encoding")
+	if !(len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b) && ce == "gzip" {
+		ce = ""
+	}
+	etag := getHeader(headers, "etag")
+	if etag == "" {
+		etag = fmt.Sprintf("\"%x-%x\"", time.Now().Unix(), len(data))
+	}
+	lastMod := getHeader(headers, "last-modified")
+
+	ramKey := makeRAMKey(ns, cleanKey)
+	item := &CacheItem{
+		Key:             ramKey,
+		Data:            data,
+		ContentType:     ct,
+		ContentEncoding: ce,
+		ETag:            etag,
+		LastModified:    lastMod,
+		Size:            int64(len(data)),
+	}
+	m.ramCache.Set(ramKey, item)
+
+	m.missingMu.Lock()
+	delete(m.missingCache, ramKey)
+	m.missingMu.Unlock()
+
+	return item, cleanKey, filePath, true
+}
+
+func (m *Manager) SaveRAM(urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	return m.SaveRAMWithNamespace("gbf", urlPath, headers, data)
+}
+
+func (m *Manager) SaveRAMWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	item, cleanKey, filePath, ok := m.saveRAMInternal(ns, urlPath, headers, data)
+	if !ok || item == nil {
+		return nil, false
+	}
+
+	// Enqueue async disk persistence (bounded, non-blocking)
+	select {
+	case m.persistQueue <- &persistTask{
+		ns:       ns,
+		cleanKey: cleanKey,
+		filePath: filePath,
+		headers:  headers,
+		data:     data,
+	}:
+	default:
+		// Queue full, drop disk persist without delaying foreground
+	}
+
+	return item, true
+}
+
+func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) bool {
+	return m.SaveWithNamespace("gbf", urlPath, headers, data)
+}
+
+func (m *Manager) SaveWithNamespace(ns, urlPath string, headers map[string]string, data []byte) bool {
+	item, _, filePath, ok := m.saveRAMInternal(ns, urlPath, headers, data)
+	if !ok || item == nil {
+		return false
+	}
+	return m.saveToDisk(filePath, headers, data)
+}
+
+func renameWithRetry(src, dst string, maxAttempts int) error {
+	var err error
+	for i := 0; i < maxAttempts; i++ {
+		err = os.Rename(src, dst)
+		if err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
+	}
+	return err
+}
+
+func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []byte) bool {
 	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
 		return false
 	}
@@ -410,6 +582,7 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 		etag = fmt.Sprintf("\"%x-%x\"", time.Now().Unix(), len(data))
 	}
 	lastMod := getHeader(headers, "last-modified")
+	ct := getHeader(headers, "content-type")
 
 	pid := os.Getpid()
 	ts := time.Now().UnixNano()
@@ -418,7 +591,7 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 		_ = os.Remove(tmpDataPath)
 		return false
 	}
-	if err := os.Rename(tmpDataPath, filePath); err != nil {
+	if err := renameWithRetry(tmpDataPath, filePath, 3); err != nil {
 		_ = os.Remove(tmpDataPath)
 		return false
 	}
@@ -438,33 +611,17 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
 	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d", extPath, pid, ts)
 	if err := os.WriteFile(tmpExtPath, metaBytes, 0644); err == nil {
-		if err := os.Rename(tmpExtPath, extPath); err != nil {
+		if err := renameWithRetry(tmpExtPath, extPath, 3); err != nil {
 			_ = os.Remove(tmpExtPath)
 		}
 	}
 
-	// Update RAM cache
-	item := &CacheItem{
-		Key:             cleanKey,
-		Data:            data,
-		ContentType:     ct,
-		ContentEncoding: ce,
-		ETag:            etag,
-		LastModified:    lastMod,
-		Size:            int64(len(data)),
-	}
-	m.ramCache.Set(cleanKey, item)
-
-	m.missingMu.Lock()
-	delete(m.missingCache, cleanKey)
-	m.missingMu.Unlock()
-
 	return true
 }
 
-func (m *Manager) markMissing(cleanKey string) {
+func (m *Manager) markMissing(ramKey string) {
 	m.missingMu.Lock()
-	m.missingCache[cleanKey] = struct{}{}
+	m.missingCache[ramKey] = struct{}{}
 	if len(m.missingCache) > 4096 {
 		m.missingCache = make(map[string]struct{})
 	}
@@ -504,7 +661,23 @@ func (m *Manager) Stats() (items int, bytes int64) {
 	return m.ramCache.Stats()
 }
 
-func (m *Manager) AuditAndRepair() map[string]interface{} {
+type AuditProgress struct {
+	Scanned   int  `json:"scanned"`
+	Healthy   int  `json:"healthy"`
+	Corrupted int  `json:"corrupted"`
+	Done      bool `json:"done"`
+}
+
+type SlimProgress struct {
+	CurrentDir   string `json:"current_dir"`
+	CurrentIdx   int    `json:"current_idx"`
+	TotalDirs    int    `json:"total_dirs"`
+	DeletedFiles int    `json:"deleted_files"`
+	FreedBytes   int64  `json:"freed_bytes"`
+	Done         bool   `json:"done"`
+}
+
+func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), cancelCh <-chan struct{}) map[string]interface{} {
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
@@ -514,6 +687,11 @@ func (m *Manager) AuditAndRepair() map[string]interface{} {
 	healthy := 0
 
 	_ = filepath.Walk(base, func(p string, fi os.FileInfo, err error) error {
+		select {
+		case <-cancelCh:
+			return filepath.SkipAll
+		default:
+		}
 		if err != nil || fi.IsDir() {
 			return nil
 		}
@@ -530,31 +708,49 @@ func (m *Manager) AuditAndRepair() map[string]interface{} {
 				return nil
 			}
 		}
+
+		isBad := false
 		if fi.Size() == 0 {
+			isBad = true
+		} else {
+			data, err := os.ReadFile(p)
+			if err != nil || len(data) == 0 {
+				isBad = true
+			} else if !IsValidCacheContent(p, "", data) {
+				isBad = true
+			}
+		}
+
+		if isBad {
 			corrupted++
 			_ = os.Remove(p)
 			_ = os.Remove(p + ".ext")
-			return nil
+			if rel, err := filepath.Rel(base, p); err == nil {
+				m.ramCache.Delete("/" + filepath.ToSlash(rel))
+			}
+		} else {
+			healthy++
 		}
 
-		data, err := os.ReadFile(p)
-		if err != nil || len(data) == 0 {
-			corrupted++
-			_ = os.Remove(p)
-			_ = os.Remove(p + ".ext")
-			return nil
+		if progressCb != nil && scanned%500 == 0 {
+			progressCb(AuditProgress{
+				Scanned:   scanned,
+				Healthy:   healthy,
+				Corrupted: corrupted,
+				Done:      false,
+			})
 		}
-
-		if !IsValidCacheContent(p, "", data) {
-			corrupted++
-			_ = os.Remove(p)
-			_ = os.Remove(p + ".ext")
-			return nil
-		}
-
-		healthy++
 		return nil
 	})
+
+	if progressCb != nil {
+		progressCb(AuditProgress{
+			Scanned:   scanned,
+			Healthy:   healthy,
+			Corrupted: corrupted,
+			Done:      true,
+		})
+	}
 
 	return map[string]interface{}{
 		"scanned":   scanned,
@@ -564,7 +760,11 @@ func (m *Manager) AuditAndRepair() map[string]interface{} {
 	}
 }
 
-func (m *Manager) PruneStaleVersions(keepCount int) (int, int, int64) {
+func (m *Manager) AuditAndRepair() map[string]interface{} {
+	return m.AuditAndRepairWithProgress(nil, nil)
+}
+
+func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(p SlimProgress), cancelCh <-chan struct{}) (int, int, int64) {
 	if keepCount <= 0 {
 		keepCount = 8
 	}
@@ -572,48 +772,167 @@ func (m *Manager) PruneStaleVersions(keepCount int) (int, int, int64) {
 	base := m.cacheBase
 	m.mu.RUnlock()
 
-	var deletedDirs, deletedFiles int
-	var freedBytes int64
+	type staleDirEntry struct {
+		fullPath string
+		display  string
+	}
 
-	for _, prefix := range []string{"assets", "assets_en", "assets_jp"} {
-		prefixDir := filepath.Join(base, prefix)
-		entries, err := os.ReadDir(prefixDir)
-		if err != nil {
-			continue
-		}
+	collectStale := func(root string) []staleDirEntry {
+		var stales []staleDirEntry
+		for _, prefix := range []string{"assets", "assets_en", "assets_jp"} {
+			prefixDir := filepath.Join(root, prefix)
+			entries, err := os.ReadDir(prefixDir)
+			if err != nil {
+				continue
+			}
 
-		var versions []string
-		for _, e := range entries {
-			if e.IsDir() {
-				if _, err := strconv.Atoi(e.Name()); err == nil {
-					versions = append(versions, e.Name())
+			var versions []string
+			for _, e := range entries {
+				if e.IsDir() {
+					if _, err := strconv.Atoi(e.Name()); err == nil {
+						versions = append(versions, e.Name())
+					}
+				}
+			}
+
+			sort.Slice(versions, func(i, j int) bool {
+				v1, _ := strconv.Atoi(versions[i])
+				v2, _ := strconv.Atoi(versions[j])
+				return v1 > v2
+			})
+
+			if len(versions) > keepCount {
+				for _, v := range versions[keepCount:] {
+					stales = append(stales, staleDirEntry{
+						fullPath: filepath.Join(prefixDir, v),
+						display:  filepath.Join(prefix, v),
+					})
 				}
 			}
 		}
+		return stales
+	}
 
-		sort.Slice(versions, func(i, j int) bool {
-			v1, _ := strconv.Atoi(versions[i])
-			v2, _ := strconv.Atoi(versions[j])
-			return v1 > v2
-		})
+	var allStales []staleDirEntry
+	allStales = append(allStales, collectStale(base)...)
 
-		if len(versions) > keepCount {
-			stale := versions[keepCount:]
-			for _, v := range stale {
-				dirToDel := filepath.Join(prefixDir, v)
-				_ = filepath.Walk(dirToDel, func(p string, fi os.FileInfo, err error) error {
-					if err == nil && !fi.IsDir() {
-						deletedFiles++
-						freedBytes += fi.Size()
-					}
-					return nil
-				})
-				if err := os.RemoveAll(dirToDel); err == nil {
-					deletedDirs++
-				}
+	hostsDir := filepath.Join(base, "hosts")
+	if hostEntries, err := os.ReadDir(hostsDir); err == nil {
+		for _, he := range hostEntries {
+			if he.IsDir() {
+				allStales = append(allStales, collectStale(filepath.Join(hostsDir, he.Name()))...)
 			}
 		}
 	}
 
+	var deletedDirs, deletedFiles int
+	var freedBytes int64
+	totalDirs := len(allStales)
+
+	for idx, s := range allStales {
+		select {
+		case <-cancelCh:
+			return deletedDirs, deletedFiles, freedBytes
+		default:
+		}
+
+		if progressCb != nil {
+			progressCb(SlimProgress{
+				CurrentDir:   s.display,
+				CurrentIdx:   idx + 1,
+				TotalDirs:    totalDirs,
+				DeletedFiles: deletedFiles,
+				FreedBytes:   freedBytes,
+				Done:         false,
+			})
+		}
+
+		_ = filepath.Walk(s.fullPath, func(p string, fi os.FileInfo, err error) error {
+			if err == nil && !fi.IsDir() {
+				deletedFiles++
+				freedBytes += fi.Size()
+			}
+			return nil
+		})
+		if err := os.RemoveAll(s.fullPath); err == nil {
+			deletedDirs++
+		}
+	}
+
+	if progressCb != nil {
+		progressCb(SlimProgress{
+			CurrentDir:   "",
+			CurrentIdx:   totalDirs,
+			TotalDirs:    totalDirs,
+			DeletedFiles: deletedFiles,
+			FreedBytes:   freedBytes,
+			Done:         true,
+		})
+	}
+
 	return deletedDirs, deletedFiles, freedBytes
+}
+
+func (m *Manager) PruneStaleVersions(keepCount int) (int, int, int64) {
+	return m.PruneStaleVersionsWithProgress(keepCount, nil, nil)
+}
+
+type warmupCandidate struct {
+	path    string
+	modTime time.Time
+}
+
+func (m *Manager) Warmup(maxItems int) int {
+	if maxItems <= 0 {
+		maxItems = 1500
+	}
+	m.mu.RLock()
+	base := m.cacheBase
+	m.mu.RUnlock()
+
+	var candidates []warmupCandidate
+
+	_ = filepath.Walk(base, func(p string, fi os.FileInfo, err error) error {
+		if err != nil || fi.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") || fi.Size() == 0 {
+			return nil
+		}
+		candidates = append(candidates, warmupCandidate{
+			path:    p,
+			modTime: fi.ModTime(),
+		})
+		return nil
+	})
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+
+	if len(candidates) > maxItems {
+		candidates = candidates[:maxItems]
+	}
+
+	loaded := 0
+	for _, c := range candidates {
+		rel, err := filepath.Rel(base, c.path)
+		if err != nil {
+			continue
+		}
+		slashRel := filepath.ToSlash(rel)
+		ns := "gbf"
+		cleanKey := slashRel
+		if strings.HasPrefix(slashRel, "hosts/") {
+			parts := strings.SplitN(slashRel, "/", 3)
+			if len(parts) == 3 {
+				ns = parts[1]
+				cleanKey = parts[2]
+			}
+		}
+		if item, _ := m.GetWithNamespace(ns, cleanKey); item != nil {
+			loaded++
+		}
+	}
+	return loaded
 }
