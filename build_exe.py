@@ -24,12 +24,10 @@ def build():
 
     kill_running_instances()
 
-    pyinstaller_exe = BASE_DIR / ".venv" / "Scripts" / "pyinstaller.exe"
-    if not pyinstaller_exe.is_file():
-        pyinstaller_exe = "pyinstaller"
-
     cmd = [
-        str(pyinstaller_exe),
+        sys.executable,
+        "-m",
+        "PyInstaller",
         "--noconfirm",
         "--clean",
         "--onefile",
