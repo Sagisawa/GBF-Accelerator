@@ -15,6 +15,10 @@
 > - **macOS**：下载 `GBF_Accelerator_v1.8.1_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
+<p align="center">
+  <img src="docs/images/gui_main.png" alt="GBF Accelerator GUI 主界面展示" width="680">
+</p>
+
 ---
 
 ## 架构设计与数据流向
@@ -120,6 +124,10 @@ GBF Accelerator 本地代理核心
   - 主界面提供实时日志窗口，直观高亮展示连接复用状态（`reused` / `new`）；
   - 记录 API 耗时分布（P50 / P95 / P99），支持按模块筛选与一键导出。
 
+<p align="center">
+  <img src="docs/images/live_logs.png" alt="实时网络与转发日志窗口" width="760">
+</p>
+
 ### 💾 层次化缓存体系与预加载
 - **RAM Cache 内存热点缓存**：高频静态资源直接驻留内存（默认上限 256MB，可在 16MB ~ 8192MB 范围自由调节），读取耗时接近 0ms，读取不经磁盘。
 - **SSD 持久化缓存与原子写入**：静态资源落盘采用临时文件（`.tmp`）与原子替换（`os.replace` + `fsync`），防止写入意外中断导致文件残损。
@@ -147,7 +155,12 @@ GBF Accelerator 本地代理核心
   - 详细指引请参阅 [docs/MAC_LINUX_NOGUI.md](docs/MAC_LINUX_NOGUI.md)。
 - **局域网共享与移动端支持**：
   - 可在设置中开启“允许局域网连接”，支持同一局域网下的 iPhone / iPad / Android 设备接入；
-  - 内置私网 IP 访问控制列表（ACL）防护，提供移动端 PAC 配置指引。
+  - 内置私网 IP 访问控制列表（ACL）防护，提供移动端 PAC 配置与证书自动引导页面。
+
+<p align="center">
+  <img src="docs/images/lan_guide.png" alt="移动端与局域网接入指引（客户端指引与浏览器落地页）" width="820">
+</p>
+
 - **客户端内置版本更新检测**：
   - 启动时异步比对 GitHub Releases 版本，支持根据操作系统（Windows / macOS）自动筛选对应发布包并提供一键下载与进度展示。
 
