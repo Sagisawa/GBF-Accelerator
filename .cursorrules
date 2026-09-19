@@ -15,5 +15,5 @@ Key Rules:
 9. TEST INTEGRITY: NEVER weaken, skip, or alter existing test assertions to make tests pass.
 10. Follow the 5-step CHANGE PROTOCOL (Audit -> Assess -> Minimal Change -> Test -> Diff Review).
 
-Always run and verify:
-`.\.venv\Scripts\python.exe test_proxy.py`
+Always run and verify (engine is now native Go; run inside `engine/`):
+`go test ./...` and `go vet ./...`

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -166,6 +167,18 @@ func (s *ProxyServer) getAssetClient() *http.Client {
 	return s.assetClient
 }
 
+// tracedRequest attaches a non-intrusive httptrace hook that records real
+// connection reuse for telemetry. It never mutates the request or its bytes.
+// The negotiated protocol is recorded separately from the response.
+func (s *ProxyServer) tracedRequest(req *http.Request) *http.Request {
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			s.stats.RecordConnReuse(info.Reused)
+		},
+	}
+	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+}
+
 func (s *ProxyServer) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -316,7 +329,7 @@ func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.R
 
 	// Block telemetry tunnels immediately
 	if isTelemetryHost(host) {
-		_, _ = conn.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+		writeHTTPResponse(conn, http.StatusForbidden, nil, nil, false, true)
 		s.stats.Log("BLOCK", fmt.Sprintf("Blocked telemetry tunnel: %s", target))
 		return
 	}
@@ -545,7 +558,7 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 	}
 
 	if err != nil || upConn == nil {
-		_, _ = clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+		writeHTTPResponse(clientConn, http.StatusBadGateway, nil, nil, false, true)
 		return
 	}
 	defer upConn.Close()
@@ -582,7 +595,7 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	}
 	hostTrimmed := strings.Trim(host, "[]")
 	if isTelemetryHost(hostTrimmed) {
-		_, _ = conn.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+		writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
 		return false
 	}
 
@@ -598,15 +611,12 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	// 1. Root CA Certificate download (only for direct requests to proxy host itself)
 	if isDirectLocal && (cleanPath == "/ca.crt" || cleanPath == "/ca.pem" || strings.HasSuffix(cleanPath, "/ca.crt")) {
 		caBytes := s.certMgr.GetCAPEM()
-		res := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
-			"Content-Type: application/x-x509-ca-cert\r\n"+
-			"Content-Length: %d\r\n"+
-			"Content-Disposition: attachment; filename=\"gbf_ca.crt\"\r\n"+
-			"Access-Control-Allow-Origin: *\r\n"+
-			"Cache-Control: no-cache\r\n"+
-			"Connection: close\r\n\r\n", len(caBytes))
-		_, _ = conn.Write([]byte(res))
-		_, _ = conn.Write(caBytes)
+		hdr := make(http.Header)
+		hdr.Set("Content-Type", "application/x-x509-ca-cert")
+		hdr.Set("Content-Disposition", `attachment; filename="gbf_ca.crt"`)
+		hdr.Set("Access-Control-Allow-Origin", "*")
+		hdr.Set("Cache-Control", "no-cache")
+		writeHTTPResponse(conn, http.StatusOK, hdr, caBytes, req.Method == http.MethodHead, true)
 		return false
 	}
 
@@ -627,14 +637,11 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 			}
 		}
 		pacText := GetPAC(h, cfg.ListenPort)
-		res := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
-			"Content-Type: application/x-ns-proxy-autoconfig\r\n"+
-			"Content-Length: %d\r\n"+
-			"Access-Control-Allow-Origin: *\r\n"+
-			"Cache-Control: no-cache\r\n"+
-			"Connection: close\r\n\r\n", len(pacText))
-		_, _ = conn.Write([]byte(res))
-		_, _ = conn.Write([]byte(pacText))
+		hdr := make(http.Header)
+		hdr.Set("Content-Type", "application/x-ns-proxy-autoconfig")
+		hdr.Set("Access-Control-Allow-Origin", "*")
+		hdr.Set("Cache-Control", "no-cache")
+		writeHTTPResponse(conn, http.StatusOK, hdr, []byte(pacText), req.Method == http.MethodHead, true)
 		return false
 	}
 
@@ -646,13 +653,10 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 			lanIP = "127.0.0.1"
 		}
 		html := GetLandingHTML(lanIP, cfg.ListenPort)
-		res := fmt.Sprintf("HTTP/1.1 200 OK\r\n"+
-			"Content-Type: text/html; charset=utf-8\r\n"+
-			"Content-Length: %d\r\n"+
-			"Access-Control-Allow-Origin: *\r\n"+
-			"Connection: close\r\n\r\n", len(html))
-		_, _ = conn.Write([]byte(res))
-		_, _ = conn.Write([]byte(html))
+		hdr := make(http.Header)
+		hdr.Set("Content-Type", "text/html; charset=utf-8")
+		hdr.Set("Access-Control-Allow-Origin", "*")
+		writeHTTPResponse(conn, http.StatusOK, hdr, []byte(html), req.Method == http.MethodHead, true)
 		return false
 	}
 
@@ -719,7 +723,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		}
 		upReq.Host = req.Host
 
-		resp, fetchErr = s.getAPIClient().Do(upReq)
+		resp, fetchErr = s.getAPIClient().Do(s.tracedRequest(upReq))
 		if fetchErr == nil {
 			break
 		}
@@ -731,11 +735,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	}
 
 	if fetchErr != nil || resp == nil {
-		connHdr := "keep-alive"
-		if req.Close {
-			connHdr = "close"
-		}
-		_, _ = fmt.Fprintf(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: %s\r\n\r\n", connHdr)
+		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}
 	defer resp.Body.Close()
@@ -743,6 +743,8 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	respBytes, _ := io.ReadAll(resp.Body)
 	s.forwardDynamicResponse(conn, resp, respBytes, req.Method == http.MethodHead, req.Close)
 	elapsed := time.Since(startTime).Milliseconds()
+	s.stats.RecordProtocol(resp.Proto)
+	s.stats.RecordLatency(float64(elapsed))
 	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-PLAIN-API] %d %s %s (%dms)", resp.StatusCode, req.Method, req.URL.Path, elapsed))
 	return !req.Close
 }
@@ -750,17 +752,12 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, targetHost string) bool {
 	// Rule 1: CORS Preflight
 	if req.Method == http.MethodOptions {
-		connHdr := "keep-alive"
-		if req.Close {
-			connHdr = "close"
-		}
-		_, _ = fmt.Fprintf(w, "HTTP/1.1 200 OK\r\n"+
-			"Access-Control-Allow-Origin: *\r\n"+
-			"Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"+
-			"Access-Control-Allow-Headers: *\r\n"+
-			"Access-Control-Max-Age: 604800\r\n"+
-			"Content-Length: 0\r\n"+
-			"Connection: %s\r\n\r\n", connHdr)
+		hdr := make(http.Header)
+		hdr.Set("Access-Control-Allow-Origin", "*")
+		hdr.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		hdr.Set("Access-Control-Allow-Headers", "*")
+		hdr.Set("Access-Control-Max-Age", "604800")
+		writeHTTPResponse(w, http.StatusOK, hdr, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}
 
@@ -831,23 +828,17 @@ func isClientNotModified(req *http.Request, item *cache.CacheItem) bool {
 }
 
 func (s *ProxyServer) sendNotModifiedResponse(w io.Writer, item *cache.CacheItem, urlPath string, reqClose bool) {
-	connHdr := "keep-alive"
-	if reqClose {
-		connHdr = "close"
-	}
-	cc := s.getCacheControlHeader(urlPath)
-	var buf bytes.Buffer
-	buf.WriteString("HTTP/1.1 304 Not Modified\r\n")
+	hdr := make(http.Header)
 	if item.ETag != "" {
-		fmt.Fprintf(&buf, "ETag: %s\r\n", item.ETag)
+		hdr.Set("ETag", item.ETag)
 	}
 	if item.LastModified != "" {
-		fmt.Fprintf(&buf, "Last-Modified: %s\r\n", item.LastModified)
+		hdr.Set("Last-Modified", item.LastModified)
 	}
-	fmt.Fprintf(&buf, "Cache-Control: %s\r\n", cc)
-	buf.WriteString("Access-Control-Allow-Origin: *\r\n")
-	fmt.Fprintf(&buf, "Connection: %s\r\n\r\n", connHdr)
-	_, _ = w.Write(buf.Bytes())
+	hdr.Set("Cache-Control", s.getCacheControlHeader(urlPath))
+	hdr.Set("Access-Control-Allow-Origin", "*")
+
+	writeHTTPResponse(w, http.StatusNotModified, hdr, nil, false, reqClose)
 }
 
 func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHost string) bool {
@@ -872,11 +863,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		strings.Contains(unescapedURI, ":") ||
 		strings.HasPrefix(cleanLower, "\\") ||
 		strings.HasPrefix(unescapedLower, "\\") {
-		connHdr := "keep-alive"
-		if req.Close {
-			connHdr = "close"
-		}
-		_, _ = fmt.Fprintf(w, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: %s\r\n\r\n", connHdr)
+		writeHTTPResponse(w, http.StatusBadRequest, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}
 
@@ -931,7 +918,12 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		}
 		upReq.Host = targetHost
 
-		resp, err := s.getAssetClient().Do(upReq)
+		fetchStart := time.Now()
+		resp, err := s.getAssetClient().Do(s.tracedRequest(upReq))
+		if err == nil && resp != nil {
+			s.stats.RecordProtocol(resp.Proto)
+			s.stats.RecordLatency(float64(time.Since(fetchStart).Milliseconds()))
+		}
 		if err != nil || resp.StatusCode != http.StatusOK {
 			// Check offline cache fallback
 			if fb, _ := s.cacheMgr.GetFallback(req.URL.Path); fb != nil {
@@ -989,11 +981,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	})
 
 	if err != nil || res == nil {
-		connHdr := "keep-alive"
-		if req.Close {
-			connHdr = "close"
-		}
-		_, _ = fmt.Fprintf(w, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: %s\r\n\r\n", connHdr)
+		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, isHead, req.Close)
 		return !req.Close
 	}
 
@@ -1077,7 +1065,7 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		}
 		upReq.Host = targetHost
 
-		resp, fetchErr = s.getAPIClient().Do(upReq)
+		resp, fetchErr = s.getAPIClient().Do(s.tracedRequest(upReq))
 		if fetchErr == nil {
 			break
 		}
@@ -1089,11 +1077,7 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	}
 
 	if fetchErr != nil || resp == nil {
-		connHdr := "keep-alive"
-		if req.Close {
-			connHdr = "close"
-		}
-		_, _ = fmt.Fprintf(w, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: %s\r\n\r\n", connHdr)
+		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}
 	defer resp.Body.Close()
@@ -1101,73 +1085,57 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	respBytes, _ := io.ReadAll(resp.Body)
 	s.forwardDynamicResponse(w, resp, respBytes, req.Method == http.MethodHead, req.Close)
 	elapsed := time.Since(startTime).Milliseconds()
+	s.stats.RecordProtocol(resp.Proto)
+	s.stats.RecordLatency(float64(elapsed))
 	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-API] %d %s %s%s (%dms)", resp.StatusCode, req.Method, targetHost, req.URL.Path, elapsed))
 	return !req.Close
 }
 
-func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.CacheItem, isHead bool, urlPath string, reqClose bool) {
+// writeHTTPResponse serializes an RFC-compliant HTTP/1.1 response to w.
+// It ensures standard Date header presence, P0-compliant header filtering
+// (zero proxy-fingerprint pollution, hop-by-hop stripping, Set-Cookie line-by-line
+// preservation), RFC 7230 content-length rules (omitted for 1xx, 204, 304), and HEAD body suppression.
+func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []byte, isHead bool, reqClose bool) {
 	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "HTTP/1.1 %d OK\r\n", status)
-	if item.ContentType != "" {
-		fmt.Fprintf(&buf, "Content-Type: %s\r\n", item.ContentType)
-	}
-	fmt.Fprintf(&buf, "Content-Length: %d\r\n", len(item.Data))
-	if item.ETag != "" {
-		fmt.Fprintf(&buf, "ETag: %s\r\n", item.ETag)
-	}
-	if item.LastModified != "" {
-		fmt.Fprintf(&buf, "Last-Modified: %s\r\n", item.LastModified)
-	}
-	if item.ContentEncoding != "" {
-		fmt.Fprintf(&buf, "Content-Encoding: %s\r\n", item.ContentEncoding)
-	}
-	buf.WriteString("Access-Control-Allow-Origin: *\r\n")
-
-	// P1: Safe browser cache policy - immutable ONLY for versioned assets
-	fmt.Fprintf(&buf, "Cache-Control: %s\r\n", s.getCacheControlHeader(urlPath))
-	if reqClose {
-		buf.WriteString("Connection: close\r\n\r\n")
-	} else {
-		buf.WriteString("Connection: keep-alive\r\n\r\n")
-	}
-
-	if isHead {
-		_, _ = w.Write(buf.Bytes())
-	} else {
-		_, _ = w.Write(buf.Bytes())
-		_, _ = w.Write(item.Data)
-	}
-}
-
-func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, body []byte, isHead bool, reqClose bool) {
-	var buf bytes.Buffer
-	statusPhrase := http.StatusText(resp.StatusCode)
+	statusPhrase := http.StatusText(statusCode)
 	if statusPhrase == "" {
 		statusPhrase = "OK"
 	}
-	fmt.Fprintf(&buf, "HTTP/1.1 %d %s\r\n", resp.StatusCode, statusPhrase)
+	fmt.Fprintf(&buf, "HTTP/1.1 %d %s\r\n", statusCode, statusPhrase)
 
-	// Write upstream headers preserving original case and CORS
-	for k, vv := range resp.Header {
-		kLower := strings.ToLower(k)
-		if isHopByHop(kLower) || kLower == "content-length" || kLower == "set-cookie" {
-			continue
+	hasDate := false
+	if header != nil && header.Get("Date") != "" {
+		hasDate = true
+	}
+	if !hasDate {
+		fmt.Fprintf(&buf, "Date: %s\r\n", time.Now().UTC().Format(http.TimeFormat))
+	}
+
+	if header != nil {
+		for k, vv := range header {
+			kLower := strings.ToLower(k)
+			if isHopByHop(kLower) || kLower == "content-length" || kLower == "set-cookie" || kLower == "connection" {
+				continue
+			}
+			if !hasDate && kLower == "date" {
+				continue
+			}
+			// P0: Zero header pollution
+			if strings.HasPrefix(kLower, "x-proxy-") || strings.HasPrefix(kLower, "x-cache-") || strings.HasPrefix(kLower, "x-acceleration-") {
+				continue
+			}
+			for _, v := range vv {
+				fmt.Fprintf(&buf, "%s: %s\r\n", formatHeaderKey(k), v)
+			}
 		}
-		// P0: Zero header pollution
-		if strings.HasPrefix(kLower, "x-proxy-") || strings.HasPrefix(kLower, "x-cache-") || strings.HasPrefix(kLower, "x-acceleration-") {
-			continue
-		}
-		for _, v := range vv {
-			fmt.Fprintf(&buf, "%s: %s\r\n", k, v)
+
+		// P0: Multi-line Set-Cookie preservation (never fold into single line with commas)
+		for _, cookie := range header.Values("Set-Cookie") {
+			fmt.Fprintf(&buf, "Set-Cookie: %s\r\n", cookie)
 		}
 	}
 
-	// P0: Multi-line Set-Cookie preservation (never fold into single line with commas)
-	for _, cookie := range resp.Header.Values("Set-Cookie") {
-		fmt.Fprintf(&buf, "Set-Cookie: %s\r\n", cookie)
-	}
-
-	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified {
+	if statusCode != http.StatusNoContent && statusCode != http.StatusNotModified && (statusCode < 100 || statusCode >= 200) {
 		fmt.Fprintf(&buf, "Content-Length: %d\r\n", len(body))
 	}
 	if reqClose {
@@ -1176,12 +1144,40 @@ func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, b
 		buf.WriteString("Connection: keep-alive\r\n\r\n")
 	}
 
-	if isHead || resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotModified {
+	if isHead || statusCode == http.StatusNoContent || statusCode == http.StatusNotModified || (statusCode >= 100 && statusCode < 200) {
 		_, _ = w.Write(buf.Bytes())
 	} else {
 		_, _ = w.Write(buf.Bytes())
-		_, _ = w.Write(body)
+		if len(body) > 0 {
+			_, _ = w.Write(body)
+		}
 	}
+}
+
+func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.CacheItem, isHead bool, urlPath string, reqClose bool) {
+	hdr := make(http.Header)
+	if item.ContentType != "" {
+		hdr.Set("Content-Type", item.ContentType)
+	}
+	if item.ETag != "" {
+		hdr.Set("ETag", item.ETag)
+	}
+	if item.LastModified != "" {
+		hdr.Set("Last-Modified", item.LastModified)
+	}
+	if item.ContentEncoding != "" {
+		hdr.Set("Content-Encoding", item.ContentEncoding)
+	}
+	hdr.Set("Access-Control-Allow-Origin", "*")
+
+	// P1: Safe browser cache policy - immutable ONLY for versioned assets
+	hdr.Set("Cache-Control", s.getCacheControlHeader(urlPath))
+
+	writeHTTPResponse(w, status, hdr, item.Data, isHead, reqClose)
+}
+
+func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, body []byte, isHead bool, reqClose bool) {
+	writeHTTPResponse(w, resp.StatusCode, resp.Header, body, isHead, reqClose)
 }
 
 func isHopByHop(h string) bool {
@@ -1191,6 +1187,17 @@ func isHopByHop(h string) bool {
 		return true
 	}
 	return false
+}
+
+func formatHeaderKey(k string) string {
+	switch {
+	case strings.EqualFold(k, "etag"):
+		return "ETag"
+	case strings.EqualFold(k, "www-authenticate"):
+		return "WWW-Authenticate"
+	default:
+		return k
+	}
 }
 
 func isRetryableAPI(path string) bool {

@@ -9,7 +9,14 @@ RELEASE_DIR="${ROOT_DIR}/release"
 WEB_DIR="${ROOT_DIR}/web"
 UI_DIST_DIR="${ENGINE_DIR}/ui/dist"
 
-APP_VERSION=$(grep 'AppVersion' "${ENGINE_DIR}/config/config.go" | sed -E 's/.*"([^"]+)".*/\1/' || echo "1.8.0")
+# AppVersion in engine/config/config.go is the single source of truth.
+# Fail hard if the version cannot be extracted, to avoid shipping a mislabeled package.
+APP_VERSION=$(grep 'AppVersion' "${ENGINE_DIR}/config/config.go" | sed -E 's/.*"([^"]+)".*/\1/' || true)
+if [[ -z "${APP_VERSION}" ]]; then
+    echo "[-] Failed to extract AppVersion from ${ENGINE_DIR}/config/config.go" >&2
+    echo '    Ensure it contains: const AppVersion = "X.Y.Z"' >&2
+    exit 1
+fi
 
 echo "================================================================="
 echo "   GBF-Accelerator Native Go Release Builder (v${APP_VERSION})"

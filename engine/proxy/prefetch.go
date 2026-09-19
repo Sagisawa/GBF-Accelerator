@@ -23,6 +23,11 @@ var (
 	twinManifestRe = regexp.MustCompile(`^/(assets(?:_(?:en|jp))?/\d+/js/)model/manifest/([^/]+\.js)$`)
 )
 
+// prefetchUserAgent is a single, stable, version-agnostic browser UA used for
+// background asset warmup requests. It is deliberately constant (not rotated) to
+// comply with the P2 restraint principle: no UA rotation, no fingerprint spoofing.
+const prefetchUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari"
+
 type prefetchCandidate struct {
 	host string
 	path string
@@ -343,7 +348,7 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	if err != nil {
 		return
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", prefetchUserAgent)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Host = item.host

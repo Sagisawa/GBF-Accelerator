@@ -338,3 +338,57 @@ func TestNewControlAPIs(t *testing.T) {
 		t.Errorf("/api/cache/cancel-task expected 200, got %d", wCancel.Code)
 	}
 }
+
+// getTelemetrySummary must report REAL observed connection reuse, protocol mix and
+// latency percentiles, not hardcoded placeholder values.
+func TestGetTelemetrySummaryRealData(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	// Seed real observations: 3 reused + 1 new conn => 75% reuse; protocol mix 3x H2, 1x H1.
+	stats.RecordConnReuse(true)
+	stats.RecordConnReuse(true)
+	stats.RecordConnReuse(true)
+	stats.RecordConnReuse(false)
+	stats.RecordProtocol("HTTP/2.0")
+	stats.RecordProtocol("HTTP/2.0")
+	stats.RecordProtocol("HTTP/2.0")
+	stats.RecordProtocol("HTTP/1.1")
+	for i := 1; i <= 10; i++ {
+		stats.RecordLatency(float64(i * 10)) // 10ms..100ms
+	}
+
+	sum := ctrl.getTelemetrySummary()
+
+	if got := sum["reused_connections"].(int64); got != 3 {
+		t.Errorf("expected 3 reused connections, got %v", got)
+	}
+	if got := sum["new_connections"].(int64); got != 1 {
+		t.Errorf("expected 1 new connection, got %v", got)
+	}
+	if got := sum["reuse_rate_percent"].(float64); got != 75.0 {
+		t.Errorf("expected reuse_rate_percent 75.0, got %v", got)
+	}
+
+	protos := sum["protocols"].(map[string]int64)
+	if protos["HTTP/2"] != 3 || protos["HTTP/1.1"] != 1 {
+		t.Errorf("expected protocols H2=3 H1=1, got %v", protos)
+	}
+
+	pct := sum["percentiles"].(map[string]interface{})
+	if pct["samples"].(int) != 10 {
+		t.Errorf("expected 10 latency samples, got %v", pct["samples"])
+	}
+	if pct["max_ms"].(float64) != 100.0 {
+		t.Errorf("expected max_ms 100.0, got %v", pct["max_ms"])
+	}
+	if pct["min_ms"].(float64) != 10.0 {
+		t.Errorf("expected min_ms 10.0, got %v", pct["min_ms"])
+	}
+}

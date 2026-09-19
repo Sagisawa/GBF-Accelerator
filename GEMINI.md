@@ -14,8 +14,9 @@
 6. **Git 与 Release 双轨语言规范**：Git Commit 必须 100% 为英文（严格禁止包含中文字符）；GitHub Release 标题与说明必须统一为中文（`vx.x.x - “主要功能/修复”`）。严格禁止将 Release 中文标题混淆当作 Commit 提交！
 7. **语言风格准则**：言简意赅、实事求是、切实实际。严禁夸大叙述与营销化用词（严禁“彻底解决”、“绝对零阻塞”、“起飞”等夸张修饰，一律使用严谨客观的工程度量与实测数据）。
 
-**测试验证命令**：
+**测试验证命令**（引擎已 Go 原生重写，在 `engine/` 目录执行）：
 ```powershell
-.\.venv\Scripts\python.exe test_proxy.py
-.\.venv\Scripts\python.exe test_update_manager.py
+cd engine
+go test ./...
+go vet ./...
 ```

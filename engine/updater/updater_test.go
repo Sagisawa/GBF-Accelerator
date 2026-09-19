@@ -26,6 +26,13 @@ func TestParseVersionAndCompare(t *testing.T) {
 		{"1.7.9", "1.8.0", false},
 		{"v1.8.0-rc1", "1.8.0", false},
 		{"1.8.0.1", "1.8.0", true},
+		// Pre-release ordering (semver): stable outranks pre-release; rcN compares numerically.
+		{"1.8.0", "1.8.0-rc1", true},
+		{"1.8.0", "v1.8.0-beta", true},
+		{"1.8.0-rc2", "1.8.0-rc1", true},
+		{"1.8.0-rc1", "1.8.0-rc2", false},
+		{"1.8.0-rc1", "1.8.0-rc1", false},
+		{"1.8.0-rc.2", "1.8.0-rc.1", true},
 	}
 
 	for _, tc := range testCases {

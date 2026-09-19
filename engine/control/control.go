@@ -1273,34 +1273,46 @@ func (c *ControlServer) getTelemetrySummary() map[string]interface{} {
 	totalAPIs := atomic.LoadInt64(&c.stats.TotalAPIs)
 	totalAssets := atomic.LoadInt64(&c.stats.TotalAssets)
 	totalReqs := totalAPIs + totalAssets
-	reused := totalAPIs
+
+	// Real connection-pool behaviour observed via httptrace.GotConn hooks.
+	reused := atomic.LoadInt64(&c.stats.ReusedConns)
+	newConns := atomic.LoadInt64(&c.stats.NewConns)
+	connTotal := reused + newConns
 	reuseRate := 0.0
-	newConns := int64(0)
-	if totalReqs > 0 {
-		newConns = 1
-		if totalAPIs > 0 {
-			reuseRate = 100.0
-		}
+	if connTotal > 0 {
+		reuseRate = math.Round((float64(reused)/float64(connTotal))*1000) / 10
 	}
+
+	// Real negotiated protocol distribution observed from upstream responses.
+	h1 := atomic.LoadInt64(&c.stats.ProtoH1)
+	h2 := atomic.LoadInt64(&c.stats.ProtoH2)
+
+	// Real latency percentiles over the most recent upstream request samples.
+	lat := c.stats.LatencySnapshot()
 
 	return map[string]interface{}{
 		"total_requests":     totalReqs,
 		"reused_connections": reused,
 		"new_connections":    newConns,
-		"reuse_rate":         reuseRate,
+		"reuse_rate_percent": reuseRate,
 		"retry_count":        atomic.LoadInt64(&c.stats.APIRetries),
 		"percentiles": map[string]interface{}{
-			"p50_ms":  0.0,
-			"p95_ms":  0.0,
-			"p99_ms":  0.0,
-			"avg_ms":  0.0,
-			"min_ms":  0.0,
-			"max_ms":  0.0,
-			"samples": 0,
+			"p50_ms":  round1(lat.P50),
+			"p95_ms":  round1(lat.P95),
+			"p99_ms":  round1(lat.P99),
+			"avg_ms":  round1(lat.Avg),
+			"min_ms":  round1(lat.Min),
+			"max_ms":  round1(lat.Max),
+			"samples": lat.Samples,
 		},
-		"protocols":          map[string]int{"HTTP/1.1": int(totalAPIs), "HTTP/2": int(totalAssets)},
-		"exceptions":         map[string]int{},
+		"protocols":  map[string]int64{"HTTP/1.1": h1, "HTTP/2": h2},
+		"exceptions": map[string]int{},
 	}
+}
+
+// round1 rounds to one decimal place for stable, human-readable telemetry output.
+func round1(v float64) float64 {
+	return math.Round(v*10) / 10
 }
 
 func (c *ControlServer) handleTelemetry(w http.ResponseWriter, req *http.Request) {

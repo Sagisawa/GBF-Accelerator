@@ -58,6 +58,10 @@ type githubAsset struct {
 // ParseVersion converts strings like "v1.4.0", "1.4.1-rc1" into slice of ints [1, 4, 0].
 func ParseVersion(v string) []int {
 	cleaned := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(v), "v"), "V")
+	// Strip any pre-release / build metadata before numeric parsing.
+	if idx := strings.IndexAny(cleaned, "-+"); idx >= 0 {
+		cleaned = cleaned[:idx]
+	}
 	parts := strings.Split(cleaned, ".")
 	var res []int
 	re := regexp.MustCompile(`^(\d+)`)
@@ -74,6 +78,69 @@ func ParseVersion(v string) []int {
 		res = append(res, 0)
 	}
 	return res
+}
+
+// preReleaseTag returns the pre-release identifier of a version string
+// (e.g. "rc1" for "1.8.0-rc1"), or "" if it is a stable release.
+func preReleaseTag(v string) string {
+	cleaned := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(v), "v"), "V")
+	dash := strings.Index(cleaned, "-")
+	if dash < 0 {
+		return ""
+	}
+	pre := cleaned[dash+1:]
+	if idx := strings.Index(pre, "+"); idx >= 0 {
+		pre = pre[:idx]
+	}
+	return strings.ToLower(pre)
+}
+
+// comparePreRelease orders pre-release identifiers per semver: a stable release
+// (empty tag) outranks any pre-release; numeric identifiers compare numerically.
+// Returns -1 if a < b, 0 if equal, 1 if a > b.
+func comparePreRelease(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if a == "" { // stable > pre-release
+		return 1
+	}
+	if b == "" {
+		return -1
+	}
+	as := strings.Split(a, ".")
+	bs := strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		an, aErr := strconv.Atoi(as[i])
+		bn, bErr := strconv.Atoi(bs[i])
+		switch {
+		case aErr == nil && bErr == nil:
+			if an != bn {
+				if an < bn {
+					return -1
+				}
+				return 1
+			}
+		case aErr == nil: // numeric < alphanumeric
+			return -1
+		case bErr == nil:
+			return 1
+		default:
+			if as[i] != bs[i] {
+				if as[i] < bs[i] {
+					return -1
+				}
+				return 1
+			}
+		}
+	}
+	if len(as) < len(bs) {
+		return -1
+	}
+	if len(as) > len(bs) {
+		return 1
+	}
+	return 0
 }
 
 // IsNewerVersion returns true if remote version is strictly greater than current version.
@@ -98,7 +165,8 @@ func IsNewerVersion(remote, current string) bool {
 			return false
 		}
 	}
-	return false
+	// Numeric components equal: compare pre-release identifiers (semver rule).
+	return comparePreRelease(preReleaseTag(remote), preReleaseTag(current)) > 0
 }
 
 func buildHTTPClient(proxyURL string, timeout time.Duration) *http.Client {

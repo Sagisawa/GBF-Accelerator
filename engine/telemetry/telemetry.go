@@ -1,10 +1,29 @@
 package telemetry
 
 import (
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// latencySampleCap bounds the in-memory ring buffer of upstream request latencies.
+// Only the most recent samples are kept for percentile computation; this keeps the
+// proxy datapath memory footprint constant regardless of total request volume.
+const latencySampleCap = 512
+
+// LatencyPercentiles summarizes the recently observed upstream request latencies.
+// All values are in milliseconds. Samples is the number of data points used.
+type LatencyPercentiles struct {
+	P50     float64
+	P95     float64
+	P99     float64
+	Avg     float64
+	Min     float64
+	Max     float64
+	Samples int
+}
 
 type LogEntry struct {
 	Time  string `json:"time"`
@@ -28,6 +47,12 @@ type Stats struct {
 	ActiveForegroundAssets int32
 	LastError              string
 
+	// Real connection-pool behaviour, fed from httptrace.GotConn hooks.
+	ReusedConns int64
+	NewConns    int64
+	ProtoH1     int64
+	ProtoH2     int64
+
 	mu            sync.RWMutex
 	logs          []LogEntry
 	subMu         sync.RWMutex
@@ -35,6 +60,14 @@ type Stats struct {
 	prefetchMu    sync.RWMutex
 	prefetchSaved map[string]struct{}
 	logChan       chan LogEntry
+
+	// Fixed-capacity ring buffer of upstream request latencies (milliseconds).
+	latMu    sync.Mutex
+	latBuf   []float64
+	latIdx   int
+	latCount int
+
+	closeOnce sync.Once
 }
 
 var GlobalStats = NewStats()
@@ -129,6 +162,8 @@ func (s *Stats) Log(level, msg string) {
 		Level: level,
 		Msg:   msg,
 	}
+	// Guard against send-on-closed-channel during shutdown: recover and drop.
+	defer func() { _ = recover() }()
 	select {
 	case s.logChan <- entry:
 	default:
@@ -155,6 +190,15 @@ func (s *Stats) logWorker() {
 		}
 		s.subMu.RUnlock()
 	}
+}
+
+// Close shuts down the background log worker, allowing its goroutine to exit.
+// It is idempotent and safe to call during process shutdown. The global
+// telemetry.GlobalStats instance is process-lifetime and is not closed.
+func (s *Stats) Close() {
+	s.closeOnce.Do(func() {
+		close(s.logChan)
+	})
 }
 
 func (s *Stats) SubscribeLogs() (chan LogEntry, func()) {
@@ -196,5 +240,83 @@ func (s *Stats) RequestsMap() map[string]interface{} {
 		"prefetch_requests": atomic.LoadInt64(&s.PrefetchRequests),
 		"prefetch_reused":   atomic.LoadInt64(&s.PrefetchReused),
 		"api_retries":       atomic.LoadInt64(&s.APIRetries),
+	}
+}
+
+// RecordConnReuse records whether an upstream connection acquisition (observed via
+// an httptrace.GotConn hook) came from the keep-alive pool or was newly dialed.
+func (s *Stats) RecordConnReuse(reused bool) {
+	if reused {
+		atomic.AddInt64(&s.ReusedConns, 1)
+	} else {
+		atomic.AddInt64(&s.NewConns, 1)
+	}
+}
+
+// RecordProtocol records the negotiated application protocol of an upstream response
+// (resp.Proto), e.g. "HTTP/1.1" or "HTTP/2.0".
+func (s *Stats) RecordProtocol(proto string) {
+	if strings.HasPrefix(proto, "HTTP/2") {
+		atomic.AddInt64(&s.ProtoH2, 1)
+	} else {
+		atomic.AddInt64(&s.ProtoH1, 1)
+	}
+}
+
+// RecordLatency appends one upstream request latency (milliseconds) to the ring buffer.
+func (s *Stats) RecordLatency(ms float64) {
+	if ms < 0 {
+		ms = 0
+	}
+	s.latMu.Lock()
+	if s.latBuf == nil {
+		s.latBuf = make([]float64, latencySampleCap)
+	}
+	s.latBuf[s.latIdx] = ms
+	s.latIdx = (s.latIdx + 1) % latencySampleCap
+	if s.latCount < latencySampleCap {
+		s.latCount++
+	}
+	s.latMu.Unlock()
+}
+
+// LatencySnapshot returns percentile statistics over the most recent samples.
+func (s *Stats) LatencySnapshot() LatencyPercentiles {
+	s.latMu.Lock()
+	n := s.latCount
+	if n == 0 {
+		s.latMu.Unlock()
+		return LatencyPercentiles{}
+	}
+	data := make([]float64, n)
+	copy(data, s.latBuf[:n])
+	s.latMu.Unlock()
+
+	sort.Float64s(data)
+	var sum float64
+	for _, v := range data {
+		sum += v
+	}
+	pick := func(q float64) float64 {
+		if n == 1 {
+			return data[0]
+		}
+		idx := int(q*float64(n-1) + 0.5)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= n {
+			idx = n - 1
+		}
+		return data[idx]
+	}
+	return LatencyPercentiles{
+		P50:     pick(0.50),
+		P95:     pick(0.95),
+		P99:     pick(0.99),
+		Avg:     sum / float64(n),
+		Min:     data[0],
+		Max:     data[n-1],
+		Samples: n,
 	}
 }

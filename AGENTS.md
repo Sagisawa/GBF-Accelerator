@@ -8,6 +8,7 @@
 ## 0. 项目核心定位与叙事原则
 
 1. **核心使命**：本项目是一个**高性能本地静态资源缓存与透明代理工具**。
+   - **技术栈现状（v2.0 起）**：引擎已完成 **Go 原生重写**（单静态二进制，零 Python 运行时依赖），核心模块位于 `engine/`：`proxy`（转发与静态缓存命中）、`cache`（RAM LRU + 磁盘持久化）、`control`（本地控制面与 Web 控制台）、`telemetry`（指标与日志）、`updater`（自更新）、`cert`/`sysproxy`/`startup`/`desktop`（平台适配层）。Web 前端为 `web/` 下的 React SPA（构建产物经 `engine/ui` 内嵌进二进制）。**早期 Python 实现（`update_manager.py`、`build_exe.py`、`test_proxy.py`、`gui_*.py` 等）已整体移除，本文档中若出现对应文件名均属历史遗留描述，应以 Go 真实文件为准。**
 2. **优化目标**：通过本地 RAM/磁盘缓存、HTTP/2 多路复用和连接复用，优化静态资源加载体验；通过温和的资源调度，**降低突发并发与瞬时请求压力，减少对上游/CDN造成不必要负载**。
 3. **叙事与合规红线**：
    - 严禁对外宣称“100% 保证不封号”、“免除官方处罚”或“规避风控检测”。
@@ -100,11 +101,11 @@
 
 ### 4. GUI 视觉烟测
 
-涉及以下内容时：
+涉及以下内容时（当前为 Go 桌面/系统托盘 + Web 控制台，已替代旧的 `gui_*.py`）：
 
-* `gui_*.py`
-* 窗口尺寸或布局
-* `Canvas` / `Scrollbar`
+* `engine/desktop/*`（系统托盘、独立应用窗口、控制台附加/隐藏、浏览器发现）
+* `web/` 前端布局与组件（React SPA，构建后内嵌）
+* 窗口尺寸或布局、`Canvas` / `Scrollbar`（Web 端对应为滚动容器/溢出布局）
 * 字体、DPI、自适应
 * 平台专用菜单或事件
 
@@ -171,12 +172,13 @@ Windows     macOS
    - 仅修改解决问题所必需的最小代码块；
    - 严禁随意格式化无关代码、删除重要注释或重写无关模块。
 4. **自动化全量测试 (Automated Test Suite)**：
-   - 改动后必须运行并通过全套回归测试：
+   - 引擎已完成 Go 原生重写，改动后必须在 `engine/` 目录运行并通过**全量 Go 测试 + 静态检查**（100% Pass，零告警）：
      ```powershell
-     .\.venv\Scripts\python.exe test_proxy.py
-     .\.venv\Scripts\python.exe test_update_manager.py
+     cd engine
+     go test ./...
+     go vet ./...
      ```
-   - 验证 75 项代理测试与 10 项更新测试全部通过（100% Pass）。
+   - 上述命令覆盖 cache / cert / config / control / desktop / process / proxy / res / startup / sysproxy / telemetry / updater 全部包的单元测试。**旧的 Python 测试（`test_proxy.py`、`test_update_manager.py`、`pytest tests/`）已随 Python 实现一并移除，不要再引用。**
 5. **Diff 自检核对 (Self-Review via Diff)**：
    - 运行 `git diff`，逐行审查所有变动行，确认未引入非预期的副作用和违反规范的代码。
 
@@ -205,12 +207,12 @@ Windows     macOS
 - **Release 说明**：保存在 `docs/releases/vX.Y.Z.md`，使用规范客观的中文 Markdown。
 - **发布压缩包**：
   - Windows 客户端：严格命名为 `GBF_Accelerator_vX.Y.Z_GUI.zip`；
-  - macOS 客户端：命名为 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`（Universal 2 双架构包，或包含 `mac`/`darwin`/`osx` 标识的命名如 `GBF_Accelerator_vX.Y.Z_mac_GUI.zip`，以配合 `update_manager.py` 跨平台匹配与过滤逻辑）。
+  - macOS 客户端：命名为 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`（Universal 2 双架构包，或包含 `mac`/`darwin`/`osx` 标识的命名如 `GBF_Accelerator_vX.Y.Z_mac_GUI.zip`，以配合 `engine/updater/updater.go` 跨平台匹配与过滤逻辑）。**注意：当前 `build.ps1` 与 `build.sh` 对 macOS 包命名存在分叉（per-arch vs universal2），发布前须统一。**
 
 ### 3. 版本发布检查清单 (Release Checklist)
 每次发布版本前，必须严格核对以下 5 项，严禁将 Release 标题混淆复制给 Commit：
-1. `update_manager.py` 中的 `APP_VERSION = "X.Y.Z"`；
-2. `build_exe.py` 中的 `zip_path` 指向 `GBF_Accelerator_vX.Y.Z_GUI.zip`（macOS 独立发布包命名规范为 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`，或包含 `mac`/`darwin`/`osx` 关键词以配合 `update_manager.py` 跨平台匹配）；
+1. `engine/config/config.go` 中的 `AppVersion = "X.Y.Z"`（唯一权威版本号来源，`build.ps1`/`build.sh` 均从此正则提取）；
+2. 构建脚本（`build.ps1` / `build.sh`）产出的 zip 命名符合 `GBF_Accelerator_vX.Y.Z_GUI.zip`（Windows）与 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`（macOS）规范，并与 `engine/updater/updater.go` 的资产匹配逻辑一致；
 3. `CHANGELOG.md` 与 `README.md` 包含对应版本的更新说明；
 4. **Git Commit 信息必须为纯英文**；
 5. **GitHub Release 标题必须为 `vX.Y.Z - 主要功能/修复`（中文）**。

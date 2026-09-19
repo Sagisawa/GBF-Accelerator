@@ -38,14 +38,18 @@ $ReleaseDir = Join-Path $RootDir "release"
 $WebDir = Join-Path $RootDir "web"
 $UiDistDir = Join-Path $EngineDir "ui\dist"
 
-# 1. Read App Version from engine/config/config.go
-$AppVersion = "1.8.0"
+# 1. Read App Version from engine/config/config.go (single source of truth).
+# Fail hard if the version cannot be extracted, to avoid shipping a mislabeled package.
+$AppVersion = ""
 $ConfigGo = Join-Path $EngineDir "config\config.go"
 if (Test-Path $ConfigGo) {
     $Match = Select-String -Path $ConfigGo -Pattern 'AppVersion\s*=\s*"([^"]+)"'
     if ($Match -and $Match.Matches.Groups.Count -gt 1) {
         $AppVersion = $Match.Matches.Groups[1].Value
     }
+}
+if ([string]::IsNullOrWhiteSpace($AppVersion)) {
+    throw "Failed to extract AppVersion from $ConfigGo. Ensure it contains: const AppVersion = `"X.Y.Z`""
 }
 
 Write-Host "=================================================================" -ForegroundColor Cyan
@@ -153,7 +157,7 @@ function Build-Windows {
 }
 
 # 5. Compile macOS Binaries
-function Build-Darwin ([string]$Arch) {
+function Build-DarwinArch ([string]$Arch) {
     $DarwinBin = Join-Path $BinDir "GBF_Accelerator_darwin_$Arch"
     Write-Host "[*] Cross-compiling macOS ($Arch) binary ($DarwinBin)..." -ForegroundColor Yellow
 
@@ -175,25 +179,52 @@ function Build-Darwin ([string]$Arch) {
 
     $SizeMb = (Get-Item $DarwinBin).Length / 1MB
     Write-Host ("[+] macOS ({0}) binary compiled successfully: {1} ({2:F2} MB)" -f $Arch, $DarwinBin, $SizeMb) -ForegroundColor Green
+}
 
-    if (-not $SkipZip) {
-        $ZipPath = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_macOS_$Arch.zip"
-        if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+# Package a single macOS release zip with a stable universal2 asset name so the
+# updater's cross-platform matching (which prefers "universal") stays consistent
+# across both build scripts. On hosts with `lipo` (macOS), both architectures are
+# merged into a true Universal 2 binary; otherwise the arm64 build is shipped.
+function Build-Darwin {
+    Build-DarwinArch "arm64"
+    Build-DarwinArch "amd64"
 
-        Write-Host "[*] Packaging macOS ($Arch) release zip: $ZipPath..." -ForegroundColor Yellow
-        $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.sh", "start_proxy.sh", "使用说明.txt", "LICENSE")
-        $FilesToZip = @($DarwinBin)
-        foreach ($Aux in $AuxFiles) {
-            $AuxPath = Join-Path $RootDir $Aux
-            if (Test-Path $AuxPath) {
-                $FilesToZip += $AuxPath
-            }
+    if ($SkipZip) { return }
+
+    $ArmBin = Join-Path $BinDir "GBF_Accelerator_darwin_arm64"
+    $AmdBin = Join-Path $BinDir "GBF_Accelerator_darwin_amd64"
+    $MacBin = $ArmBin
+
+    $Lipo = Get-Command lipo -ErrorAction SilentlyContinue
+    if ($Lipo) {
+        $UniversalBin = Join-Path $BinDir "GBF_Accelerator_darwin_universal"
+        Write-Host "[*] Combining universal2 binary via lipo..." -ForegroundColor Yellow
+        & lipo -create -output $UniversalBin $ArmBin $AmdBin
+        if ($LASTEXITCODE -eq 0) {
+            $MacBin = $UniversalBin
+        } else {
+            Write-Host "[!] lipo merge failed; falling back to arm64 build." -ForegroundColor Yellow
         }
-
-        Compress-Archive -Path $FilesToZip -DestinationPath $ZipPath -Force
-        $ZipSizeMb = (Get-Item $ZipPath).Length / 1MB
-        Write-Host ("[***] RELEASE READY: {0} ({1:F2} MB)" -f $ZipPath, $ZipSizeMb) -ForegroundColor Cyan
+    } else {
+        Write-Host "[*] lipo not available on this host; packaging arm64 build with universal2 asset name." -ForegroundColor Yellow
     }
+
+    $ZipPath = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_macOS_universal2.zip"
+    if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+
+    Write-Host "[*] Packaging macOS release zip: $ZipPath..." -ForegroundColor Yellow
+    $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.sh", "start_proxy.sh", "使用说明.txt", "LICENSE")
+    $FilesToZip = @($MacBin)
+    foreach ($Aux in $AuxFiles) {
+        $AuxPath = Join-Path $RootDir $Aux
+        if (Test-Path $AuxPath) {
+            $FilesToZip += $AuxPath
+        }
+    }
+
+    Compress-Archive -Path $FilesToZip -DestinationPath $ZipPath -Force
+    $ZipSizeMb = (Get-Item $ZipPath).Length / 1MB
+    Write-Host ("[***] RELEASE READY: {0} ({1:F2} MB)" -f $ZipPath, $ZipSizeMb) -ForegroundColor Cyan
 }
 
 if ($Target -eq "windows" -or $Target -eq "all") {
@@ -201,8 +232,7 @@ if ($Target -eq "windows" -or $Target -eq "all") {
 }
 
 if ($Target -eq "darwin" -or $Target -eq "all") {
-    Build-Darwin "arm64"
-    Build-Darwin "amd64"
+    Build-Darwin
 }
 
 Write-Host "`n[+] All release build steps completed successfully." -ForegroundColor Green
