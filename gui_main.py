@@ -2963,6 +2963,51 @@ class GBFAcceleratorGUI:
 
             threading.Thread(target=_hard_exit, daemon=True).start()
 
+_RE_PRIVACY_UID = re.compile(r"([?&]uid=)[^&\s\)]+", re.IGNORECASE)
+_RE_PRIVACY_TS = re.compile(r"([?&](?:_|[tT]|timestamp)=)[^&\s\)]+")
+_RE_PRIVACY_TOKEN = re.compile(r"([?&](?:token|session|auth|password|signature)=)[^&\s\)]+", re.IGNORECASE)
+_RE_PRIVACY_RAID = re.compile(r"(/(?:supporter_raid|(?:normal_)?multiraid/content/index|raid(?:/content/index)?)/)\d{10,12}(/|\?|\b)")
+_RE_PRIVACY_USER = re.compile(r"(/(?:profile|user)/(?:content/index|status)/)\d+(/|\?|\b)")
+_RE_PRIVACY_IP192 = re.compile(r"\[(192\.168\.\d+\.)\d+\]")
+_RE_PRIVACY_IP10 = re.compile(r"\[(10\.\d+\.\d+\.)\d+\]")
+_RE_PRIVACY_IP172 = re.compile(r"\[(172\.(?:1[6-9]|2\d|3[01])\.\d+\.)\d+\]")
+
+def mask_log_privacy(line: str) -> str:
+    """Mask sensitive user identifiers, timestamps, battle room IDs, and LAN IPs in log lines.
+
+    Covers:
+    - User ID: uid=12345678 -> uid=******
+    - Query Timestamps: _=1789799786136 -> _=***, t=1789799786136 -> t=***
+    - Sensitive Tokens: token=xyz, session=abc -> token=******, session=******
+    - Raid Battle IDs: /supporter_raid/46602483502/ -> /supporter_raid/10000000000/
+    - User Profile IDs: /profile/content/index/9812230 -> /profile/content/index/*****
+    - LAN Client IPs: [192.168.1.50] -> [192.168.1.*]
+    """
+    if not line:
+        return line
+
+    # 1. User UID in query string
+    line = _RE_PRIVACY_UID.sub(r"\g<1>******", line)
+
+    # 2. Dynamic cache-busting timestamps
+    line = _RE_PRIVACY_TS.sub(r"\g<1>***", line)
+
+    # 3. Auth/Session/Token query parameters
+    line = _RE_PRIVACY_TOKEN.sub(r"\g<1>******", line)
+
+    # 4. Raid/Battle room IDs in URL paths (10-12 digits)
+    line = _RE_PRIVACY_RAID.sub(r"\g<1>10000000000\g<2>", line)
+
+    # 5. User Profile / Status IDs in URL paths
+    line = _RE_PRIVACY_USER.sub(r"\g<1>******\g<2>", line)
+
+    # 6. LAN Client IPs in CONNECT logs (leave 127.0.0.1 untouched)
+    line = _RE_PRIVACY_IP192.sub(r"[\g<1>*]", line)
+    line = _RE_PRIVACY_IP10.sub(r"[\g<1>*]", line)
+    line = _RE_PRIVACY_IP172.sub(r"[\g<1>*]", line)
+
+    return line
+
 class LogViewerWindow:
     """Non-modal, high-performance real-time proxy and network log viewer."""
     def __init__(self, parent: GBFAcceleratorGUI):
@@ -2974,14 +3019,13 @@ class LogViewerWindow:
         except Exception:
             pass
 
-        # Adaptive window geometry
         # Adaptive window geometry (wide layout to ensure all toolbar buttons are fully visible)
         sw = self.top.winfo_screenwidth()
         sh = self.top.winfo_screenheight()
         w = min(1280, max(1060, sw - 60))
         h = min(720, max(520, sh - 100))
         self.top.geometry(f"{w}x{h}")
-        self.top.minsize(960, 400)
+        self.top.minsize(1020, 400)
 
         # Position slightly offset from parent
         try:
@@ -3011,6 +3055,7 @@ class LogViewerWindow:
         self.var_compact_domain = tk.BooleanVar(value=False)     # 默认显示完整域名，不省略遮蔽
         self.var_mute_assets = tk.BooleanVar(value=False)        # 默认显示素材
         self.var_hide_mocks = tk.BooleanVar(value=False)         # 默认显示打点
+        self.var_hide_privacy = tk.BooleanVar(value=True)        # 默认开启隐私信息与敏感参数脱敏
         self.var_align_format = tk.BooleanVar(value=True)        # 默认开启对齐排版
         self.var_filter_text = tk.StringVar(value="")
         self.var_filter_cat = tk.StringVar(value="全部 (All)")
@@ -3042,26 +3087,26 @@ class LogViewerWindow:
 
     def setup_ui(self):
         # 1. Top Toolbar
-        toolbar = ttk.Frame(self.top, padding="6 5 6 5")
+        toolbar = ttk.Frame(self.top, padding="4 4 4 4")
         toolbar.pack(fill="x", side="top")
 
         # Right-side action buttons: pack FIRST so they are ALWAYS visible at the right edge
-        btn_export = ttk.Button(toolbar, text="导出日志", width=8, command=self.export_logs)
+        btn_export = ttk.Button(toolbar, text="导出日志", width=7, command=self.export_logs)
         btn_export.pack(side="right", padx=(2, 0))
 
-        btn_copy = ttk.Button(toolbar, text="复制全部", width=8, command=self.copy_all)
+        btn_copy = ttk.Button(toolbar, text="复制全部", width=7, command=self.copy_all)
         btn_copy.pack(side="right", padx=(2, 0))
 
-        btn_clear = ttk.Button(toolbar, text="清除显示", width=8, command=self.clear_display)
+        btn_clear = ttk.Button(toolbar, text="清除显示", width=7, command=self.clear_display)
         btn_clear.pack(side="right", padx=(2, 0))
 
-        self.btn_pause = ttk.Button(toolbar, text="⏸ 暂停", width=8, command=self.toggle_pause)
-        self.btn_pause.pack(side="right", padx=(2, 8))
+        self.btn_pause = ttk.Button(toolbar, text="⏸ 暂停", width=7, command=self.toggle_pause)
+        self.btn_pause.pack(side="right", padx=(2, 6))
 
         # Left-side search and filters
         ttk.Label(toolbar, text="搜索:").pack(side="left", padx=(0, 2))
-        self.entry_filter = ttk.Entry(toolbar, textvariable=self.var_filter_text, width=12, font=ui_font(9))
-        self.entry_filter.pack(side="left", padx=(0, 6))
+        self.entry_filter = ttk.Entry(toolbar, textvariable=self.var_filter_text, width=10, font=ui_font(9))
+        self.entry_filter.pack(side="left", padx=(0, 4))
         self.entry_filter.bind("<KeyRelease>", lambda e: self.reapply_filter())
 
         ttk.Label(toolbar, text="类型:").pack(side="left", padx=(0, 2))
@@ -3072,27 +3117,30 @@ class LogViewerWindow:
             "仅素材拉取 (FETCH/PREFETCH)",
             "仅慢请求 (>200ms)",
             "仅重连与告警 (RETRY/ERROR)",
-        ], state="readonly", width=15, font=ui_font(9))
-        combo_cat.pack(side="left", padx=(0, 6))
+        ], state="readonly", width=14, font=ui_font(9))
+        combo_cat.pack(side="left", padx=(0, 4))
         combo_cat.bind("<<ComboboxSelected>>", lambda e: self.reapply_filter())
 
-        chk_conn = ttk.Checkbutton(toolbar, text="隐藏底层握手", variable=self.var_hide_connect, command=self.reapply_filter)
-        chk_conn.pack(side="left", padx=(0, 4))
+        chk_conn = ttk.Checkbutton(toolbar, text="隐藏握手", variable=self.var_hide_connect, command=self.reapply_filter)
+        chk_conn.pack(side="left", padx=(0, 2))
 
         chk_compact = ttk.Checkbutton(toolbar, text="简化域名", variable=self.var_compact_domain, command=self.reapply_filter)
-        chk_compact.pack(side="left", padx=(0, 4))
+        chk_compact.pack(side="left", padx=(0, 2))
 
-        chk_mute = ttk.Checkbutton(toolbar, text="隐藏静态资源", variable=self.var_mute_assets, command=self.reapply_filter)
-        chk_mute.pack(side="left", padx=(0, 4))
+        chk_mute = ttk.Checkbutton(toolbar, text="隐藏静态", variable=self.var_mute_assets, command=self.reapply_filter)
+        chk_mute.pack(side="left", padx=(0, 2))
 
-        chk_mock = ttk.Checkbutton(toolbar, text="隐藏数据上报", variable=self.var_hide_mocks, command=self.reapply_filter)
-        chk_mock.pack(side="left", padx=(0, 4))
+        chk_mock = ttk.Checkbutton(toolbar, text="隐藏打点", variable=self.var_hide_mocks, command=self.reapply_filter)
+        chk_mock.pack(side="left", padx=(0, 2))
+
+        chk_privacy = ttk.Checkbutton(toolbar, text="脱敏隐私", variable=self.var_hide_privacy, command=self.reapply_filter)
+        chk_privacy.pack(side="left", padx=(0, 2))
 
         chk_align = ttk.Checkbutton(toolbar, text="对齐排版", variable=self.var_align_format, command=self.reapply_filter)
-        chk_align.pack(side="left", padx=(0, 4))
+        chk_align.pack(side="left", padx=(0, 2))
 
         chk_scroll = ttk.Checkbutton(toolbar, text="自动滚屏", variable=self.var_auto_scroll)
-        chk_scroll.pack(side="left", padx=(0, 4))
+        chk_scroll.pack(side="left", padx=(0, 2))
 
         # 2. Main Console Text with horizontal & vertical scrollbars
         f_body = ttk.Frame(self.top)
@@ -3461,6 +3509,8 @@ class LogViewerWindow:
 
     def _render_line(self, raw_line: str, lvl: str):
         raw_line = raw_line.rstrip("\r\n")
+        if self.var_hide_privacy.get():
+            raw_line = mask_log_privacy(raw_line)
         is_aligned = self.var_align_format.get()
         if is_aligned:
             line = self._align_log_line(raw_line, lvl)
@@ -3782,17 +3832,25 @@ class LogViewerWindow:
         except Exception:
             pass
 
+        mask_active = self.var_hide_privacy.get()
+        if mask_active:
+            header.append("# Privacy Protection: Active (UID, Timestamps, and Raid IDs masked)")
         header.append("# Notice: Contains complete raw URLs, query parameters and transport-level connection events.")
         header.append("# ==============================================================================\n")
 
-        full_content = "\n".join(header) + "\n" + "\n".join(rec[0] for rec in records) + "\n"
+        lines_to_export = [mask_log_privacy(rec[0]) if mask_active else rec[0] for rec in records]
+        full_content = "\n".join(header) + "\n" + "\n".join(lines_to_export) + "\n"
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(full_content)
-            self.var_status.set(f"已导出全量诊断日志: {os.path.basename(file_path)} (共 {len(records)} 条原始记录)")
+            privacy_note = "（已安全脱敏）" if mask_active else ""
+            self.var_status.set(f"已导出全量诊断日志{privacy_note}: {os.path.basename(file_path)} (共 {len(records)} 条记录)")
+            msg_content = f"全量排查诊断日志已成功导出至：\n{file_path}\n\n该文件包含完整的网络请求、状态码及底层连接握手，可直接发给开发者排查问题。"
+            if mask_active:
+                msg_content += "\n（已按当前设置对 UID、时间戳及房间号执行脱敏保护）"
             messagebox.showinfo(
                 "导出成功",
-                f"全量排查诊断日志已成功导出至：\n{file_path}\n\n该文件包含 100% 完整的原始域名、请求参数及底层连接握手，可直接发给开发者排查问题。",
+                msg_content,
                 parent=self.top
             )
         except Exception as e:
@@ -3848,10 +3906,12 @@ class LogViewerWindow:
             path_key = url.split("?")[0].replace("https://game.granbluefantasy.jp", "").replace("https://prd-game-a-granbluefantasy.akamaized.net", "")
             with self._queue_lock:
                 for raw, _ in reversed(self._all_records):
-                    if raw.startswith(ts) and (not path_key or path_key in raw):
+                    if raw.startswith(ts) and (not path_key or path_key in raw or path_key in mask_log_privacy(raw)):
+                        out_line = mask_log_privacy(raw) if self.var_hide_privacy.get() else raw
                         self.top.clipboard_clear()
-                        self.top.clipboard_append(raw)
-                        self.var_status.set("已复制对应的原始排查日志记录！")
+                        self.top.clipboard_append(out_line)
+                        status_msg = "已复制脱敏后的原始排查日志记录！" if self.var_hide_privacy.get() else "已复制对应的原始排查日志记录！"
+                        self.var_status.set(status_msg)
                         return
         self._copy_selected_line()
 
@@ -3860,6 +3920,8 @@ class LogViewerWindow:
             return
         url = self._extract_url_from_line(self._context_line)
         if url:
+            if self.var_hide_privacy.get():
+                url = mask_log_privacy(url)
             self.top.clipboard_clear()
             self.top.clipboard_append(url)
             self.var_status.set(f"已复制 URL: {url}")
