@@ -31,7 +31,7 @@ func openAppWindow(url string) error {
 
 	browserPath := findAppBrowserWindows()
 	if browserPath != "" {
-		cmd := exec.Command(browserPath, fmt.Sprintf("--app=%s", appURL), "--window-size=820,960")
+		cmd := exec.Command(browserPath, fmt.Sprintf("--app=%s", appURL), "--window-size=880,640")
 		if err := cmd.Start(); err == nil {
 			go func() {
 				_ = cmd.Wait()

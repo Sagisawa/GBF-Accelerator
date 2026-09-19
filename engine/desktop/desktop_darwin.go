@@ -38,7 +38,7 @@ func openAppWindow(url string) error {
 			continue
 		}
 
-		cmd := exec.Command("open", "-na", appName, "--args", fmt.Sprintf("--app=%s", appURL), "--window-size=820,960")
+		cmd := exec.Command("open", "-na", appName, "--args", fmt.Sprintf("--app=%s", appURL), "--window-size=880,640")
 		if err := cmd.Run(); err == nil {
 			return nil
 		}

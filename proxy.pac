@@ -31,7 +31,7 @@ function FindProxyForURL(url, host) {
         shExpMatch(host, "*.connect.mobage.jp") ||
         shExpMatch(host, "connect.mobage.jp") ||
         shExpMatch(host, "*.game.mobage.jp") ||
-        shExpMatch(host, "gbf.game.mobage.jp") ||
+        shExpMatch(host, "gbf.game.mbga.jp") ||
         shExpMatch(host, "*.mobage.jp") ||
         shExpMatch(host, "mobage.jp")
     ) {

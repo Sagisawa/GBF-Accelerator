@@ -84,6 +84,12 @@ export const App: React.FC = () => {
     []
   )
 
+  const isStandalone = typeof window !== 'undefined' && (
+    window.matchMedia('(display-mode: standalone)').matches ||
+    window.location.search.includes('standalone') ||
+    Boolean((window.navigator as any).standalone)
+  )
+
   // Refresh data from API
   const loadState = useCallback(async () => {
     try {
@@ -169,6 +175,48 @@ export const App: React.FC = () => {
       if (es) es.close()
     }
   }, [loadState])
+
+  // Save user-adjusted window dimensions and maximized state across restarts
+  useEffect(() => {
+    if (!isStandalone) return
+
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const saveGeometry = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+
+      const w = window.outerWidth || window.innerWidth
+      const h = window.outerHeight || window.innerHeight
+
+      const isMaximized = Boolean(
+        window.screen &&
+        w >= window.screen.availWidth - 20 &&
+        h >= window.screen.availHeight - 20
+      )
+
+      const patch: Record<string, any> = { window_maximized: isMaximized }
+      if (!isMaximized && w >= 400 && h >= 400) {
+        patch.window_width = Math.round(w)
+        patch.window_height = Math.round(h)
+      }
+
+      applyConfig(patch).catch(() => {})
+    }
+
+    const handleResize = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(saveGeometry, 800)
+    }
+
+    window.addEventListener('resize', handleResize)
+    window.addEventListener('beforeunload', saveGeometry)
+
+    return () => {
+      if (timer) clearTimeout(timer)
+      window.removeEventListener('resize', handleResize)
+      window.removeEventListener('beforeunload', saveGeometry)
+    }
+  }, [isStandalone])
 
   // Proxy Start / Stop
   const handleToggleProxy = async () => {
@@ -572,596 +620,824 @@ export const App: React.FC = () => {
   const ramUsageMb = Math.round(cacheStats?.ram_mb ?? (status?.cache?.ram_mb ?? 0))
   const ramMaxMb = config.ram_cache_max_mb ?? 256
 
-  const isStandalone = typeof window !== 'undefined' && (
-    window.matchMedia('(display-mode: standalone)').matches ||
-    window.location.search.includes('standalone') ||
-    Boolean((window.navigator as any).standalone)
-  )
+  const uptimeSec = status?.uptime_seconds ?? 0
+  const diskHitsCount = status?.requests?.disk_hits ?? 0
+  const evaluatedAssetTotal = ramHitsCount + diskHitsCount + downloadsCount
+  const ramHitPct = evaluatedAssetTotal > 0 ? Math.round((ramHitsCount / evaluatedAssetTotal) * 100) : 0
+  const diskHitPct = evaluatedAssetTotal > 0 ? Math.round((diskHitsCount / evaluatedAssetTotal) * 100) : 0
+  const missHitPct = evaluatedAssetTotal > 0 ? Math.max(0, 100 - ramHitPct - diskHitPct) : 0
+  const totalHitRate = evaluatedAssetTotal > 0 ? Math.round(((ramHitsCount + diskHitsCount) / evaluatedAssetTotal) * 1000) / 10 : 0
+
+  const telemetryData = status?.telemetry
+  const reusedConnections = telemetryData?.reused_connections ?? 0
+  const newConnections = telemetryData?.new_connections ?? 0
+  const totalConnections = reusedConnections + newConnections
+  const connReusePercent = telemetryData?.reuse_rate_percent ?? (totalConnections > 0 ? Math.round((reusedConnections / totalConnections) * 1000) / 10 : 0)
+  const h2Count = telemetryData?.protocols?.['HTTP/2'] ?? 0
+  const h1Count = telemetryData?.protocols?.['HTTP/1.1'] ?? 0
+  const latencySamples = telemetryData?.percentiles?.samples ?? 0
+  const p50Latency = telemetryData?.percentiles?.p50_ms ?? 0
+  const p95Latency = telemetryData?.percentiles?.p95_ms ?? 0
+  const activeApiCount = status?.active_api_count ?? 0
+  const activeForeground = status?.active_foreground_assets ?? 0
+  const prefetchReusedCount = status?.requests?.prefetch_reused ?? 0
 
   return (
-    <div className={`min-h-screen ${isStandalone ? 'bg-white py-0 px-0' : 'bg-[#f1f5f9] py-6 px-3 sm:px-6'} flex flex-col items-center justify-start font-sans antialiased text-slate-800 selection:bg-blue-200`}>
+    <div className="min-h-screen w-full flex flex-col bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-sky-100">
       {/* Toast Notification */}
       {toast && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-3 duration-200">
           <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
             {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
             {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
-            {toast.type === 'info' && <Info className="w-4 h-4 text-blue-400 shrink-0" />}
+            {toast.type === 'info' && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
             <span className="font-medium tracking-tight">{toast.msg}</span>
           </div>
         </div>
       )}
 
-      {/* Main Desktop Window Frame */}
-      <div className={`w-full ${isStandalone ? 'max-w-[820px] rounded-none shadow-none border-0' : 'max-w-[800px] rounded-lg shadow-xl border border-slate-300'} bg-white overflow-hidden flex flex-col`}>
-        {/* Windows Simulated Title Bar */}
-        {!isStandalone && (
-          <div className="bg-white border-b border-slate-200 h-8 pl-3 pr-0 flex items-center justify-between select-none">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
-                <Zap className="w-2.5 h-2.5 fill-current" />
-              </div>
-              <span className="text-xs font-normal text-slate-700">GBF 加速器</span>
+      {/* Windows Simulated Title Bar for Non-Standalone Browser Mode */}
+      {!isStandalone && (
+        <div className="shrink-0 bg-white border-b border-slate-200 h-8 pl-3 pr-0 flex items-center justify-between select-none">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
+              <Zap className="w-2.5 h-2.5 fill-current" />
             </div>
-
-            <div className="flex items-center h-full">
-              <button
-                type="button"
-                onClick={() => showToast('GBF 加速代理正在后台运行', 'info')}
-                className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
-                title="最小化"
-              >
-                —
-              </button>
-              <button
-                type="button"
-                onClick={() => showToast('窗口已处于最大适配尺寸', 'info')}
-                className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
-                title="最大化"
-              >
-                □
-              </button>
-              <button
-                type="button"
-                onClick={() => showToast('如需退出请关闭浏览器标签或使用托盘菜单', 'info')}
-                className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-[#e81123] hover:text-white text-xs transition-colors"
-                title="关闭"
-              >
-                ✕
-              </button>
-            </div>
+            <span className="text-xs font-normal text-slate-700">GBF 加速器</span>
           </div>
-        )}
 
-        {/* Window Client Area */}
-        <div className="p-4 sm:p-5 flex flex-col space-y-3 bg-white">
-          {/* 1. Header Card */}
-          <div className="flex items-center justify-between gap-4 pb-1">
-            <div className="flex flex-col space-y-1">
-              <div className="flex items-baseline gap-2">
-                <h1 className="text-lg sm:text-[19px] font-bold text-slate-900 tracking-tight">
-                  碧蓝幻想 GBF 加速器
-                </h1>
-                <span className="text-xs font-mono text-slate-500">
-                  v{status?.version || '1.8.0'}
-                </span>
-                {updateInfo?.available && (
-                  <button
-                    type="button"
-                    onClick={() => setIsUpdateModalOpen(true)}
-                    className="ml-1 px-1.5 py-0.5 rounded-[3px] bg-[#ffc107] hover:bg-[#e0a800] text-[#212529] text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
-                  >
-                    <span>🔥</span>
-                    <span>发现新版 v{updateInfo.version}</span>
-                  </button>
-                )}
+          <div className="flex items-center h-full">
+            <button
+              type="button"
+              onClick={() => showToast('GBF 加速代理正在后台运行', 'info')}
+              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
+              title="最小化"
+            >
+              —
+            </button>
+            <button
+              type="button"
+              onClick={() => showToast('窗口已处于自适应状态', 'info')}
+              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
+              title="最大化"
+            >
+              □
+            </button>
+            <button
+              type="button"
+              onClick={() => showToast('如需退出请关闭浏览器标签或使用托盘菜单', 'info')}
+              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-[#e81123] hover:text-white text-xs transition-colors"
+              title="关闭"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 1. Header & Live Telemetry HUD (Fixed top panel) */}
+      <header className="shrink-0 bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 sm:py-4 shadow-2xs z-20">
+        <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5">
+          {/* Top Row: Logo, Title, Running State & Master Switch */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
+                <Zap className="w-5.5 h-5.5 fill-current" />
               </div>
-
-              <div className="flex items-center gap-2">
-                <span
-                  className={`text-xs font-medium ${
-                    isRunning ? 'text-[#28a745]' : 'text-[#6c757d]'
-                  }`}
-                >
-                  {isRunning
-                    ? `● 运行中 (监听端口 ${currentListenPort})`
-                    : '● 已停止'}
-                </span>
+              <div className="flex flex-col min-w-0">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
+                    碧蓝幻想 GBF 加速器
+                  </span>
+                  <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200">
+                    v{status?.version || '1.8.0'}
+                  </span>
+                  {updateInfo?.available && (
+                    <button
+                      type="button"
+                      onClick={() => setIsUpdateModalOpen(true)}
+                      className="px-2.5 py-0.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300/80 text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition-all shadow-2xs"
+                    >
+                      <span>🔥</span>
+                      <span>发现新版 v{updateInfo.version}</span>
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 mt-1.5">
+                  <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
+                    <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                    <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
+                      {isRunning ? `运行中 (监听端口 ${currentListenPort})` : '已停止'}
+                    </span>
+                  </span>
+                </div>
               </div>
             </div>
 
-            {/* Top Right Start / Stop Button */}
+            {/* Top Right Master Start / Stop Action Button */}
             <button
               type="button"
               disabled={loadingProxy}
               onClick={handleToggleProxy}
-              className={`min-w-[96px] px-5 py-2 rounded-[3px] text-sm font-bold text-white shadow-xs transition-colors cursor-pointer select-none active:scale-[0.98] ${
+              className={`min-w-[116px] px-6 py-2.5 rounded-xl text-sm sm:text-base font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] ${
                 isRunning
-                  ? 'bg-[#dc3545] hover:bg-[#c82333] active:bg-[#bd2130]'
-                  : 'bg-[#28a745] hover:bg-[#218838] active:bg-[#1e7e34]'
+                  ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
+                  : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
               }`}
             >
               {loadingProxy ? '处理中...' : isRunning ? '停止加速' : '启动加速'}
             </button>
           </div>
 
-          {/* 2. Real-time Telemetry Stats (3-Column Strip) */}
-          <div className="border-y border-slate-200 py-3.5 px-2 grid grid-cols-3 text-center">
-            {/* Stat 1: Cache Hits */}
-            <div className="flex flex-col items-center justify-center">
-              <div className="text-2xl sm:text-3xl font-bold font-sans text-[#28a745] tracking-tight tnum">
-                {hitsCount.toLocaleString()}
-                {ramHitsCount > 0 && (
-                  <span className="text-xs font-normal text-slate-500 ml-1">
-                    (内存 {ramHitsCount.toLocaleString()})
+          {/* Telemetry 3-Tile HUD */}
+          <div className="grid grid-cols-3 gap-2.5 sm:gap-4 pt-1">
+            {/* Stat 1: Local Cache Hits */}
+            <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
+              <div className="flex flex-col">
+                <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
+                  <span className="text-sm sm:text-base">⚡</span> 本地缓存命中
+                </span>
+                <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
+                  <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 font-mono tnum leading-tight">
+                    {hitsCount.toLocaleString()}
                   </span>
-                )}
-              </div>
-              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                <span>⚡</span>
-                <span>本地缓存命中</span>
+                  {ramHitsCount > 0 && (
+                    <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
+                      RAM {ramHitsCount.toLocaleString()}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
             {/* Stat 2: Remote Downloads */}
-            <div className="flex flex-col items-center justify-center">
-              <div className="text-2xl sm:text-3xl font-bold font-sans text-[#007bff] tracking-tight tnum">
-                {downloadsCount.toLocaleString()}
-              </div>
-              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                <span>📥</span>
-                <span>远程下载缓存</span>
+            <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
+              <div className="flex flex-col">
+                <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
+                  <span className="text-sm sm:text-base">📥</span> 远程下载缓存
+                </span>
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  <span className="text-2xl sm:text-3xl font-extrabold text-sky-600 font-mono tnum leading-tight">
+                    {downloadsCount.toLocaleString()}
+                  </span>
+                </div>
               </div>
             </div>
 
             {/* Stat 3: API Passthrough */}
-            <div className="flex flex-col items-center justify-center">
-              <div className="text-2xl sm:text-3xl font-bold font-sans text-[#6c757d] tracking-tight tnum">
-                {apisCount.toLocaleString()}
+            <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
+              <div className="flex flex-col">
+                <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
+                  <span className="text-sm sm:text-base">🔄</span> 游戏 API 转发
+                </span>
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  <span className="text-2xl sm:text-3xl font-extrabold text-slate-800 font-mono tnum leading-tight">
+                    {apisCount.toLocaleString()}
+                  </span>
+                </div>
               </div>
-              <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                <span>🔄</span>
-                <span>游戏 API 转发</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
+      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
+          {/* Card 1: Local Cache & Storage */}
+          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
+            <div className="space-y-3.5">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">📁</span>
+                  <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
+                    本地缓存与存储管理
+                  </h2>
+                </div>
+                <span className="text-xs text-emerald-700 font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200/60">
+                  RAM + 磁盘双层
+                </span>
+              </div>
+
+              {/* Local Cache Dir */}
+              <div className="space-y-2">
+                <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
+                  本地缓存目录（支持无缝复用 ACGPower 缓存）：
+                </label>
+                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                  <input
+                    type="text"
+                    value={cacheDirInput}
+                    onChange={(e) => setCacheDirInput(e.target.value)}
+                    className="flex-1 min-w-[160px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleBrowseDir}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
+                  >
+                    浏览...
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDetectAcgp}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
+                  >
+                    检测 ACGP
+                  </button>
+                </div>
+                {/* Health & Slim buttons */}
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsAuditModalOpen(true)}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                  >
+                    <span>🩺</span>
+                    <span>一键体检缓存</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSlimModalOpen(true)}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                  >
+                    <span>🧹</span>
+                    <span>缓存安全瘦身</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* RAM Cache Setting */}
+              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
+                <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
+                  <input
+                    type="checkbox"
+                    checked={isRamCache}
+                    onChange={handleToggleRamCache}
+                    className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
+                  />
+                  <span>
+                    启用内存热点缓存 (RAM Cache) - 占用约 256MB 内存，高频静态资源 0 磁盘 I/O 直接响应
+                  </span>
+                </label>
+
+                <div className="ml-6 flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
+                  <span>上限 (MB):</span>
+                  <input
+                    type="text"
+                    value={ramMbInput}
+                    onChange={(e) => setRamMbInput(e.target.value)}
+                    className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyRamMb}
+                    className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                  >
+                    应用
+                  </button>
+                  <span className="text-slate-500 font-mono text-xs">
+                    {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
+                  </span>
+                  <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
+                    <div
+                      className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                      style={{ width: `${Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%` }}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* 3. Settings Card ("配置选项") */}
-          <div className="space-y-3 pt-1">
-            <h2 className="text-sm sm:text-base font-bold text-slate-900">
-              配置选项
-            </h2>
-
-            {/* Field 1: Local Cache Dir */}
-            <div className="space-y-1">
-              <label className="text-xs text-slate-700 block">
-                本地缓存目录（支持无缝复用 ACGPower 缓存）：
-              </label>
-              <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
-                <input
-                  type="text"
-                  value={cacheDirInput}
-                  onChange={(e) => setCacheDirInput(e.target.value)}
-                  className="flex-1 min-w-[200px] border border-slate-300 rounded px-2.5 py-1 text-xs font-mono bg-white text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
-                />
-                <button
-                  type="button"
-                  onClick={handleBrowseDir}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-3 py-1 rounded transition-colors shrink-0 cursor-pointer"
-                >
-                  浏览...
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDetectAcgp}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors shrink-0 cursor-pointer"
-                >
-                  检测 ACGP
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsAuditModalOpen(true)}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors shrink-0 cursor-pointer flex items-center gap-1"
-                >
-                  <span>🩺</span>
-                  <span>一键体检缓存</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsSlimModalOpen(true)}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors shrink-0 cursor-pointer flex items-center gap-1"
-                >
-                  <span>🧹</span>
-                  <span>缓存安全瘦身</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Field 2: Upstream Proxy */}
-            <div className="space-y-1">
-              <label className="text-xs text-slate-700 block">
-                上游网络代理（Clash Verge / Clash / V2ray / 岛风GO 等）：
-              </label>
-              <div className="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
-                <input
-                  type="text"
-                  disabled={isDirect}
-                  value={upstreamInput}
-                  onChange={(e) => setUpstreamInput(e.target.value)}
-                  className="flex-1 min-w-[200px] border border-slate-300 rounded px-2.5 py-1 text-xs font-mono bg-white text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs disabled:bg-slate-100 disabled:text-slate-400"
-                />
-                <button
-                  type="button"
-                  disabled={isDirect}
-                  onClick={handleSaveUpstream}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-3 py-1 rounded transition-colors shrink-0 cursor-pointer disabled:opacity-50"
-                >
-                  确认
-                </button>
-                <button
-                  type="button"
-                  disabled={isDirect}
-                  onClick={handleProbeUpstream}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors shrink-0 cursor-pointer disabled:opacity-50"
-                >
-                  自动探测
-                </button>
-              </div>
-            </div>
-
-            {/* Checkbox 1: Direct Mode */}
-            <div className="pt-0.5">
-              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={isDirect}
-                  onChange={handleToggleDirect}
-                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                />
-                <span>直连模式（使用本机网络，不经过上游代理；仍使用本地缓存）</span>
-              </label>
-            </div>
-
-            {/* Checkbox 2: Shimakaze Mode */}
-            <div className="space-y-1">
-              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  disabled={isDirect}
-                  checked={isShimakaze}
-                  onChange={handleToggleShimakaze}
-                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer disabled:opacity-50"
-                />
-                <span className={isDirect ? 'text-slate-400' : 'text-slate-800'}>
-                  岛风GO 兼容优化模式（放宽超时、自愈重试、适配自签证书；默认关闭）
-                </span>
-              </label>
-
-              {/* Shimakaze Tip Box (Shown in screenshot) */}
-              {isShimakaze && !isDirect && (
-                <div className="ml-6 p-2 bg-[#f0f7ff] border border-[#bae0ff] rounded text-xs text-[#1971c2] leading-relaxed">
-                  提示：本软件架构升级后，日常使用可按需开启岛风GO【使用远端缓存】（可显著加快初次冷启动下载速度）；若遇游戏维护更新后新素材显示异常，在主界面点击【清理缓存】或临时关闭远端缓存即可。
+          {/* Card 2: Upstream Proxy & Network Routing */}
+          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
+            <div className="space-y-3.5">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">🌐</span>
+                  <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
+                    上游网络代理与分流
+                  </h2>
                 </div>
-              )}
-            </div>
-
-            {/* Field 3: Local Listen Port */}
-            <div className="space-y-1">
-              <label className="text-xs text-slate-700 block">
-                本地监听端口（默认 8124，支持自定义）：
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={portInput}
-                  onChange={(e) => setPortInput(e.target.value)}
-                  className="w-20 border border-slate-300 rounded px-2.5 py-1 text-xs font-mono bg-white text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
-                />
-                <button
-                  type="button"
-                  onClick={handleResetPort}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-3 py-1 rounded transition-colors cursor-pointer"
-                >
-                  恢复默认 (8124)
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSavePort}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-3 py-1 rounded transition-colors cursor-pointer"
-                >
-                  保存配置
-                </button>
+                <span className="text-xs text-sky-700 font-semibold px-2.5 py-0.5 rounded-full bg-sky-50 border border-sky-200/60">
+                  Clash / 岛风GO / 直连
+                </span>
               </div>
-            </div>
 
-            {/* Field 4: Allow LAN & Mobile Guide */}
-            <div className="space-y-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
+              {/* Upstream Proxy */}
+              <div className="space-y-1.5">
+                <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
+                  上游网络代理（Clash Verge / Clash / V2ray / 岛风GO 等）：
+                </label>
+                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                  <input
+                    type="text"
+                    disabled={isDirect}
+                    value={upstreamInput}
+                    onChange={(e) => setUpstreamInput(e.target.value)}
+                    className="flex-1 min-w-[160px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all disabled:bg-slate-100 disabled:text-slate-400"
+                  />
+                  <button
+                    type="button"
+                    disabled={isDirect}
+                    onClick={handleSaveUpstream}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
+                  >
+                    确认
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDirect}
+                    onClick={handleProbeUpstream}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
+                  >
+                    自动探测
+                  </button>
+                </div>
+              </div>
+
+              {/* Mode Toggles */}
+              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
+                <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={isAllowLan}
-                    onChange={handleToggleAllowLan}
-                    className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
+                    checked={isDirect}
+                    onChange={handleToggleDirect}
+                    className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                   />
-                  <span>
-                    允许局域网连接 (Allow LAN) - 允许其他设备（iOS/iPad/安卓等）连接本代理（默认关闭）
-                  </span>
+                  <span>直连模式（使用本机网络，不经过上游代理；仍使用本地缓存）</span>
                 </label>
-                <button
-                  type="button"
-                  onClick={() => setIsMobileModalOpen(true)}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2 py-0.5 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
-                >
-                  <span>📱</span>
-                  <span>移动端/iOS 连接指引...</span>
-                </button>
-              </div>
-              {isAllowLan && (
-                <div className="ml-6 text-[11px] text-blue-600 font-medium">
-                  本机局域网 IP: {status?.lan_ip || '192.168.x.x'} (端口 {currentListenPort}) | 移动设备请配置 Wi-Fi 代理为此 IP 与端口
-                </div>
-              )}
-            </div>
 
-            {/* Field 5: HTTPS Root CA Status */}
-            <div className="space-y-1">
-              <label className="text-xs text-slate-700 block">
-                HTTPS 根证书状态（游戏静态资源本地解析必需）：
-              </label>
-              <div className="flex items-center gap-2 flex-wrap">
+                <div>
+                  <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
+                    <input
+                      type="checkbox"
+                      disabled={isDirect}
+                      checked={isShimakaze}
+                      onChange={handleToggleShimakaze}
+                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
+                    />
+                    <span className={isDirect ? 'text-slate-400' : 'text-slate-800'}>
+                      岛风GO 兼容优化模式（放宽超时、自愈重试、适配自签证书；默认关闭）
+                    </span>
+                  </label>
+
+                  {isShimakaze && !isDirect && (
+                    <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs">
+                      提示：本软件架构升级后，日常使用可按需开启岛风GO【使用远端缓存】（可显著加快初次冷启动下载速度）；若遇游戏维护更新后新素材显示异常，在主界面点击【清理缓存】或临时关闭远端缓存即可。
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Listen Port & Allow LAN */}
+              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="text-[13px] sm:text-sm text-slate-700 font-medium">本地监听端口：</label>
+                  <input
+                    type="text"
+                    value={portInput}
+                    onChange={(e) => setPortInput(e.target.value)}
+                    className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSavePort}
+                    className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                  >
+                    保存配置
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResetPort}
+                    className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/80 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                  >
+                    恢复默认 (8124)
+                  </button>
+                </div>
+
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={isAllowLan}
+                        onChange={handleToggleAllowLan}
+                        className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                      />
+                      <span>允许局域网连接 (Allow LAN)</span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setIsMobileModalOpen(true)}
+                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
+                    >
+                      <span>📱</span>
+                      <span>移动端/iOS 连接指引...</span>
+                    </button>
+                  </div>
+                  {isAllowLan && (
+                    <div className="text-xs text-sky-700 font-medium pl-6">
+                      本机局域网 IP: {status?.lan_ip || '192.168.x.x'} (端口 {currentListenPort}) | 移动设备配置 Wi-Fi 代理为此地址
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Card 3: HTTPS Root CA & System Integration */}
+          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
+            <div className="space-y-3.5">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">🛡️</span>
+                  <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
+                    HTTPS 根证书与系统集成
+                  </h2>
+                </div>
                 <span
-                  className={`text-xs font-bold ${
-                    isCaInstalled ? 'text-[#28a745]' : 'text-[#dc3545]'
+                  className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
+                    isCaInstalled
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
+                      : 'bg-rose-50 text-rose-700 border-rose-200/60'
                   }`}
                 >
-                  {isCaInstalled ? '已信任 (正常工作)' : '未安装信任'}
+                  {isCaInstalled ? '已信任' : '未安装'}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setCaModalAction('install')}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors cursor-pointer"
-                >
-                  一键安装/修复根证书
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCaModalAction('uninstall')}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded transition-colors cursor-pointer"
-                >
-                  一键注销/卸载根证书
-                </button>
               </div>
-              <div className="text-[11px] font-mono text-slate-500 pt-0.5 select-all">
-                SHA-256 指纹： {caFingerprint}
-              </div>
-            </div>
 
-            {/* System Checkboxes */}
-            <div className="space-y-1.5 pt-1">
-              <div>
-                <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={isAutoPac}
-                    onChange={handleToggleAutoPac}
-                    className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                  />
-                  <span>
-                    自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）
+              {/* CA Status & Action Buttons */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span className="text-[13px] sm:text-sm text-slate-700 font-medium">
+                    证书状态：
+                    <strong className={isCaInstalled ? 'text-emerald-700 ml-1' : 'text-rose-600 ml-1'}>
+                      {isCaInstalled ? '已信任 (正常解析)' : '未安装信任'}
+                    </strong>
                   </span>
-                </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCaModalAction('install')}
+                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                    >
+                      一键安装/修复根证书
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCaModalAction('uninstall')}
+                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                    >
+                      一键注销/卸载根证书
+                    </button>
+                  </div>
+                </div>
+                <div className="text-xs font-mono text-slate-500 pt-0.5 select-all break-all leading-normal">
+                  SHA-256 指纹： {caFingerprint}
+                </div>
               </div>
 
-              <div>
-                <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={isAutoStart}
-                    onChange={handleToggleAutoStart}
-                    className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                  />
-                  <span>开机自启（启动后自动缩小到系统托盘，默认关闭）</span>
-                </label>
-              </div>
+              {/* System Checkboxes */}
+              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
+                <div>
+                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isAutoPac}
+                      onChange={handleToggleAutoPac}
+                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                    />
+                    <span>
+                      自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）
+                    </span>
+                  </label>
+                </div>
 
-              <div>
-                <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={isAutoUpdate}
-                    onChange={handleToggleAutoUpdate}
-                    className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                  />
-                  <span>启动时自动检测新版本（发现新版时右上角提醒，默认开启）</span>
-                </label>
+                <div>
+                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isAutoStart}
+                      onChange={handleToggleAutoStart}
+                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                    />
+                    <span>开机自启（启动后自动缩小到系统托盘，默认关闭）</span>
+                  </label>
+                </div>
+
+                <div>
+                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={isAutoUpdate}
+                      onChange={handleToggleAutoUpdate}
+                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                    />
+                    <span>启动时自动检测新版本（发现新版时右上角提醒，默认开启）</span>
+                  </label>
+                </div>
               </div>
             </div>
           </div>
 
-          <hr className="border-slate-200" />
-
-          {/* 4. Performance & System Resource Options */}
-          <div className="space-y-2">
-            <h3 className="text-xs text-slate-700 font-normal">
-              性能与系统资源选项（默认开启；若需降低内存/显存占用可取消对应勾选）：
-            </h3>
-
-            {/* Perf 1: RAM Cache */}
-            <div className="space-y-1">
-              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={isRamCache}
-                  onChange={handleToggleRamCache}
-                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                />
-                <span>
-                  启用内存热点缓存 (RAM Cache) - 占用约 256MB 内存，高频静态资源 0 磁盘 I/O 直接响应
-                </span>
-              </label>
-
-              <div className="ml-6 flex items-center gap-2 text-xs text-slate-700">
-                <span>内存缓存上限 (MB):</span>
-                <input
-                  type="text"
-                  value={ramMbInput}
-                  onChange={(e) => setRamMbInput(e.target.value)}
-                  className="w-16 border border-slate-300 rounded px-2 py-0.5 text-xs font-mono bg-white text-slate-800 focus:outline-none focus:border-blue-500 shadow-2xs"
-                />
-                <button
-                  type="button"
-                  onClick={handleApplyRamMb}
-                  className="bg-[#f8f9fa] hover:bg-[#e2e6ea] border border-slate-300 text-xs text-slate-700 px-2.5 py-0.5 rounded transition-colors cursor-pointer"
-                >
-                  应用
-                </button>
-                <span className="text-slate-500 ml-2">
-                  使用中 {ramUsageMb} MB / {ramMaxMb} MB
+          {/* Card 4: Performance Acceleration & Asset Scheduling */}
+          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
+            <div className="space-y-3.5">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">⚡</span>
+                  <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
+                    性能加速与调度优化
+                  </h2>
+                </div>
+                <span className="text-xs text-amber-800 font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200/60">
+                  削峰填谷 · 防黑屏
                 </span>
               </div>
-            </div>
 
-            {/* Perf 2: Browser Cache */}
-            <div>
-              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={isBrowserCache}
-                  onChange={handleToggleBrowserCache}
-                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                />
-                <span>
-                  启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认关闭）
-                </span>
-              </label>
-            </div>
+              <div className="space-y-3 text-[13px] sm:text-sm text-slate-800">
+                <div>
+                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
+                    <input
+                      type="checkbox"
+                      checked={isAutoRepair}
+                      onChange={handleToggleAutoRepair}
+                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
+                    />
+                    <span>
+                      自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防止黑屏卡死
+                    </span>
+                  </label>
+                </div>
 
-            {/* Perf 3: Auto Repair */}
-            <div>
-              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={isAutoRepair}
-                  onChange={handleToggleAutoRepair}
-                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                />
-                <span>
-                  自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防止黑屏卡死
-                </span>
-              </label>
-            </div>
+                <div>
+                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
+                    <input
+                      type="checkbox"
+                      checked={isPrefetch}
+                      onChange={handleTogglePrefetch}
+                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
+                    />
+                    <span>
+                      启用资源预加载 - 解析场景 JS 引用的素材并后台预热，首次进新副本/活动更流畅
+                    </span>
+                  </label>
+                </div>
 
-            {/* Perf 4: Prefetch */}
-            <div>
-              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={isPrefetch}
-                  onChange={handleTogglePrefetch}
-                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                />
-                <span>
-                  启用资源预加载 - 解析场景 JS 引用的素材并后台预热，首次进新副本/活动更流畅
-                </span>
-              </label>
-            </div>
+                <div>
+                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
+                    <input
+                      type="checkbox"
+                      checked={isRamWarmup}
+                      onChange={handleToggleRamWarmup}
+                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
+                    />
+                    <span>
+                      启动时预热内存缓存 - 把高频小文件预先载入 RAM，消除会话首读的磁盘延迟
+                    </span>
+                  </label>
+                </div>
 
-            {/* Perf 5: RAM Warmup */}
-            <div>
-              <label className="inline-flex items-center gap-2 text-xs text-slate-800 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={isRamWarmup}
-                  onChange={handleToggleRamWarmup}
-                  className="w-4 h-4 rounded text-blue-600 border-slate-300 focus:ring-0 cursor-pointer"
-                />
-                <span>
-                  启动时预热内存缓存 - 把高频小文件预先载入 RAM，消除会话首读的磁盘延迟
-                </span>
-              </label>
+                <div>
+                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
+                    <input
+                      type="checkbox"
+                      checked={isBrowserCache}
+                      onChange={handleToggleBrowserCache}
+                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
+                    />
+                    <span>
+                      启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认关闭）
+                    </span>
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* 5. Bottom Action Dock */}
-        <div className="bg-[#f8fafc] border-t border-slate-200 px-3.5 py-2.5 flex items-center justify-between flex-wrap gap-1 select-none">
-          <div className="flex items-center gap-1 flex-wrap">
-            <button
-              type="button"
-              onClick={handleOpenCacheFolder}
-              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <span>📁</span>
-              <span>缓存目录</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setIsClearModalOpen(true)}
-              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <span>🗑</span>
-              <span>清空缓存</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setIsRoutingModalOpen(true)}
-              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <span>🌐</span>
-              <span>分流说明</span>
-            </button>
-
-            <a
-              href="https://github.com/Sagisawa/GBF-Accelerator"
-              target="_blank"
-              rel="noreferrer"
-              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <span>⭐</span>
-              <span>GitHub</span>
-            </a>
-
-            <button
-              type="button"
-              onClick={() => setIsUpdateModalOpen(true)}
-              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <span>🔄</span>
-              <span>检查更新</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setIsLatencyModalOpen(true)}
-              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <span>📶</span>
-              <span>延迟测试</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setIsLogDrawerOpen((prev) => !prev)}
-              className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
-            >
-              <span>📜</span>
-              <span>实时日志</span>
-            </button>
+        {/* 5. Accelerating Engine Telemetry Dashboard */}
+        <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-5 transition-colors">
+          <div className="flex items-center justify-between pb-2.5 mb-3.5 border-b border-slate-100">
+            <div className="flex items-center gap-2.5">
+              <span className="w-2.5 h-2.5 rounded-full bg-sky-500 animate-pulse shrink-0" />
+              <h3 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
+                加速效能与网络态势
+              </h3>
+              <span className="text-xs text-slate-400 font-mono hidden sm:inline">
+                ENGINE TELEMETRY
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-xs sm:text-[13px] text-slate-500 font-mono">
+              <span className="text-slate-400">运行:</span>
+              <span className="text-slate-700 font-semibold">
+                {Math.floor(uptimeSec / 3600)}h {Math.floor((uptimeSec % 3600) / 60)}m {Math.floor(uptimeSec % 60)}s
+              </span>
+            </div>
           </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-4">
+            {/* Col 1: Asset Routing & Cache Ratio */}
+            <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+                  <span className="text-emerald-500 text-base">⚡</span>
+                  <span>分流与命中占比</span>
+                </span>
+                <span className="text-sm sm:text-base font-bold font-mono text-emerald-600">
+                  {totalHitRate > 0 ? `${totalHitRate}%` : '--'}
+                </span>
+              </div>
+
+              {/* Multi-segment visual bar */}
+              <div className="space-y-1.5">
+                <div className="w-full h-2.5 bg-slate-200/80 rounded-full overflow-hidden flex shadow-inner">
+                  <div
+                    className="h-full bg-emerald-500 transition-all duration-300"
+                    style={{ width: `${ramHitPct}%` }}
+                    title={`RAM 即时命中: ${ramHitsCount} (${ramHitPct}%)`}
+                  />
+                  <div
+                    className="h-full bg-sky-500 transition-all duration-300"
+                    style={{ width: `${diskHitPct}%` }}
+                    title={`磁盘命中: ${diskHitsCount} (${diskHitPct}%)`}
+                  />
+                  <div
+                    className="h-full bg-amber-400/90 transition-all duration-300"
+                    style={{ width: `${missHitPct}%` }}
+                    title={`CDN 上游下载: ${downloadsCount} (${missHitPct}%)`}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                    RAM: {ramHitsCount}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+                    磁盘: {diskHitsCount}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                    下载: {downloadsCount}
+                  </span>
+                </div>
+              </div>
+
+              <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
+                <span>累计节省外网请求</span>
+                <span className="font-mono font-semibold text-slate-800">{hitsCount} 次</span>
+              </div>
+            </div>
+
+            {/* Col 2: HTTP/2 Multiplexing & Handshake Savings */}
+            <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+                  <span className="text-sky-500 text-base">🌐</span>
+                  <span>HTTP/2 连接复用态势</span>
+                </span>
+                <span className="text-sm sm:text-base font-bold font-mono text-sky-600">
+                  {connReusePercent > 0 ? `${connReusePercent}%` : '--'}
+                </span>
+              </div>
+
+              <div className="space-y-2 text-xs sm:text-[13px] text-slate-600">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">避免重复 TCP 握手:</span>
+                  <span className="font-mono font-semibold text-emerald-600">
+                    +{reusedConnections} 次
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">新建连接 / 活跃素材:</span>
+                  <span className="font-mono text-slate-700">
+                    {newConnections} / {activeForeground}
+                  </span>
+                </div>
+              </div>
+
+              <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
+                <span>协议多路复用</span>
+                <span className="font-mono font-medium text-sky-700">
+                  H2: {h2Count} | H1: {h1Count}
+                </span>
+              </div>
+            </div>
+
+            {/* Col 3: Upstream Latency & Yielding Guardrail */}
+            <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+                  <span className="text-indigo-500 text-base">📶</span>
+                  <span>上游延迟与调度水线</span>
+                </span>
+                <span className="text-xs font-mono text-slate-500">
+                  样本: {latencySamples}
+                </span>
+              </div>
+
+              <div className="space-y-2 text-xs sm:text-[13px] text-slate-600">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">P50 延迟 / P95 尾延迟:</span>
+                  <span className="font-mono font-semibold text-slate-800">
+                    {p50Latency > 0 ? `${p50Latency}ms` : '--'} / {p95Latency > 0 ? `${p95Latency}ms` : '--'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">前台战斗 API 避让:</span>
+                  <span className={`font-medium ${activeApiCount > 0 ? 'text-amber-600 font-semibold' : 'text-emerald-600'}`}>
+                    {activeApiCount > 0 ? `避让中 (${activeApiCount} 活动)` : '待命就绪 (0 活动)'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
+                <span>预加载命中复用</span>
+                <span className="font-mono font-semibold text-indigo-600">
+                  {prefetchReusedCount} 项
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </main>
+
+      {/* 3. Fixed Bottom Action Dock (Footer) */}
+      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-4 sm:px-6 py-3 sm:py-3.5 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
+        <div className="max-w-5xl mx-auto flex items-center justify-center flex-wrap gap-2.5 sm:gap-3">
+          <button
+            type="button"
+            onClick={handleOpenCacheFolder}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+          >
+            <span className="text-base">📁</span>
+            <span>缓存目录</span>
+          </button>
 
           <button
             type="button"
-            onClick={() => showToast('GBF 加速代理已在后台持续运行', 'info')}
-            className="bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] border border-slate-300 text-xs text-slate-700 px-2.5 py-1 rounded-[3px] transition-colors cursor-pointer flex items-center gap-1"
+            onClick={() => setIsClearModalOpen(true)}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
           >
-            <span>⬇</span>
-            <span>最小化到托盘</span>
+            <span className="text-base">🗑</span>
+            <span>清空缓存</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsRoutingModalOpen(true)}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+          >
+            <span className="text-base">🌐</span>
+            <span>分流说明</span>
+          </button>
+
+          <a
+            href="https://github.com/Sagisawa/GBF-Accelerator"
+            target="_blank"
+            rel="noreferrer"
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+          >
+            <span className="text-base">⭐</span>
+            <span>GitHub</span>
+          </a>
+
+          <button
+            type="button"
+            onClick={() => setIsUpdateModalOpen(true)}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+          >
+            <span className="text-base">🔄</span>
+            <span>检查更新</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsLatencyModalOpen(true)}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+          >
+            <span className="text-base">📶</span>
+            <span>延迟测试</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsLogDrawerOpen((prev) => !prev)}
+            className={`px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium border active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs ${
+              isLogDrawerOpen
+                ? 'bg-sky-50 border-sky-300 text-sky-700 shadow-sky-100'
+                : 'text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border-slate-200'
+            }`}
+          >
+            <span className="text-base">📜</span>
+            <span>实时日志</span>
           </button>
         </div>
-      </div>
+      </footer>
 
       {/* Floating Modal Windows */}
       <ClearCacheModal

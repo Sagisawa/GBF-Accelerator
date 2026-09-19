@@ -527,6 +527,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"active_foreground_assets": atomic.LoadInt32(&c.stats.ActiveForegroundAssets),
 		"uptime_seconds":           uptime,
 		"requests":                 c.stats.RequestsMap(),
+		"telemetry":                c.getTelemetrySummary(),
 		"cache": map[string]interface{}{
 			"ram_items": ramItems,
 			"ram_mb":    math.Round(float64(ramBytes)/(1024*1024)*100) / 100,

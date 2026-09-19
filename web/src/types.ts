@@ -37,6 +37,7 @@ export interface RuntimeStatus {
     ram_mb: number;
     cache_dir: string;
   };
+  telemetry?: TelemetrySummary;
   last_error: string;
 }
 
