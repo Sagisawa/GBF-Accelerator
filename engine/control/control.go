@@ -1057,12 +1057,14 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 	}
 
 	var reqBody struct {
-		URL  string `json:"url"`
-		Dest string `json:"dest"`
+		URL    string `json:"url"`
+		Dest   string `json:"dest"`
+		SHA256 string `json:"sha256"`
 	}
 	_ = json.NewDecoder(req.Body).Decode(&reqBody)
 
 	downloadURL := reqBody.URL
+	expectedSHA256 := reqBody.SHA256
 	if downloadURL == "" {
 		proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
 		info := updater.CheckForUpdate(proxyURL, 8*time.Second, config.AppVersion)
@@ -1075,6 +1077,9 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 			return
 		}
 		downloadURL = info.DownloadURL
+		if expectedSHA256 == "" {
+			expectedSHA256 = info.SHA256
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1096,6 +1101,7 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 			downloadURL,
 			destPath,
 			proxyURL,
+			expectedSHA256,
 			func(downloaded, total int64) {
 				c.dlMu.Lock()
 				c.dlProgress = downloaded

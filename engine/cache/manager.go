@@ -368,17 +368,20 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	if metaBytes, err := os.ReadFile(extPath); err == nil {
 		var meta map[string]interface{}
 		if err := json.Unmarshal(metaBytes, &meta); err == nil {
-			if ct, ok := meta["ct"].(string); ok {
-				contentType = ct
-			}
-			if ce, ok := meta["ce"].(string); ok {
-				contentEncoding = ce
-			}
-			if et, ok := meta["ETag"].(string); ok {
-				etag = et
-			}
-			if lm, ok := meta["LastModified"].(string); ok {
-				lastMod = lm
+			// Defensive metadata version guard: must be valid map with v == 1
+			if v, ok := meta["v"].(float64); ok && int(v) == 1 {
+				if ct, ok := meta["ct"].(string); ok {
+					contentType = ct
+				}
+				if ce, ok := meta["ce"].(string); ok {
+					contentEncoding = ce
+				}
+				if et, ok := meta["ETag"].(string); ok {
+					etag = et
+				}
+				if lm, ok := meta["LastModified"].(string); ok {
+					lastMod = lm
+				}
 			}
 		}
 	}
@@ -661,9 +664,11 @@ func (m *Manager) ClearAll() (int, int64) {
 	var deletedFiles int
 	var freedBytes int64
 
-	_ = filepath.Walk(base, func(p string, fi os.FileInfo, err error) error {
-		if err == nil && !fi.IsDir() {
-			freedBytes += fi.Size()
+	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				freedBytes += info.Size()
+			}
 			deletedFiles++
 			_ = os.Remove(p)
 		}
@@ -706,13 +711,13 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 	corrupted := 0
 	healthy := 0
 
-	_ = filepath.Walk(base, func(p string, fi os.FileInfo, err error) error {
+	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
 		select {
 		case <-cancelCh:
 			return filepath.SkipAll
 		default:
 		}
-		if err != nil || fi.IsDir() {
+		if err != nil || d.IsDir() {
 			return nil
 		}
 		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
@@ -737,7 +742,8 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		}
 
 		isBad := false
-		if fi.Size() == 0 {
+		info, iErr := d.Info()
+		if iErr != nil || info.Size() == 0 {
 			isBad = true
 		} else {
 			data, err := os.ReadFile(p)
@@ -872,10 +878,12 @@ func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(
 			})
 		}
 
-		_ = filepath.Walk(s.fullPath, func(p string, fi os.FileInfo, err error) error {
-			if err == nil && !fi.IsDir() {
+		_ = filepath.WalkDir(s.fullPath, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() {
 				deletedFiles++
-				freedBytes += fi.Size()
+				if info, err := d.Info(); err == nil {
+					freedBytes += info.Size()
+				}
 			}
 			return nil
 		})
@@ -917,16 +925,20 @@ func (m *Manager) Warmup(maxItems int) int {
 
 	var candidates []warmupCandidate
 
-	_ = filepath.Walk(base, func(p string, fi os.FileInfo, err error) error {
-		if err != nil || fi.IsDir() {
+	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") || fi.Size() == 0 {
+		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil || info.Size() == 0 {
 			return nil
 		}
 		candidates = append(candidates, warmupCandidate{
 			path:    p,
-			modTime: fi.ModTime(),
+			modTime: info.ModTime(),
 		})
 		return nil
 	})

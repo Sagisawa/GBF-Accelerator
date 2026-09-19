@@ -4,11 +4,15 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +82,7 @@ func TestDownloadReleaseAsset(t *testing.T) {
 		ts.URL,
 		destFile,
 		"",
+		"",
 		func(downloaded, total int64) {
 			progressReports++
 		},
@@ -111,7 +116,7 @@ func TestDownloadReleaseAsset(t *testing.T) {
 		}()
 	}
 
-	finalPath2, err := DownloadReleaseAsset(ts.URL, destFile, "", nil, context.Background())
+	finalPath2, err := DownloadReleaseAsset(ts.URL, destFile, "", "", nil, context.Background())
 	if err != nil {
 		t.Fatalf("DownloadReleaseAsset overwriting locked file failed: %v", err)
 	}
@@ -123,7 +128,7 @@ func TestDownloadReleaseAsset(t *testing.T) {
 	ctxCancel, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 	destCancel := filepath.Join(tempDir, "cancel.zip")
-	_, err = DownloadReleaseAsset(ts.URL, destCancel, "", nil, ctxCancel)
+	_, err = DownloadReleaseAsset(ts.URL, destCancel, "", "", nil, ctxCancel)
 	if err == nil {
 		t.Errorf("expected error on cancelled context, got nil")
 	}
@@ -185,7 +190,7 @@ func TestDownloadReleaseAsset_RetryContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	_, err = DownloadReleaseAsset(ts.URL, destFile, "", nil, ctx)
+	_, err = DownloadReleaseAsset(ts.URL, destFile, "", "", nil, ctx)
 	if err == nil {
 		t.Errorf("expected error due to context cancellation during lock, got nil")
 	}
@@ -194,5 +199,136 @@ func TestDownloadReleaseAsset_RetryContextCancellation(t *testing.T) {
 	partFile := destFile + ".part"
 	if _, err := os.Stat(partFile); !os.IsNotExist(err) {
 		t.Errorf("expected .part file to be removed on error, but it still exists")
+	}
+}
+
+func TestExtractSHA256(t *testing.T) {
+	hashWin := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	hashMac := "1111111111111111111111111111111111111111111111111111111111111111"
+
+	// 1. Standard label pattern
+	bodyLabel := fmt.Sprintf("Some notes\nSHA256: %s\nMore notes", hashWin)
+	if got := ExtractSHA256(bodyLabel, ""); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+
+	// 2. Markdown backticks and multi-platform isolation
+	bodyMarkdown := fmt.Sprintf("### Checksums\n- `GBF_Accelerator_v1.9.0_GUI.zip`: `%s`\n- `GBF_Accelerator_v1.9.0_macOS_universal2.zip`: `%s`\n", hashWin, hashMac)
+	if got := ExtractSHA256(bodyMarkdown, "GBF_Accelerator_v1.9.0_GUI.zip"); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+	if got := ExtractSHA256(bodyMarkdown, "GBF_Accelerator_v1.9.0_macOS_universal2.zip"); got != hashMac {
+		t.Errorf("expected %s, got %s", hashMac, got)
+	}
+
+	// 3. sha256sum multi-line format with binary (*) and text flags
+	bodySha256sum := fmt.Sprintf("\n%s  GBF_Accelerator_v1.9.0_GUI.zip\n%s *GBF_Accelerator_v1.9.0_macOS_universal2.zip\n", hashWin, hashMac)
+	if got := ExtractSHA256(bodySha256sum, "GBF_Accelerator_v1.9.0_GUI.zip"); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+	if got := ExtractSHA256(bodySha256sum, "GBF_Accelerator_v1.9.0_macOS_universal2.zip"); got != hashMac {
+		t.Errorf("expected %s, got %s", hashMac, got)
+	}
+
+	// 4. Markdown table format
+	bodyTable := fmt.Sprintf("| Asset | SHA-256 |\n| :--- | :--- |\n| `GBF_Accelerator_v1.9.0_GUI.zip` | `%s` |\n| `GBF_Accelerator_v1.9.0_macOS_universal2.zip` | `%s` |\n", hashWin, hashMac)
+	if got := ExtractSHA256(bodyTable, "GBF_Accelerator_v1.9.0_GUI.zip"); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+	if got := ExtractSHA256(bodyTable, "GBF_Accelerator_v1.9.0_macOS_universal2.zip"); got != hashMac {
+		t.Errorf("expected %s, got %s", hashMac, got)
+	}
+
+	// 5. BSD format
+	bodyBSD := fmt.Sprintf("\nSHA256 (GBF_Accelerator_v1.9.0_GUI.zip) = %s\nSHA256 (GBF_Accelerator_v1.9.0_macOS_universal2.zip) = %s\n", hashWin, hashMac)
+	if got := ExtractSHA256(bodyBSD, "GBF_Accelerator_v1.9.0_GUI.zip"); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+	if got := ExtractSHA256(bodyBSD, "GBF_Accelerator_v1.9.0_macOS_universal2.zip"); got != hashMac {
+		t.Errorf("expected %s, got %s", hashMac, got)
+	}
+
+	// 6. Indented / sub-item format
+	bodyIndented := fmt.Sprintf("- **GBF_Accelerator_v1.9.0_GUI.zip**\n  - SHA-256: `%s`\n- **GBF_Accelerator_v1.9.0_macOS_universal2.zip**\n  - SHA-256: `%s`\n", hashWin, hashMac)
+	if got := ExtractSHA256(bodyIndented, "GBF_Accelerator_v1.9.0_GUI.zip"); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+	if got := ExtractSHA256(bodyIndented, "GBF_Accelerator_v1.9.0_macOS_universal2.zip"); got != hashMac {
+		t.Errorf("expected %s, got %s", hashMac, got)
+	}
+
+	// 7. Single hash release notes fallback
+	bodySingle := fmt.Sprintf("Release v1.9.0\nSHA-256: %s", hashWin)
+	if got := ExtractSHA256(bodySingle, "GBF_Accelerator_v1.9.0_GUI.zip"); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+	if got := ExtractSHA256(bodySingle, ""); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+
+	// 8. Multiple hashes with unmatched filename returns empty
+	if got := ExtractSHA256(bodyMarkdown, "unmatched_other_file.zip"); got != "" {
+		t.Errorf("expected empty on unmatched filename, got %s", got)
+	}
+
+	// 9. Uppercase hash normalization to lowercase
+	bodyUpper := fmt.Sprintf("SHA-256: %s", strings.ToUpper(hashWin))
+	if got := ExtractSHA256(bodyUpper, ""); got != hashWin {
+		t.Errorf("expected %s, got %s", hashWin, got)
+	}
+
+	// 10. Empty or not found
+	if got := ExtractSHA256("", ""); got != "" {
+		t.Errorf("expected empty on empty text, got %s", got)
+	}
+	if got := ExtractSHA256("no hash here", ""); got != "" {
+		t.Errorf("expected empty on no hash, got %s", got)
+	}
+}
+
+func TestDownloadReleaseAsset_SHA256Verification(t *testing.T) {
+	zipData := createTestZip(t, "data.txt", []byte("sha256 test data"))
+	hasher := sha256.New()
+	hasher.Write(zipData)
+	correctHash := hex.EncodeToString(hasher.Sum(nil))
+	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Length", strconv.Itoa(len(zipData)))
+		_, _ = w.Write(zipData)
+	}))
+	defer ts.Close()
+
+	tempDir := t.TempDir()
+
+	// 1. Success with matching hash (case insensitive)
+	destOK := filepath.Join(tempDir, "ok.zip")
+	finalPath, err := DownloadReleaseAsset(ts.URL, destOK, "", strings.ToUpper(correctHash), nil, context.Background())
+	if err != nil {
+		t.Fatalf("expected successful download with correct hash, got error: %v", err)
+	}
+	if finalPath != destOK {
+		t.Errorf("expected %s, got %s", destOK, finalPath)
+	}
+	if fi, err := os.Stat(destOK); err != nil || fi.Size() == 0 {
+		t.Fatalf("downloaded file missing or empty")
+	}
+
+	// 2. Failure with mismatched hash
+	destFail := filepath.Join(tempDir, "fail.zip")
+	_, err = DownloadReleaseAsset(ts.URL, destFail, "", wrongHash, nil, context.Background())
+	if err == nil {
+		t.Fatal("expected error on SHA-256 mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "SHA-256 校验失败") {
+		t.Errorf("expected SHA-256 mismatch message, got: %v", err)
+	}
+	// Verify .part was deleted
+	if _, statErr := os.Stat(destFail + ".part"); !os.IsNotExist(statErr) {
+		t.Errorf(".part file must be deleted upon hash mismatch")
+	}
+	if _, statErr := os.Stat(destFail); !os.IsNotExist(statErr) {
+		t.Errorf("target file must not be created upon hash mismatch")
 	}
 }

@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -77,6 +78,7 @@ func TestCacheManager(t *testing.T) {
 	corruptMeta := map[string]interface{}{
 		"ct": "application/javascript",
 		"ce": "gzip",
+		"v":  1,
 	}
 	corruptBytes, _ := json.Marshal(corruptMeta)
 	_ = os.WriteFile(appExtPath, corruptBytes, 0644)
@@ -676,6 +678,76 @@ func TestGetFallback(t *testing.T) {
 	itemMiss, srcMiss := mgr.GetFallback("/unknown/path/asset.png")
 	if itemMiss != nil || srcMiss != "" {
 		t.Errorf("expected nil for unknown path, got item=%v, src=%s", itemMiss, srcMiss)
+	}
+}
+
+func TestCacheManagerExtVersionGuard(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+
+	pngData := append([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}, bytes.Repeat([]byte{0}, 20)...)
+	testFile := filepath.Join(tempDir, "assets", "test.png")
+	testExt := testFile + ".ext"
+	_ = os.MkdirAll(filepath.Dir(testFile), 0755)
+	_ = os.WriteFile(testFile, pngData, 0644)
+
+	// Case 1: valid v: 1 metadata
+	metaV1 := map[string]interface{}{
+		"v":    1,
+		"ct":   "image/png",
+		"ETag": "\"test-etag-v1\"",
+	}
+	v1Bytes, _ := json.Marshal(metaV1)
+	_ = os.WriteFile(testExt, v1Bytes, 0644)
+	mgr.ClearRAM()
+
+	item1, src1 := mgr.Get("assets/test.png")
+	if item1 == nil || src1 != "DISK" {
+		t.Fatalf("expected DISK hit for valid v: 1 metadata, got item=%v, src=%s", item1, src1)
+	}
+	if item1.ContentType != "image/png" {
+		t.Errorf("expected Content-Type image/png, got %s", item1.ContentType)
+	}
+	if item1.ETag != "\"test-etag-v1\"" {
+		t.Errorf("expected ETag \"test-etag-v1\", got %s", item1.ETag)
+	}
+
+	// Case 2: outdated or unsupported v != 1 (e.g. v: 99 or missing v)
+	metaBadV := map[string]interface{}{
+		"v":    99,
+		"ct":   "custom/unknown",
+		"ETag": "\"bad-etag-v99\"",
+	}
+	badVBytes, _ := json.Marshal(metaBadV)
+	_ = os.WriteFile(testExt, badVBytes, 0644)
+	mgr.ClearRAM()
+
+	item2, src2 := mgr.Get("assets/test.png")
+	if item2 == nil || src2 != "DISK" {
+		t.Fatalf("expected DISK hit with fallback for v: 99, got item=%v, src=%s", item2, src2)
+	}
+	// Must fallback safely to extension-based MIME (image/png) instead of custom/unknown
+	if item2.ContentType != "image/png" {
+		t.Errorf("expected fallback Content-Type image/png, got %s", item2.ContentType)
+	}
+	// Must fallback to dynamically generated etag instead of bad-etag
+	if item2.ETag == "\"bad-etag-v99\"" {
+		t.Errorf("metadata with v: 99 must be ignored, but got bad-etag-v99")
+	}
+
+	// Case 3: corrupt non-object JSON or malformed content
+	_ = os.WriteFile(testExt, []byte("[1, 2, 3]"), 0644)
+	mgr.ClearRAM()
+
+	item3, src3 := mgr.Get("assets/test.png")
+	if item3 == nil || src3 != "DISK" {
+		t.Fatalf("expected DISK hit with fallback for corrupt JSON, got item=%v, src=%s", item3, src3)
+	}
+	if item3.ContentType != "image/png" {
+		t.Errorf("expected fallback Content-Type image/png, got %s", item3.ContentType)
+	}
+	if item3.ETag == "" {
+		t.Errorf("expected non-empty fallback ETag, got empty")
 	}
 }
 

@@ -3,7 +3,9 @@ package updater
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +38,7 @@ type UpdateInfo struct {
 	DownloadURL      string `json:"download_url"`
 	AssetDownloadURL string `json:"asset_download_url"`
 	PublishedAt      string `json:"published_at"`
+	SHA256           string `json:"sha256,omitempty"`
 	Error            string `json:"error,omitempty"`
 }
 
@@ -169,6 +172,80 @@ func IsNewerVersion(remote, current string) bool {
 	return comparePreRelease(preReleaseTag(remote), preReleaseTag(current)) > 0
 }
 
+var (
+	hex64Pattern = regexp.MustCompile(`\b([a-fA-F0-9]{64})\b`)
+	hashKeyRe    = regexp.MustCompile(`(?i)(?:sha-?256|checksum|hash)`)
+)
+
+// ExtractSHA256 extracts a 64-char hex SHA-256 hash matching a filename or standard pattern from release text.
+func ExtractSHA256(text, filename string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+
+	fnClean := strings.TrimSpace(filename)
+	if fnClean != "" {
+		fnLower := strings.ToLower(fnClean)
+		lines := strings.Split(text, "\n")
+		for idx, line := range lines {
+			line = strings.TrimRight(line, "\r")
+			if strings.Contains(strings.ToLower(line), fnLower) {
+				// 1. Check for 64-hex hash on the same line (markdown list, table cell, sha256sum, BSD style)
+				if m := hex64Pattern.FindStringSubmatch(line); len(m) >= 2 {
+					return strings.ToLower(m[1])
+				}
+				// 2. Check subsequent contiguous/indented lines (up to 5 lines) before next item or file
+				endIdx := idx + 6
+				if endIdx > len(lines) {
+					endIdx = len(lines)
+				}
+				for _, nextLine := range lines[idx+1 : endIdx] {
+					nextLine = strings.TrimRight(nextLine, "\r")
+					stripped := strings.TrimSpace(nextLine)
+					if stripped == "" {
+						break
+					}
+					// Stop if next line is an unindented new section or list item
+					if !strings.HasPrefix(nextLine, " ") && !strings.HasPrefix(nextLine, "\t") {
+						firstChar := stripped[:1]
+						if strings.ContainsAny(firstChar, "#-*+123") {
+							break
+						}
+					}
+					// Stop if next line is another file entry
+					lowerStripped := strings.ToLower(stripped)
+					if strings.Contains(lowerStripped, ".zip") || strings.Contains(lowerStripped, ".exe") ||
+						strings.Contains(lowerStripped, ".tar.gz") || strings.Contains(lowerStripped, ".dmg") {
+						break
+					}
+					if mNext := hex64Pattern.FindStringSubmatch(nextLine); len(mNext) >= 2 {
+						return strings.ToLower(mNext[1])
+					}
+				}
+			}
+		}
+	}
+
+	// Generic search: only when filename not provided, or when exactly one unique hash exists
+	allMatches := hex64Pattern.FindAllString(text, -1)
+	seen := make(map[string]struct{})
+	var uniqueHashes []string
+	for _, h := range allMatches {
+		hLower := strings.ToLower(h)
+		if _, exists := seen[hLower]; !exists {
+			seen[hLower] = struct{}{}
+			uniqueHashes = append(uniqueHashes, hLower)
+		}
+	}
+	if len(uniqueHashes) == 1 {
+		if fnClean == "" || hashKeyRe.MatchString(text) {
+			return uniqueHashes[0]
+		}
+	}
+
+	return ""
+}
+
 func buildHTTPClient(proxyURL string, timeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		TLSClientConfig:       &tls.Config{InsecureSkipVerify: false},
@@ -249,6 +326,7 @@ func CheckForUpdate(upstreamProxy string, timeout time.Duration, currentVer stri
 
 	// Find suitable release asset URL
 	var downloadURL string
+	var matchedAssetName string
 	isMac := runtime.GOOS == "darwin"
 
 	for _, asset := range relData.Assets {
@@ -266,9 +344,11 @@ func CheckForUpdate(upstreamProxy string, timeout time.Duration, currentVer stri
 			}
 			if strings.Contains(lower, "universal") {
 				downloadURL = asset.BrowserDownloadURL
+				matchedAssetName = name
 				break
 			} else if downloadURL == "" {
 				downloadURL = asset.BrowserDownloadURL
+				matchedAssetName = name
 			}
 		} else {
 			// Windows
@@ -277,9 +357,11 @@ func CheckForUpdate(upstreamProxy string, timeout time.Duration, currentVer stri
 			}
 			if strings.Contains(lower, "gui") {
 				downloadURL = asset.BrowserDownloadURL
+				matchedAssetName = name
 				break
 			} else if downloadURL == "" {
 				downloadURL = asset.BrowserDownloadURL
+				matchedAssetName = name
 			}
 		}
 	}
@@ -288,6 +370,8 @@ func CheckForUpdate(upstreamProxy string, timeout time.Duration, currentVer stri
 	if len(pubDate) > 10 {
 		pubDate = pubDate[:10]
 	}
+
+	sha256 := ExtractSHA256(relData.Body, matchedAssetName)
 
 	return &UpdateInfo{
 		HasUpdate:        IsNewerVersion(latestVer, currentVer),
@@ -300,6 +384,7 @@ func CheckForUpdate(upstreamProxy string, timeout time.Duration, currentVer stri
 		DownloadURL:      downloadURL,
 		AssetDownloadURL: downloadURL,
 		PublishedAt:      pubDate,
+		SHA256:           sha256,
 	}
 }
 
@@ -326,6 +411,7 @@ func DownloadReleaseAsset(
 	assetURL string,
 	destPath string,
 	upstreamProxy string,
+	expectedSHA256 string,
 	progressCb func(downloaded, total int64),
 	cancelCtx context.Context,
 ) (string, error) {
@@ -433,6 +519,39 @@ func DownloadReleaseAsset(
 			_ = os.Remove(partPath)
 			lastErr = copyErr
 			continue
+		}
+
+		// Check SHA-256 checksum if provided
+		expectedClean := strings.ToLower(strings.TrimSpace(expectedSHA256))
+		if expectedClean != "" {
+			hasher := sha256.New()
+			partFile, oErr := os.Open(partPath)
+			if oErr != nil {
+				_ = os.Remove(partPath)
+				lastErr = fmt.Errorf("failed to open downloaded file for checksum: %w", oErr)
+				continue
+			}
+			_, cErr := io.Copy(hasher, partFile)
+			_ = partFile.Close()
+			if cErr != nil {
+				_ = os.Remove(partPath)
+				lastErr = fmt.Errorf("failed to compute checksum: %w", cErr)
+				continue
+			}
+			actualSHA256 := hex.EncodeToString(hasher.Sum(nil))
+			if actualSHA256 != expectedClean {
+				_ = os.Remove(partPath)
+				expShort := expectedClean
+				if len(expShort) > 8 {
+					expShort = expShort[:8]
+				}
+				actShort := actualSHA256
+				if len(actShort) > 8 {
+					actShort = actShort[:8]
+				}
+				lastErr = fmt.Errorf("SHA-256 校验失败 (预期: %s..., 实际: %s...)", expShort, actShort)
+				continue
+			}
 		}
 
 		// Verify zip file integrity
