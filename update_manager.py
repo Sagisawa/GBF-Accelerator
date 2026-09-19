@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import sys
@@ -24,6 +25,7 @@ class UpdateInfo:
     download_url: Optional[str] = None
     published_at: str = ""
     error: Optional[str] = None
+    sha256: Optional[str] = None
 
 def parse_version(v: str) -> Tuple[int, ...]:
     """Parse semver string like 'v1.4.0', '1.4.1-rc1' into comparable tuple of ints (1, 4, 0)."""
@@ -111,6 +113,7 @@ def check_for_updates(
 
     # Find portable GUI zip or exe asset download URL
     download_url = None
+    matched_asset_name = ""
     assets = data.get("assets", [])
     is_mac = sys.platform == "darwin"
     for asset in assets:
@@ -126,20 +129,25 @@ def check_for_updates(
                 continue
             if "universal" in lower_name:
                 download_url = asset.get("browser_download_url")
+                matched_asset_name = name
                 break
             elif not download_url:
                 download_url = asset.get("browser_download_url")
+                matched_asset_name = name
         else:
             # Windows: 避开 mac/linux，优先匹配 GUI.zip
             if any(k in lower_name for k in ("mac", "darwin", "osx", "linux")):
                 continue
             if "gui" in lower_name:
                 download_url = asset.get("browser_download_url")
+                matched_asset_name = name
                 break
             elif not download_url:
                 download_url = asset.get("browser_download_url")
+                matched_asset_name = name
 
     has_update = is_newer_version(latest_ver, current_ver)
+    sha256 = extract_sha256(release_notes, matched_asset_name)
 
     return UpdateInfo(
         has_update=has_update,
@@ -150,7 +158,47 @@ def check_for_updates(
         html_url=html_url,
         download_url=download_url,
         published_at=published_at,
+        sha256=sha256,
     )
+
+def extract_sha256(text: str, filename: str = "") -> Optional[str]:
+    """Extract 64-char hex SHA-256 hash matching a filename or standard pattern from release text."""
+    if not text:
+        return None
+
+    hex64_pattern = re.compile(r"\b([a-fA-F0-9]{64})\b")
+
+    if filename:
+        fn_clean = filename.strip()
+        lines = text.splitlines()
+        for idx, line in enumerate(lines):
+            if fn_clean.lower() in line.lower():
+                # 1. Check for 64-hex hash on the same line (markdown list, table cell, sha256sum, BSD style)
+                m = hex64_pattern.search(line)
+                if m:
+                    return m.group(1).lower()
+                # 2. Check subsequent contiguous/indented lines (up to 5 lines) before next item or file
+                for next_line in lines[idx + 1 : idx + 6]:
+                    stripped = next_line.strip()
+                    if not stripped:
+                        break
+                    # Stop if next line is an unindented new section or list item
+                    if not next_line.startswith((" ", "\t")) and stripped.startswith(("#", "-", "*", "+", "1", "2", "3")):
+                        break
+                    # Stop if next line is another file entry
+                    if any(ext in stripped.lower() for ext in (".zip", ".exe", ".tar.gz", ".dmg")):
+                        break
+                    m_next = hex64_pattern.search(next_line)
+                    if m_next:
+                        return m_next.group(1).lower()
+
+    # Generic search: only when filename not provided, or when exactly one unique hash exists
+    all_hashes = list(dict.fromkeys(h.lower() for h in hex64_pattern.findall(text)))
+    if len(all_hashes) == 1:
+        if not filename or re.search(r"(?i)(?:sha-?256|checksum|hash)", text):
+            return all_hashes[0]
+
+    return None
 
 def get_default_download_dir() -> Path:
     """Return standard user Downloads directory with home fallback."""
@@ -191,10 +239,12 @@ def download_release_asset(
     cancel_event: Optional[threading.Event] = None,
     timeout: float = 30.0,
     chunk_size: int = 65536,
+    expected_sha256: Optional[str] = None,
 ) -> Tuple[bool, str, Optional[Path]]:
     """
     Download a release asset with stream chunking, proxy-first fallback,
-    progress reporting, cancellation check, and zip file integrity validation.
+    progress reporting, cancellation check, zip file integrity validation,
+    and optional SHA-256 checksum verification.
     Writes to dest_path with .part extension during download.
     Returns: (success, message, final_path)
     """
@@ -287,6 +337,19 @@ def download_release_asset(
                 last_error = "下载的文件非有效 zip 压缩包（可能是网络跳转错误页）"
                 _safe_unlink(part_path)
                 continue
+
+            # Check SHA-256 checksum if provided
+            expected_clean = expected_sha256.strip().lower() if expected_sha256 else ""
+            if expected_clean:
+                hasher = hashlib.sha256()
+                with open(part_path, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        hasher.update(chunk)
+                actual_sha256 = hasher.hexdigest().lower()
+                if actual_sha256 != expected_clean:
+                    last_error = f"SHA-256 校验失败 (预期: {expected_clean[:8]}..., 实际: {actual_sha256[:8]}...)"
+                    _safe_unlink(part_path)
+                    continue
 
             # Atomic replace
             _safe_unlink(dest_path)

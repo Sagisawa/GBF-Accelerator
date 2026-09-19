@@ -293,15 +293,15 @@ class CacheManager:
 
         ext_path = file_path.with_name(file_path.name + ".ext")
         content_type = ""
-        content_encoding = ""
         cached_etag = ""
 
         if ext_path.is_file():
             try:
                 with open(ext_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
+                    if not isinstance(meta, dict) or meta.get("v") != 1:
+                        meta = {}
                     content_type = meta.get("ct", "")
-                    content_encoding = meta.get("ce", "")
                     cached_etag = meta.get("ETag", "")
             except Exception:
                 pass
@@ -454,6 +454,8 @@ class CacheManager:
                 try:
                     with open(ext_path, "r", encoding="utf-8") as f:
                         meta = json.load(f)
+                        if not isinstance(meta, dict) or meta.get("v") != 1:
+                            meta = {}
                         content_type = meta.get("ct", "")
                         cached_etag = meta.get("ETag", "")
                 except Exception:
@@ -592,7 +594,10 @@ class CacheManager:
             if ext_path.is_file():
                 try:
                     with open(ext_path, "r", encoding="utf-8") as f:
-                        etag = json.load(f).get("ETag", "") or ""
+                        meta = json.load(f)
+                        if not isinstance(meta, dict) or meta.get("v") != 1:
+                            meta = {}
+                        etag = meta.get("ETag", "") or ""
                 except Exception:
                     etag = ""
             if not etag:
@@ -1263,26 +1268,78 @@ class CacheManager:
                     except Exception:
                         pass
 
-                # Walk directory bottom-up to safely delete files and rmdir folders
+                # Recursively delete files and subdirectories bottom-up using os.scandir
                 try:
                     files_since_progress = 0
-                    for root, dirs, files in os.walk(v_dir, topdown=False):
+
+                    def _prune_dir(dir_path: Path) -> None:
+                        nonlocal cancelled, deleted_files, freed_bytes, files_since_progress
                         if cancel_event and cancel_event.is_set():
                             cancelled = True
-                            break
+                            return
 
-                        for name in files:
+                        subdirs: List[Path] = []
+                        files: List[Tuple[Path, int]] = []
+
+                        try:
+                            try:
+                                scanner = os.scandir(dir_path)
+                            except PermissionError:
+                                try:
+                                    os.chmod(dir_path, stat.S_IWRITE)
+                                    scanner = os.scandir(dir_path)
+                                except Exception:
+                                    return
+                            except Exception:
+                                return
+
+                            with scanner as it:
+                                for entry in it:
+                                    if cancel_event and cancel_event.is_set():
+                                        cancelled = True
+                                        break
+                                    try:
+                                        try:
+                                            st = entry.stat(follow_symlinks=False)
+                                        except Exception:
+                                            st = None
+
+                                        is_sub_dir = False
+                                        try:
+                                            if entry.is_dir(follow_symlinks=False):
+                                                if st is not None and getattr(st, "st_reparse_tag", 0) == 0 and not entry.is_symlink():
+                                                    is_sub_dir = True
+                                        except Exception:
+                                            is_sub_dir = False
+
+                                        if is_sub_dir:
+                                            subdirs.append(Path(entry.path))
+                                        else:
+                                            sz = getattr(st, "st_size", 0) if st is not None else 0
+                                            files.append((Path(entry.path), sz))
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            return
+
+                        if cancelled:
+                            return
+
+                        # 1. Prune nested subdirectories first (true bottom-up recursion)
+                        for sdir in subdirs:
+                            _prune_dir(sdir)
+                            if cancelled:
+                                return
+                            _safe_rmdir(sdir)
+
+                        # 2. Prune files in current directory
+                        for fp, sz in files:
                             if cancel_event and cancel_event.is_set():
                                 cancelled = True
-                                break
-
-                            fp = Path(root) / name
+                                return
                             try:
-                                try:
-                                    sz = fp.stat().st_size
-                                except Exception:
-                                    sz = 0
-                                if _safe_unlink(fp):
+                                # Safe unlink with fallback to rmdir (in case of junction/symlink directory)
+                                if _safe_unlink(fp) or _safe_rmdir(fp):
                                     deleted_files += 1
                                     freed_bytes += sz
                                     files_since_progress += 1
@@ -1295,12 +1352,9 @@ class CacheManager:
                             except Exception:
                                 pass
 
-                        for name in dirs:
-                            dp = Path(root) / name
-                            _safe_rmdir(dp)
-
-                    # Remove the top-level version directory itself if empty
-                    _safe_rmdir(v_dir)
+                    _prune_dir(v_dir)
+                    if not cancelled:
+                        _safe_rmdir(v_dir)
                 except Exception:
                     pass
 

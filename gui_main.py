@@ -1326,6 +1326,7 @@ class GBFAcceleratorGUI:
                     upstream_proxy=up,
                     progress_cb=progress_cb,
                     cancel_event=cancel_ev,
+                    expected_sha256=getattr(info, "sha256", None),
                 )
                 try:
                     if dialog.winfo_exists():
