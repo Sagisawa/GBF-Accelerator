@@ -140,8 +140,7 @@ function Build-Windows {
         $ZipPath = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_GUI.zip"
         if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
-        Write-Host "[*] Packaging Windows release zip: $ZipPath..." -ForegroundColor Yellow
-        $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "使用说明.txt", "LICENSE")
+        $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.bat", "start_proxy.bat", "LICENSE")
         $FilesToZip = @($ExePath)
         foreach ($Aux in $AuxFiles) {
             $AuxPath = Join-Path $RootDir $Aux
@@ -149,6 +148,7 @@ function Build-Windows {
                 $FilesToZip += $AuxPath
             }
         }
+        Get-ChildItem -Path $RootDir -Filter "*.txt" | ForEach-Object { $FilesToZip += $_.FullName }
 
         Compress-Archive -Path $FilesToZip -DestinationPath $ZipPath -Force
         $ZipSizeMb = (Get-Item $ZipPath).Length / 1MB
@@ -213,7 +213,7 @@ function Build-Darwin {
     if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
     Write-Host "[*] Packaging macOS release zip: $ZipPath..." -ForegroundColor Yellow
-    $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.sh", "start_proxy.sh", "使用说明.txt", "LICENSE")
+    $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.sh", "start_proxy.sh", "LICENSE")
     $FilesToZip = @($MacBin)
     foreach ($Aux in $AuxFiles) {
         $AuxPath = Join-Path $RootDir $Aux
@@ -221,6 +221,7 @@ function Build-Darwin {
             $FilesToZip += $AuxPath
         }
     }
+    Get-ChildItem -Path $RootDir -Filter "*.txt" | ForEach-Object { $FilesToZip += $_.FullName }
 
     Compress-Archive -Path $FilesToZip -DestinationPath $ZipPath -Force
     $ZipSizeMb = (Get-Item $ZipPath).Length / 1MB
