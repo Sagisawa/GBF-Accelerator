@@ -3,6 +3,7 @@ import {
   RuntimeStatus,
   CacheStats,
   LogItem,
+  ProxyCandidate,
 } from './types'
 import {
   fetchStatus,
@@ -28,6 +29,8 @@ import { AuditModal } from './components/modals/AuditModal'
 import { SlimModal } from './components/modals/SlimModal'
 import { CaCertModal } from './components/modals/CaCertModal'
 import { UpdateModal } from './components/modals/UpdateModal'
+import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
+import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal'
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { isNewerVersion } from './utils/version'
@@ -61,6 +64,9 @@ export const App: React.FC = () => {
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false)
   const [isSlimModalOpen, setIsSlimModalOpen] = useState<boolean>(false)
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false)
+  const [isUpstreamSelectModalOpen, setIsUpstreamSelectModalOpen] = useState<boolean>(false)
+  const [upstreamCandidates, setUpstreamCandidates] = useState<ProxyCandidate[]>([])
+  const [isShimakazeSuggestOpen, setIsShimakazeSuggestOpen] = useState<boolean>(false)
   const [caModalAction, setCaModalAction] = useState<'install' | 'uninstall' | null>(null)
   const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version: string } | null>(null)
 
@@ -255,6 +261,27 @@ export const App: React.FC = () => {
     }
   }
 
+  // Check and prompt if upstream is Shimakaze GO (port 8099)
+  const checkShimakazeSuggest = (url: string) => {
+    const is8099 = url.includes(':8099')
+    const currentShimakaze = Boolean(config.shimakaze_mode ?? false)
+    if (is8099 && !currentShimakaze) {
+      setIsShimakazeSuggestOpen(true)
+    }
+  }
+
+  // Enable Shimakaze mode from suggestion modal
+  const handleEnableShimakaze = async () => {
+    try {
+      await applyConfig({ shimakaze_mode: true })
+      setConfig((prev) => ({ ...prev, shimakaze_mode: true }))
+      showToast('已成功启用【岛风GO 兼容优化模式】', 'success')
+      loadState()
+    } catch (e: any) {
+      showToast(`启用岛风GO兼容模式失败: ${e.message}`, 'error')
+    }
+  }
+
   // Save Upstream Proxy
   const handleSaveUpstream = async () => {
     const trimmed = upstreamInput.trim()
@@ -267,6 +294,7 @@ export const App: React.FC = () => {
       setConfig((prev) => ({ ...prev, upstream_proxy: trimmed }))
       showToast(`上游代理地址已保存并切换至：${trimmed}`, 'success')
       loadState()
+      checkShimakazeSuggest(trimmed)
     } catch (e: any) {
       showToast(`保存上游代理失败: ${e.message}`, 'error')
     }
@@ -276,17 +304,38 @@ export const App: React.FC = () => {
   const handleProbeUpstream = async () => {
     try {
       const data = await detectUpstream()
-      if (data && data.found && data.primary) {
-        setUpstreamInput(data.primary)
-        await applyConfig({ upstream_proxy: data.primary })
-        showToast(`已探测并应用上游代理: ${data.primary}`, 'success')
+      const candidates: ProxyCandidate[] = Array.isArray(data?.candidates) ? data.candidates : []
+
+      if (candidates.length > 1) {
+        setUpstreamCandidates(candidates)
+        setIsUpstreamSelectModalOpen(true)
+      } else if (candidates.length === 1 || (data && data.found && data.primary)) {
+        const chosen = candidates.length === 1 ? candidates[0].url : data.primary
+        setUpstreamInput(chosen)
+        await applyConfig({ upstream_proxy: chosen })
+        showToast(`已探测并应用上游代理: ${chosen}`, 'success')
+        loadState()
+        checkShimakazeSuggest(chosen)
       } else {
         await applyConfig({ upstream_proxy: 'auto' })
         showToast('未检测到活跃上游代理端口，已重置为 auto 模式', 'info')
+        loadState()
       }
-      loadState()
     } catch (e: any) {
       showToast(`探测上游代理失败: ${e.message}`, 'error')
+    }
+  }
+
+  // Handle selection from UpstreamSelectModal
+  const handleSelectUpstreamCandidate = async (candidate: ProxyCandidate) => {
+    try {
+      setUpstreamInput(candidate.url)
+      await applyConfig({ upstream_proxy: candidate.url })
+      showToast(`已切换至上游代理: ${candidate.name} (${candidate.url})`, 'success')
+      loadState()
+      checkShimakazeSuggest(candidate.url)
+    } catch (e: any) {
+      showToast(`切换上游代理失败: ${e.message}`, 'error')
     }
   }
 
@@ -1170,6 +1219,20 @@ export const App: React.FC = () => {
         actionType={caModalAction || 'install'}
         onRefresh={loadState}
         onToast={showToast}
+      />
+
+      <UpstreamSelectModal
+        isOpen={isUpstreamSelectModalOpen}
+        onClose={() => setIsUpstreamSelectModalOpen(false)}
+        candidates={upstreamCandidates}
+        currentProxy={upstreamInput || config.upstream_proxy || status?.upstream_proxy}
+        onSelect={handleSelectUpstreamCandidate}
+      />
+
+      <ShimakazeSuggestModal
+        isOpen={isShimakazeSuggestOpen}
+        onClose={() => setIsShimakazeSuggestOpen(false)}
+        onEnable={handleEnableShimakaze}
       />
 
       <UpdateModal

@@ -105,3 +105,8 @@ export interface UpdateInfo {
   published_at?: string;
   error?: string;
 }
+
+export interface ProxyCandidate {
+  url: string;
+  name: string;
+}
