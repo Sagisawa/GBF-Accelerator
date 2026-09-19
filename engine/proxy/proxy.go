@@ -115,7 +115,7 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 		MaxConnsPerHost:     apiMaxConn,
 		MaxIdleConns:        apiMaxConn,
 		MaxIdleConnsPerHost: apiMaxIdle,
-		IdleConnTimeout:     time.Duration(c.APIKeepaliveExpiry) * time.Second,
+		IdleConnTimeout:     time.Duration(c.APIKeepaliveExpiry * float64(time.Second)),
 		DisableKeepAlives:   false,
 		ForceAttemptHTTP2:   false, // Dedicated HTTP/1.1 pool for dynamic APIs
 		DisableCompression: true,  // P0: Business semantic transparency
@@ -134,7 +134,7 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 		MaxConnsPerHost:     assetMaxConn,
 		MaxIdleConns:        assetMaxConn,
 		MaxIdleConnsPerHost: assetMaxIdle,
-		IdleConnTimeout:     time.Duration(c.AssetKeepaliveExpiry) * time.Second,
+		IdleConnTimeout:     time.Duration(c.AssetKeepaliveExpiry * float64(time.Second)),
 		DisableKeepAlives:   false,
 		ForceAttemptHTTP2:   true, // HTTP/2 multiplexed for Akamai CDN
 		DisableCompression: true,  // P0: Byte-for-byte fidelity
@@ -1286,9 +1286,14 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 	}
 
 	if header != nil {
+		var cookies []string
 		for k, vv := range header {
 			kLower := strings.ToLower(k)
-			if isHopByHop(kLower) || kLower == "content-length" || kLower == "set-cookie" || kLower == "connection" {
+			if kLower == "set-cookie" {
+				cookies = append(cookies, vv...)
+				continue
+			}
+			if isHopByHop(kLower) || kLower == "content-length" || kLower == "connection" {
 				continue
 			}
 			if !hasDate && kLower == "date" {
@@ -1304,7 +1309,7 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 		}
 
 		// P0: Multi-line Set-Cookie preservation (never fold into single line with commas)
-		for _, cookie := range header.Values("Set-Cookie") {
+		for _, cookie := range cookies {
 			fmt.Fprintf(&buf, "Set-Cookie: %s\r\n", cookie)
 		}
 	}

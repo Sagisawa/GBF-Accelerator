@@ -3,9 +3,9 @@
 碧蓝幻想（Granblue Fantasy）高性能本地静态资源缓存与透明代理工具。
 
 [![Release](https://img.shields.io/github/v/release/Sagisawa/GBF-Accelerator?color=blue&logo=github)](https://github.com/Sagisawa/GBF-Accelerator/releases)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Go](https://img.shields.io/badge/Go-1.21%2B-blue.svg?logo=go)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20(nogui)-informational.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-85%2F85%20Passed-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-Passed-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
@@ -119,14 +119,14 @@ Browser / Safari / AndApp / Steam
   - 前台请求完毕后增加短时冷却平滑，避免后台预加载立即恢复引发瞬时突发流量。
 - **安全失效重试 (Safe Stale-Retry)**：
   - **写请求严格零重试**：所有涉及状态变更的 POST 请求（普通攻击、技能释放、召唤、购买等）最大尝试次数严格为 1，杜绝重复触发。
-  - **只读白名单断连重试**：仅对识别出的只读幂等 GET 接口（如 `/rest/multiraid/start.json`），在遇到底层空闲长连接断开（`ConnectError` / `RemoteProtocolError`）时执行最多 1 次快速重连。
+  - **只读白名单断连重试**：仅对预先严格审核的只读幂等 GET 接口（如 `/rest/multiraid/condition.json`、`/rest/quest/stage_list`、`/rest/party/deck_info` 等），在遇到底层空闲长连接断开（`EOF` / `connection reset` 等）时执行最多 1 次快速重连；多人战开本发车与战斗等写操作坚决零重试。
 - **低开销遥测与实时监控**：
   - 主界面提供实时日志窗口，直观高亮展示连接复用状态（`reused` / `new`）；
   - 记录 API 耗时分布（P50 / P95 / P99），支持按模块筛选与一键导出。
 
 ### 💾 层次化缓存体系与预加载
 - **RAM Cache 内存热点缓存**：高频静态资源直接驻留内存（默认上限 256MB，可在 16MB ~ 8192MB 范围自由调节），读取耗时接近 0ms，读取不经磁盘。
-- **SSD 持久化缓存与原子写入**：静态资源落盘采用临时文件（`.tmp`）与原子替换（`os.replace` + `fsync`），防止写入意外中断导致文件残损。
+- **SSD 持久化缓存与原子写入**：静态资源落盘采用临时文件（`.tmp`）与原子重命名重试机制，防止写入意外中断导致文件残损。
 - **Magic Bytes 二进制校验与一键体检**：校验 PNG / JPEG / WebP / GIF / MP3 / WOFF 等二进制文件头，拦截 0 字节损坏文件及 502/503 错误 HTML；GUI 提供“一键体检缓存”支持坏件清理与自动回源自愈。
 - **SingleFlight 并发请求合并**：同名静态素材高并发请求时自动合并为单次回源拉取，其余请求共享返回结果，缓解上游并发压力。
 - **后台平滑预加载 (Prefetch)**：解析场景 JS/JSON 及 CreateJS 角色动画切片，在任务间引入 15~35ms 随机抖动平滑调度，削峰填谷；引用扫描解耦至后台有界队列，不阻塞前台请求。
@@ -147,7 +147,7 @@ Browser / Safari / AndApp / Steam
   - 提供 `start_proxy.sh` 快捷启动与 `install_ca.sh` 一键证书管理；
   - 支持写入 LaunchAgents 用户自启服务。
 - **Linux / 无头环境 (nogui)**：
-  - 提供轻量化纯命令行模式运行（`python3 app_main.py`），适用于 Linux 虚拟机或无图形界面服务器；
+  - 提供轻量化纯命令行模式运行（`go run . --headless` 或编译二进制加 `--headless` 参数），适用于 Linux 虚拟机或无图形界面服务器；
   - 详细指引请参阅 [docs/MAC_LINUX_NOGUI.md](docs/MAC_LINUX_NOGUI.md)。
 - **局域网共享与移动端支持**：
   - 可在设置中开启“允许局域网连接”，支持同一局域网下的 iPhone / iPad / Android 设备接入；
@@ -188,8 +188,9 @@ Browser / Safari / AndApp / Steam
 ### 方式二：从源码运行
 
 #### 环境要求
-- **Python 3.10+**（推荐 3.11 / 3.12）
+- **Go 1.21+**（推荐 1.22 / 1.23）
 - Windows 10/11 或 macOS 12+ 或 Linux
+- **Node.js 18+**（可选，仅当需要重新构建 `web/` 前端 SPA 页面时需要）
 
 #### Windows 源码运行
 ```powershell
@@ -197,15 +198,9 @@ Browser / Safari / AndApp / Steam
 git clone https://github.com/Sagisawa/GBF-Accelerator.git
 cd GBF-Accelerator
 
-# 2. 创建并激活 Python 虚拟环境
-python -m venv .venv
-.\.venv\Scripts\activate
-
-# 3. 安装依赖
-pip install -r requirements.txt
-
-# 4. 运行图形界面
-python gui_main.py
+# 2. 进入 engine 目录直接运行 Go 原生引擎（自带内嵌 Web 控制台）
+cd engine
+go run .
 ```
 
 #### macOS 源码运行
@@ -214,27 +209,21 @@ python gui_main.py
 git clone https://github.com/Sagisawa/GBF-Accelerator.git
 cd GBF-Accelerator
 
-# 2. 创建并激活 Python 虚拟环境
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 3. 安装依赖
-pip install -r requirements.txt
-
-# 4. 首次使用安装/信任本地根证书
+# 2. 首次使用安装/信任本地根证书
 ./install_ca.sh
 
-# 5. 启动程序 (GUI 界面)
+# 3. 启动程序
 ./start_proxy.sh
-# 或直接运行: python3 gui_main.py
+# 或直接运行: cd engine && go run .
 ```
 
 #### Linux / 无头服务器运行 (nogui)
-在无桌面环境的 Linux 服务器或容器中，可使用纯命令行模式：
+在无桌面环境的 Linux 服务器或容器中，可使用纯命令行无头模式：
 ```bash
-python3 app_main.py
+cd engine
+go run . --headless
 ```
-> 详细的环境依赖、`libnss3-tools` 证书导入与浏览器配置步骤，请参阅专用指南：[docs/MAC_LINUX_NOGUI.md](docs/MAC_LINUX_NOGUI.md)。
+> 详细的环境依赖、证书导入与浏览器配置步骤，请参阅专用指南：[docs/MAC_LINUX_NOGUI.md](docs/MAC_LINUX_NOGUI.md)。
 
 ---
 
@@ -266,8 +255,8 @@ python3 app_main.py
   "api_max_connections": 16,
   "api_max_keepalive": 4,
   "api_keepalive_expiry": 20.0,
-  "asset_max_connections": 100,
-  "asset_max_keepalive": 40,
+  "asset_max_connections": 32,
+  "asset_max_keepalive": 16,
   "asset_keepalive_expiry": 60.0,
   "enable_api_telemetry": true
 }
@@ -297,8 +286,8 @@ python3 app_main.py
 | `api_max_connections` | 整数 | `16` | 动态 API 专属连接池最大连接数。 |
 | `api_max_keepalive` | 整数 | `4` | 动态 API 连接池空闲长连接保留数。 |
 | `api_keepalive_expiry` | 浮点 | `20.0` | 动态 API 空闲长连接保活超时（秒）。 |
-| `asset_max_connections` | 整数 | `100` | 静态素材通道最大并发连接数（HTTP/2 多路复用，推荐保守水线 <= 32）。 |
-| `asset_max_keepalive` | 整数 | `40` | 静态素材通道空闲长连接保留数（推荐保守水线 <= 16）。 |
+| `asset_max_connections` | 整数 | `32` | 静态素材通道最大并发连接数（HTTP/2 多路复用，推荐保守水线 <= 32）。 |
+| `asset_max_keepalive` | 整数 | `16` | 静态素材通道空闲长连接保留数（推荐保守水线 <= 16）。 |
 | `asset_keepalive_expiry` | 浮点 | `60.0` | 静态素材通道空闲长连接保活超时（秒）。 |
 | `enable_api_telemetry` | 布尔 | `true` | 是否启用 API 响应耗时分布（P50/P95/P99）及连接复用率遥测。 |
 
@@ -364,30 +353,27 @@ python3 app_main.py
 ## 开发与构建
 
 ### 运行测试套件
-项目配备了严谨的回归测试套件（75 项核心代理测试与 10 项更新管理测试，共 85 项自动化测试），涵盖双通道隔离、SingleFlight 合并、只读失效重试、Magic Bytes 校验、进程单例防重与跨平台更新逻辑：
+项目配备了覆盖核心代理、双通道隔离、SingleFlight 并发合并、只读失效重试、Magic Bytes 校验、进程单例防重与跨平台更新逻辑的 Go 自动化全量测试套件与静态检查：
 ```powershell
-# Windows
-.\.venv\Scripts\python.exe test_proxy.py
-.\.venv\Scripts\python.exe test_update_manager.py
-
-# macOS / Linux
-python3 test_proxy.py
-python3 test_update_manager.py
+# 进入 engine 目录执行全量单元测试与静态代码检查
+cd engine
+go test -v ./...
+go vet ./...
 ```
 
-### 打包为独立可执行文件 / 应用程序
+### 打包为独立可执行文件 / 便携发布包
 
-- **Windows**（打包为单个独立可执行文件）：
-  ```bash
-  python build_exe.py
+- **Windows**（编译原生单二进制并打包便携发布包）：
+  ```powershell
+  .\build.ps1
   ```
-  打包完成后，可执行文件位于 `dist/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_vX.Y.Z_GUI.zip`。
+  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v1.8.0_GUI.zip`。
 
-- **macOS**（打包为 Universal 2 双架构 `.app` 应用程序）：
+- **macOS**（编译 Universal 2 双架构二进制并打包）：
   ```bash
-  python build_app.py
+  ./build.sh --release
   ```
-  打包完成后，应用程序位于 `dist/GBF_Accelerator.app`，发布包位于 `release/GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`，原生双兼容 Apple Silicon（M系列）与 Intel 芯片。
+  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v1.8.0_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
 
 ---
 
@@ -395,6 +381,6 @@ python3 test_update_manager.py
 
 - **根证书本地隔离管理**：本机根证书仅在首次运行时本地生成，私钥严格保存在本地 `certs/` 目录不外泄。主界面实时展示证书的 SHA-256 指纹，并提供注销/卸载根证书功能，方便随时清理受信任根证书。
 - **精准域名分流控制**：PAC 脚本及代理路由严格限制为 GBF 主站域名、标准版 CDN 与 Steam 版专用 CDN（`prd-game-a*-granbluefantasy-steam.akamaized.net`），不通配公共 `*.akamaized.net`，不接管非 GBF 流量。
-- **缓存原子落盘与完整性校验**：静态资源下载采用临时文件（`.tmp`）及原子替换（`os.replace` + `fsync`），防止写入意外中断产生损坏文件；通过文件头校验拦截伪装成静态资源的错误 HTML 响应。
+- **缓存原子落盘与完整性校验**：静态资源下载采用临时文件（`.tmp`）及原子重命名重试机制，防止写入意外中断产生损坏文件；通过文件头校验拦截伪装成静态资源的错误 HTML 响应。
 - **动态 API 原样透明转发与心跳直达**：所有动态接口（抽卡、编队、结算、`/ob/r` 在线心跳、`/socket/` 多人战等）均原样透传，不篡改业务正文、不伪造任何 Mock 响应，保留原生 CORS 响应头与多行 `Set-Cookie`。
 - **免责声明**：本软件为开源网络辅助与本地静态资源缓存工具，不篡改任何游戏数据、前端脚本或内存。请遵守 Cygames 最终用户许可协议，使用风险自负。

@@ -737,6 +737,12 @@ func (c *ControlServer) handleBrowseDir(w http.ResponseWriter, req *http.Request
 		if err == nil {
 			chosen = strings.TrimSpace(string(out))
 		}
+	} else if runtime.GOOS == "darwin" {
+		cmd := exec.Command("osascript", "-e", `POSIX path of (choose folder with prompt "选择 GBF 本地静态缓存保存目录")`)
+		out, err := cmd.Output()
+		if err == nil {
+			chosen = strings.TrimSpace(string(out))
+		}
 	}
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": chosen})
 }

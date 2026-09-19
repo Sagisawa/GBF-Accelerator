@@ -88,6 +88,31 @@ func TestForwardDynamicResponse_P0_HeaderIntegrity(t *testing.T) {
 	}
 }
 
+// P0-4: Non-canonical lowercase set-cookie headers must also be preserved multi-line.
+func TestForwardDynamicResponse_NonCanonicalSetCookie(t *testing.T) {
+	srv := &ProxyServer{}
+	h := http.Header{}
+	// Direct map assignment to simulate non-canonical lowercase key from upstream
+	h["set-cookie"] = []string{"foo=1; Path=/", "bar=2; Path=/"}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     h,
+	}
+	var buf bytes.Buffer
+	srv.forwardDynamicResponse(&buf, resp, []byte("ok"), false, false)
+	out := buf.String()
+
+	cookieLines := 0
+	for _, line := range strings.Split(out, "\r\n") {
+		if strings.HasPrefix(line, "Set-Cookie: ") {
+			cookieLines++
+		}
+	}
+	if cookieLines != 2 {
+		t.Errorf("expected 2 Set-Cookie lines for non-canonical headers, got %d:\n%s", cookieLines, out)
+	}
+}
+
 // P0-4: HEAD requests must not emit a body.
 func TestForwardDynamicResponse_HeadNoBody(t *testing.T) {
 	srv := &ProxyServer{}

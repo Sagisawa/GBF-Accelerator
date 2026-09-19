@@ -1,26 +1,26 @@
 # GBF Accelerator — macOS / Linux (nogui) 使用说明
 
-> **macOS GUI 用户须知**：
-> macOS 已支持完整的原生图形界面版本（包含 Tkinter GUI 主界面、Menu Bar 顶部状态栏常驻菜单、一键 CA 根证书自动信任、`networksetup` 系统代理自动托管以及跨平台更新检查）。
-> macOS 用户推荐直接运行打包好的 `GBF_Accelerator.app`（或源码模式运行 `./start_proxy.sh` / `python3 gui_main.py`）。
-> **本文档仅面向**：在 **Linux** 系统，或在 **macOS** 上以纯**命令行模式 (nogui)** / 无头服务器方式运行 `python3 app_main.py` 的用户。
-> Windows GUI 用户请参考随程序分发的《使用说明.txt》。
+> **macOS 用户须知**：
+> macOS 已支持完整的原生图形与无头版本（内嵌 Web 控制台、Menu Bar 顶部状态栏常驻菜单、一键 CA 根证书自动信任、`networksetup` 系统代理自动托管以及跨平台更新检查）。
+> macOS 用户推荐直接运行打包好的 `GBF_Accelerator`（或源码模式运行 `./start_proxy.sh` / `cd engine && go run .`）。
+> **本文档仅面向**：在 **Linux** 系统，或在 **macOS** 上以纯**命令行无头模式 (--headless)** 运行的用户。
+> Windows 用户请参考随程序分发的《使用说明.txt》。
 
 ---
 
 ## 1. 运行模式与平台能力对比
 
-| 项目 | Windows GUI 版 | macOS 原生 GUI 版 | nogui 命令行模式 (Linux / macOS 无头) |
+| 项目 | Windows GUI 版 | macOS 原生版 | nogui 命令行模式 (Linux / macOS 无头) |
 |---|---|---|---|
-| 启动方式 | 双击 `GBF_Accelerator.exe`（含 GUI） | 双击 `GBF_Accelerator.app` 或 `./start_proxy.sh` / `python3 gui_main.py` | `python3 app_main.py`（纯命令行） |
+| 启动方式 | 双击 `GBF_Accelerator.exe` | 双击 `GBF_Accelerator` 或 `./start_proxy.sh` | `./GBF_Accelerator --headless` 或 `go run . --headless` |
 | 系统代理 | 自动写入注册表 + WinINet 通知 | 自动调用 `networksetup` 配置系统代理与直连绕过列表 | **不自动写入**，需在浏览器手动设置 HTTP/HTTPS 代理 |
 | 根证书信任 | 自动调用 `certutil -addstore` | 自动调用 `security add-trusted-cert` 信任 Keychain 根证书 | **不自动写入**，需在系统或浏览器证书库手动信任 |
 | 开机自启 | 写入 `HKCU\...\Run` | 写入 LaunchAgents plist | **不提供** |
-| 托盘 / 状态栏 | Windows 任务栏通知区托盘图标 | macOS Menu Bar 顶部状态栏常驻图标（Cocoa / pystray） | **不提供** |
+| 托盘 / 状态栏 | Windows 任务栏通知区托盘图标 | macOS Menu Bar 顶部状态栏常驻图标 | **不提供** |
 | 静态资源缓存 | ✓ | ✓ | ✓ |
 | 动态 API 透明转发 | ✓ | ✓ | ✓ |
 | 连接池 / 预加载调度 | ✓ | ✓ | ✓ |
-| 更新检查 | GUI 自动检测更新 | GUI 自动检测更新（跨平台过滤） | **不提供** |
+| 更新检查 | 自动检测更新 | 自动检测更新（跨平台过滤） | 自动检测更新 |
 
 **核心原则与 Windows 版一致**：本工具为网络层本地静态资源缓存与透明代理，不修改任何游戏内数据、协议包或战斗参数；游戏核心 API（抽卡、编队、结算、多人战等）原样转发至上游代理，保留 Cygames 原生响应头；本工具不对账号安全作任何保证，使用第三方网络工具存在违反游戏服务条款的可能，是否使用请自行评估，风险自负。
 
@@ -28,7 +28,7 @@
 
 ## 2. 环境要求
 
-- **Python 3.10+**（推荐 3.11 / 3.12）
+- **Go 1.21+**（推荐 1.22 / 1.23，源码编译时需要）
 - **OpenSSL / libnss3 工具链**（仅 Linux 信任证书时需要 `certutil`，Debian/Ubuntu：`apt install libnss3-tools`）
 - **Git**（可选，仅从源码克隆时需要）
 - **网络访问**到 GitHub / Akamai CDN
@@ -41,35 +41,29 @@
 ### 3.1 准备源码
 
 ```bash
-git clone https://github.com/<your-fork>/GBF-Accelerator.git
+git clone https://github.com/Sagisawa/GBF-Accelerator.git
 cd GBF-Accelerator
-python3 -m pip install -r requirements.txt
 ```
-
-> `requirements.txt` 已包含全平台所需依赖：
-> `cryptography`、`httpx[socks,http2]`、`h2`、`pillow`、`pystray`、`pyinstaller`，以及 macOS 专属的 `pyobjc-framework-Cocoa`。
-> 在 nogui 命令行模式下 `pystray` / `pillow` / `pyinstaller` / `pyobjc` 不会被调用，但安装无害。
 
 ### 3.2 首次启动
 
 ```bash
-python3 app_main.py
+cd engine
+go run . --headless
 ```
 
 首次启动时程序会：
 
-1. 在脚本同目录生成 `certs/ca.crt`、`certs/server.crt` 与 `certs/*.key`；
-2. 在脚本同目录生成 `proxy.pac` 与《使用说明.txt》；
-3. 让你交互式选择静态资源缓存目录（默认 `./cache/gbf/https`）；
-4. 自动探测本机 7897 / 7890 / 10808 / 10809 等常见上游代理端口（Clash / v2rayN），也可手动指定；
-5. **在 macOS / Linux 上额外打印一次性配置指引**（含浏览器代理地址与根证书信任命令），下文 §4 列出；
-6. 启动本地代理服务并监听 `http://127.0.0.1:8124`（默认端口，可在 `config.json` 中修改）。
+1. 在程序同目录生成 `certs/ca.crt`、`certs/*.key`；
+2. 在程序同目录生成 `proxy.pac` 与《使用说明.txt》；
+3. 自动探测本机 7897 / 7890 / 10808 / 10809 等常见上游代理端口（Clash / v2rayN），也可在 `config.json` 手动指定；
+4. 启动本地代理服务并监听 `http://127.0.0.1:8124`（默认端口，可在 `config.json` 中修改），控制面监听 `http://127.0.0.1:8125`。
 
 按 `Ctrl+C` 即可安全退出。
 
 ### 3.3 后续启动
 
-直接再次执行 `python3 app_main.py` 即可。已生成的证书与配置会复用。
+直接再次执行 `go run . --headless` 或运行预编译二进制 `./bin/GBF_Accelerator --headless` 即可。已生成的证书与配置会自动复用。
 
 ---
 
