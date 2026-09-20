@@ -382,25 +382,17 @@ func (s *ProxyServer) WaitServeLoops(timeout time.Duration) bool {
 }
 
 func (s *ProxyServer) trackConn(conn net.Conn) bool {
+	// Keep the same lock order as Stop: s.mu -> connMu. This makes the
+	// Accept-vs-Stop race atomic without introducing a lock inversion.
 	s.mu.RLock()
-	running := s.running
-	s.mu.RUnlock()
-	if !running {
+	defer s.mu.RUnlock()
+	if !s.running {
 		_ = conn.Close()
 		return false
 	}
 
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
-	// Stop may race with Accept; re-check the lifecycle under the same lock
-	// ordering used by Stop (s.mu -> connMu).
-	s.mu.RLock()
-	running = s.running
-	s.mu.RUnlock()
-	if !running {
-		_ = conn.Close()
-		return false
-	}
 	if s.activeConns == nil {
 		s.activeConns = make(map[net.Conn]struct{})
 	}
