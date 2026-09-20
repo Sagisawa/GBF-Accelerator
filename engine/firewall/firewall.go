@@ -1,8 +1,8 @@
 package firewall
 
 import (
+	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 )
 
@@ -62,32 +62,11 @@ func ErrorCode(err error) string {
 		return ""
 	}
 	var fe *Error
-	if ok := AsError(err, &fe); ok {
+	if errors.As(err, &fe) {
 		return fe.Code
 	}
 	return CodeOperationFailed
 }
-
-func AsError(err error, target **Error) bool {
-	if err == nil {
-		return false
-	}
-	for cur := err; cur != nil; {
-		if fe, ok := cur.(*Error); ok {
-			*target = fe
-			return true
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := cur.(unwrapper)
-		if !ok {
-			return false
-		}
-		cur = u.Unwrap()
-	}
-	return false
-}
-
-var _ = regexp.MustCompile
 
 func validPort(port int) bool {
 	return port >= 1 && port <= 65535
