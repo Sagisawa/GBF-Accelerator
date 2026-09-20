@@ -60,3 +60,19 @@ func TestDefaultConfigUsesAutomaticUpstreamProxy(t *testing.T) {
 		t.Fatalf("default UpstreamProxy=%q, want auto", cfg.UpstreamProxy)
 	}
 }
+
+func TestAssetPoolLimitsAreClamped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload := `{"asset_max_connections":100,"asset_max_keepalive":40}`
+	if err := os.WriteFile(path, []byte(payload), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := NewManager(path).Get()
+	if got.AssetMaxConnections != 32 {
+		t.Fatalf("AssetMaxConnections=%d, want 32", got.AssetMaxConnections)
+	}
+	if got.AssetMaxKeepalive != 16 {
+		t.Fatalf("AssetMaxKeepalive=%d, want 16", got.AssetMaxKeepalive)
+	}
+}
+
