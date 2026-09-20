@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -276,6 +277,39 @@ func TestProxyServerLifecycleRestart(t *testing.T) {
 	stats := telemetry.NewStats()
 
 	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+
+	// A stopped proxy must terminate already-accepted client connections, not
+	// merely stop accepting new connections. Otherwise HTTP Keep-Alive / CONNECT
+	// sessions could continue forwarding traffic after the UI says "stopped".
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start for active-connection stop test failed: %v", err)
+	}
+	clientConn, err := net.Dial("tcp", srv.ListenerAddr())
+	if err != nil {
+		t.Fatalf("failed to connect test client: %v", err)
+	}
+	defer clientConn.Close()
+
+	deadline := time.Now().Add(1 * time.Second)
+	for {
+		srv.connMu.Lock()
+		activeCount := len(srv.activeConns)
+		srv.connMu.Unlock()
+		if activeCount > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("test client connection was never tracked as active")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	srv.Stop()
+	clientConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	var readBuf [1]byte
+	if _, readErr := clientConn.Read(readBuf[:]); readErr == nil {
+		t.Fatal("expected client connection to be closed after proxy stop")
+	}
 
 	// Cycle 1: Start -> Stop
 	if err := srv.Start(); err != nil {
