@@ -59,7 +59,7 @@ func DefaultConfig() Config {
 		ListenPort:           8124,
 		ControlPort:          8125,
 		AllowLAN:             false,
-		UpstreamProxy:        "",
+		UpstreamProxy:        "auto",
 		DirectMode:           false,
 		CacheDir:             filepath.Join("cache", "gbf", "https"),
 		CleanZombies:         true,
