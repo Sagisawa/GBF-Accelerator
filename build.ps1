@@ -117,6 +117,23 @@ function Build-Windows {
         $LdFlags += " -H=windowsgui"
     }
 
+    # Compile Windows PE icon resource if windres is available
+    $Windres = Get-Command windres.exe -ErrorAction SilentlyContinue
+    $RcPath = Join-Path $EngineDir "gbf_accelerator.rc"
+    if ($Windres -and (Test-Path $RcPath)) {
+        Push-Location $EngineDir
+        try {
+            & $Windres.Source -i gbf_accelerator.rc -O coff -F pe-x86-64 -o resource_windows_amd64.syso
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "[+] Windows PE icon resource compiled (resource_windows_amd64.syso)" -ForegroundColor Green
+            }
+        } catch {
+            Write-Warning "Failed to compile Windows icon resource: $_"
+        } finally {
+            Pop-Location
+        }
+    }
+
     Write-Host "[*] Compiling Windows single native binary ($ExePath)..." -ForegroundColor Yellow
     $env:CGO_ENABLED = "0"
 
