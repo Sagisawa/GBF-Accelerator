@@ -51,7 +51,8 @@ func (m *Manager) IsInstalled() bool {
 	if sha1 == "" {
 		return false
 	}
-	return isCAInstalled(sha1)
+	caPath := filepath.Join(m.certsDir, "ca.crt")
+	return isCAInstalled(sha1, caPath)
 }
 
 func (m *Manager) Install(certsDir string) error {

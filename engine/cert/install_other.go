@@ -3,7 +3,7 @@
 
 package cert
 
-func isCAInstalled(sha1 string) bool {
+func isCAInstalled(sha1 string, _ string) bool {
 	return true
 }
 

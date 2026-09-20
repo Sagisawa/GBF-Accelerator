@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-func isCAInstalled(sha1 string) bool {
+func isCAInstalled(sha1 string, _ string) bool {
 	cleanSHA1 := strings.ToUpper(strings.TrimSpace(sha1))
 	if cleanSHA1 == "" {
 		return false

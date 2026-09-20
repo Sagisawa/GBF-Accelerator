@@ -48,7 +48,9 @@ echo "[*] 正在将根证书导入当前用户登录钥匙串 (login.keychain)..
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 if [ ! -f "$KEYCHAIN" ]; then
     KEYCHAIN="$HOME/Library/Keychains/login.keychain"
-fi
+# 清理旧同名证书以保证钥匙串卫生，避免同名证书冲突
+security delete-certificate -c "GBF Local Accelerator Root CA" -t "$KEYCHAIN" 2>/dev/null || true
+security delete-certificate -c "GBF Local Accelerator Root CA" -t 2>/dev/null || true
 
 if security add-trusted-cert -r trustRoot -k "$KEYCHAIN" "$CA_PATH" 2>/dev/null; then
     echo ""
