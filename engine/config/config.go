@@ -434,8 +434,12 @@ func GetLANIP() string {
 // On macOS, if the executable is inside a .app bundle (e.g. .../GBF_Accelerator.app/Contents/MacOS/...),
 // writable user data must live in ~/Library/Application Support/GBF-Accelerator to satisfy Gatekeeper.
 func GetBaseDir() string {
-	if runtime.GOOS == "darwin" {
-		if exe, err := os.Executable(); err == nil {
+	// Released portable builds keep writable data beside the executable.
+	// macOS .app bundles are the exception: bundle contents may be read-only,
+	// so writable data is stored in the user's Application Support directory.
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		if runtime.GOOS == "darwin" {
 			exeLower := strings.ToLower(filepath.ToSlash(exe))
 			if strings.Contains(exeLower, ".app/contents/macos") {
 				if home, err := os.UserHomeDir(); err == nil {
@@ -445,6 +449,10 @@ func GetBaseDir() string {
 				}
 			}
 		}
+		if abs, err := filepath.Abs(exeDir); err == nil {
+			return abs
+		}
+		return exeDir
 	}
 	return "."
 }
