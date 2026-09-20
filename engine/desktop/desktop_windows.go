@@ -3,12 +3,39 @@
 package desktop
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
+)
+
+const (
+	bifReturnOnlyFSDirs = 0x0001
+	bifNewDialogStyle   = 0x0040
+	bifEditBox          = 0x0010
+)
+
+type browseInfo struct {
+	hwndOwner      uintptr
+	pidlRoot       uintptr
+	pszDisplayName *uint16
+	lpszTitle      *uint16
+	ulFlags        uint32
+	lpfn           uintptr
+	lParam         uintptr
+	iImage         int32
+}
+
+var (
+	shell32                 = syscall.NewLazyDLL("shell32.dll")
+	shBrowseForFolderW     = shell32.NewProc("SHBrowseForFolderW")
+	shGetPathFromIDListW   = shell32.NewProc("SHGetPathFromIDListW")
+	coTaskMemFree          = syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree")
+	getForegroundWindow    = syscall.NewLazyDLL("user32.dll").NewProc("GetForegroundWindow")
 )
 
 // prepareAppURL appends standalone=1 to the query string if not already present.
@@ -128,18 +155,46 @@ func findAppBrowserWindows() string {
 	return ""
 }
 
-// ChooseFolder displays a native folder picker dialog on Windows.
+// ChooseFolder displays the native Windows shell folder picker.
+// The active foreground window is used as the dialog owner so the picker
+// stays in front of the GUI that initiated the request.
 func ChooseFolder(prompt string) (string, error) {
 	if prompt == "" {
 		prompt = "选择保存目录"
 	}
-	escapedPrompt := strings.ReplaceAll(prompt, "'", "''")
-	psCmd := fmt.Sprintf("[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = '%s'; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }", escapedPrompt)
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", psCmd)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.Output()
+
+	title, err := syscall.UTF16PtrFromString(prompt)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+
+	displayName := make([]uint16, syscall.MAX_PATH)
+	pathBuffer := make([]uint16, syscall.MAX_PATH)
+
+	owner, _, _ := getForegroundWindow.Call()
+	bi := browseInfo{
+		hwndOwner:      owner,
+		pszDisplayName: &displayName[0],
+		lpszTitle:      title,
+		ulFlags:        bifReturnOnlyFSDirs | bifNewDialogStyle | bifEditBox,
+	}
+
+	pidl, _, _ := shBrowseForFolderW.Call(uintptr(unsafe.Pointer(&bi)))
+	if pidl == 0 {
+		return "", nil
+	}
+	defer coTaskMemFree.Call(pidl)
+
+	ok, _, callErr := shGetPathFromIDListW.Call(
+		pidl,
+		uintptr(unsafe.Pointer(&pathBuffer[0])),
+	)
+	if ok == 0 {
+		if callErr != syscall.Errno(0) {
+			return "", callErr
+		}
+		return "", errors.New("failed to resolve selected folder path")
+	}
+
+	return strings.TrimSpace(syscall.UTF16ToString(pathBuffer)), nil
 }
