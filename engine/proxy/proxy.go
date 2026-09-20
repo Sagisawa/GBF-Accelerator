@@ -104,7 +104,7 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 
 	dialer := &net.Dialer{
 		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
+		KeepAlive: 15 * time.Second,
 	}
 
 	apiTransport := &http.Transport{
@@ -867,7 +867,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		}
 
 		for k, vv := range req.Header {
-			if isHopByHop(strings.ToLower(k)) {
+			if isHopByHop(k) {
 				continue
 			}
 			for _, v := range vv {
@@ -1129,8 +1129,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		}
 
 		for k, vv := range req.Header {
-			kLower := strings.ToLower(k)
-			if isHopByHop(kLower) || kLower == "if-none-match" || kLower == "if-modified-since" {
+			if isHopByHop(k) || strings.EqualFold(k, "if-none-match") || strings.EqualFold(k, "if-modified-since") {
 				continue
 			}
 			for _, v := range vv {
@@ -1291,7 +1290,7 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		}
 
 		for k, vv := range req.Header {
-			if isHopByHop(strings.ToLower(k)) {
+			if isHopByHop(k) {
 				continue
 			}
 			for _, v := range vv {
@@ -1384,21 +1383,23 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 	}
 
 	if header != nil {
-		var cookies []string
+		var cookieArr [8]string
+		cookies := cookieArr[:0]
 		for k, vv := range header {
-			kLower := strings.ToLower(k)
-			if kLower == "set-cookie" {
+			if strings.EqualFold(k, "set-cookie") {
 				cookies = append(cookies, vv...)
 				continue
 			}
-			if isHopByHop(kLower) || kLower == "content-length" || kLower == "connection" {
+			if isHopByHop(k) || strings.EqualFold(k, "content-length") || strings.EqualFold(k, "connection") {
 				continue
 			}
-			if !hasDate && kLower == "date" {
+			if !hasDate && strings.EqualFold(k, "date") {
 				continue
 			}
 			// P0: Zero header pollution
-			if strings.HasPrefix(kLower, "x-proxy-") || strings.HasPrefix(kLower, "x-cache-") || strings.HasPrefix(kLower, "x-acceleration-") {
+			if hasCaseInsensitivePrefix(k, "x-proxy-") ||
+				hasCaseInsensitivePrefix(k, "x-cache-") ||
+				hasCaseInsensitivePrefix(k, "x-acceleration-") {
 				continue
 			}
 			formattedKey := formatHeaderKey(k)
@@ -1469,12 +1470,21 @@ func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, b
 }
 
 func isHopByHop(h string) bool {
-	switch h {
-	case "connection", "keep-alive", "proxy-authenticate",
-		"proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade":
-		return true
+	return strings.EqualFold(h, "connection") ||
+		strings.EqualFold(h, "keep-alive") ||
+		strings.EqualFold(h, "proxy-authenticate") ||
+		strings.EqualFold(h, "proxy-authorization") ||
+		strings.EqualFold(h, "te") ||
+		strings.EqualFold(h, "trailers") ||
+		strings.EqualFold(h, "transfer-encoding") ||
+		strings.EqualFold(h, "upgrade")
+}
+
+func hasCaseInsensitivePrefix(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
 	}
-	return false
+	return strings.EqualFold(s[:len(prefix)], prefix)
 }
 
 func formatHeaderKey(k string) string {

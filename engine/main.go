@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"syscall"
 	"time"
@@ -133,6 +134,24 @@ func main() {
 	})
 
 	curCfg := cfgMgr.Get()
+
+	// Configure runtime soft memory limit and GC pacing for low-latency networking
+	applyRuntimeTuning := func(c *config.Config) {
+		if os.Getenv("GOMEMLIMIT") == "" {
+			maxMB := c.RAMCacheMaxMB
+			if maxMB <= 0 {
+				maxMB = 256
+			}
+			debug.SetMemoryLimit(int64(maxMB+128) * 1024 * 1024)
+		}
+		if os.Getenv("GOGC") == "" {
+			debug.SetGCPercent(200)
+		}
+	}
+	applyRuntimeTuning(&curCfg)
+	cfgMgr.OnUpdate(func(c *config.Config) {
+		applyRuntimeTuning(c)
+	})
 
 	stats := telemetry.GlobalStats
 

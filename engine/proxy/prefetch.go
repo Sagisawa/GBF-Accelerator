@@ -152,7 +152,8 @@ func (pe *PrefetchEngine) MaybeEnqueueDiscovery(host, path string, data []byte) 
 	if len(data) < 2 {
 		return
 	}
-	p := strings.ToLower(strings.Split(path, "?")[0])
+	cleanPath, _, _ := strings.Cut(path, "?")
+	p := strings.ToLower(cleanPath)
 	if !strings.HasSuffix(p, ".js") && !strings.HasSuffix(p, ".json") {
 		return
 	}
@@ -194,7 +195,7 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 	seen := make(map[string]struct{})
 	var refs [][2]string
 
-	cleanURL := strings.Split(urlPath, "?")[0]
+	cleanURL, _, _ := strings.Cut(urlPath, "?")
 
 	// 1. Deduced twin CreateJS script for model manifest files
 	if mTwin := twinManifestRe.FindStringSubmatch(cleanURL); len(mTwin) == 3 {
@@ -204,61 +205,91 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 		refs = append(refs, [2]string{defaultHost, twinCJS})
 	}
 
-	// 2. Standard asset references
-	matches := assetRefRe.FindAllSubmatch(body, -1)
-	for _, m := range matches {
-		if len(m) < 3 {
-			continue
+	// 2. Standard asset references (streamed with early exit)
+	offset := 0
+	bodyLen := len(body)
+	scannedMatches := 0
+	for len(refs) < 120 && offset < bodyLen && scannedMatches < 300 {
+		loc := assetRefRe.FindSubmatchIndex(body[offset:])
+		if loc == nil {
+			break
 		}
-		refHost := strings.ToLower(string(m[1]))
-		if refHost != "" && !isGBFAkamaiHost(refHost) && !isDomainOrSubdomain(refHost, "granbluefantasy.jp") && !isDomainOrSubdomain(refHost, "granbluefantasy.com") {
-			continue
+		scannedMatches++
+		var refHost string
+		if loc[2] >= 0 && loc[3] >= 0 {
+			hBytes := body[offset+loc[2] : offset+loc[3]]
+			refHost = strings.ToLower(string(hBytes))
+			if refHost != "" && !isGBFAkamaiHost(refHost) && !isDomainOrSubdomain(refHost, "granbluefantasy.jp") && !isDomainOrSubdomain(refHost, "granbluefantasy.com") {
+				if loc[1] == 0 {
+					offset++
+				} else {
+					offset += loc[1]
+				}
+				continue
+			}
 		}
 		if refHost == "" {
 			refHost = defaultHost
 		}
-		refPath := "/" + strings.TrimPrefix(string(m[2]), "/")
-		if len(refPath) > 200 {
-			continue
-		}
-		key := refHost + refPath
-		if _, ok := seen[key]; !ok {
-			seen[key] = struct{}{}
-			refs = append(refs, [2]string{refHost, refPath})
-			if len(refs) >= 120 {
-				return refs
+
+		if loc[4] >= 0 && loc[5] >= 0 {
+			pBytes := body[offset+loc[4] : offset+loc[5]]
+			if len(pBytes) <= 200 {
+				for len(pBytes) > 0 && pBytes[0] == '/' {
+					pBytes = pBytes[1:]
+				}
+				refPath := "/" + string(pBytes)
+				key := refHost + refPath
+				if _, ok := seen[key]; !ok {
+					seen[key] = struct{}{}
+					refs = append(refs, [2]string{refHost, refPath})
+				}
 			}
+		}
+
+		if loc[1] == 0 {
+			offset++
+		} else {
+			offset += loc[1]
 		}
 	}
 
-	// 3. CreateJS & Game.imgUri spritesheets and textures
-	if len(refs) < 120 {
+	// 3. CreateJS & Game.imgUri spritesheets and textures (streamed with early exit)
+	if len(refs) < 120 && scannedMatches < 300 {
 		imgPrefix := "/assets/img"
 		if strings.HasPrefix(cleanURL, "/assets_en/") {
 			imgPrefix = "/assets_en/img"
 		}
-		cjsMatches := cjsImgRefRe.FindAllSubmatch(body, -1)
-		for _, m := range cjsMatches {
-			if len(m) < 2 {
-				continue
+		offset = 0
+		for len(refs) < 120 && offset < bodyLen && scannedMatches < 300 {
+			loc := cjsImgRefRe.FindSubmatchIndex(body[offset:])
+			if loc == nil {
+				break
 			}
-			raw := string(m[1])
-			var imgPath string
-			if strings.HasPrefix(raw, "sp/") {
-				imgPath = imgPrefix + "/" + raw
-			} else {
-				imgPath = "/" + strings.TrimPrefix(raw, "/")
-			}
-			if len(imgPath) > 200 {
-				continue
-			}
-			key := defaultHost + imgPath
-			if _, ok := seen[key]; !ok {
-				seen[key] = struct{}{}
-				refs = append(refs, [2]string{defaultHost, imgPath})
-				if len(refs) >= 120 {
-					return refs
+			scannedMatches++
+			if loc[2] >= 0 && loc[3] >= 0 {
+				rawBytes := body[offset+loc[2] : offset+loc[3]]
+				if len(rawBytes) <= 200 {
+					var imgPath string
+					if bytes.HasPrefix(rawBytes, []byte("sp/")) {
+						imgPath = imgPrefix + "/" + string(rawBytes)
+					} else {
+						for len(rawBytes) > 0 && rawBytes[0] == '/' {
+							rawBytes = rawBytes[1:]
+						}
+						imgPath = "/" + string(rawBytes)
+					}
+					key := defaultHost + imgPath
+					if _, ok := seen[key]; !ok {
+						seen[key] = struct{}{}
+						refs = append(refs, [2]string{defaultHost, imgPath})
+					}
 				}
+			}
+			if loc[1] == 0 {
+				offset++
+			} else {
+				offset += loc[1]
 			}
 		}
 	}

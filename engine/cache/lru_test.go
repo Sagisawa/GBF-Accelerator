@@ -172,3 +172,56 @@ func BenchmarkLRUGetSet(b *testing.B) {
 	}
 }
 
+func BenchmarkLRUGetSet_Parallel(b *testing.B) {
+	lru := NewLRUCache(64 * 1024 * 1024)
+	keys := make([]string, 1000)
+	for i := 0; i < 1000; i++ {
+		keys[i] = "bench_key_" + string(rune('a'+(i%26))) + string(rune('0'+(i%10)))
+		lru.Set(keys[i], &CacheItem{Key: keys[i], Data: make([]byte, 64)})
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		idx := 0
+		for pb.Next() {
+			k := keys[idx%1000]
+			_, _ = lru.Get(k)
+			idx++
+		}
+	})
+}
+
+func TestShardedLRU(t *testing.T) {
+	// >= 1MB triggers 16 shards
+	lru := NewLRUCache(16 * 1024 * 1024)
+	if lru.numShards != 16 {
+		t.Fatalf("expected 16 shards, got %d", lru.numShards)
+	}
+
+	// Insert items across shards
+	for i := 0; i < 100; i++ {
+		key := "item_" + string(rune('a'+(i%26))) + string(rune('0'+(i%10)))
+		lru.Set(key, &CacheItem{Key: key, Data: make([]byte, 1024)})
+		if !lru.Contains(key) {
+			t.Fatalf("expected item %s to be contained", key)
+		}
+		item, ok := lru.Get(key)
+		if !ok || item == nil {
+			t.Fatalf("expected item %s to be retrieved", key)
+		}
+	}
+
+	items, bytes := lru.Stats()
+	if items == 0 || bytes == 0 {
+		t.Fatalf("expected positive stats, got items=%d bytes=%d", items, bytes)
+	}
+
+	lru.Clear()
+	items, bytes = lru.Stats()
+	if items != 0 || bytes != 0 {
+		t.Fatalf("expected 0 stats after clear, got items=%d bytes=%d", items, bytes)
+	}
+}
+
+
