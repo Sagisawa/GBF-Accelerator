@@ -42,6 +42,7 @@ type ProxyServer struct {
 	stats       *telemetry.Stats
 	prefetch    *PrefetchEngine
 	listener    net.Listener
+	listenerGen uint64
 	mu          sync.RWMutex
 	apiClient   atomic.Pointer[http.Client]
 	assetClient atomic.Pointer[http.Client]
@@ -204,14 +205,69 @@ func (s *ProxyServer) Start() error {
 	}
 
 	s.listener = ln
+	s.listenerGen++
 	s.running = true
 	s.closedChan = make(chan struct{})
 	if s.prefetch == nil || s.prefetch.IsStopped() {
 		s.prefetch = newPrefetchEngine(s)
 	}
 
-	go s.serveLoop(ln)
+	go s.serveLoop(ln, s.listenerGen)
 	return nil
+}
+
+func (s *ProxyServer) ReloadListener(newHost string, newPort int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running {
+		return nil
+	}
+
+	newAddr := fmt.Sprintf("%s:%d", newHost, newPort)
+	if s.listener != nil && s.listener.Addr().String() == newAddr {
+		return nil
+	}
+
+	oldLn := s.listener
+	var oldAddr string
+	if oldLn != nil {
+		oldAddr = oldLn.Addr().String()
+		_ = oldLn.Close()
+	}
+
+	newLn, err := net.Listen("tcp", newAddr)
+	if err != nil {
+		// Rollback to old listener if available
+		if oldAddr != "" {
+			if rollbackLn, rErr := net.Listen("tcp", oldAddr); rErr == nil {
+				s.listener = rollbackLn
+				s.listenerGen++
+				go s.serveLoop(rollbackLn, s.listenerGen)
+				return fmt.Errorf("failed to listen on %s: %w (rolled back to %s)", newAddr, err, oldAddr)
+			} else {
+				s.listener = nil
+				return fmt.Errorf("failed to listen on %s: %v (rollback to %s failed: %v)", newAddr, err, oldAddr, rErr)
+			}
+		}
+		return fmt.Errorf("failed to listen on %s: %w", newAddr, err)
+	}
+
+	s.listener = newLn
+	s.listenerGen++
+	go s.serveLoop(newLn, s.listenerGen)
+	if s.stats != nil {
+		s.stats.Log("INFO", fmt.Sprintf("[PROXY] 监听地址已动态重载至: %s (generation: %d)", newAddr, s.listenerGen))
+	}
+	return nil
+}
+
+func (s *ProxyServer) ListenerAddr() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return ""
 }
 
 func (s *ProxyServer) Stop() {
@@ -221,6 +277,7 @@ func (s *ProxyServer) Stop() {
 		return
 	}
 	s.running = false
+	s.listenerGen++
 	if s.listener != nil {
 		_ = s.listener.Close()
 		s.listener = nil
@@ -258,16 +315,19 @@ func (s *ProxyServer) IsRunning() bool {
 	return s.running
 }
 
-func (s *ProxyServer) serveLoop(ln net.Listener) {
+func (s *ProxyServer) serveLoop(ln net.Listener, gen uint64) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			s.mu.RLock()
 			running := s.running
+			currentGen := s.listenerGen
 			s.mu.RUnlock()
-			if !running {
+
+			if !running || gen != currentGen {
 				return
 			}
+			time.Sleep(20 * time.Millisecond)
 			continue
 		}
 
@@ -731,8 +791,8 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		hdr.Set("Content-Disposition", `attachment; filename="gbf_ca.crt"`)
 		hdr.Set("Access-Control-Allow-Origin", "*")
 		hdr.Set("Cache-Control", "no-cache")
-		writeHTTPResponse(conn, http.StatusOK, hdr, caBytes, req.Method == http.MethodHead, true)
-		return false
+		writeHTTPResponse(conn, http.StatusOK, hdr, caBytes, req.Method == http.MethodHead, req.Close)
+		return !req.Close
 	}
 
 	// 2. Dynamic PAC script (only for direct requests to proxy host itself)
@@ -756,8 +816,8 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		hdr.Set("Content-Type", "application/x-ns-proxy-autoconfig")
 		hdr.Set("Access-Control-Allow-Origin", "*")
 		hdr.Set("Cache-Control", "no-cache")
-		writeHTTPResponse(conn, http.StatusOK, hdr, []byte(pacText), req.Method == http.MethodHead, true)
-		return false
+		writeHTTPResponse(conn, http.StatusOK, hdr, []byte(pacText), req.Method == http.MethodHead, req.Close)
+		return !req.Close
 	}
 
 	// 3. Mobile LAN landing guide (only for direct requests to proxy host itself)
@@ -773,8 +833,8 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		hdr := make(http.Header)
 		hdr.Set("Content-Type", "text/html; charset=utf-8")
 		hdr.Set("Access-Control-Allow-Origin", "*")
-		writeHTTPResponse(conn, http.StatusOK, hdr, []byte(html), req.Method == http.MethodHead, true)
-		return false
+		writeHTTPResponse(conn, http.StatusOK, hdr, []byte(html), req.Method == http.MethodHead, req.Close)
+		return !req.Close
 	}
 
 	// 4. Plain HTTP proxy request (e.g. GET http://gbf.game.mbga.jp/)

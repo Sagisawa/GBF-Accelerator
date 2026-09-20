@@ -144,6 +144,9 @@ function Build-Windows {
         $FilesToZip = @($ExePath)
         foreach ($Aux in $AuxFiles) {
             $AuxPath = Join-Path $RootDir $Aux
+            if (-not (Test-Path $AuxPath)) {
+                $AuxPath = Join-Path (Join-Path $EngineDir "res") $Aux
+            }
             if (Test-Path $AuxPath) {
                 $FilesToZip += $AuxPath
             }
@@ -211,18 +214,70 @@ function Build-Darwin {
     $ZipPath = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_macOS_universal2.zip"
     if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
-    Write-Host "[*] Packaging macOS release zip: $ZipPath..." -ForegroundColor Yellow
+    Write-Host "[*] Constructing macOS .app bundle and packaging: $ZipPath..." -ForegroundColor Yellow
+    $StagingDir = Join-Path $ReleaseDir "staging_macos"
+    if (Test-Path $StagingDir) { Remove-Item $StagingDir -Recurse -Force }
+    $AppDir = Join-Path $StagingDir "GBF_Accelerator.app"
+    $ContentsDir = Join-Path $AppDir "Contents"
+    $MacOsDir = Join-Path $ContentsDir "MacOS"
+    $ResourcesDir = Join-Path $ContentsDir "Resources"
+    New-Item -ItemType Directory -Path $MacOsDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $ResourcesDir -Force | Out-Null
+
+    Copy-Item -Path $MacBin -Destination (Join-Path $MacOsDir "GBF_Accelerator") -Force
+    $IcnsSrc = Join-Path $RootDir "gbf_accelerator.icns"
+    if (Test-Path $IcnsSrc) {
+        Copy-Item -Path $IcnsSrc -Destination (Join-Path $ResourcesDir "gbf_accelerator.icns") -Force
+    }
+
+    $PlistContent = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleExecutable</key>
+    <string>GBF_Accelerator</string>
+    <key>CFBundleIconFile</key>
+    <string>gbf_accelerator.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.sagisawa.gbf-accelerator</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>GBF Accelerator</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$AppVersion</string>
+    <key>CFBundleVersion</key>
+    <string>$AppVersion</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.15</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+"@
+    Set-Content -Path (Join-Path $ContentsDir "Info.plist") -Value $PlistContent -Encoding UTF8
+
     $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.sh", "start_proxy.sh", "LICENSE")
-    $FilesToZip = @($MacBin)
     foreach ($Aux in $AuxFiles) {
         $AuxPath = Join-Path $RootDir $Aux
+        if (-not (Test-Path $AuxPath)) {
+            $AuxPath = Join-Path (Join-Path $EngineDir "res") $Aux
+        }
         if (Test-Path $AuxPath) {
-            $FilesToZip += $AuxPath
+            Copy-Item -Path $AuxPath -Destination (Join-Path $StagingDir $Aux) -Force
         }
     }
-    Get-ChildItem -Path $RootDir -Filter "*.txt" | ForEach-Object { $FilesToZip += $_.FullName }
+    Get-ChildItem -Path $RootDir -Filter "*.txt" | ForEach-Object {
+        Copy-Item -Path $_.FullName -Destination (Join-Path $StagingDir $_.Name) -Force
+    }
 
-    Compress-Archive -Path $FilesToZip -DestinationPath $ZipPath -Force
+    Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force
+    Remove-Item $StagingDir -Recurse -Force
     $ZipSizeMb = (Get-Item $ZipPath).Length / 1MB
     Write-Host ("[***] RELEASE READY: {0} ({1:F2} MB)" -f $ZipPath, $ZipSizeMb) -ForegroundColor Cyan
 }

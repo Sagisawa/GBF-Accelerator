@@ -208,19 +208,19 @@ flowchart TD
 ### 方式一：使用预构建便携版（推荐）
 
 #### Windows 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v1.8.0_GUI.zip`。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.0.0_GUI.zip`。
 2. 解压到任意非中文路径（例如 `D:\GBF_Accelerator\`）。
 3. 确保你的上游代理（Clash Verge / v2rayN 等）已开启并正常联网。
 4. 双击运行 `GBF_Accelerator.exe`。
-5. 检查上游代理端口与本地端口（默认 `8124`），勾选“自动配置系统 PAC 代理”，点击“启动加速”。
+5. 检查上游代理端口与本地端口（默认 `8124`），勾选“自动配置系统 PAC 代理”（或使用 ZeroOmega / SmartProxy 插件分流），点击“启动加速”。
 6. 在浏览器中打开游戏页面即可正常游玩。
 
 #### macOS 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_vX.Y.Z_macOS_universal2.zip`（例如当前版本 `GBF_Accelerator_v1.8.0_macOS_universal2.zip`，Universal 2 双架构二进制独立 `.app`，同时原生支持 Intel 与 Apple Silicon Macs）。
-2. 解压并打开应用程序（若提示签名拦截，请参考 [常见问题 FAQ](#q3-macos-提示应用程序已损坏无法打开或被-gatekeeper-拦截)）。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.0.0_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
+2. 解压并将 `GBF_Accelerator.app` 拖入系统的【应用程序】文件夹（首次打开若遇 Gatekeeper 拦截，请执行 `xattr -cr /Applications/GBF_Accelerator.app`）。
 3. 确保 Clash / Surge 等上游代理正常运行。
-4. 启动后程序会常驻顶部 Menu Bar 菜单栏；若首次使用，可根据提示完成钥匙串根证书信任。
-5. 点击“启动加速”，系统 PAC 代理将自动挂载，即可在 Safari 或 Chrome 中开始游戏。
+4. 启动后程序会自动打开内嵌 Web 控制台（支持 Chromium App Mode 独立窗口）；若首次使用，根据界面提示一键完成钥匙串根证书信任。
+5. 点击“启动加速”，系统 PAC 代理将自动挂载（或在浏览器中使用插件分流），即可在 Safari 或 Chrome 中开始游戏。
 
 ---
 

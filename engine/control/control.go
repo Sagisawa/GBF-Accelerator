@@ -37,8 +37,9 @@ type ControlServer struct {
 	proxySrv   *proxy.ProxyServer
 	stats      *telemetry.Stats
 	server     *http.Server
-	listener   net.Listener
-	mu         sync.RWMutex
+	listener    net.Listener
+	listenerGen uint64
+	mu          sync.RWMutex
 	distDir    string
 	running    bool
 	closedChan chan struct{}
@@ -118,6 +119,16 @@ func (c *ControlServer) Start() error {
 		return fmt.Errorf("failed to bind control server on %s: %w", addr, err)
 	}
 
+	c.listener = ln
+	c.listenerGen++
+	c.running = true
+	c.closedChan = make(chan struct{})
+
+	c.startServe(ln, c.listenerGen)
+	return nil
+}
+
+func (c *ControlServer) startServe(ln net.Listener, gen uint64) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", c.handleRoute)
 
@@ -125,14 +136,74 @@ func (c *ControlServer) Start() error {
 		Handler: mux,
 	}
 	c.server = srv
-	c.listener = ln
-	c.running = true
-	c.closedChan = make(chan struct{})
 
 	go func() {
 		_ = srv.Serve(ln)
+		c.mu.RLock()
+		running := c.running
+		currentGen := c.listenerGen
+		c.mu.RUnlock()
+		if !running || gen != currentGen {
+			return
+		}
 	}()
+}
+
+func (c *ControlServer) ReloadListener(newPort int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.running {
+		return nil
+	}
+
+	newAddr := fmt.Sprintf("127.0.0.1:%d", newPort)
+	if c.listener != nil && c.listener.Addr().String() == newAddr {
+		return nil
+	}
+
+	oldLn := c.listener
+	oldSrv := c.server
+	var oldAddr string
+	if oldLn != nil {
+		oldAddr = oldLn.Addr().String()
+		_ = oldLn.Close()
+	}
+	if oldSrv != nil {
+		_ = oldSrv.Close()
+	}
+
+	newLn, err := net.Listen("tcp", newAddr)
+	if err != nil {
+		if oldAddr != "" {
+			if rollbackLn, rErr := net.Listen("tcp", oldAddr); rErr == nil {
+				c.listener = rollbackLn
+				c.listenerGen++
+				c.startServe(rollbackLn, c.listenerGen)
+				return fmt.Errorf("failed to listen on %s: %w (rolled back to %s)", newAddr, err, oldAddr)
+			} else {
+				c.listener = nil
+				return fmt.Errorf("failed to listen on %s: %v (rollback to %s failed: %v)", newAddr, err, oldAddr, rErr)
+			}
+		}
+		return fmt.Errorf("failed to listen on %s: %w", newAddr, err)
+	}
+
+	c.listener = newLn
+	c.listenerGen++
+	c.startServe(newLn, c.listenerGen)
+	if c.stats != nil {
+		c.stats.Log("INFO", fmt.Sprintf("[CONTROL] 管理控制面已动态重载至: %s", newAddr))
+	}
 	return nil
+}
+
+func (c *ControlServer) ListenerAddr() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.listener != nil {
+		return c.listener.Addr().String()
+	}
+	return ""
 }
 
 func (c *ControlServer) Stop() {
@@ -142,6 +213,7 @@ func (c *ControlServer) Stop() {
 		return
 	}
 	c.running = false
+	c.listenerGen++
 	if c.server != nil {
 		_ = c.server.Close()
 		c.server = nil
@@ -557,120 +629,166 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	updated := c.cfgMgr.Update(func(cfg *config.Config) {
-		if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
-			cfg.ListenPort = int(val)
-		} else if val, ok := patch["port"].(float64); ok && val > 0 && val < 65536 {
-			cfg.ListenPort = int(val)
+	candidate := c.cfgMgr.Candidate()
+	oldCandidate := candidate
+
+	if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
+		candidate.ListenPort = int(val)
+	} else if val, ok := patch["port"].(float64); ok && val > 0 && val < 65536 {
+		candidate.ListenPort = int(val)
+	}
+	if val, ok := patch["control_port"].(float64); ok && val > 0 && val < 65536 {
+		candidate.ControlPort = int(val)
+	}
+	if val, ok := patch["upstream_proxy"].(string); ok {
+		if strings.EqualFold(val, "auto") {
+			val = config.AutoDetectUpstreamProxy()
 		}
-		if val, ok := patch["control_port"].(float64); ok && val > 0 && val < 65536 {
-			cfg.ControlPort = int(val)
-		}
-		if val, ok := patch["upstream_proxy"].(string); ok {
-			if strings.EqualFold(val, "auto") {
-				val = config.AutoDetectUpstreamProxy()
-			}
-			cfg.UpstreamProxy = val
-		}
-		if val, ok := patch["direct_mode"].(bool); ok {
-			cfg.DirectMode = val
-		}
-		if val, ok := patch["verify_upstream_tls"].(bool); ok {
-			cfg.VerifyUpstreamTLS = val
-		}
-		if val, ok := patch["allow_lan"].(bool); ok {
-			cfg.AllowLAN = val
-		}
-		if val, ok := patch["cache_dir"].(string); ok {
-			if strings.EqualFold(val, "auto") {
-				if detected := config.AutoDetectACGPowerCache(); detected != "" {
-					val = detected
-				}
-			}
-			cfg.CacheDir = config.NormalizeCacheDir(val)
-			c.cacheMgr.SetCacheBase(cfg.CacheDir)
-		}
-		if val, ok := patch["ram_cache_max_mb"].(float64); ok {
-			cfg.RAMCacheMaxMB = int(val)
-			c.cacheMgr.SetRAMLimit(cfg.RAMCacheMaxMB)
-		}
-		if val, ok := patch["enable_ram_cache"].(bool); ok {
-			cfg.EnableRAMCache = val
-		}
-		if val, ok := patch["enable_browser_cache"].(bool); ok {
-			cfg.EnableBrowserCache = val
-		}
-		if val, ok := patch["enable_prefetch"].(bool); ok {
-			cfg.EnablePrefetch = val
-		}
-		if val, ok := patch["enable_auto_repair"].(bool); ok {
-			cfg.EnableAutoRepair = val
-		}
-		if val, ok := patch["enable_ram_warmup"].(bool); ok {
-			cfg.EnableRAMWarmup = val
-		}
-		if val, ok := patch["auto_system_proxy"].(bool); ok {
-			cfg.AutoSystemProxy = val
-			if val {
-				_ = sysproxy.EnablePACProxy(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort))
-			} else {
-				_ = sysproxy.DisablePACProxy(false)
-			}
-		} else if val, ok := patch["auto_pac"].(bool); ok {
-			cfg.AutoSystemProxy = val
-			if val {
-				_ = sysproxy.EnablePACProxy(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort))
-			} else {
-				_ = sysproxy.DisablePACProxy(false)
+		candidate.UpstreamProxy = val
+	}
+	if val, ok := patch["direct_mode"].(bool); ok {
+		candidate.DirectMode = val
+	}
+	if val, ok := patch["verify_upstream_tls"].(bool); ok {
+		candidate.VerifyUpstreamTLS = val
+	}
+	if val, ok := patch["allow_lan"].(bool); ok {
+		candidate.AllowLAN = val
+	}
+	if val, ok := patch["cache_dir"].(string); ok {
+		if strings.EqualFold(val, "auto") {
+			if detected := config.AutoDetectACGPowerCache(); detected != "" {
+				val = detected
 			}
 		}
-		if val, ok := patch["auto_start"].(bool); ok {
-			cfg.AutoStart = val
-			_ = startup.SetStartupEnabled(val)
+		candidate.CacheDir = config.NormalizeCacheDir(val)
+	}
+	if val, ok := patch["ram_cache_max_mb"].(float64); ok {
+		candidate.RAMCacheMaxMB = int(val)
+	}
+	if val, ok := patch["enable_ram_cache"].(bool); ok {
+		candidate.EnableRAMCache = val
+	}
+	if val, ok := patch["enable_browser_cache"].(bool); ok {
+		candidate.EnableBrowserCache = val
+	}
+	if val, ok := patch["enable_prefetch"].(bool); ok {
+		candidate.EnablePrefetch = val
+	}
+	if val, ok := patch["enable_auto_repair"].(bool); ok {
+		candidate.EnableAutoRepair = val
+	}
+	if val, ok := patch["enable_ram_warmup"].(bool); ok {
+		candidate.EnableRAMWarmup = val
+	}
+	if val, ok := patch["auto_system_proxy"].(bool); ok {
+		candidate.AutoSystemProxy = val
+	} else if val, ok := patch["auto_pac"].(bool); ok {
+		candidate.AutoSystemProxy = val
+	}
+	if val, ok := patch["auto_start"].(bool); ok {
+		candidate.AutoStart = val
+	}
+	if val, ok := patch["auto_check_update"].(bool); ok {
+		candidate.AutoCheckUpdate = val
+	}
+	if val, ok := patch["shimakaze_mode"].(bool); ok {
+		candidate.ShimakazeMode = val
+	}
+	if val, ok := patch["api_max_connections"].(float64); ok && val > 0 {
+		candidate.APIMaxConnections = int(val)
+	}
+	if val, ok := patch["api_max_keepalive"].(float64); ok && val >= 0 {
+		candidate.APIMaxKeepalive = int(val)
+	}
+	if val, ok := patch["api_keepalive_expiry"].(float64); ok && val > 0 {
+		candidate.APIKeepaliveExpiry = val
+	}
+	if val, ok := patch["asset_max_connections"].(float64); ok && val > 0 {
+		candidate.AssetMaxConnections = int(val)
+	}
+	if val, ok := patch["asset_max_keepalive"].(float64); ok && val >= 0 {
+		candidate.AssetMaxKeepalive = int(val)
+	}
+	if val, ok := patch["asset_keepalive_expiry"].(float64); ok && val > 0 {
+		candidate.AssetKeepaliveExpiry = val
+	}
+	if val, ok := patch["ram_warmup_max_items"].(float64); ok && val > 0 {
+		candidate.RAMWarmupMaxItems = int(val)
+	}
+	if val, ok := patch["enable_api_telemetry"].(bool); ok {
+		candidate.EnableAPITelemetry = val
+	}
+	if val, ok := patch["clean_zombies"].(bool); ok {
+		candidate.CleanZombies = val
+	}
+
+	proxyRebound := false
+	controlRebound := false
+
+	// 1. If 8124 listener needs reload (allow_lan or listen_port changed)
+	if c.proxySrv != nil && (candidate.AllowLAN != oldCandidate.AllowLAN || candidate.ListenPort != oldCandidate.ListenPort) {
+		newHost := candidate.GetEffectiveListenHost()
+		if err := c.proxySrv.ReloadListener(newHost, candidate.ListenPort); err != nil {
+			c.sendJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("代理监听重载失败: %v", err),
+			})
+			return
 		}
-		if val, ok := patch["auto_check_update"].(bool); ok {
-			cfg.AutoCheckUpdate = val
+		proxyRebound = true
+	}
+
+	// 2. If 8125 listener needs reload (control_port changed)
+	if candidate.ControlPort != oldCandidate.ControlPort {
+		if err := c.ReloadListener(candidate.ControlPort); err != nil {
+			if proxyRebound && c.proxySrv != nil {
+				_ = c.proxySrv.ReloadListener(oldCandidate.GetEffectiveListenHost(), oldCandidate.ListenPort)
+			}
+			c.sendJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("控制端口重载失败: %v", err),
+			})
+			return
 		}
-		if val, ok := patch["shimakaze_mode"].(bool); ok {
-			cfg.ShimakazeMode = val
+		controlRebound = true
+	}
+
+	// 3. Commit candidate configuration to memory and disk
+	if err := c.cfgMgr.Commit(candidate); err != nil {
+		// Rollback listeners if commit/save failed
+		if proxyRebound && c.proxySrv != nil {
+			_ = c.proxySrv.ReloadListener(oldCandidate.GetEffectiveListenHost(), oldCandidate.ListenPort)
 		}
-		if val, ok := patch["control_port"].(float64); ok && val > 0 && val < 65536 {
-			cfg.ControlPort = int(val)
+		if controlRebound {
+			_ = c.ReloadListener(oldCandidate.ControlPort)
 		}
-		if val, ok := patch["api_max_connections"].(float64); ok && val > 0 {
-			cfg.APIMaxConnections = int(val)
+		c.sendJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("配置持久化失败: %v", err),
+		})
+		return
+	}
+
+	// 4. Apply non-listener runtime state
+	if candidate.CacheDir != oldCandidate.CacheDir {
+		c.cacheMgr.SetCacheBase(candidate.CacheDir)
+	}
+	if candidate.RAMCacheMaxMB != oldCandidate.RAMCacheMaxMB {
+		c.cacheMgr.SetRAMLimit(candidate.RAMCacheMaxMB)
+	}
+	if candidate.AutoSystemProxy != oldCandidate.AutoSystemProxy || candidate.ListenPort != oldCandidate.ListenPort {
+		if candidate.AutoSystemProxy {
+			_ = sysproxy.EnablePACProxy(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", candidate.ListenPort))
+		} else {
+			_ = sysproxy.DisablePACProxy(false)
 		}
-		if val, ok := patch["api_max_keepalive"].(float64); ok && val >= 0 {
-			cfg.APIMaxKeepalive = int(val)
-		}
-		if val, ok := patch["api_keepalive_expiry"].(float64); ok && val > 0 {
-			cfg.APIKeepaliveExpiry = val
-		}
-		if val, ok := patch["asset_max_connections"].(float64); ok && val > 0 {
-			cfg.AssetMaxConnections = int(val)
-		}
-		if val, ok := patch["asset_max_keepalive"].(float64); ok && val >= 0 {
-			cfg.AssetMaxKeepalive = int(val)
-		}
-		if val, ok := patch["asset_keepalive_expiry"].(float64); ok && val > 0 {
-			cfg.AssetKeepaliveExpiry = val
-		}
-		if val, ok := patch["ram_warmup_max_items"].(float64); ok && val > 0 {
-			cfg.RAMWarmupMaxItems = int(val)
-		}
-		if val, ok := patch["enable_api_telemetry"].(bool); ok {
-			cfg.EnableAPITelemetry = val
-		}
-		if val, ok := patch["clean_zombies"].(bool); ok {
-			cfg.CleanZombies = val
-		}
-	})
-	_ = c.cfgMgr.Save()
+	}
+	if candidate.AutoStart != oldCandidate.AutoStart {
+		_ = startup.SetStartupEnabled(candidate.AutoStart)
+	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "Configuration updated",
-		"config":  updated,
+		"config":  candidate,
 	})
 }
 

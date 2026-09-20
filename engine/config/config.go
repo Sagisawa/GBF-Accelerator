@@ -171,6 +171,37 @@ func (m *Manager) Get() Config {
 	return m.cfg
 }
 
+func (m *Manager) Candidate() Config {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cfg
+}
+
+func (m *Manager) Commit(candidate Config) error {
+	m.mu.Lock()
+	oldCfg := m.cfg
+	m.cfg = candidate
+	m.mu.Unlock()
+
+	if err := m.Save(); err != nil {
+		m.mu.Lock()
+		m.cfg = oldCfg
+		m.mu.Unlock()
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	m.mu.RLock()
+	updated := m.cfg
+	callbacks := make([]func(*Config), len(m.onSave))
+	copy(callbacks, m.onSave)
+	m.mu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb(&updated)
+	}
+	return nil
+}
+
 func (m *Manager) Update(fn func(c *Config)) Config {
 	m.mu.Lock()
 	fn(&m.cfg)
@@ -219,22 +250,30 @@ func (m *Manager) Save() error {
 	return renameErr
 }
 
-func (m *Manager) GetEffectiveListenHost() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if m.cfg.AllowLAN {
+func (c Config) GetEffectiveListenHost() string {
+	if c.AllowLAN {
 		return "0.0.0.0"
 	}
 	return "127.0.0.1"
 }
 
+func (c Config) GetEffectiveUpstreamProxy() string {
+	if c.DirectMode {
+		return ""
+	}
+	return c.UpstreamProxy
+}
+
+func (m *Manager) GetEffectiveListenHost() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cfg.GetEffectiveListenHost()
+}
+
 func (m *Manager) GetEffectiveUpstreamProxy() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if m.cfg.DirectMode {
-		return ""
-	}
-	return m.cfg.UpstreamProxy
+	return m.cfg.GetEffectiveUpstreamProxy()
 }
 
 func GetLANIP() string {

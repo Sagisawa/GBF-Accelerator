@@ -62,15 +62,68 @@ if [[ "$(uname -s)" == "Darwin" ]] || [[ "${1:-}" == "--release" ]] || [[ "${2:-
 
     ZIP_PATH="${RELEASE_DIR}/GBF_Accelerator_v${APP_VERSION}_macOS_universal2.zip"
     rm -f "${ZIP_PATH}"
-    echo "[*] Packaging macOS release zip: ${ZIP_PATH}..."
+    echo "[*] Constructing macOS .app bundle and packaging: ${ZIP_PATH}..."
+
+    STAGING_DIR="${RELEASE_DIR}/staging_macos"
+    rm -rf "${STAGING_DIR}"
+    mkdir -p "${STAGING_DIR}/GBF_Accelerator.app/Contents/MacOS"
+    mkdir -p "${STAGING_DIR}/GBF_Accelerator.app/Contents/Resources"
+
+    cp "${MAC_BIN}" "${STAGING_DIR}/GBF_Accelerator.app/Contents/MacOS/GBF_Accelerator"
+    chmod +x "${STAGING_DIR}/GBF_Accelerator.app/Contents/MacOS/GBF_Accelerator"
+
+    if [[ -f "${ROOT_DIR}/gbf_accelerator.icns" ]]; then
+        cp "${ROOT_DIR}/gbf_accelerator.icns" "${STAGING_DIR}/GBF_Accelerator.app/Contents/Resources/gbf_accelerator.icns"
+    fi
+
+    cat > "${STAGING_DIR}/GBF_Accelerator.app/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleExecutable</key>
+    <string>GBF_Accelerator</string>
+    <key>CFBundleIconFile</key>
+    <string>gbf_accelerator.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.sagisawa.gbf-accelerator</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>GBF Accelerator</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${APP_VERSION}</string>
+    <key>CFBundleVersion</key>
+    <string>${APP_VERSION}</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.15</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+EOF
+
     AUX_FILES=("SwitchyOmega_GBF.bak" "proxy.pac" "install_ca.sh" "start_proxy.sh" "使用说明.txt" "LICENSE")
-    FILES_TO_PACK=("${MAC_BIN}")
     for aux in "${AUX_FILES[@]}"; do
         if [[ -f "${ROOT_DIR}/${aux}" ]]; then
-            FILES_TO_PACK+=("${ROOT_DIR}/${aux}")
+            cp "${ROOT_DIR}/${aux}" "${STAGING_DIR}/"
+        elif [[ -f "${ENGINE_DIR}/res/${aux}" ]]; then
+            cp "${ENGINE_DIR}/res/${aux}" "${STAGING_DIR}/"
         fi
     done
-    chmod +x "${ROOT_DIR}/start_proxy.sh" "${ROOT_DIR}/install_ca.sh" "${MAC_BIN}" 2>/dev/null || true
-    zip -j "${ZIP_PATH}" "${FILES_TO_PACK[@]}"
+
+    if [[ -f "${STAGING_DIR}/start_proxy.sh" ]]; then
+        chmod +x "${STAGING_DIR}/start_proxy.sh"
+    fi
+    if [[ -f "${STAGING_DIR}/install_ca.sh" ]]; then
+        chmod +x "${STAGING_DIR}/install_ca.sh"
+    fi
+
+    (cd "${STAGING_DIR}" && zip -r -y "${ZIP_PATH}" .)
+    rm -rf "${STAGING_DIR}"
     echo "[***] MAC RELEASE READY: ${ZIP_PATH}"
 fi

@@ -1,8 +1,8 @@
 # GBF Accelerator — macOS / Linux (nogui) 使用说明
 
 > **macOS 用户须知**：
-> macOS 已支持完整的原生图形与无头版本（内嵌 Web 控制台、Menu Bar 顶部状态栏常驻菜单、一键 CA 根证书自动信任、`networksetup` 系统代理自动托管以及跨平台更新检查）。
-> macOS 用户推荐直接运行打包好的 `GBF_Accelerator`（或源码模式运行 `./start_proxy.sh` / `cd engine && go run .`）。
+> macOS 已支持完整的原生图形与无头版本（原生 .app 启动器、内嵌 Web 控制台、一键 CA 根证书自动信任、`networksetup` 系统代理自动托管以及跨平台更新检查）。
+> macOS 用户推荐直接运行打包好的 `GBF_Accelerator.app`（或源码模式运行 `./start_proxy.sh` / `cd engine && go run .`）。
 > **本文档仅面向**：在 **Linux** 系统，或在 **macOS** 上以纯**命令行无头模式 (--headless)** 运行的用户。
 > Windows 用户请参考随程序分发的《使用说明.txt》。
 
@@ -10,13 +10,13 @@
 
 ## 1. 运行模式与平台能力对比
 
-| 项目 | Windows GUI 版 | macOS 原生版 | nogui 命令行模式 (Linux / macOS 无头) |
+| 项目 | Windows GUI 版 | macOS 原生版 (.app) | nogui 命令行模式 (Linux / macOS 无头) |
 |---|---|---|---|
-| 启动方式 | 双击 `GBF_Accelerator.exe` | 双击 `GBF_Accelerator` 或 `./start_proxy.sh` | `./GBF_Accelerator --headless` 或 `go run . --headless` |
+| 启动方式 | 双击 `GBF_Accelerator.exe` | 双击 `GBF_Accelerator.app` 或 `./start_proxy.sh` | `./GBF_Accelerator --headless` 或 `go run . --headless` |
 | 系统代理 | 自动写入注册表 + WinINet 通知 | 自动调用 `networksetup` 配置系统代理与直连绕过列表 | **不自动写入**，需在浏览器手动设置 HTTP/HTTPS 代理 |
 | 根证书信任 | 自动调用 `certutil -addstore` | 自动调用 `security add-trusted-cert` 信任 Keychain 根证书 | **不自动写入**，需在系统或浏览器证书库手动信任 |
 | 开机自启 | 写入 `HKCU\...\Run` | 写入 LaunchAgents plist | **不提供** |
-| 托盘 / 状态栏 | Windows 任务栏通知区托盘图标 | macOS Menu Bar 顶部状态栏常驻图标 | **不提供** |
+| 托盘 / 状态栏 | Windows 任务栏通知区托盘图标 | Web 控制台与后台守护 | **不提供** |
 | 静态资源缓存 | ✓ | ✓ | ✓ |
 | 动态 API 透明转发 | ✓ | ✓ | ✓ |
 | 连接池 / 预加载调度 | ✓ | ✓ | ✓ |
@@ -139,7 +139,7 @@ certutil -A -n GBF-Accelerator -t C,C \
 配置文件由 `config_manager` 维护，路径：
 
 ```
-<脚本所在目录>/config.json
+<程序所在目录>/config.json
 ```
 
 常用字段（与 Windows 版一致）：
@@ -157,7 +157,7 @@ certutil -A -n GBF-Accelerator -t C,C \
 | `enable_prefetch` | `true` | 后台预加载缺失素材（与 Windows 版行为一致：平滑调度、避让前台） |
 | `enable_ram_cache` | `true` | 内存热缓存开关 |
 
-修改后重启 `python3 app_main.py` 生效。
+修改后重启程序（或在 Web 控制台点击「保存并应用」）生效。
 
 ---
 
@@ -177,8 +177,8 @@ certutil -A -n GBF-Accelerator -t C,C \
 
 以下功能仅在图形界面版本（Windows GUI / macOS 原生 GUI）中内置，nogui 纯命令行模式下不提供：
 
-- **图形化操作界面**：nogui 模式仅在终端输出运行日志，不弹出 Tkinter 图形窗口。
-- **托盘 / 状态栏图标与菜单**：nogui 模式无任务栏托盘或 Menu Bar 状态栏常驻图标。
+- **图形化操作界面**：nogui 模式仅在终端输出运行日志，不自动拉起 Web 控制台或桌面应用窗口。
+- **托盘图标**：nogui 模式无系统任务栏托盘图标。
 - **系统代理自动接管**：nogui 模式不修改系统网络设置，需手动在浏览器中配置代理。
 - **根证书一键静默信任**：nogui 模式不自动写入系统钥匙串或证书库，需按 §4.2 手动信任。
 - **开机自启配置**：nogui 模式不写入自启项，如需后台常驻建议使用 `systemd` 或 `launchd` 服务。
@@ -195,7 +195,6 @@ certutil -A -n GBF-Accelerator -t C,C \
 | 浏览器报 `ERR_CERT_AUTHORITY_INVALID` | §4.2 未执行；或 Firefox 需在「证书颁发机构」中单独导入 |
 | 浏览器报 `ERR_PROXY_CONNECTION_FAILED` | 加速器未启动，或端口被占用（修改 `config.json` 的 `listen_port`） |
 | 终端 `Address already in use` | 同上端口占用；`kill` 占用进程或换端口 |
-| 终端 `ModuleNotFoundError: No module named 'httpx'` | §3.1 的 `pip install -r requirements.txt` 未执行 |
 | 终端 `ImportError: libnss3.so` | §2 的 `libnss3-tools` 未安装（仅 Linux 信任证书场景需要） |
 | macOS Keychain 命令要求输入密码 | 正常；「系统级」命令需要 sudo |
 

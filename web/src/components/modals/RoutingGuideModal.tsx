@@ -69,6 +69,27 @@ export const RoutingGuideModal: React.FC<RoutingGuideModalProps> = ({
           </div>
         </div>
 
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5">
+          <div className="font-bold text-slate-900 text-sm">方案 3：SmartProxy / ZeroOmega 分流（推荐配合 Clash TUN 模式使用）</div>
+          <p className="leading-relaxed text-slate-600">
+            当电脑开启 Clash TUN 模式接管虚拟网卡时，TUN 会与系统 PAC 产生路由竞争。按以下 4 步在 SmartProxy 插件中配置专属分流即可完美共存：
+          </p>
+          <div className="text-[11px] text-slate-600 bg-white p-2.5 rounded border border-slate-200 space-y-1.5 leading-relaxed font-mono">
+            <div><strong className="text-slate-900">1. 添加代理目标</strong>：在 SmartProxy 设置 → Proxies → 添加 HTTP 代理：<code className="text-blue-600">127.0.0.1:{listenPort}</code>，命名为 <code className="text-slate-800 font-bold">GbfAccelerator</code>。</div>
+            <div><strong className="text-slate-900">2. 默认代理策略</strong>：在 Website Rules（网站规则）中，将 <strong className="text-slate-800">Default proxy（默认代理）</strong> 设为 <strong className="text-emerald-700">Direct（直连）</strong>（由 Clash TUN 负责接管非游戏流量）。</div>
+            <div><strong className="text-slate-900">3. 添加 GBF 专属规则</strong>（代理选择 <code className="text-blue-600">GbfAccelerator</code>）：
+              <div className="pl-3 pt-0.5 text-slate-500 space-y-0.5">
+                <div>• granbluefantasy.jp</div>
+                <div>• granbluefantasy.com</div>
+                <div>• mbga.jp</div>
+                <div>• *granbluefantasy.akamaized.net</div>
+                <div>• *granbluefantasy-steam.akamaized.net（Steam版）</div>
+              </div>
+            </div>
+            <div><strong className="text-slate-900">4. 启用规则</strong>：将 SmartProxy 扩展图标切换为 <strong className="text-blue-700">Smart Mode（智能分流模式）</strong> 即可。</div>
+          </div>
+        </div>
+
         <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-lg space-y-1">
           <div className="font-bold text-blue-900 text-xs">安全与隐私提示</div>
           <p className="text-[11px] text-blue-800 leading-relaxed">
