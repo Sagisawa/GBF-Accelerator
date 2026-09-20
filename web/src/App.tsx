@@ -164,6 +164,7 @@ export const App: React.FC = () => {
   const [logs, setLogs] = useState<LogItem[]>([])
   const [loadingProxy, setLoadingProxy] = useState<boolean>(false)
   const [loadingBrowse, setLoadingBrowse] = useState<boolean>(false)
+  const [loadingOpenFolder, setLoadingOpenFolder] = useState<boolean>(false)
   const [loadingAction, setLoadingAction] = useState<string | null>(null)
   const loadingActionRef = useRef<string | null>(null)
 
@@ -446,11 +447,15 @@ export const App: React.FC = () => {
   }
   // Open Cache Folder
   const handleOpenCacheFolder = async () => {
+    if (loadingOpenFolder) return
+    setLoadingOpenFolder(true)
     try {
       await openCacheFolder()
       showToast('已在系统文件管理器中打开缓存目录', 'info')
     } catch (e: any) {
       showToast(`打开目录失败: ${e.message}`, 'error')
+    } finally {
+      setTimeout(() => setLoadingOpenFolder(false), 800)
     }
   }
 
@@ -1560,10 +1565,11 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={handleOpenCacheFolder}
-            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+            disabled={loadingOpenFolder}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-2xs"
           >
             <span className="text-base">📁</span>
-            <span>缓存目录</span>
+            <span>{loadingOpenFolder ? '正在打开...' : '缓存目录'}</span>
           </button>
 
           <button

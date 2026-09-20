@@ -987,7 +987,9 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 func (c *ControlServer) handleOpenCacheFolder(w http.ResponseWriter, req *http.Request) {
 	base := c.cacheMgr.GetCacheBase()
 	_ = os.MkdirAll(base, 0755)
-	_ = desktop.OpenFolder(base)
+	go func() {
+		_ = desktop.OpenFolder(base)
+	}()
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": base})
 }
 
