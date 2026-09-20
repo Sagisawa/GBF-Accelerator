@@ -56,13 +56,6 @@ func OpenFolder(path string) error {
 	}
 	cleanPath := filepath.Clean(path)
 	_ = os.MkdirAll(cleanPath, 0755)
-	switch runtime.GOOS {
-	case "windows":
-		return openFolderWindows(cleanPath)
-	case "darwin":
-		return exec.Command("open", cleanPath).Start()
-	default:
-		return exec.Command("xdg-open", cleanPath).Start()
-	}
+	return openFolderNative(cleanPath)
 }
 
