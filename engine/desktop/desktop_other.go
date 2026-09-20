@@ -33,3 +33,25 @@ func openAppWindow(url string) error {
 
 	return OpenBrowser(url)
 }
+
+// ChooseFolder displays a folder picker dialog on Linux using zenity or kdialog if available.
+func ChooseFolder(prompt string) (string, error) {
+	if prompt == "" {
+		prompt = "选择保存目录"
+	}
+	if path, err := exec.LookPath("zenity"); err == nil {
+		cmd := exec.Command(path, "--file-selection", "--directory", fmt.Sprintf("--title=%s", prompt))
+		if out, err := cmd.Output(); err == nil {
+			return strings.TrimSpace(string(out)), nil
+		}
+		return "", nil
+	}
+	if path, err := exec.LookPath("kdialog"); err == nil {
+		cmd := exec.Command(path, "--getexistingdirectory", "--title", prompt)
+		if out, err := cmd.Output(); err == nil {
+			return strings.TrimSpace(string(out)), nil
+		}
+		return "", nil
+	}
+	return "", fmt.Errorf("no supported dialog tool (zenity or kdialog) found")
+}

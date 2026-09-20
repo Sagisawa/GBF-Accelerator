@@ -11,8 +11,8 @@
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
 
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
-> - **Windows**：下载 `GBF_Accelerator_v1.8.0_GUI.zip`，解压即用。
-> - **macOS**：下载 `GBF_Accelerator_v1.8.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Windows**：下载 `GBF_Accelerator_v2.0.0_GUI.zip`，解压即用。
+> - **macOS**：下载 `GBF_Accelerator_v2.0.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
@@ -435,7 +435,7 @@ go vet ./...
   # 若修改了 web/ 前端代码，需同步重新编译 React SPA
   .\build.ps1 -RebuildWeb
   ```
-  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v1.8.0_GUI.zip`。
+  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v2.0.0_GUI.zip`。
 
 - **macOS / Linux**（编译 Universal 2 双架构二进制并打包）：
   ```bash
@@ -445,7 +445,9 @@ go vet ./...
   # 若修改了 web/ 前端代码，需同步重新编译 React SPA
   ./build.sh --rebuild-web --release
   ```
-  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v1.8.0_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
+  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v2.0.0_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
+
+> ⚠️ **发布构建说明**：macOS Universal 2 正式发布包（融合 arm64 与 amd64）必须在具备 `lipo` 工具的 macOS 主机环境下打包生成。在缺乏 `lipo` 的环境（如 Windows）运行 macOS 打包将严格报错并中断，杜绝输出单架构伪装包。
 
 ---
 

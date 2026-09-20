@@ -47,11 +47,17 @@ if [[ "$(uname -s)" == "Darwin" ]] || [[ "${1:-}" == "--release" ]] || [[ "${2:-
     (cd "${ENGINE_DIR}" && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags "-s -w" -o "${BIN_DIR}/GBF_Accelerator_darwin_arm64" .)
     (cd "${ENGINE_DIR}" && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags "-s -w" -o "${BIN_DIR}/GBF_Accelerator_darwin_amd64" .)
 
-    MAC_BIN="${BIN_DIR}/GBF_Accelerator_darwin_arm64"
-    if command -v lipo >/dev/null 2>&1; then
-        echo "[*] Combining universal2 binary via lipo..."
-        lipo -create -output "${BIN_DIR}/GBF_Accelerator_darwin_universal" "${BIN_DIR}/GBF_Accelerator_darwin_arm64" "${BIN_DIR}/GBF_Accelerator_darwin_amd64"
-        MAC_BIN="${BIN_DIR}/GBF_Accelerator_darwin_universal"
+    if ! command -v lipo >/dev/null 2>&1; then
+        echo "[-] lipo command not found; cannot package universal2 release on this host. Official universal2 release archives must be built on macOS." >&2
+        exit 1
+    fi
+    echo "[*] Combining universal2 binary via lipo..."
+    lipo -create -output "${BIN_DIR}/GBF_Accelerator_darwin_universal" "${BIN_DIR}/GBF_Accelerator_darwin_arm64" "${BIN_DIR}/GBF_Accelerator_darwin_amd64"
+    MAC_BIN="${BIN_DIR}/GBF_Accelerator_darwin_universal"
+
+    if ! command -v zip >/dev/null 2>&1; then
+        echo "[-] zip command not found; cannot package macOS release" >&2
+        exit 1
     fi
 
     ZIP_PATH="${RELEASE_DIR}/GBF_Accelerator_v${APP_VERSION}_macOS_universal2.zip"
@@ -65,8 +71,6 @@ if [[ "$(uname -s)" == "Darwin" ]] || [[ "${1:-}" == "--release" ]] || [[ "${2:-
         fi
     done
     chmod +x "${ROOT_DIR}/start_proxy.sh" "${ROOT_DIR}/install_ca.sh" "${MAC_BIN}" 2>/dev/null || true
-    if command -v zip >/dev/null 2>&1; then
-        zip -j "${ZIP_PATH}" "${FILES_TO_PACK[@]}"
-        echo "[***] MAC RELEASE READY: ${ZIP_PATH}"
-    fi
+    zip -j "${ZIP_PATH}" "${FILES_TO_PACK[@]}"
+    echo "[***] MAC RELEASE READY: ${ZIP_PATH}"
 fi

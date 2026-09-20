@@ -159,10 +159,10 @@ func TestBug4_HandlePassthroughTunnel_HTTPSUpstream(t *testing.T) {
 				// Respond 200 Connection Established
 				_, _ = c.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
 
-				// Echo loop: read from client, write back
+				// Echo loop: read from client, write back using the same buffered reader
 				buf := make([]byte, 1024)
 				for {
-					n, rErr := c.Read(buf)
+					n, rErr := br.Read(buf)
 					if n > 0 {
 						_, _ = c.Write(append([]byte("ECHO:"), buf[:n]...))
 					}
@@ -190,9 +190,29 @@ func TestBug4_HandlePassthroughTunnel_HTTPSUpstream(t *testing.T) {
 	srv := NewProxyServer(cfgMgr, nil, cacheMgr, stats)
 	defer srv.Stop()
 
-	// 2. Set up client connection using net.Pipe
-	clientSide, serverSide := net.Pipe()
+	// 2. Set up client connection using real localhost TCP socket pair
+	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start client listener: %v", err)
+	}
+	defer clientLn.Close()
+
+	serverConnChan := make(chan net.Conn, 1)
+	go func() {
+		conn, aErr := clientLn.Accept()
+		if aErr == nil {
+			serverConnChan <- conn
+		}
+	}()
+
+	clientSide, err := net.Dial("tcp", clientLn.Addr().String())
+	if err != nil {
+		t.Fatalf("failed to dial client connection: %v", err)
+	}
 	defer clientSide.Close()
+
+	serverSide := <-serverConnChan
+	defer serverSide.Close()
 
 	tunnelDone := make(chan struct{})
 	go func() {

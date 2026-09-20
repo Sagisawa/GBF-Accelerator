@@ -140,15 +140,20 @@ func TestLogRingBuffer_ChronologicalOrderAndCap(t *testing.T) {
 	s := NewStats()
 	defer s.Close()
 
-	for i := 0; i < 1500; i++ {
-		s.Log("INFO", fmt.Sprintf("msg-%04d", i))
-	}
+	// Use subscriber channel to synchronously verify worker consumption per message,
+	// preventing queue drops from tight loop bursting and guaranteeing deterministic ingestion.
+	subCh, unsub := s.SubscribeLogs()
+	defer unsub()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for len(s.logChan) > 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	const total = 1500
+	for i := 0; i < total; i++ {
+		s.Log("INFO", fmt.Sprintf("msg-%04d", i))
+		select {
+		case <-subCh:
+		case <-time.After(1 * time.Second):
+			t.Fatalf("timed out waiting for log %d to be processed by worker", i)
+		}
 	}
-	time.Sleep(50 * time.Millisecond)
 
 	logs := s.GetLogs()
 	if len(logs) != maxLogEntries {
@@ -160,6 +165,38 @@ func TestLogRingBuffer_ChronologicalOrderAndCap(t *testing.T) {
 	}
 	if logs[0].Msg != "msg-0500" {
 		t.Errorf("expected oldest log to be msg-0500, got %s", logs[0].Msg)
+	}
+
+	// Verify sequential monotonicity throughout the buffer
+	for i := 1; i < len(logs); i++ {
+		if logs[i-1].Msg >= logs[i].Msg {
+			t.Errorf("expected monotonic message sequence, got %s >= %s at index %d", logs[i-1].Msg, logs[i].Msg, i)
+		}
+	}
+}
+
+func TestLogDrop_NonBlockingUnderCongestion(t *testing.T) {
+	// Construct an isolated Stats instance with full channel and no consumer worker,
+	// verifying that Log() drops cleanly without blocking the caller datapath.
+	s := &Stats{
+		logChan: make(chan LogEntry, 1024),
+	}
+	// Pre-fill the buffer completely
+	for i := 0; i < 1024; i++ {
+		s.logChan <- LogEntry{Level: "INFO", Msg: "fill"}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Log("INFO", "overflow-entry")
+	}()
+
+	select {
+	case <-done:
+		// Succeeded immediately via non-blocking default branch
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("s.Log() blocked when channel was full; violates datapath non-blocking contract")
 	}
 }
 

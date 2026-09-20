@@ -196,18 +196,17 @@ function Build-Darwin {
     $MacBin = $ArmBin
 
     $Lipo = Get-Command lipo -ErrorAction SilentlyContinue
-    if ($Lipo) {
-        $UniversalBin = Join-Path $BinDir "GBF_Accelerator_darwin_universal"
-        Write-Host "[*] Combining universal2 binary via lipo..." -ForegroundColor Yellow
-        & lipo -create -output $UniversalBin $ArmBin $AmdBin
-        if ($LASTEXITCODE -eq 0) {
-            $MacBin = $UniversalBin
-        } else {
-            Write-Host "[!] lipo merge failed; falling back to arm64 build." -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "[*] lipo not available on this host; packaging arm64 build with universal2 asset name." -ForegroundColor Yellow
+    if (-not $Lipo) {
+        throw "lipo command not found; cannot package macOS universal2 release on this host. Official universal2 release archives must be built on macOS."
     }
+
+    $UniversalBin = Join-Path $BinDir "GBF_Accelerator_darwin_universal"
+    Write-Host "[*] Combining universal2 binary via lipo..." -ForegroundColor Yellow
+    & lipo -create -output $UniversalBin $ArmBin $AmdBin
+    if ($LASTEXITCODE -ne 0) {
+        throw "lipo merge failed with exit code $LASTEXITCODE; aborted packaging."
+    }
+    $MacBin = $UniversalBin
 
     $ZipPath = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_macOS_universal2.zip"
     if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }

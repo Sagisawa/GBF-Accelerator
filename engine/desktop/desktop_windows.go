@@ -127,3 +127,19 @@ func findAppBrowserWindows() string {
 
 	return ""
 }
+
+// ChooseFolder displays a native folder picker dialog on Windows.
+func ChooseFolder(prompt string) (string, error) {
+	if prompt == "" {
+		prompt = "选择保存目录"
+	}
+	escapedPrompt := strings.ReplaceAll(prompt, "'", "''")
+	psCmd := fmt.Sprintf("[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = '%s'; if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }", escapedPrompt)
+	cmd := exec.Command("powershell", "-NoProfile", "-Command", psCmd)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}

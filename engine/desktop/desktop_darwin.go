@@ -46,3 +46,19 @@ func openAppWindow(url string) error {
 
 	return OpenBrowser(url)
 }
+
+// ChooseFolder displays a native folder picker dialog on macOS using osascript.
+func ChooseFolder(prompt string) (string, error) {
+	if prompt == "" {
+		prompt = "选择保存目录"
+	}
+	escapedPrompt := strings.ReplaceAll(prompt, "\"", "\\\"")
+	script := fmt.Sprintf(`POSIX path of (choose folder with prompt "%s")`, escapedPrompt)
+	cmd := exec.Command("osascript", "-e", script)
+	out, err := cmd.Output()
+	if err != nil {
+		// User cancellation in AppleScript returns non-zero exit code
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), nil
+}
