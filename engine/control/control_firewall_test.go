@@ -3,6 +3,7 @@
 package control
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -27,8 +28,17 @@ func TestControlServerFirewallStatusUnsupportedOnNonWindows(t *testing.T) {
 	rec := httptest.NewRecorder()
 	ctrl.handleRoute(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Fatalf("expected 501 for unsupported firewall integration, got %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 status response for unsupported firewall integration, got %d", rec.Code)
+	}
+	var payload struct {
+		Supported bool `json:"supported"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("failed to decode firewall status: %v", err)
+	}
+	if payload.Supported {
+		t.Fatal("expected firewall integration to report supported=false on non-Windows")
 	}
 	if firewall.IsSupported() {
 		t.Fatal("non-Windows test compiled with supported firewall implementation")
