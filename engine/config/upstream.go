@@ -55,10 +55,9 @@ func DetectUpstreamProxies() []ProxyCandidate {
 		}
 
 		scheme := "http"
-		if cand.port == 10808 {
-			scheme = "socks5"
-		} else if cand.port != 8099 && cand.port != 7890 && cand.port != 7897 && cand.port != 7891 && cand.port != 10809 {
-			// Distinguish a pure SOCKS5 listener from HTTP via SOCKS5 handshake
+		if cand.port != 8099 && cand.port != 7890 && cand.port != 7897 && cand.port != 7891 {
+			// v2rayN commonly uses either 10808 or 10809 for HTTP/SOCKS5 depending
+			// on configuration; probe the listener instead of hard-coding the scheme.
 			if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", cand.port), 300*time.Millisecond); err == nil {
 				_ = conn.SetDeadline(time.Now().Add(300 * time.Millisecond))
 				_, _ = conn.Write([]byte{0x05, 0x01, 0x00})
