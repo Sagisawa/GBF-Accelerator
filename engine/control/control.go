@@ -434,6 +434,16 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleUpdateDownloadCancel(w, req)
 			return
 		}
+	case "/api/firewall/status":
+		if req.Method == http.MethodGet {
+			c.handleFirewallStatus(w, req)
+			return
+		}
+	case "/api/firewall/apply":
+		if req.Method == http.MethodPost {
+			c.handleFirewallApply(w, req)
+			return
+		}
 	case "/api/cert/status":
 		if req.Method == http.MethodGet {
 			c.handleCertStatus(w, req)
@@ -1395,6 +1405,61 @@ func (c *ControlServer) handleUpdateDownloadCancel(w http.ResponseWriter, req *h
 		"ok":      true,
 		"message": "Download cancelled",
 	})
+}
+
+func (c *ControlServer) handleFirewallStatus(w http.ResponseWriter, req *http.Request) {
+	cfg := c.cfgMgr.Get()
+	status, err := firewall.GetStatus(cfg.ListenPort)
+	if err != nil {
+		code := firewall.ErrorCode(err)
+		httpStatus := http.StatusInternalServerError
+		if code == firewall.CodeInvalidPort {
+			httpStatus = http.StatusBadRequest
+		} else if code == firewall.CodeUnsupported {
+			httpStatus = http.StatusNotImplemented
+		}
+		c.sendJSON(w, httpStatus, map[string]interface{}{"ok": false, "code": code, "message": err.Error(), "status": status})
+		return
+	}
+	c.sendJSON(w, http.StatusOK, status)
+}
+
+func (c *ControlServer) handleFirewallApply(w http.ResponseWriter, req *http.Request) {
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
+	cfg := c.cfgMgr.Get()
+	code, err := firewall.ApplyRule(cfg.ListenPort)
+	if err != nil {
+		codeName := firewall.ErrorCode(err)
+		httpStatus := http.StatusInternalServerError
+		switch codeName {
+		case firewall.CodeInvalidPort:
+			httpStatus = http.StatusBadRequest
+		case firewall.CodeUserCancelled:
+			httpStatus = http.StatusConflict
+		case firewall.CodeUnsupported:
+			httpStatus = http.StatusNotImplemented
+		}
+		c.sendJSON(w, httpStatus, map[string]interface{}{"ok": false, "code": codeName, "message": err.Error()})
+		return
+	}
+
+	status, statusErr := firewall.GetStatus(cfg.ListenPort)
+	if statusErr != nil || !status.Allowed {
+		message := "firewall rule verification failed"
+		if statusErr != nil {
+			message = statusErr.Error()
+		}
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "code": firewall.CodeVerificationFailed, "message": message, "status": status})
+		return
+	}
+
+	message := "Windows 防火墙规则已配置并验证"
+	if code == firewall.CodeAlreadyAllowed {
+		message = "Windows 防火墙规则已经满足要求，无需重复配置"
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "code": code, "message": message, "status": status})
 }
 
 func (c *ControlServer) handleCertStatus(w http.ResponseWriter, req *http.Request) {
