@@ -123,7 +123,7 @@ func (m *Manager) persistWorker(wg *sync.WaitGroup) {
 				}
 			}
 		case task := <-m.persistQueue:
-			m.saveToDisk(task.filePath, task.headers, task.data)
+			m.saveToDisk(task.filePath, task.headers, task.data, task.generation)
 		}
 	}
 }
