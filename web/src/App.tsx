@@ -827,6 +827,9 @@ export const App: React.FC = () => {
   const ramMaxMb = config.ram_cache_max_mb ?? 256
 
   const uptimeSec = status?.uptime_seconds ?? 0
+  const hitsCount = status?.requests?.total_hits ?? 0
+  const ramHitsCount = status?.requests?.ram_hits ?? 0
+  const downloadsCount = status?.requests?.cache_misses ?? 0
   const diskHitsCount = status?.requests?.disk_hits ?? 0
   const evaluatedAssetTotal = ramHitsCount + diskHitsCount + downloadsCount
   const ramHitPct = evaluatedAssetTotal > 0 ? Math.round((ramHitsCount / evaluatedAssetTotal) * 100) : 0
