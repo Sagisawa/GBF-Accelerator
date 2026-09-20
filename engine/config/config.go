@@ -96,6 +96,18 @@ func NewManager(cfgPath string) *Manager {
 	return m
 }
 
+func normalizeRAMCacheMaxMB(v int) int {
+	const minMB = 16
+	const maxMB = 8192
+	if v < minMB {
+		return minMB
+	}
+	if v > maxMB {
+		return maxMB
+	}
+	return v
+}
+
 func (m *Manager) Load(cfgPath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -147,8 +159,8 @@ func (m *Manager) Load(cfgPath string) error {
 	if _, ok := present["enable_ram_cache"]; ok {
 		m.cfg.EnableRAMCache = loaded.EnableRAMCache
 	}
-	if loaded.RAMCacheMaxMB > 0 {
-		m.cfg.RAMCacheMaxMB = loaded.RAMCacheMaxMB
+	if _, ok := present["ram_cache_max_mb"]; ok {
+		m.cfg.RAMCacheMaxMB = normalizeRAMCacheMaxMB(loaded.RAMCacheMaxMB)
 	}
 	if _, ok := present["enable_browser_cache"]; ok {
 		m.cfg.EnableBrowserCache = loaded.EnableBrowserCache
@@ -214,6 +226,7 @@ func (m *Manager) Candidate() Config {
 }
 
 func (m *Manager) Commit(candidate Config) error {
+	candidate.RAMCacheMaxMB = normalizeRAMCacheMaxMB(candidate.RAMCacheMaxMB)
 	m.commitMu.Lock()
 
 	m.mu.Lock()
@@ -246,22 +259,35 @@ func (m *Manager) Commit(candidate Config) error {
 }
 
 func (m *Manager) Update(fn func(c *Config)) Config {
+	updated, _ := m.UpdateWithError(fn)
+	return updated
+}
+
+func (m *Manager) UpdateWithError(fn func(c *Config)) (Config, error) {
 	m.commitMu.Lock()
 
 	m.mu.Lock()
+	oldCfg := m.cfg
 	fn(&m.cfg)
+	m.cfg.RAMCacheMaxMB = normalizeRAMCacheMaxMB(m.cfg.RAMCacheMaxMB)
 	updated := m.cfg
 	callbacks := make([]func(*Config), len(m.onSave))
 	copy(callbacks, m.onSave)
 	m.mu.Unlock()
 
-	_ = m.Save()
+	if err := m.Save(); err != nil {
+		m.mu.Lock()
+		m.cfg = oldCfg
+		m.mu.Unlock()
+		m.commitMu.Unlock()
+		return oldCfg, fmt.Errorf("failed to save config: %w", err)
+	}
 	m.commitMu.Unlock()
 
 	for _, cb := range callbacks {
 		cb(&updated)
 	}
-	return updated
+	return updated, nil
 }
 
 func (m *Manager) OnUpdate(cb func(*Config)) {
