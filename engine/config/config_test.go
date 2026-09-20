@@ -179,3 +179,31 @@ func TestConfigManager_CommitCallbackNoDeadlock(t *testing.T) {
 	}
 }
 
+
+
+func TestConfigManager_PartialConfigPreservesDefaults(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "gbf_partial_config_*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	if err := os.WriteFile(tempFile.Name(), []byte(`{"listen_port":9001}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(tempFile.Name())
+	cfg := mgr.Get()
+	defaults := DefaultConfig()
+
+	if cfg.ListenPort != 9001 {
+		t.Fatalf("expected persisted ListenPort=9001, got %d", cfg.ListenPort)
+	}
+	if cfg.CleanZombies != defaults.CleanZombies ||
+		cfg.EnableRAMCache != defaults.EnableRAMCache ||
+		cfg.EnablePrefetch != defaults.EnablePrefetch ||
+		cfg.VerifyUpstreamTLS != defaults.VerifyUpstreamTLS ||
+		cfg.EnableAPITelemetry != defaults.EnableAPITelemetry {
+		t.Fatalf("partial config reset defaults: %+v", cfg)
+	}
+}
