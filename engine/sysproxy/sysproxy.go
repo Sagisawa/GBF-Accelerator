@@ -10,6 +10,7 @@ var (
 	mu              sync.Mutex
 	isManagingProxy bool
 	originalPACURL  string
+	managedPACURL   string
 )
 
 // GetCurrentPACURL retrieves the current system AutoConfigURL if configured.
@@ -53,6 +54,7 @@ func EnablePACProxy(pacURL string) error {
 	err := enablePACProxy(pacURL)
 	if err == nil {
 		isManagingProxy = true
+		managedPACURL = pacURL
 	}
 	return err
 }
@@ -61,15 +63,29 @@ func EnablePACProxy(pacURL string) error {
 func DisablePACProxy(force bool) error {
 	mu.Lock()
 	defer mu.Unlock()
+
+	currentPAC := strings.TrimSpace(GetCurrentPACURL())
+	isManaged := isManagingProxy && managedPACURL != "" && strings.EqualFold(currentPAC, managedPACURL)
 	isOur := IsPACProxyEnabled(0)
 
-	if !force && !isManagingProxy && !isOur {
-		return nil
+	// Never overwrite a PAC that was changed by another application/user after
+	// we mounted ours. Only force=true may override an externally changed PAC.
+	if !force {
+		if isManagingProxy && !isManaged {
+			isManagingProxy = false
+			managedPACURL = ""
+			originalPACURL = ""
+			return nil
+		}
+		if !isManagingProxy && !isOur {
+			return nil
+		}
 	}
 
 	err := disablePACProxy(force)
 	if err == nil {
 		isManagingProxy = false
+		managedPACURL = ""
 	}
 	return err
 }
