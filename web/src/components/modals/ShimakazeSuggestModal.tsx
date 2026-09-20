@@ -68,7 +68,7 @@ export const ShimakazeSuggestModal: React.FC<ShimakazeSuggestModalProps> = ({
             </div>
             <div className="flex items-start gap-1.5">
               <CheckCircle2 className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
-              <span>完美适配岛风 GO 本地自签证书与链式代理转发</span>
+              <span>适配岛风 GO 本地自签证书与链式代理转发</span>
             </div>
           </div>
         </div>
