@@ -207,6 +207,28 @@ export const App: React.FC = () => {
           setLogs((prev) => [...prev.slice(-300), item])
         } catch {}
       })
+
+      es.addEventListener('metrics', (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          if (data?.requests) {
+            setStatus((prev) => {
+              if (!prev) return prev
+              return {
+                ...prev,
+                active_api_count: typeof data.active_api === 'number' ? data.active_api : prev.active_api_count,
+                active_foreground_assets: typeof data.active_fg === 'number' ? data.active_fg : prev.active_foreground_assets,
+                uptime_seconds: typeof data.uptime === 'number' ? data.uptime : prev.uptime_seconds,
+                requests: {
+                  ...prev.requests,
+                  ...data.requests,
+                },
+                telemetry: data.telemetry ?? prev.telemetry,
+              }
+            })
+          }
+        } catch {}
+      })
     } catch (e) {
       console.warn('SSE connection failed, falling back to polling', e)
     }
