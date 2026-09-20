@@ -5,7 +5,7 @@
 [![Release](https://img.shields.io/github/v/release/Sagisawa/GBF-Accelerator?color=blue&logo=github)](https://github.com/Sagisawa/GBF-Accelerator/releases)
 [![Go](https://img.shields.io/badge/Go-1.21%2B-blue.svg?logo=go)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20(nogui)-informational.svg)]()
-[![Tests](https://img.shields.io/badge/Tests-Passed-brightgreen.svg)]()
+[![CI](https://github.com/Sagisawa/GBF-Accelerator/actions/workflows/ci.yml/badge.svg?branch=feat%2Fv2.0-master-plan)](https://github.com/Sagisawa/GBF-Accelerator/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
@@ -16,6 +16,15 @@
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
+
+## v2.0.0 发布要点
+
+v2.0.0 是 Go 原生引擎与 Web 控制台重构后的正式发布线，发布前最后一轮主要收敛集中在“可用性与状态可观测性”，不再扩大代理数据面功能范围：
+
+- **实时状态显示**：顶部“本地缓存命中 / 远程下载缓存 / 游戏 API 转发”通过 1 秒级 SSE 更新；运行时间仍由独立组件按 1 秒本地计时，避免高频更新驱动整个页面重渲染。
+- **系统代理冲突提示**：当检测到外部 PAC 或手动系统代理时，控制台直接显示冲突来源，便于排查 PAC 不生效问题。
+- **Windows 局域网防火墙适配**：仅在用户明确操作时创建当前代理端口的入站放行规则，并限制为 Private / LocalSubnet / TCP，不自动扩大 Public 或 Any 暴露范围。
+- **跨平台边界保持不变**：Windows 提供桌面系统集成与上述防火墙适配；macOS 保持 Universal 2 与网络设置集成；Linux 继续以无头模式为主。
 
 ## 架构设计与数据流向
 
@@ -207,7 +216,7 @@ flowchart TD
 ### 🖥️ 跨平台原生集成
 - **Windows 原生集成**：
   - 基于 Chromium App Mode 的无边框独立控制台窗口与原生深色主题，零 Electron / Python 运行时依赖；
-  - 自动管理 WinINet 系统 PAC 代理（启动自动挂载，退出自动清理）；
+  - 自动管理 WinINet 系统 PAC 代理；\n  - 系统代理冲突可视化：检测到外部 PAC 或手动系统代理时，在控制台直接显示冲突来源；\n  - Windows 局域网共享可通过独立的一键防火墙适配操作放行当前代理端口，规则严格限定为 Private + LocalSubnet + TCP + Inbound + Allow；
   - 系统代理冲突检测：自动识别 Clash / v2rayN 等外部工具抢占并提供一键修复引导；
   - 启动时自动检测并清理端口占用与残留僵尸进程（`clean_zombies`）；
   - 支持常驻系统托盘，后台运行时挂起界面刷新，CPU 占用降至接近 0.0%；
@@ -338,14 +347,14 @@ go run . --headless
   "direct_mode": false,
   "cache_dir": "auto",
   "clean_zombies": true,
-  "auto_system_proxy": true,
+  "auto_system_proxy": false,
   "auto_start": false,
   "enable_ram_cache": true,
   "ram_cache_max_mb": 256,
   "enable_browser_cache": true,
   "enable_auto_repair": true,
   "enable_prefetch": true,
-  "enable_ram_warmup": true,
+  "enable_ram_warmup": false,
   "ram_warmup_max_items": 1500,
   "verify_upstream_tls": true,
   "shimakaze_mode": false,
@@ -362,7 +371,7 @@ go run . --headless
 
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
-| `listen_host` | 字符串 | `"127.0.0.1"` | 本地代理监听地址；需局域网其他设备访问时设为 `"0.0.0.0"`。 |
+| `listen_host` | 字符串 | `"127.0.0.1"` | 保留配置字段；实际监听地址由 `allow_lan` 统一控制，开启后运行时使用 `0.0.0.0`。 |
 | `listen_port` | 整数 | `8124` | 本地代理服务监听端口（核心网络分流）。 |
 | `control_port` | 整数 | `8125` | Web 控制台与本地管理 REST API 端口（仅限本机回环访问）。 |
 | `allow_lan` | 布尔 | `false` | 是否允许局域网内其他设备接入加速服务。 |
@@ -370,14 +379,14 @@ go run . --headless
 | `direct_mode` | 布尔 | `false` | 直连模式；开启后绕过上游代理直接请求，但本地静态缓存继续生效。 |
 | `cache_dir` | 字符串 | `"auto"` | 静态素材磁盘落盘目录；`"auto"` 自动检测已有 ACGPower 缓存或使用程序目录下的 `cache/gbf/https`。 |
 | `clean_zombies` | 布尔 | `true` | 启动时自动检查并清理因异常退出残留的历史孤儿代理进程。 |
-| `auto_system_proxy` | 布尔 | `true` | 点击“启动加速”时是否自动挂载系统 PAC 代理（Windows WinINet / macOS networksetup）。 |
+| `auto_system_proxy` | 布尔 | `false` | 是否自动挂载系统 PAC 代理（Windows WinINet / macOS networksetup）。 |
 | `auto_start` | 布尔 | `false` | 是否随系统开机自启并最小化（默认关闭）。 |
 | `enable_ram_cache` | 布尔 | `true` | 是否启用 RAM 内存热点缓存。 |
 | `ram_cache_max_mb` | 整数 | `256` | RAM 缓存容量上限（MB），支持范围 16 ~ 8192。 |
 | `enable_browser_cache` | 布尔 | `true` | 是否对带版本哈希的静态资源注入 `immutable` 强缓存标头。 |
 | `enable_auto_repair` | 布尔 | `true` | 自动检测并清理损坏/0字节的静态资源缓存并回源修复。 |
 | `enable_prefetch` | 布尔 | `true` | 启用后台资源平滑预加载（15~35ms 抖动调度，前台活动主动让道）。 |
-| `enable_ram_warmup` | 布尔 | `true` | 启动时是否预热高频静态素材至 RAM 缓存。 |
+| `enable_ram_warmup` | 布尔 | `false` | 启动时是否预热高频静态素材至 RAM 缓存。 |
 | `ram_warmup_max_items` | 整数 | `1500` | 启动预热扫描素材数量上限，平衡启动耗时与热点命中。 |
 | `verify_upstream_tls` | 布尔 | `true` | 请求上游时是否校验 TLS 证书安全性。 |
 | `shimakaze_mode` | 布尔 | `false` | 岛风 GO 兼容优化模式（适配其证书与超时参数）。 |
@@ -449,6 +458,12 @@ go run . --headless
    - **自动代理（PAC）**：选择【自动】，URL 填写 `http://192.168.1.100:8124/proxy.pac`。
    - **手动代理**：选择【手动】，服务器填写 `192.168.1.100`，端口填写 `8124`。
 6. 首次接入时访问 `http://192.168.1.100:8124/ca.crt` 下载并安装根证书，并在系统【通用】→【关于本机】→【证书信任设置】中开启对该证书的完全信任。
+
+
+### Q6: 开启系统 PAC 后提示“检测到系统代理冲突”怎么办？
+- **含义**：程序检测到当前系统中存在其他 PAC 脚本或手动 HTTP / HTTPS / SOCKS 代理配置。
+- **处理方式**：先确认是否正在使用 Clash、v2rayN、Surge 等其他代理工具；如需使用 GBF Accelerator 的系统 PAC，请避免让多个工具同时管理同一套系统代理配置。
+- **安全边界**：程序仅提供诊断提示，不会擅自覆盖其他软件设置。Windows 的防火墙适配也必须由用户明确触发，不会因开启局域网共享而自动修改系统防火墙。
 
 ---
 
