@@ -30,8 +30,13 @@ func setStartupEnabled(enabled bool) error {
 		return cmd.Run()
 	}
 
+	if !isStartupEnabled() {
+		return nil
+	}
 	cmd := exec.Command("reg", "delete", runKey, "/v", AppName, "/f")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to disable Windows startup: %w", err)
+	}
 	return nil
 }
