@@ -3,6 +3,7 @@ package res
 import (
 	_ "embed"
 	"os"
+	"strings"
 	"path/filepath"
 
 	"gbf-proxy/proxy"
@@ -14,8 +15,9 @@ var SwitchyOmegaBak []byte
 //go:embed 使用说明.txt
 var InstructionsTxt []byte
 
-// EnsureHelperFiles writes or updates proxy.pac and ensures SwitchyOmega_GBF.bak
-// and 使用说明.txt are present in targetDir.
+// EnsureHelperFiles writes the generated proxy.pac when it is absent or still
+// appears to be a previously generated helper, while preserving user-customized
+// PAC files. SwitchyOmega_GBF.bak and 使用说明.txt are created only when absent.
 func EnsureHelperFiles(targetDir string, proxyPort int) error {
 	if targetDir == "" {
 		targetDir = "."
@@ -24,10 +26,29 @@ func EnsureHelperFiles(targetDir string, proxyPort int) error {
 		return err
 	}
 
-	// 1. Always update proxy.pac with current port
+	// 1. Create/update the generated PAC helper without overwriting a custom PAC.
 	pacPath := filepath.Join(targetDir, "proxy.pac")
 	pacContent := proxy.GetPAC("127.0.0.1", proxyPort)
-	_ = os.WriteFile(pacPath, []byte(pacContent), 0644)
+	writePAC := false
+	if existing, err := os.ReadFile(pacPath); err != nil {
+		if os.IsNotExist(err) {
+			writePAC = true
+		} else {
+			return err
+		}
+	} else {
+		// Generated helper PACs contain the proxy.pac routing target. If the file
+		// does not match that shape, treat it as user-owned and preserve it.
+		text := string(existing)
+		writePAC = strings.Contains(text, "FindProxyForURL") &&
+			(strings.Contains(text, "PROXY 127.0.0.1:") ||
+				strings.Contains(text, "PROXY localhost:"))
+	}
+	if writePAC {
+		if err := os.WriteFile(pacPath, []byte(pacContent), 0644); err != nil {
+			return err
+		}
+	}
 
 	// 2. Ensure SwitchyOmega_GBF.bak
 	bakPath := filepath.Join(targetDir, "SwitchyOmega_GBF.bak")
