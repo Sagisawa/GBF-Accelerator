@@ -76,7 +76,7 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	oldAsset := s.assetClient.Load()
 
 	var proxyFunc func(*http.Request) (*url.URL, error)
-	effProxy := c.UpstreamProxy
+	effProxy := c.GetEffectiveUpstreamProxy()
 	if c.DirectMode {
 		effProxy = ""
 	}
