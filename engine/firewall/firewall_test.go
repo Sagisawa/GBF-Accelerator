@@ -43,9 +43,11 @@ func TestValidateRuleAttributes(t *testing.T) {
 		{"direction mismatch", func(r *RuleInfo) { r.Direction = "Outbound" }, false},
 		{"disabled", func(r *RuleInfo) { r.Enabled = false }, false},
 		{"public only", func(r *RuleInfo) { r.Profile = []string{"Public"} }, false},
+		{"private plus public", func(r *RuleInfo) { r.Profile = []string{"Private", "Public"} }, false},
 		{"any remote address", func(r *RuleInfo) { r.RemoteAddress = []string{"Any"} }, false},
 		{"local subnet", func(r *RuleInfo) { r.RemoteAddress = []string{"LocalSubnet"} }, true},
 		{"local subnet plus any", func(r *RuleInfo) { r.RemoteAddress = []string{"LocalSubnet", "Any"} }, false},
+		{"local subnet plus explicit subnet", func(r *RuleInfo) { r.RemoteAddress = []string{"LocalSubnet", "192.168.1.0/24"} }, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
