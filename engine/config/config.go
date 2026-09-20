@@ -108,6 +108,28 @@ func normalizeRAMCacheMaxMB(v int) int {
 	return v
 }
 
+func normalizeAssetMaxConnections(v int) int {
+	const maxConnections = 32
+	if v <= 0 {
+		return DefaultConfig().AssetMaxConnections
+	}
+	if v > maxConnections {
+		return maxConnections
+	}
+	return v
+}
+
+func normalizeAssetMaxKeepalive(v int) int {
+	const maxKeepalive = 16
+	if v < 0 {
+		return 0
+	}
+	if v > maxKeepalive {
+		return maxKeepalive
+	}
+	return v
+}
+
 func (m *Manager) Load(cfgPath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -187,10 +209,10 @@ func (m *Manager) Load(cfgPath string) error {
 		m.cfg.APIMaxKeepalive = loaded.APIMaxKeepalive
 	}
 	if loaded.AssetMaxConnections > 0 {
-		m.cfg.AssetMaxConnections = loaded.AssetMaxConnections
+		m.cfg.AssetMaxConnections = normalizeAssetMaxConnections(loaded.AssetMaxConnections)
 	}
 	if loaded.AssetMaxKeepalive > 0 {
-		m.cfg.AssetMaxKeepalive = loaded.AssetMaxKeepalive
+		m.cfg.AssetMaxKeepalive = normalizeAssetMaxKeepalive(loaded.AssetMaxKeepalive)
 	}
 	if _, ok := present["shimakaze_mode"]; ok {
 		m.cfg.ShimakazeMode = loaded.ShimakazeMode
@@ -227,6 +249,8 @@ func (m *Manager) Candidate() Config {
 
 func (m *Manager) Commit(candidate Config) error {
 	candidate.RAMCacheMaxMB = normalizeRAMCacheMaxMB(candidate.RAMCacheMaxMB)
+	candidate.AssetMaxConnections = normalizeAssetMaxConnections(candidate.AssetMaxConnections)
+	candidate.AssetMaxKeepalive = normalizeAssetMaxKeepalive(candidate.AssetMaxKeepalive)
 	m.commitMu.Lock()
 
 	m.mu.Lock()
@@ -270,6 +294,8 @@ func (m *Manager) UpdateWithError(fn func(c *Config)) (Config, error) {
 	oldCfg := m.cfg
 	fn(&m.cfg)
 	m.cfg.RAMCacheMaxMB = normalizeRAMCacheMaxMB(m.cfg.RAMCacheMaxMB)
+	m.cfg.AssetMaxConnections = normalizeAssetMaxConnections(m.cfg.AssetMaxConnections)
+	m.cfg.AssetMaxKeepalive = normalizeAssetMaxKeepalive(m.cfg.AssetMaxKeepalive)
 	updated := m.cfg
 	callbacks := make([]func(*Config), len(m.onSave))
 	copy(callbacks, m.onSave)
