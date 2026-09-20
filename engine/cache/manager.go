@@ -440,9 +440,11 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	}
 
 	if !IsValidCacheContent(cleanKey, contentType, data) {
+		if m.autoRepair.Load() {
+			_ = os.Remove(filePath)
+			_ = os.Remove(extPath)
+		}
 		m.markMissing(ramKey)
-		_ = os.Remove(filePath)
-		_ = os.Remove(extPath)
 		return nil, ""
 	}
 
