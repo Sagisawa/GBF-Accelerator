@@ -25,6 +25,7 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
   const [firewallStatus, setFirewallStatus] = React.useState<FirewallStatus | null>(null)
   const [firewallLoading, setFirewallLoading] = React.useState(false)
   const [firewallApplying, setFirewallApplying] = React.useState(false)
+  const [lanApplying, setLanApplying] = React.useState(false)
   const [firewallError, setFirewallError] = React.useState<string | null>(null)
   const isLanEnabled = Boolean(status?.allow_lan)
   const isProxyRunning = Boolean(status?.proxy_running)
@@ -81,12 +82,17 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
   }
 
   const handleEnableLan = async () => {
+    if (lanApplying) return
+    setLanApplying(true)
     try {
       await applyConfig({ allow_lan: true })
       onToast('已开启局域网共享', 'success')
       onConfigUpdated()
+      await refreshFirewallStatus()
     } catch (e: any) {
       onToast(`开启局域网失败: ${e.message}`, 'error')
+    } finally {
+      setLanApplying(false)
     }
   }
 
@@ -122,8 +128,10 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
                 variant="primary"
                 size="xs"
                 onClick={handleEnableLan}
+                loading={lanApplying}
+                disabled={lanApplying}
               >
-                一键开启局域网共享 (Allow LAN)
+                {lanApplying ? '正在开启...' : '一键开启局域网共享 (Allow LAN)'}
               </Button>
             </div>
           </div>
