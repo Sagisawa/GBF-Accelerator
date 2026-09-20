@@ -334,6 +334,9 @@ func (c Config) GetEffectiveUpstreamProxy() string {
 	if c.DirectMode {
 		return ""
 	}
+	if strings.EqualFold(strings.TrimSpace(c.UpstreamProxy), "auto") {
+		return AutoDetectUpstreamProxy()
+	}
 	return c.UpstreamProxy
 }
 
