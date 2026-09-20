@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -31,12 +32,112 @@ type browseInfo struct {
 }
 
 var (
-	shell32                 = syscall.NewLazyDLL("shell32.dll")
-	shBrowseForFolderW     = shell32.NewProc("SHBrowseForFolderW")
-	shGetPathFromIDListW   = shell32.NewProc("SHGetPathFromIDListW")
-	coTaskMemFree          = syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree")
-	getForegroundWindow    = syscall.NewLazyDLL("user32.dll").NewProc("GetForegroundWindow")
+	shell32               = syscall.NewLazyDLL("shell32.dll")
+	shBrowseForFolderW    = shell32.NewProc("SHBrowseForFolderW")
+	shGetPathFromIDListW  = shell32.NewProc("SHGetPathFromIDListW")
+	coTaskMemFree         = syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree")
+
+	user32               = syscall.NewLazyDLL("user32.dll")
+	getForegroundWindow  = user32.NewProc("GetForegroundWindow")
+	getWindowThreadPID   = user32.NewProc("GetWindowThreadProcessId")
+	getCurrentThreadID   = user32.NewProc("GetCurrentThreadId")
+	attachThreadInput    = user32.NewProc("AttachThreadInput")
+	setForegroundWindow  = user32.NewProc("SetForegroundWindow")
+	showWindow           = user32.NewProc("ShowWindow")
+	bringWindowToTop     = user32.NewProc("BringWindowToTop")
+	enumWindows          = user32.NewProc("EnumWindows")
+	getClassNameW        = user32.NewProc("GetClassNameW")
 )
+
+const swShowNormal = 1
+
+func enumExplorerWindows() map[uintptr]struct{} {
+	windows := make(map[uintptr]struct{})
+	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		classBuf := make([]uint16, 64)
+		ret, _, _ := getClassNameW.Call(
+			hwnd,
+			uintptr(unsafe.Pointer(&classBuf[0])),
+			uintptr(len(classBuf)),
+		)
+		if ret == 0 {
+			return 1
+		}
+		className := syscall.UTF16ToString(classBuf[:ret])
+		if className == "CabinetWClass" || className == "ExploreWClass" {
+			windows[hwnd] = struct{}{}
+		}
+		return 1
+	})
+	_, _, _ = enumWindows.Call(cb, 0)
+	return windows
+}
+
+func activateExplorerWindow(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+
+	foreground, _, _ := getForegroundWindow.Call()
+	foregroundThread, _, _ := getWindowThreadPID.Call(foreground, 0)
+	targetThread, _, _ := getWindowThreadPID.Call(hwnd, 0)
+	currentThread, _, _ := getCurrentThreadID.Call()
+
+	// Windows intentionally restricts background processes from stealing focus.
+	// Link the caller's input queue to the foreground and target threads for
+	// the duration of activation, then detach immediately.
+	attachedForeground := false
+	attachedTarget := false
+	if foregroundThread != 0 && currentThread != 0 && foregroundThread != currentThread {
+		attachedForeground = attachThreadInput.Call(currentThread, foregroundThread, 1) != 0
+	}
+	if targetThread != 0 && currentThread != 0 && targetThread != currentThread {
+		attachedTarget = attachThreadInput.Call(currentThread, targetThread, 1) != 0
+	}
+
+	if attachedTarget {
+		defer attachThreadInput.Call(currentThread, targetThread, 0)
+	}
+	if attachedForeground {
+		defer attachThreadInput.Call(currentThread, foregroundThread, 0)
+	}
+
+	showWindow.Call(hwnd, swShowNormal)
+	bringWindowToTop.Call(hwnd)
+	return setForegroundWindow.Call(hwnd) != 0
+}
+
+func openFolderWindows(path string) error {
+	before := enumExplorerWindows()
+
+	cmd := exec.Command("explorer.exe", "/n,"+path)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		_ = cmd.Wait()
+	}()
+
+	// Explorer commonly delegates the command to the existing shell process,
+	// so the spawned PID is not the window we need to activate. Find the new
+	// Explorer top-level window instead.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		after := enumExplorerWindows()
+		for hwnd := range after {
+			if _, existed := before[hwnd]; existed {
+				continue
+			}
+			if activateExplorerWindow(hwnd) {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+}
 
 // prepareAppURL appends standalone=1 to the query string if not already present.
 func prepareAppURL(url string) string {
