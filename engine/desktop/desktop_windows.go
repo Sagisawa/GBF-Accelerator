@@ -107,7 +107,7 @@ func activateExplorerWindow(hwnd uintptr) bool {
 	return setForegroundWindow.Call(hwnd) != 0
 }
 
-func openFolderWindows(path string) error {
+func openFolderNative(path string) error {
 	before := enumExplorerWindows()
 
 	cmd := exec.Command("explorer.exe", "/n,"+path)
