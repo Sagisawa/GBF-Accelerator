@@ -85,8 +85,8 @@
   - Candidate 为纯内存快照, 禁直接修改生效配置、Listener、系统代理、自启动或缓存状态。
 - **网络配置强事务顺序**:
   - 涉及 `allow_lan`, `listen_port`, `control_port` 严格遵循:
-    `Candidate -> Network Rebind -> 全部成功 -> Config Commit / Save -> Post-Commit Runtime Sync`。
-  - 重绑失败不提交并回滚 listener; `Save()` 失败恢复配置并全量回滚 proxy/control listener; 严禁磁盘与运行时分裂 (`config.json = new, runtime = old`)。
+    `Candidate -> Config Commit / Save -> Network Rebind -> Post-Commit Runtime Sync`。
+  - 先持久化配置再修改 listener；任一 listener 重绑失败必须回滚配置与已重绑 listener；严禁磁盘与运行时分裂 (`config.json = new, runtime = old`)。
 - **Commit() 与 Update() 语义分离**:
   - `Commit(candidate)` 为强事务主路径 API; `Update(fn)` 仅历史兼容, 禁在网络事务主路径使用。
 - **commitMu 锁作用域与禁止回调重入**:
