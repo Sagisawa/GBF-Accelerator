@@ -832,4 +832,44 @@ func TestControlServer_ApplyConfig_SaveFail_RollbackBoth(t *testing.T) {
 	}
 }
 
+func TestControlServer_AppQuit(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgFile := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgFile)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+	quitCalled := make(chan struct{})
+	ctrl.SetQuitFunc(func() {
+		close(quitCalled)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/app/quit", nil)
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response JSON: %v", err)
+	}
+	if resp["ok"] != true {
+		t.Errorf("expected ok=true, got %v", resp["ok"])
+	}
+
+	select {
+	case <-quitCalled:
+		// Succeeded
+	case <-time.After(1 * time.Second):
+		t.Fatal("quitFunc was not called within timeout")
+	}
+}
+
+
 

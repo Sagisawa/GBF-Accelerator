@@ -218,3 +218,12 @@ export async function cancelDownload(): Promise<any> {
   return res.json()
 }
 
+export async function quitApp(): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/app/quit`, { method: 'POST' })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.message || data.error || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+

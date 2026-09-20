@@ -17,8 +17,10 @@ import {
   detectACGPower,
   detectUpstream,
   checkForUpdate,
+  quitApp,
 } from './api'
 
+import { Modal } from './components/common/Modal'
 import { LiveLogsWindow } from './components/logs/LiveLogsWindow'
 import { MobileGuideModal } from './components/modals/MobileGuideModal'
 import { ClearCacheModal } from './components/modals/ClearCacheModal'
@@ -39,6 +41,7 @@ import {
   Info,
   XCircle,
   Zap,
+  Power,
 } from 'lucide-react'
 
 export const App: React.FC = () => {
@@ -89,6 +92,23 @@ export const App: React.FC = () => {
   const [isShimakazeSuggestOpen, setIsShimakazeSuggestOpen] = useState<boolean>(false)
   const [caModalAction, setCaModalAction] = useState<'install' | 'uninstall' | null>(null)
   const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version: string } | null>(null)
+  const [isQuitModalOpen, setIsQuitModalOpen] = useState<boolean>(false)
+  const [quitting, setQuitting] = useState<boolean>(false)
+  const [isTerminated, setIsTerminated] = useState<boolean>(false)
+
+  const handleQuitApp = async () => {
+    setQuitting(true)
+    try {
+      await quitApp()
+      setIsQuitModalOpen(false)
+      setIsTerminated(true)
+      showToast('加速器后台已安全退出，端口已释放。您可以直接关闭此标签页。', 'success')
+    } catch (err: any) {
+      showToast(err?.message || '退出失败', 'error')
+    } finally {
+      setQuitting(false)
+    }
+  }
 
   // Floating Toast
   const [toast, setToast] = useState<{
@@ -648,6 +668,7 @@ export const App: React.FC = () => {
     '8D:7A:35:CA:F9:19:9B:C5:EE:3B:B4:0D:F9:41:15:F4:F3:57:12:65:94:3D:8B:14:D4:0A:43:19:20:B7:5E:75'
 
   const currentListenPort = config.listen_port ?? status?.listen_port ?? 8124
+  const currentControlPort = config.control_port ?? status?.control_port ?? 8125
   const hitsCount = status?.requests?.total_hits ?? 0
   const ramHitsCount = status?.requests?.ram_hits ?? 0
   const downloadsCount = status?.requests?.cache_misses ?? 0
@@ -691,42 +712,11 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Windows Simulated Title Bar for Non-Standalone Browser Mode */}
-      {!isStandalone && (
-        <div className="shrink-0 bg-white border-b border-slate-200 h-8 pl-3 pr-0 flex items-center justify-between select-none">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center shrink-0">
-              <Zap className="w-2.5 h-2.5 fill-current" />
-            </div>
-            <span className="text-xs font-normal text-slate-700">GBF 加速器</span>
-          </div>
-
-          <div className="flex items-center h-full">
-            <button
-              type="button"
-              onClick={() => showToast('GBF 加速代理正在后台运行', 'info')}
-              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
-              title="最小化"
-            >
-              —
-            </button>
-            <button
-              type="button"
-              onClick={() => showToast('窗口已处于自适应状态', 'info')}
-              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-slate-200 text-xs transition-colors"
-              title="最大化"
-            >
-              □
-            </button>
-            <button
-              type="button"
-              onClick={() => showToast('如需退出请关闭浏览器标签或使用托盘菜单', 'info')}
-              className="w-11 h-8 flex items-center justify-center text-slate-600 hover:bg-[#e81123] hover:text-white text-xs transition-colors"
-              title="关闭"
-            >
-              ✕
-            </button>
-          </div>
+      {/* Termination Notice Banner when user explicitly quits backend */}
+      {isTerminated && (
+        <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200">
+          <span>🛑</span>
+          <span>GBF-Accelerator 后台服务已安全退出，端口 8124 与 8125 已释放。您可以随时关闭此网页标签。</span>
         </div>
       )}
 
@@ -769,19 +759,31 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Top Right Master Start / Stop Action Button */}
-            <button
-              type="button"
-              disabled={loadingProxy}
-              onClick={handleToggleProxy}
-              className={`min-w-[116px] px-6 py-2.5 rounded-xl text-sm sm:text-base font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] ${
-                isRunning
-                  ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
-                  : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
-              }`}
-            >
-              {loadingProxy ? '处理中...' : isRunning ? '停止加速' : '启动加速'}
-            </button>
+            {/* Top Right Master Start / Stop Action Button & Quit Button */}
+            <div className="flex items-center gap-2 sm:gap-2.5">
+              <button
+                type="button"
+                disabled={loadingProxy || isTerminated}
+                onClick={handleToggleProxy}
+                className={`min-w-[110px] px-5 py-2.5 rounded-xl text-sm sm:text-base font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] ${
+                  isRunning
+                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
+                    : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
+                }`}
+              >
+                {loadingProxy ? '处理中...' : isRunning ? '停止加速' : '启动加速'}
+              </button>
+              <button
+                type="button"
+                disabled={isTerminated}
+                onClick={() => setIsQuitModalOpen(true)}
+                className="px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs"
+                title="彻底退出 GBF 加速器后台服务 (释放 8124 与 8125 端口)"
+              >
+                <Power className="w-4 h-4 text-rose-500" />
+                <span>彻底退出</span>
+              </button>
+            </div>
           </div>
 
           {/* Telemetry 3-Tile HUD */}
@@ -1568,6 +1570,55 @@ export const App: React.FC = () => {
         telemetry={status?.telemetry}
         hitRatioPercent={cacheStats?.hit_ratio_percent ?? 100.0}
       />
+
+      {/* Quit Application Confirmation Modal */}
+      <Modal
+        isOpen={isQuitModalOpen}
+        onClose={() => !quitting && setIsQuitModalOpen(false)}
+        title={
+          <div className="flex items-center gap-2 text-rose-600 font-bold text-base">
+            <Power className="w-5 h-5" />
+            <span>确认彻底退出 GBF 加速器？</span>
+          </div>
+        }
+        subtitle="终止后台代理与管理服务"
+        maxWidth="max-w-md"
+      >
+        <div className="space-y-4 text-xs sm:text-sm text-slate-600">
+          <div className="p-3.5 bg-rose-50/80 border border-rose-200/80 rounded-xl space-y-2 text-rose-900">
+            <p className="font-semibold text-xs sm:text-sm">
+              退出后将完全关闭代理与后台管理服务：
+            </p>
+            <ul className="list-disc list-inside space-y-1 text-xs text-rose-800">
+              <li>释放数据代理端口 <strong>{currentListenPort}</strong></li>
+              <li>释放 Web 控制台端口 <strong>{currentControlPort}</strong></li>
+              <li>安全回写内存缓存数据至磁盘</li>
+            </ul>
+          </div>
+          <p className="text-slate-500 text-xs leading-relaxed">
+            如需再次使用，需在电脑桌面或终端重新启动程序。
+          </p>
+          <div className="pt-2 flex justify-end gap-2.5 border-t border-slate-100">
+            <button
+              type="button"
+              disabled={quitting}
+              onClick={() => setIsQuitModalOpen(false)}
+              className="px-4 py-2 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 transition-all cursor-pointer"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              disabled={quitting}
+              onClick={handleQuitApp}
+              className="px-5 py-2 rounded-xl text-xs sm:text-sm font-bold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
+            >
+              <Power className="w-4 h-4" />
+              <span>{quitting ? '正在退出...' : '确认彻底退出'}</span>
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

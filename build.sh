@@ -125,20 +125,6 @@ EOF
         chmod +x "${STAGING_DIR}/install_ca.sh"
     fi
 
-    # Generate friendly one-click helper scripts for macOS users
-    cat > "${STAGING_DIR}/打开控制台.command" << 'EOF'
-#!/bin/bash
-open "http://127.0.0.1:8125"
-EOF
-    chmod +x "${STAGING_DIR}/打开控制台.command"
-
-    cat > "${STAGING_DIR}/停止加速器.command" << 'EOF'
-#!/bin/bash
-killall GBF_Accelerator 2>/dev/null
-osascript -e 'display notification "加速器已成功停止" with title "GBF-Accelerator"' 2>/dev/null || echo "GBF-Accelerator 已停止"
-EOF
-    chmod +x "${STAGING_DIR}/停止加速器.command"
-
     (cd "${STAGING_DIR}" && zip -r -y "${ZIP_PATH}" .)
     rm -rf "${STAGING_DIR}"
     echo "[***] MAC RELEASE READY: ${ZIP_PATH}"

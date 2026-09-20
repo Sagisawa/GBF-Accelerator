@@ -43,6 +43,7 @@ type ControlServer struct {
 	distDir    string
 	running    bool
 	closedChan chan struct{}
+	quitFunc   func()
 
 	// Background Cache Task state
 	cacheTaskMu     sync.Mutex
@@ -102,6 +103,12 @@ func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *c
 		distDir:    distDir,
 		closedChan: make(chan struct{}),
 	}
+}
+
+func (c *ControlServer) SetQuitFunc(fn func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.quitFunc = fn
 }
 
 func (c *ControlServer) Start() error {
@@ -519,6 +526,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			})
 			return
 		}
+	case "/api/app/quit", "/api/app/exit":
+		if req.Method == http.MethodPost {
+			c.handleAppQuit(w, req)
+			return
+		}
 	}
 
 	// Reject unmatched API routes with 404 JSON
@@ -534,6 +546,24 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	}
 
 	c.sendJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+}
+
+func (c *ControlServer) handleAppQuit(w http.ResponseWriter, req *http.Request) {
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "GBF-Accelerator 正在安全退出...",
+	})
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		c.mu.RLock()
+		q := c.quitFunc
+		c.mu.RUnlock()
+		if q != nil {
+			q()
+		} else {
+			os.Exit(0)
+		}
+	}()
 }
 
 func (c *ControlServer) sendJSON(w http.ResponseWriter, status int, data interface{}) {

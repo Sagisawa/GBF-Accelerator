@@ -243,6 +243,7 @@ func main() {
 		proxySrv: proxySrv,
 		quitChan: quitChan,
 	}
+	ctrlSrv.SetQuitFunc(appCtrl.Quit)
 
 	var tray desktop.Tray
 	if !*noGUI && !*headless {
@@ -256,8 +257,8 @@ func main() {
 
 	consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", curCfg.ControlPort)
 	if !*noGUI && !*headless && !*minimized {
-		if err := desktop.OpenAppWindow(consoleURL); err != nil {
-			fmt.Printf("[*] Failed to open app window: %v\n", err)
+		if err := desktop.OpenBrowser(consoleURL); err != nil {
+			fmt.Printf("[*] Failed to open browser: %v\n", err)
 		}
 	} else if *openBrowser {
 		_ = desktop.OpenBrowser(consoleURL)
