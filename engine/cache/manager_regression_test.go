@@ -62,3 +62,25 @@ func TestRAMCacheAndAutoRepairRuntimeToggles(t *testing.T) {
         t.Fatalf("auto-repair disabled must not quarantine file: %v", err)
     }
 }
+
+func TestAutoRepairDisabledPreservesInvalidCacheFile(t *testing.T) {
+	base := t.TempDir()
+	m := NewManager(base, 16)
+	defer m.Close()
+	m.SetAutoRepair(false)
+
+	path := filepath.Join(base, "assets", "123", "broken.png")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("not a png"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if item, _ := m.Get("/assets/123/broken.png"); item != nil {
+		t.Fatal("invalid cache content must not be served")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("invalid cache file was removed while auto repair disabled: %v", err)
+	}
+}
