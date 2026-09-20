@@ -73,6 +73,89 @@ const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ ba
   return <>{hours}h {minutes}m {seconds}s</>
 }
 
+const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null }> = ({ status }) => {
+  const [counts, setCounts] = useState(() => ({
+    totalHits: status?.requests?.total_hits ?? 0,
+    ramHits: status?.requests?.ram_hits ?? 0,
+    downloads: status?.requests?.cache_misses ?? 0,
+    apis: status?.requests?.total_apis ?? 0,
+  }))
+
+  useEffect(() => {
+    setCounts({
+      totalHits: status?.requests?.total_hits ?? 0,
+      ramHits: status?.requests?.ram_hits ?? 0,
+      downloads: status?.requests?.cache_misses ?? 0,
+      apis: status?.requests?.total_apis ?? 0,
+    })
+  }, [status?.requests?.total_hits, status?.requests?.ram_hits, status?.requests?.cache_misses, status?.requests?.total_apis])
+
+  useEffect(() => {
+    const onMetrics = (event: Event) => {
+      const data = (event as CustomEvent).detail
+      const requests = data?.requests
+      if (!requests) return
+      setCounts((prev) => ({
+        totalHits: typeof requests.total_hits === 'number' ? requests.total_hits : prev.totalHits,
+        ramHits: typeof requests.ram_hits === 'number' ? requests.ram_hits : prev.ramHits,
+        downloads: typeof requests.cache_misses === 'number' ? requests.cache_misses : prev.downloads,
+        apis: typeof requests.total_apis === 'number' ? requests.total_apis : prev.apis,
+      }))
+    }
+
+    window.addEventListener('gbf-metrics', onMetrics)
+    return () => window.removeEventListener('gbf-metrics', onMetrics)
+  }, [])
+
+  return (
+    <div className="grid grid-cols-3 gap-2.5 sm:gap-4 pt-1">
+      <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
+        <div className="flex flex-col">
+          <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
+            <span className="text-sm sm:text-base">⚡</span> 本地缓存命中
+          </span>
+          <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
+            <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 font-mono tnum leading-tight">
+              {counts.totalHits.toLocaleString()}
+            </span>
+            {counts.ramHits > 0 && (
+              <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
+                RAM {counts.ramHits.toLocaleString()}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
+        <div className="flex flex-col">
+          <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
+            <span className="text-sm sm:text-base">📥</span> 远程下载缓存
+          </span>
+          <div className="flex items-baseline gap-1.5 mt-1">
+            <span className="text-2xl sm:text-3xl font-extrabold text-sky-600 font-mono tnum leading-tight">
+              {counts.downloads.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
+        <div className="flex flex-col">
+          <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
+            <span className="text-sm sm:text-base">🔄</span> 游戏 API 转发
+          </span>
+          <div className="flex items-baseline gap-1.5 mt-1">
+            <span className="text-2xl sm:text-3xl font-extrabold text-slate-800 font-mono tnum leading-tight">
+              {counts.apis.toLocaleString()}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export const App: React.FC = () => {
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
@@ -212,20 +295,7 @@ export const App: React.FC = () => {
         try {
           const data = JSON.parse(e.data)
           if (data?.requests) {
-            setStatus((prev) => {
-              if (!prev) return prev
-              return {
-                ...prev,
-                active_api_count: typeof data.active_api === 'number' ? data.active_api : prev.active_api_count,
-                active_foreground_assets: typeof data.active_fg === 'number' ? data.active_fg : prev.active_foreground_assets,
-                uptime_seconds: typeof data.uptime === 'number' ? data.uptime : prev.uptime_seconds,
-                requests: {
-                  ...prev.requests,
-                  ...data.requests,
-                },
-                telemetry: data.telemetry ?? prev.telemetry,
-              }
-            })
+            window.dispatchEvent(new CustomEvent('gbf-metrics', { detail: data }))
           }
         } catch {}
       })
@@ -753,10 +823,6 @@ export const App: React.FC = () => {
 
   const currentListenPort = config.listen_port ?? status?.listen_port ?? 8124
   const currentControlPort = config.control_port ?? status?.control_port ?? 8125
-  const hitsCount = status?.requests?.total_hits ?? 0
-  const ramHitsCount = status?.requests?.ram_hits ?? 0
-  const downloadsCount = status?.requests?.cache_misses ?? 0
-  const apisCount = status?.requests?.total_apis ?? 0
   const ramUsageMb = Math.round(cacheStats?.ram_mb ?? (status?.cache?.ram_mb ?? 0))
   const ramMaxMb = config.ram_cache_max_mb ?? 256
 
@@ -870,55 +936,8 @@ export const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Telemetry 3-Tile HUD */}
-          <div className="grid grid-cols-3 gap-2.5 sm:gap-4 pt-1">
-            {/* Stat 1: Local Cache Hits */}
-            <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
-              <div className="flex flex-col">
-                <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-                  <span className="text-sm sm:text-base">⚡</span> 本地缓存命中
-                </span>
-                <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
-                  <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 font-mono tnum leading-tight">
-                    {hitsCount.toLocaleString()}
-                  </span>
-                  {ramHitsCount > 0 && (
-                    <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
-                      RAM {ramHitsCount.toLocaleString()}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Stat 2: Remote Downloads */}
-            <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
-              <div className="flex flex-col">
-                <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-                  <span className="text-sm sm:text-base">📥</span> 远程下载缓存
-                </span>
-                <div className="flex items-baseline gap-1.5 mt-1">
-                  <span className="text-2xl sm:text-3xl font-extrabold text-sky-600 font-mono tnum leading-tight">
-                    {downloadsCount.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Stat 3: API Passthrough */}
-            <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
-              <div className="flex flex-col">
-                <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-                  <span className="text-sm sm:text-base">🔄</span> 游戏 API 转发
-                </span>
-                <div className="flex items-baseline gap-1.5 mt-1">
-                  <span className="text-2xl sm:text-3xl font-extrabold text-slate-800 font-mono tnum leading-tight">
-                    {apisCount.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
+          {/* Realtime request counters: isolated from the root App render loop */}
+          <RealtimeRequestHud status={status} />
         </div>
       </header>
 
