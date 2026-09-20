@@ -757,13 +757,32 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		candidate.CleanZombies = val
 	}
 
+	proxyNeedsReload := c.proxySrv != nil &&
+		(candidate.AllowLAN != oldCandidate.AllowLAN || candidate.ListenPort != oldCandidate.ListenPort)
+	controlNeedsReload := candidate.ControlPort != oldCandidate.ControlPort
+
+	// 1. Persist and commit configuration BEFORE mutating listeners.
+	// A failed disk write must leave all runtime listeners untouched.
+	if err := c.cfgMgr.Commit(candidate); err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("配置持久化失败: %v", err),
+		})
+		return
+	}
+
 	proxyRebound := false
 	controlRebound := false
 
-	// 1. If 8124 listener needs reload (allow_lan or listen_port changed)
-	if c.proxySrv != nil && (candidate.AllowLAN != oldCandidate.AllowLAN || candidate.ListenPort != oldCandidate.ListenPort) {
+	// 2. Apply listener changes only after configuration persistence succeeds.
+	if proxyNeedsReload {
 		newHost := candidate.GetEffectiveListenHost()
 		if err := c.proxySrv.ReloadListener(newHost, candidate.ListenPort); err != nil {
+			// Restore configuration because the persisted candidate cannot be used
+			// safely while the proxy listener remains on the old address.
+			rollbackErr := c.cfgMgr.Commit(oldCandidate)
+			if rollbackErr != nil {
+				c.stats.Log("ERROR", fmt.Sprintf("[CONFIG] 严重：代理监听重载失败且配置回滚也失败: reload=%v rollback=%v", err, rollbackErr))
+			}
 			c.sendJSON(w, http.StatusInternalServerError, map[string]string{
 				"error": fmt.Sprintf("代理监听重载失败: %v", err),
 			})
@@ -772,11 +791,19 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		proxyRebound = true
 	}
 
-	// 2. If 8125 listener needs reload (control_port changed)
-	if candidate.ControlPort != oldCandidate.ControlPort {
+	if controlNeedsReload {
 		if err := c.ReloadListener(candidate.ControlPort); err != nil {
+			var rollbackErr error
 			if proxyRebound && c.proxySrv != nil {
-				_ = c.proxySrv.ReloadListener(oldCandidate.GetEffectiveListenHost(), oldCandidate.ListenPort)
+				rollbackErr = c.proxySrv.ReloadListener(oldCandidate.GetEffectiveListenHost(), oldCandidate.ListenPort)
+			}
+			if cfgErr := c.cfgMgr.Commit(oldCandidate); rollbackErr == nil {
+				rollbackErr = cfgErr
+			} else if cfgErr != nil {
+				rollbackErr = fmt.Errorf("listener rollback: %v; config rollback: %v", rollbackErr, cfgErr)
+			}
+			if rollbackErr != nil {
+				c.stats.Log("ERROR", fmt.Sprintf("[CONFIG] 严重：控制监听重载失败，回滚存在错误: %v", rollbackErr))
 			}
 			c.sendJSON(w, http.StatusInternalServerError, map[string]string{
 				"error": fmt.Sprintf("控制端口重载失败: %v", err),
@@ -786,22 +813,7 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		controlRebound = true
 	}
 
-	// 3. Commit candidate configuration to memory and disk
-	if err := c.cfgMgr.Commit(candidate); err != nil {
-		// Rollback listeners if commit/save failed
-		if proxyRebound && c.proxySrv != nil {
-			_ = c.proxySrv.ReloadListener(oldCandidate.GetEffectiveListenHost(), oldCandidate.ListenPort)
-		}
-		if controlRebound {
-			_ = c.ReloadListener(oldCandidate.ControlPort)
-		}
-		c.sendJSON(w, http.StatusInternalServerError, map[string]string{
-			"error": fmt.Sprintf("配置持久化失败: %v", err),
-		})
-		return
-	}
-
-	// 4. Apply non-listener runtime state
+	// 3. Apply non-listener runtime state
 	if candidate.CacheDir != oldCandidate.CacheDir {
 		c.cacheMgr.SetCacheBase(candidate.CacheDir)
 	}
