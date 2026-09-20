@@ -45,6 +45,8 @@ type ProxyServer struct {
 	listenerGen uint64
 	serveLoopWg sync.WaitGroup
 	mu          sync.RWMutex
+	connMu      sync.Mutex
+	activeConns map[net.Conn]struct{}
 	apiClient   atomic.Pointer[http.Client]
 	assetClient   atomic.Pointer[http.Client]
 	upstreamProxy atomic.Pointer[string]
@@ -59,6 +61,7 @@ func NewProxyServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cac
 		cacheMgr:   cacheMgr,
 		stats:      stats,
 		closedChan: make(chan struct{}),
+		activeConns: make(map[net.Conn]struct{}),
 	}
 	s.prefetch = newPrefetchEngine(s)
 	initialCfg := cfgMgr.Get()
@@ -233,6 +236,11 @@ func (s *ProxyServer) Start() error {
 	s.listenerGen++
 	s.running = true
 	s.closedChan = make(chan struct{})
+	s.connMu.Lock()
+	if s.activeConns == nil {
+		s.activeConns = make(map[net.Conn]struct{})
+	}
+	s.connMu.Unlock()
 	if s.prefetch == nil || s.prefetch.IsStopped() {
 		s.prefetch = newPrefetchEngine(s)
 	}
@@ -300,8 +308,8 @@ func (s *ProxyServer) ListenerAddr() string {
 
 func (s *ProxyServer) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
 	s.running = false
@@ -323,10 +331,26 @@ func (s *ProxyServer) Stop() {
 			tr.CloseIdleConnections()
 		}
 	}
+
+	// Stop must terminate already-accepted client connections too. Closing only
+	// the listener leaves existing HTTP Keep-Alive / CONNECT tunnels usable.
+	s.connMu.Lock()
+	active := make([]net.Conn, 0, len(s.activeConns))
+	for conn := range s.activeConns {
+		active = append(active, conn)
+		delete(s.activeConns, conn)
+	}
+	s.connMu.Unlock()
+
 	select {
 	case <-s.closedChan:
 	default:
 		close(s.closedChan)
+	}
+	s.mu.Unlock()
+
+	for _, conn := range active {
+		_ = conn.Close()
 	}
 }
 
@@ -357,6 +381,39 @@ func (s *ProxyServer) WaitServeLoops(timeout time.Duration) bool {
 	}
 }
 
+func (s *ProxyServer) trackConn(conn net.Conn) bool {
+	s.mu.RLock()
+	running := s.running
+	s.mu.RUnlock()
+	if !running {
+		_ = conn.Close()
+		return false
+	}
+
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	// Stop may race with Accept; re-check the lifecycle under the same lock
+	// ordering used by Stop (s.mu -> connMu).
+	s.mu.RLock()
+	running = s.running
+	s.mu.RUnlock()
+	if !running {
+		_ = conn.Close()
+		return false
+	}
+	if s.activeConns == nil {
+		s.activeConns = make(map[net.Conn]struct{})
+	}
+	s.activeConns[conn] = struct{}{}
+	return true
+}
+
+func (s *ProxyServer) untrackConn(conn net.Conn) {
+	s.connMu.Lock()
+	delete(s.activeConns, conn)
+	s.connMu.Unlock()
+}
+
 func (s *ProxyServer) serveLoop(ln net.Listener, gen uint64) {
 	defer s.serveLoopWg.Done()
 
@@ -378,6 +435,9 @@ func (s *ProxyServer) serveLoop(ln net.Listener, gen uint64) {
 		// Check LAN ACL
 		if !s.isClientAllowed(conn.RemoteAddr()) {
 			_ = conn.Close()
+			continue
+		}
+		if !s.trackConn(conn) {
 			continue
 		}
 
@@ -408,6 +468,7 @@ func (s *ProxyServer) isClientAllowed(addr net.Addr) bool {
 }
 
 func (s *ProxyServer) handleConnection(conn net.Conn) {
+	defer s.untrackConn(conn)
 	defer conn.Close()
 
 	br := bufio.NewReader(conn)
