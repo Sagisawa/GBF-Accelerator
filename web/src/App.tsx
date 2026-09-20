@@ -369,8 +369,8 @@ export const App: React.FC = () => {
     try {
       const chosen = await browseDirectory()
       if (chosen) {
-        setCacheDirInput(chosen)
         await applyConfig({ cache_dir: chosen })
+        setCacheDirInput(chosen)
         setConfig((prev) => ({ ...prev, cache_dir: chosen }))
         showToast(`缓存目录已成功更改为：${chosen}`, 'success')
         loadState()
@@ -929,6 +929,7 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                   <input
                     type="text"
+                    disabled={Boolean(loadingAction) || loadingBrowse}
                     value={cacheDirInput}
                     onChange={(e) => setCacheDirInput(e.target.value)}
                     className="flex-1 min-w-[160px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
@@ -992,6 +993,7 @@ export const App: React.FC = () => {
                   <span>上限 (MB):</span>
                   <input
                     type="text"
+                    disabled={Boolean(loadingAction)}
                     value={ramMbInput}
                     onChange={(e) => setRamMbInput(e.target.value)}
                     className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
@@ -1042,7 +1044,7 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                   <input
                     type="text"
-                    disabled={isDirect}
+                    disabled={isDirect || Boolean(loadingAction)}
                     value={upstreamInput}
                     onChange={(e) => setUpstreamInput(e.target.value)}
                     className="flex-1 min-w-[160px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all disabled:bg-slate-100 disabled:text-slate-400"
@@ -1108,6 +1110,7 @@ export const App: React.FC = () => {
                   <label className="text-[13px] sm:text-sm text-slate-700 font-medium">本地监听端口：</label>
                   <input
                     type="text"
+                    disabled={Boolean(loadingAction)}
                     value={portInput}
                     onChange={(e) => setPortInput(e.target.value)}
                     className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
@@ -1332,7 +1335,7 @@ export const App: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
-                      启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认关闭）
+                      启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认开启）
                     </span>
                   </label>
                 </div>
