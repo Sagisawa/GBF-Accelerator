@@ -1273,6 +1273,12 @@ export const App: React.FC = () => {
                       自动配置系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）
                     </span>
                   </label>
+                  {status?.system_proxy_conflict && (
+                    <div className="mt-2 ml-6 p-2.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 leading-relaxed shadow-2xs">
+                      <span className="font-semibold">⚠️ 检测到系统代理冲突：</span>
+                      <span className="ml-1 break-all">{status.system_proxy_conflict}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div>
