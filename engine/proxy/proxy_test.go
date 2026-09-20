@@ -449,8 +449,8 @@ func TestHandlePlainHTTP_DirectLocalAndPAC(t *testing.T) {
 	connExternal := &dummyConn{}
 	reqExternal := &http.Request{
 		Method: http.MethodGet,
-		Host:   "example.com",
-		URL:    &url.URL{Scheme: "http", Host: "example.com", Path: "/ca.crt"},
+		Host:   "example.com:8124",
+		URL:    &url.URL{Scheme: "http", Host: "example.com:8124", Path: "/ca.crt"},
 	}
 	srv.handlePlainHTTP(connExternal, reqExternal)
 	if strings.Contains(connExternal.writeBuf.String(), "application/x-x509-ca-cert") ||
