@@ -55,7 +55,7 @@ func ChooseFolder(prompt string) (string, error) {
 		prompt = "选择保存目录"
 	}
 	escapedPrompt := strings.ReplaceAll(prompt, "\\", "\\\\")
-	escapedPrompt = strings.ReplaceAll(escapedPrompt, """, "\\"")
+	escapedPrompt = strings.ReplaceAll(escapedPrompt, "\"", "\\\"")
 	script := fmt.Sprintf("tell application \"Finder\"\n\tactivate\n\tset selectedFolder to choose folder with prompt \"%s\"\n\tPOSIX path of selectedFolder\nend tell", escapedPrompt)
 
 	cmd := exec.Command("osascript", "-e", script)
