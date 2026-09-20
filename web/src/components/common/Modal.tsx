@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useId } from 'react'
 import { cn } from '../../utils/cn'
 import { X } from 'lucide-react'
 
@@ -21,6 +21,8 @@ export const Modal: React.FC<ModalProps> = ({
   maxWidth = 'max-w-md',
   className,
 }) => {
+  const titleId = useId()
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && isOpen) {
@@ -49,7 +51,7 @@ export const Modal: React.FC<ModalProps> = ({
       <div
         role="dialog"
         aria-modal="true"
-        aria-labelledby="modal-title"
+        aria-labelledby={titleId}
         className={cn(
           'relative w-full max-h-[calc(100vh-2rem)] flex flex-col bg-white border border-slate-300 rounded-xl shadow-2xl overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150',
           maxWidth,
@@ -59,7 +61,7 @@ export const Modal: React.FC<ModalProps> = ({
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-slate-200 bg-[#f8fafc] flex items-center justify-between">
           <div>
-            <h3 id="modal-title" className="text-sm font-bold text-slate-900 tracking-tight">{title}</h3>
+            <h3 id={titleId} className="text-sm font-bold text-slate-900 tracking-tight">{title}</h3>
             {subtitle && (
               <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
             )}
