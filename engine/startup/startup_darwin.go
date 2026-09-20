@@ -87,7 +87,11 @@ func setStartupEnabled(enabled bool) error {
 		return nil
 	}
 
-	_ = exec.Command("launchctl", "unload", plistPath).Run()
-	_ = os.Remove(plistPath)
+	// Removing the plist disables future login launches. Do not treat an
+	// unload failure as fatal because the job may not be loaded in the current
+	// session (the app intentionally does not load it on enable).
+	if err := os.Remove(plistPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove macOS startup plist: %w", err)
+	}
 	return nil
 }
