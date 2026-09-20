@@ -369,16 +369,13 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodGet || req.Method == http.MethodHead {
 			cfg := c.cfgMgr.Get()
 			h := "127.0.0.1"
-			if cfg.AllowLAN {
-				if lanIP := config.GetLANIP(); lanIP != "" {
-					h = lanIP
-				}
-			}
 			pacText := proxy.GetPAC(h, cfg.ListenPort)
 			w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
 			w.Header().Set("Content-Length", strconv.Itoa(len(pacText)))
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
 			w.WriteHeader(http.StatusOK)
 			if req.Method != http.MethodHead {
 				_, _ = w.Write([]byte(pacText))

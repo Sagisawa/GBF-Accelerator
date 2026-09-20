@@ -12,7 +12,9 @@ func GetPAC(host string, port int) string {
         shExpMatch(host, "granbluefantasy.akamaized.net") ||
         shExpMatch(host, "*.granbluefantasy.akamaized.net") ||
         shExpMatch(host, "gbf.akamaized.net") ||
-        shExpMatch(host, "*.gbf.akamaized.net") ||
+        shExpMatch(host, "*granbluefantasy.akamaized.net") ||
+        shExpMatch(host, "*granbluefantasy-steam.akamaized.net") ||
+        shExpMatch(host, "*gbf.akamaized.net") ||
         shExpMatch(host, "prd-game-a-granbluefantasy.akamaized.net") ||
         shExpMatch(host, "prd-game-a1-granbluefantasy.akamaized.net") ||
         shExpMatch(host, "prd-game-a2-granbluefantasy.akamaized.net") ||
@@ -36,7 +38,6 @@ func GetPAC(host string, port int) string {
         shExpMatch(host, "*.connect.mobage.jp") ||
         shExpMatch(host, "connect.mobage.jp") ||
         shExpMatch(host, "*.game.mobage.jp") ||
-        shExpMatch(host, "gbf.game.mbga.jp") ||
         shExpMatch(host, "*.mobage.jp") ||
         shExpMatch(host, "mobage.jp")
     ) {

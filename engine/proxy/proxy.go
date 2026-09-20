@@ -824,16 +824,13 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		if hostNoPort != "" && hostNoPort != "127.0.0.1" && hostNoPort != "localhost" && hostNoPort != "::1" {
 			h = hostNoPort
 		}
-		if cfg.AllowLAN && h == "127.0.0.1" {
-			if lanIP := config.GetLANIP(); lanIP != "" {
-				h = lanIP
-			}
-		}
 		pacText := GetPAC(h, cfg.ListenPort)
 		hdr := make(http.Header)
 		hdr.Set("Content-Type", "application/x-ns-proxy-autoconfig")
 		hdr.Set("Access-Control-Allow-Origin", "*")
-		hdr.Set("Cache-Control", "no-cache")
+		hdr.Set("Cache-Control", "no-store, no-cache, must-revalidate")
+		hdr.Set("Pragma", "no-cache")
+		hdr.Set("Expires", "0")
 		writeHTTPResponse(conn, http.StatusOK, hdr, []byte(pacText), req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}
