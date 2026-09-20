@@ -4,7 +4,7 @@ import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { QRCodeSVG } from 'qrcode.react'
 import { Smartphone, Wifi, Copy, Check, AlertCircle } from 'lucide-react'
-import { applyConfig } from '../../api'
+import { applyConfig, applyFirewallRule, fetchFirewallStatus, APIError, FirewallStatus } from '../../api'
 
 export interface MobileGuideModalProps {
   isOpen: boolean
@@ -22,6 +22,10 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
   onToast,
 }) => {
   const [copied, setCopied] = React.useState(false)
+  const [firewallStatus, setFirewallStatus] = React.useState<FirewallStatus | null>(null)
+  const [firewallLoading, setFirewallLoading] = React.useState(false)
+  const [firewallApplying, setFirewallApplying] = React.useState(false)
+  const [firewallError, setFirewallError] = React.useState<string | null>(null)
   const isLanEnabled = Boolean(status?.allow_lan)
   const isProxyRunning = Boolean(status?.proxy_running)
   const host = status?.lan_ip || '192.168.x.x'
@@ -29,6 +33,52 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
   const canUseMobileAccess = isLanEnabled && isProxyRunning
   const pacUrl = `http://${host}:${port}/proxy.pac`
   const guideUrl = `http://${host}:${port}/`
+
+  const refreshFirewallStatus = React.useCallback(async () => {
+    setFirewallLoading(true)
+    setFirewallError(null)
+    try {
+      setFirewallStatus(await fetchFirewallStatus())
+    } catch (e: any) {
+      setFirewallStatus(null)
+      setFirewallError(e?.message || '无法读取 Windows 防火墙状态')
+    } finally {
+      setFirewallLoading(false)
+    }
+  }, [])
+
+  React.useEffect(() => {
+    if (!isOpen) return
+    refreshFirewallStatus()
+  }, [isOpen, refreshFirewallStatus])
+
+  const handleApplyFirewall = async () => {
+    if (firewallApplying) return
+    setFirewallApplying(true)
+    setFirewallError(null)
+    try {
+      const result = await applyFirewallRule()
+      setFirewallStatus(result.status || null)
+      onToast(
+        result.code === 'already_allowed'
+          ? 'Windows 防火墙规则已经满足要求'
+          : 'Windows 防火墙规则已配置并验证',
+        'success'
+      )
+      await refreshFirewallStatus()
+    } catch (e: any) {
+      const code = e instanceof APIError ? e.code : e?.code
+      if (code === 'user_cancelled') {
+        setFirewallError('已取消 UAC 提权，本程序未修改防火墙规则。')
+        onToast('已取消防火墙配置', 'info')
+      } else {
+        setFirewallError(e?.message || '配置 Windows 防火墙失败')
+        onToast('配置 Windows 防火墙失败', 'error')
+      }
+    } finally {
+      setFirewallApplying(false)
+    }
+  }
 
   const handleEnableLan = async () => {
     try {
@@ -78,6 +128,67 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
             </div>
           </div>
         )}
+
+        {/* Windows Firewall Status */}
+        <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5 text-xs">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-semibold text-slate-900">Windows 防火墙</span>
+            {firewallLoading ? (
+              <span className="text-slate-400">检测中...</span>
+            ) : firewallStatus?.allowed ? (
+              <span className="text-emerald-700 font-semibold">已放行</span>
+            ) : firewallStatus?.supported === false ? (
+              <span className="text-slate-400">当前平台无需配置</span>
+            ) : firewallStatus ? (
+              <span className="text-amber-700 font-semibold">尚未放行</span>
+            ) : (
+              <span className="text-rose-600 font-semibold">读取失败</span>
+            )}
+          </div>
+
+          {firewallStatus?.has_public && !firewallStatus.has_private && (
+            <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-md text-amber-800 leading-relaxed">
+              当前 Windows 网络属于【公用网络】；本程序创建的防火墙规则仅适用于【专用网络】，因此通过该公用网络连接的设备可能无法访问。若手机无法连接，请前往系统设置将当前网络切换为【专用网络】。
+            </div>
+          )}
+
+          {firewallStatus?.supported !== false && firewallStatus?.allowed && (
+            <div className="text-emerald-700 leading-relaxed">
+              🛡️ Windows 防火墙：已放行端口 {firewallStatus.port}（仅限专用网络 / 局域网子网）
+            </div>
+          )}
+
+          {firewallStatus?.supported !== false && firewallStatus && !firewallStatus.allowed && (
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-slate-500 leading-relaxed">
+                当前端口 {firewallStatus.port} 尚未检测到符合要求的放行规则。
+              </span>
+              <Button
+                variant="primary"
+                size="xs"
+                onClick={handleApplyFirewall}
+                loading={firewallApplying}
+              >
+                {firewallApplying ? '正在配置...' : '一键配置防火墙'}
+              </Button>
+            </div>
+          )}
+
+          {firewallError && (
+            <div className="flex items-center justify-between gap-2 text-rose-700 leading-relaxed">
+              <span>{firewallError}</span>
+              <Button variant="desktop" size="xs" onClick={refreshFirewallStatus} disabled={firewallLoading || firewallApplying}>
+                重试
+              </Button>
+            </div>
+          )}
+
+          {firewallStatus?.network_categories?.length > 0 && (
+            <div className="text-[11px] text-slate-500 font-mono">
+              当前网络类别：{firewallStatus.network_categories.join(', ')}
+            </div>
+          )}
+        </div>
 
         {/* QR Code and Instructions */}
         <div className="flex flex-col sm:flex-row items-center gap-4 p-4 bg-slate-50 border border-slate-200 rounded-lg">
