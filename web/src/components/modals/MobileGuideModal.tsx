@@ -191,9 +191,9 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
             </div>
           )}
 
-          {firewallStatus?.network_categories?.length > 0 && (
+          {((firewallStatus?.network_categories || []).length > 0) && (
             <div className="text-[11px] text-slate-500 font-mono">
-              当前网络类别：{firewallStatus.network_categories.join(', ')}
+              当前网络类别：{(firewallStatus?.network_categories || []).join(', ')}
             </div>
           )}
         </div>
