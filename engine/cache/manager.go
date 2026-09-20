@@ -144,6 +144,9 @@ func (m *Manager) SetCacheBase(base string) {
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+
 	m.ramEnabled.Store(enabled)
 	if !enabled {
 		m.ramCache.Clear()
