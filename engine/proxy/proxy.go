@@ -172,11 +172,21 @@ func (s *ProxyServer) getAssetClient() *http.Client {
 // tracedRequest attaches a non-intrusive httptrace hook that records real
 // connection reuse for telemetry. It never mutates the request or its bytes.
 // The negotiated protocol is recorded separately from the response.
+func (s *ProxyServer) telemetryEnabled() bool {
+	return s.cfgMgr != nil && s.cfgMgr.Get().EnableAPITelemetry
+}
+
 func (s *ProxyServer) tracedRequest(req *http.Request) *http.Request {
+	if !s.telemetryEnabled() {
+		return req
+	}
 	return s.tracedRequestWithCallback(req, nil)
 }
 
 func (s *ProxyServer) tracedRequestWithCallback(req *http.Request, onGotConn func(reused bool)) *http.Request {
+	if !s.telemetryEnabled() {
+		return req
+	}
 	trace := &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
 			s.stats.RecordConnReuse(info.Reused)
@@ -994,8 +1004,10 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	}
 	s.forwardDynamicResponse(conn, resp, respBytes, req.Method == http.MethodHead, req.Close)
 	elapsed := time.Since(startTime).Milliseconds()
-	s.stats.RecordProtocol(resp.Proto)
-	s.stats.RecordLatency(float64(elapsed))
+	if s.telemetryEnabled() {
+		s.stats.RecordProtocol(resp.Proto)
+		s.stats.RecordLatency(float64(elapsed))
+	}
 	reusedStr := "new"
 	if reqReused {
 		reusedStr = "reused"
@@ -1236,7 +1248,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 
 		fetchStart := time.Now()
 		resp, err := s.getAssetClient().Do(s.tracedRequest(upReq))
-		if err == nil && resp != nil {
+		if err == nil && resp != nil && s.telemetryEnabled() {
 			s.stats.RecordProtocol(resp.Proto)
 			s.stats.RecordLatency(float64(time.Since(fetchStart).Milliseconds()))
 		}
@@ -1426,8 +1438,10 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	}
 	s.forwardDynamicResponse(w, resp, respBytes, req.Method == http.MethodHead, req.Close)
 	elapsed := time.Since(startTime).Milliseconds()
-	s.stats.RecordProtocol(resp.Proto)
-	s.stats.RecordLatency(float64(elapsed))
+	if s.telemetryEnabled() {
+		s.stats.RecordProtocol(resp.Proto)
+		s.stats.RecordLatency(float64(elapsed))
+	}
 	reusedStr := "new"
 	if reqReused {
 		reusedStr = "reused"
