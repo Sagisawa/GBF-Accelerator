@@ -40,6 +40,7 @@ type ControlServer struct {
 	listener    net.Listener
 	listenerGen uint64
 	mu          sync.RWMutex
+	applyMu     sync.Mutex
 	distDir    string
 	running    bool
 	closedChan chan struct{}
@@ -662,6 +663,11 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		c.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON payload"})
 		return
 	}
+
+	// Serialize the full apply/commit/rebind/rollback transaction. Without this,
+	// overlapping ApplyConfig requests can roll each other back from stale candidates.
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
 
 	candidate := c.cfgMgr.Candidate()
 	oldCandidate := candidate
