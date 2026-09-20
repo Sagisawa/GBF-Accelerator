@@ -22,6 +22,7 @@ import (
 	"gbf-proxy/cert"
 	"gbf-proxy/config"
 	"gbf-proxy/desktop"
+	"gbf-proxy/firewall"
 	"gbf-proxy/proxy"
 	"gbf-proxy/res"
 	"gbf-proxy/startup"
