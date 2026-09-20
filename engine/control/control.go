@@ -615,7 +615,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"listen_host":              c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":              cfg.ListenPort,
 		"control_port":             cfg.ControlPort,
-		"upstream_proxy":           c.cfgMgr.GetEffectiveUpstreamProxy(),
+		"upstream_proxy":           c.proxySrv.GetEffectiveUpstreamProxy(),
 		"direct_mode":              cfg.DirectMode,
 		"allow_lan":                cfg.AllowLAN,
 		"lan_ip":                   lanIP,
