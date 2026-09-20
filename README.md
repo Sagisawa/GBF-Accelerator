@@ -25,115 +25,60 @@
 - **控制平面（管理控制台，默认 `:8125`）**：负责本地 REST API、实时 SSE 遥测流推送与内嵌 React 控制台；自带 DNS 重绑定与 CORS 防护，支持局域网白名单隔离；
 - **宿主集成层（Desktop Integration）**：无外部 Python / Electron 依赖，自动托管系统 PAC 代理与证书库，通过本地 Chromium App Mode 挂载原生独立窗口并常驻托盘。
 
-### 全景架构与数据流向图
+### 核心数据流向图
 
 ```mermaid
 flowchart TD
-    subgraph ClientHost ["💻 客户端环境"]
-        GameClient["游戏端 (Chrome / Safari / Edge / AndApp / Steam)"]
-        UserUI["管理终端 (Chromium App 独立窗口 / Web 控制台)"]
-    end
+    Client["客户端 (Chrome / Safari / Edge / AndApp / Steam)"]
+    Proxy["GBF Accelerator 本地代理 (127.0.0.1:8124)"]
+    Dispatcher{"SNI 与路径分流调度"}
+    
+    Client -->|"PAC 自动分流"| Proxy
+    Proxy --> Dispatcher
 
-    subgraph DataPlane ["⚡ 数据平面: GBF Accelerator Core (默认 :8124)"]
-        Dispatcher{"协议与域名分流调度器<br/>(ACL & Host & Path 校验)"}
+    subgraph AssetChannel ["⚡ 静态素材通道 (*.akamaized.net)"]
+        RAMCheck{"RAM 内存缓存 (0ms)"}
+        DiskCheck{"SSD 磁盘缓存 (1~3ms)"}
+        SingleFlight["SingleFlight 并发合并"]
+        AssetClient["asset_client (HTTP/2 多路复用)"]
+        CacheStore["Respond-First 秒级交付<br/>(RAM 即刻返回 + 后台异步落盘)"]
+        PrefetchWorker["后台预加载 Worker<br/>(15~35ms 抖动平滑 / 前台避让)"]
         
-        subgraph LocalEndpoints ["内部直连端点"]
-            PACServer["/proxy.pac 动态脚本分发"]
-            CAServer["/ca.crt 根证书安装分发"]
-            LANGuide["/ 局域网接入与扫码引导"]
-        end
-
-        subgraph TunnelRoutes ["CONNECT 隧道决策"]
-            Block403["官方遥测域名 403 阻断<br/>(sp.mbga.jp/telemetry 等)"]
-            Passthrough["外部非相关域名 Passthrough<br/>(透明 TCP / SOCKS5 穿透)"]
-            MITM["GBF 域名 MITM 终端握手<br/>(本地独立唯一 CA 动态签发)"]
-        end
-
-        subgraph AssetChannel ["⚡ 静态素材通道 (*.akamaized.net 等)"]
-            RAMCheck{"RAM 内存缓存 (LRU)"}
-            DiskCheck{"SSD 磁盘缓存"}
-            CondCheck{"304 协商 (ETag / IMS)"}
-            SingleFlight["SingleFlight 并发请求合并"]
-            AssetClient["asset_client (HTTP/2 多路复用专用池)"]
-            RespondFirst["Respond-First 交付引擎<br/>(RAM 写入即交付 + 后台非阻塞落盘)"]
-            DiskStore["原子落盘 (.tmp + Rename)<br/>Magic Bytes 二进制校验"]
-            PrefetchWorker["后台预加载 Worker<br/>(15~35ms 抖动平滑调度)"]
-
-            RAMCheck -->|"未命中"| DiskCheck
-            RAMCheck -->|"命中"| CondCheck
-            DiskCheck -->|"命中"| CondCheck
-            DiskCheck -->|"未命中"| SingleFlight
-            SingleFlight --> AssetClient
-            AssetClient -->|"回源成功"| RespondFirst
-            RespondFirst -->|"瞬时交付"| ResponseDeliver
-            RespondFirst -.->|"后台异步落盘"| DiskStore
-            DiskStore -.->|"热点提入"| RAMCheck
-            PrefetchWorker -.->|"前台活动时主动避让 (QoS)"| AssetClient
-        end
-
-        subgraph APIChannel ["🛡️ 动态 API 通道 (game.granbluefantasy.jp)"]
-            APIClient["api_client (HTTP/1.1 Keep-Alive 专用池)"]
-            RetryPolicy{"P0 级重试控制"}
-            WriteZero["POST/写请求: maxAttempts=1<br/>(物理禁用 GetBody 杜绝重放)"]
-            SafeRetry["只读 GET 白名单: maxAttempts=2<br/>(仅限空闲连接断开快速重连)"]
-
-            APIClient --> RetryPolicy
-            RetryPolicy -->|"涉及状态变更"| WriteZero
-            RetryPolicy -->|"幂等只读查询"| SafeRetry
-        end
+        RAMCheck -->|"未命中"| DiskCheck
+        DiskCheck -->|"未命中"| SingleFlight
+        SingleFlight --> AssetClient
+        PrefetchWorker -.->|"前台活动时让道 (QoS)"| AssetClient
     end
 
-    subgraph ControlPlane ["🎛️ 控制平面: 管理服务 (默认 :8125)"]
-        DNSRebind{"Host 与 Origin 校验<br/>(DNS 重绑定防护)"}
-        WebSPA["内嵌 React SPA 前端 (Go embed 打包)"]
-        RestAPI["REST API (/api/status, /api/config, ...)"]
-        SSEStream["SSE 实时遥测流 (连接复用状态 / 延迟 / 吞吐)"]
-        CacheMaint["缓存体检 (Audit) & 安全瘦身 (Slim) 调度器"]
-        AutoUpdater["版本检测与后台增量下载引擎"]
-
-        UserUI --> DNSRebind
-        DNSRebind --> WebSPA
-        DNSRebind --> RestAPI
-        DNSRebind --> SSEStream
-        RestAPI --> CacheMaint
-        RestAPI --> AutoUpdater
+    subgraph APIChannel ["🛡️ 动态 API 通道 (game.granbluefantasy.jp)"]
+        APIClient["api_client (HTTP/1.1 Keep-Alive 专用池)<br/>• POST/写操作: 物理禁用 GetBody 严格零重试<br/>• GET 只读白名单: 仅限空闲断开单次重连<br/>• 官方心跳 /ob/r 与 /rest/error/js 100% 穿透"]
     end
 
     subgraph UpstreamGateway ["🌐 上游网络出口"]
         UpstreamMode{"出口模式"}
         UpstreamProxy["上游代理 (Clash / v2rayN / 岛风GO)"]
         DirectNet["公网直连 (Cygames / Akamai)"]
-
+        
         UpstreamMode -->|"代理模式 (默认)"| UpstreamProxy
         UpstreamMode -->|"直连模式"| DirectNet
     end
 
-    %% 客户端连接
-    GameClient -->|"系统 PAC / 扩展代理"| Dispatcher
-    
-    %% 分流逻辑
-    Dispatcher -->|"明文请求本地端点"| LocalEndpoints
-    Dispatcher -->|"CONNECT 遥测域名"| Block403
-    Dispatcher -->|"CONNECT 外部无关域名"| Passthrough
-    Dispatcher -->|"CONNECT GBF 核心域名"| MITM
-    
-    MITM -->|"静态素材 (GET/HEAD)"| RAMCheck
-    MITM -->|"动态业务 API / 官方心跳 (/ob/r)"| APIClient
+    Dispatcher -->|"静态素材 (GET/HEAD)"| RAMCheck
+    Dispatcher -->|"业务接口 / 官方心跳"| APIClient
 
-    Passthrough --> UpstreamMode
-    WriteZero --> UpstreamMode
-    SafeRetry --> UpstreamMode
     AssetClient --> UpstreamMode
+    APIClient --> UpstreamMode
 
-    %% 交付流
-    CondCheck -->|"304 Not Modified"| ResponseDeliver["客户端呈现 (零代理特征 / 纯净响应)"]
-    UpstreamProxy -->|"业务语义零干预透传<br/>多行 Set-Cookie 原样保留"| ResponseDeliver
-    DirectNet -->|"业务语义零干预透传<br/>多行 Set-Cookie 原样保留"| ResponseDeliver
-    ResponseDeliver --> GameClient
+    UpstreamProxy -->|"素材数据流"| CacheStore
+    DirectNet -->|"素材数据流"| CacheStore
+    CacheStore -->|"更新缓存并交付"| ResponseDeliver["客户端呈现 (零代理特征 / 纯净响应)"]
 
-    %% 控制面与数据面协同
-    DataPlane -.->|"实时统计数据"| SSEStream
-    RestAPI -.->|"动态热应用配置"| DataPlane
+    RAMCheck -->|"RAM 命中"| ResponseDeliver
+    DiskCheck -->|"SSD 命中"| ResponseDeliver
+
+    UpstreamProxy -->|"业务透明透传<br/>多行 Set-Cookie 原样保留"| ResponseDeliver
+    DirectNet -->|"业务透明透传<br/>多行 Set-Cookie 原样保留"| ResponseDeliver
+    ResponseDeliver --> Client
 ```
 
 <details>
@@ -195,19 +140,25 @@ flowchart TD
   - **动态 API 通道 (`api_client`)**：为 `game.granbluefantasy.jp` 专设独立 HTTP/1.1 连接池，保持长连接复用，避免连接反复握手延迟。
   - **静态素材通道 (`asset_client`)**：针对 Akamai CDN 启用 HTTP/2 多路复用，通过单条链路并发拉取多路素材切片。
   - **连接池互不影响**：后台预加载批量并发拉取素材时，动态 API 维持专属连接，避免与静态流量产生连接竞争。
+- **Go 运行时低延迟网络调优**：
+  - 启动时自动将 `debug.SetMemoryLimit`（软内存上限）设为 `RAMCacheMaxMB + 128MB`，配合 `debug.SetGCPercent(200)` 调优 GC 步调；
+  - 减少高并发网络 I/O 期间的垃圾回收频次与 STW 停顿，保障低延迟网络热路径平稳。
 - **前台素材优先调度与 QoS 避让**：
   - 动态跟踪前台活动请求，当前台拉取首屏与战斗画面素材时，后台预加载任务主动暂停让道；
   - 前台请求完毕后增加短时冷却平滑，避免后台预加载立即恢复引发瞬时突发流量。
-- **安全失效重试 (Safe Stale-Retry)**：
-  - **写请求严格零重试**：所有涉及状态变更的 POST 请求（普通攻击、技能释放、召唤、购买等）最大尝试次数严格为 1，杜绝重复触发。
-  - **只读白名单断连重试**：仅对预先严格审核的只读幂等 GET 接口（如 `/rest/multiraid/condition.json`、`/rest/quest/stage_list`、`/rest/party/deck_info` 等），在遇到底层空闲长连接断开（`EOF` / `connection reset` 等）时执行最多 1 次快速重连；多人战开本发车与战斗等写操作坚决零重试。
-- **低开销遥测与实时监控**：
-  - 主界面提供实时日志窗口，直观高亮展示连接复用状态（`reused` / `new`）；
-  - 记录 API 耗时分布（P50 / P95 / P99），支持按模块筛选与一键导出。
+- **双重约束安全重试 (Safe Stale-Retry)**：
+  - **写请求严格零重试**：所有涉及状态变更的 POST 请求（普通攻击、技能释放、召唤、购买等）最大尝试次数严格为 1，并在运行时显式置空 `upReq.GetBody`，从底层杜绝 Go 标准库隐式重发。
+  - **只读白名单断连重试**：仅对预先严格审核的只读幂等 GET 接口（如 `/rest/multiraid/condition.json`、`/rest/quest/stage_list`、`/rest/party/deck_info` 等），在遇到底层空闲长连接断开（`EOF` / `connection reset`）时执行最多 1 次快速重连；多人战开本发车与战斗等写操作坚决零重试。
+- **SSE 实时遥测与监控**：
+  - 通过 Server-Sent Events (SSE) 长连接将连接复用状态（`reused` / `new`）、吞吐速率与 API 耗时分布（P50 / P95 / P99）实时推流至 Web 控制台；
+  - 支持按接口模块筛选，提供一键导出审计日志能力。
 
 ### 💾 层次化缓存体系与预加载
-- **RAM Cache 内存热点缓存**：高频静态资源直接驻留内存（默认上限 256MB，可在 16MB ~ 8192MB 范围自由调节），读取耗时接近 0ms，读取不经磁盘。
-- **SSD 持久化缓存与原子写入**：静态资源落盘采用临时文件（`.tmp`）与原子重命名重试机制，防止写入意外中断导致文件残损。
+- **RAM Cache 内存热点缓存**：高频静态资源直接驻留内存（默认上限 256MB，可在 16MB ~ 8192MB 自由调节），读取耗时接近 0ms，读取不经磁盘。
+- **Respond-First 写入交付引擎**：回源拉取素材完毕后优先写入 RAM Cache 并立即向客户端交付响应，磁盘落盘完全置于后台非阻塞异步执行，避免文件 I/O 阻塞网络交付。
+- **SSD 持久化缓存与原子写入**：静态资源落盘采用临时文件（`.tmp`）与原子重命名机制，防止进程异常中断导致缓存破损。
+- **304 Not Modified 条件协商缓存**：支持客户端 `If-None-Match` (ETag) 与 `If-Modified-Since` 校验，本地缓存命中时瞬时返回 304 响应，零实体字节传输。
+- **智能 Cache-Control 分级**：针对带版本号的素材切片（`reVersioned`）返回 `immutable, max-age=31536000`，有效利用浏览器本地磁盘缓存；常规文件返回受控缓存头。
 - **Magic Bytes 二进制校验与一键体检**：校验 PNG / JPEG / WebP / GIF / MP3 / WOFF 等二进制文件头，拦截 0 字节损坏文件及 502/503 错误 HTML；GUI 提供“一键体检缓存”支持坏件清理与自动回源自愈。
 - **SingleFlight 并发请求合并**：同名静态素材高并发请求时自动合并为单次回源拉取，其余请求共享返回结果，缓解上游并发压力。
 - **后台平滑预加载 (Prefetch)**：解析场景 JS/JSON 及 CreateJS 角色动画切片，在任务间引入 15~35ms 随机抖动平滑调度，削峰填谷；引用扫描解耦至后台有界队列，不阻塞前台请求。
@@ -220,10 +171,12 @@ flowchart TD
   - 基于 Chromium App Mode 的无边框独立控制台窗口与原生深色主题，零 Electron / Python 运行时依赖；
   - 自动管理 WinINet 系统 PAC 代理（启动自动挂载，退出自动清理）；
   - 系统代理冲突检测：自动识别 Clash / v2rayN 等外部工具抢占并提供一键修复引导；
+  - 启动时自动检测并清理端口占用与残留僵尸进程（`clean_zombies`）；
   - 支持常驻系统托盘，后台运行时挂起界面刷新，CPU 占用降至接近 0.0%；
   - 内置 Windows 证书库信任管理（`certutil` 自动导入/注销）；
   - 支持随 Windows 开机自启（默认关闭）。
 - **macOS 原生集成**：
+  - 采用 Universal 2 双架构二进制打包，同时原生支持 Intel 与 Apple Silicon (M系列) Macs；
   - 基于 Chromium App Mode 启动独立应用窗口，支持顶部状态栏常驻图标与上下文菜单；
   - 自动调用 `networksetup` 托管系统 PAC 代理，具备外部代理冲突检测；
   - 自动调用 `security add-trusted-cert` 信任用户登录钥匙串（Keychain）；
@@ -237,11 +190,13 @@ flowchart TD
   - 手机访问 `http://<局域网IP>:8124/` 直达移动端专属向导页，提供一键复制 PAC 链接与扫码下载证书；
   - 内置私网 IP 访问控制列表（ACL）防护，防止非局域网非法访问。
 - **客户端内置版本更新检测**：
-  - 启动时异步比对 GitHub Releases 版本，支持根据操作系统（Windows / macOS）自动筛选对应发布包并提供一键下载与进度展示。
+  - 启动时异步比对 GitHub Releases 版本，支持根据操作系统（Windows / macOS）自动筛选对应发布包并提供一键下载与断点续传。
 
 ### 🛡️ 安全、零篡改与透明治理
 - **业务语义绝对透明**：所有业务接口（抽卡、编队、结算、任务等）通过专用通道端到端原样转发，严禁修改状态码、业务 Header、正文或 Cookie；严格保留多行 `Set-Cookie`，禁止逗号折叠。
 - **官方探测绝对穿透**：官方在线心跳（`/ob/r`）与前端错误上报（`/rest/error/js`）100% 穿透直达 Cygames 服务器，本地不拦截、不伪造。
+- **官方遥测与数据搜集精准阻断**：对 `sp.mbga.jp/telemetry`、`log.granbluefantasy.jp` 等非业务数据搜集域名进行 403 Forbidden 主动阻断，保护隐私并降低网络杂讯。
+- **控制平面安全隔离 (DNS Rebinding 防护)**：控制端口严格校验 HTTP `Host` 与 `Origin` 头（非白名单直接拒绝），杜绝第三方恶意网页通过本地端口实施 DNS 重绑定或跨域提权反弹。
 - **响应头零指纹污染**：向客户端交付的所有响应中，严禁添加任何自定义代理标识头（如 `X-Proxy-*` 等），保持标准透明传输中间件定位。
 - **本地独立唯一根证书**：根证书私钥仅在首次运行时由本机动态生成，严格保存在本地 `certs/` 目录，不使用任何硬编码或公开共享证书；域名证书通过 SAN 严格限制在 GBF 相关域名，符合 Apple TLS 规范（有效期 <= 365 天）。
 - **精准收敛分流规则**：PAC 脚本精准收敛至 GBF 官方站点、标准 CDN 与 Steam 版 CDN，不通配公共 `*.akamaized.net`，不干扰非 GBF 流量。
