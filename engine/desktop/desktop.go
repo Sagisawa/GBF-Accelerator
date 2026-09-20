@@ -58,7 +58,10 @@ func OpenFolder(path string) error {
 	_ = os.MkdirAll(cleanPath, 0755)
 	switch runtime.GOOS {
 	case "windows":
-		return exec.Command("explorer", cleanPath).Start()
+		// Use Explorer's shell open semantics instead of a bare child-process
+		// launch. /n requests a new Explorer window, which also makes a
+		// user-initiated folder click reliably surface the window.
+		return exec.Command("explorer.exe", "/n,"+cleanPath).Start()
 	case "darwin":
 		return exec.Command("open", cleanPath).Start()
 	default:
