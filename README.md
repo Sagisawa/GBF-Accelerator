@@ -41,7 +41,7 @@ flowchart TD
         DiskCheck{"SSD 磁盘缓存 (1~3ms)"}
         SingleFlight["SingleFlight 并发合并"]
         AssetClient["asset_client (HTTP/2 多路复用)"]
-        CacheStore["Respond-First 秒级交付<br/>(RAM 即刻返回 + 后台异步落盘)"]
+        CacheStore["Respond-First 即时交付<br/>(RAM 写入即返 + 后台异步落盘)"]
         PrefetchWorker["后台预加载 Worker<br/>(15~35ms 抖动平滑 / 前台避让)"]
         
         RAMCheck -->|"未命中"| DiskCheck
