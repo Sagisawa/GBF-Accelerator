@@ -46,3 +46,23 @@ func TestEnsureHelperFiles(t *testing.T) {
 		t.Errorf("expected updated 127.0.0.1:8126 in proxy.pac")
 	}
 }
+
+func TestEnsureHelperFilesPreservesCustomPAC(t *testing.T) {
+	tempDir := t.TempDir()
+	pacPath := filepath.Join(tempDir, "proxy.pac")
+	custom := "function FindProxyForURL(url, host) { return \"DIRECT\"; }"
+	if err := os.WriteFile(pacPath, []byte(custom), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureHelperFiles(tempDir, 9000); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(pacPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != custom {
+		t.Fatalf("custom PAC was overwritten")
+	}
+}
