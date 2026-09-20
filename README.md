@@ -158,15 +158,15 @@ flowchart TD
 ```text
 [Candidate] (候选配置生成与字段校验)
     ↓
-[Listener Rebind] (网络监听强事务重载: 8124 / 8125 端口与 Host 切换)
-    ↓
 [Commit] (内存配置原子提交与磁盘持久化)
+    ↓
+[Listener Rebind] (网络监听强事务重载: 8124 / 8125 端口与 Host 切换)
     ↓
 [Post-Commit Runtime Sync] (非监听运行时副作用生效: 缓存目录/RAM 上限/PAC 代理/自启)
 ```
 
-- **Rebind 阶段失败**：遇端口占用立即自动回滚，旧 Listener 保持不变，配置状态完全不变；
-- **Save/Commit 阶段失败**：两端 Listener 自动回滚至原端口与原监听地址，内存配置瞬时还原，磁盘配置未变，且**彻底阻断 Post-Commit 运行时副作用**（sysproxy 不执行、startup 不执行、cache runtime 不切换）；
+- **Save/Commit 阶段失败**：监听器尚未变更，内存配置回滚，磁盘配置保持不变，且**彻底阻断 Listener 与 Post-Commit 运行时副作用**；
+- **Rebind 阶段失败**：已成功重绑的 Listener 与配置自动回滚至旧状态，并返回明确错误；
 - **语义约束**：`cfgMgr.Update()` 仅用于安全的内存就地原子更新；`cfgMgr.Commit()` 承载包含磁盘落盘校验、两端监听联动与强事务回滚保障的完整语义。
 
 ---
