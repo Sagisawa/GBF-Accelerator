@@ -1449,53 +1449,79 @@ func (c *ControlServer) handleStartupSet(w http.ResponseWriter, req *http.Reques
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "invalid JSON"})
 		return
 	}
-	err := c.setStartupEnabledFn(body.Enabled)
-	if err != nil {
+
+	oldEnabled := c.cfgMgr.Get().AutoStart
+	if err := c.setStartupEnabledFn(body.Enabled); err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 		return
 	}
-	c.cfgMgr.Update(func(cfg *config.Config) {
+	if _, err := c.cfgMgr.UpdateWithError(func(cfg *config.Config) {
 		cfg.AutoStart = body.Enabled
-	})
+	}); err != nil {
+		rollbackErr := c.setStartupEnabledFn(oldEnabled)
+		if rollbackErr != nil {
+			c.stats.Log("ERROR", fmt.Sprintf("[STARTUP] 配置保存失败且开机启动回滚失败: save=%v rollback=%v", err, rollbackErr))
+		}
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": fmt.Sprintf("配置保存失败: %v", err)})
+		return
+	}
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"enabled": body.Enabled,
 	})
 }
-
 func (c *ControlServer) handleSysProxyEnable(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()
 	pacURL := fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort)
-	err := c.enablePACProxyFn(pacURL)
-	if err != nil {
+	oldEnabled := cfg.AutoSystemProxy
+	if err := c.enablePACProxyFn(pacURL); err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 		return
 	}
-	c.cfgMgr.Update(func(cfg *config.Config) {
+	if _, err := c.cfgMgr.UpdateWithError(func(cfg *config.Config) {
 		cfg.AutoSystemProxy = true
-	})
+	}); err != nil {
+		var rollbackErr error
+		if oldEnabled {
+			rollbackErr = c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort))
+		} else {
+			rollbackErr = c.disablePACProxyFn(false)
+		}
+		if rollbackErr != nil {
+			c.stats.Log("ERROR", fmt.Sprintf("[SYSPROXY] 配置保存失败且系统 PAC 回滚失败: save=%v rollback=%v", err, rollbackErr))
+		}
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": fmt.Sprintf("配置保存失败: %v", err)})
+		return
+	}
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "System PAC proxy enabled",
 		"url":     pacURL,
 	})
 }
-
 func (c *ControlServer) handleSysProxyDisable(w http.ResponseWriter, req *http.Request) {
-	err := c.disablePACProxyFn(false)
-	if err != nil {
+	cfg := c.cfgMgr.Get()
+	oldEnabled := cfg.AutoSystemProxy
+	if err := c.disablePACProxyFn(false); err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 		return
 	}
-	c.cfgMgr.Update(func(cfg *config.Config) {
+	if _, err := c.cfgMgr.UpdateWithError(func(cfg *config.Config) {
 		cfg.AutoSystemProxy = false
-	})
+	}); err != nil {
+		if oldEnabled {
+			if rollbackErr := c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort)); rollbackErr != nil {
+				c.stats.Log("ERROR", fmt.Sprintf("[SYSPROXY] 配置保存失败且系统 PAC 回滚失败: save=%v rollback=%v", err, rollbackErr))
+			}
+		}
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": fmt.Sprintf("配置保存失败: %v", err)})
+		return
+	}
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "System PAC proxy disabled",
 	})
 }
-
 func (c *ControlServer) handlePrefetchStatus(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()
 	queueSize := 0
