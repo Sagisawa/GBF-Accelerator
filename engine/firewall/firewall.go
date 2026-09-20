@@ -91,28 +91,13 @@ func ValidateRuleAttributes(rule RuleInfo, expectedPort int) bool {
 		return false
 	}
 
-	hasPrivate := false
-	for _, profile := range rule.Profile {
-		if strings.EqualFold(strings.TrimSpace(profile), "Private") {
-			hasPrivate = true
-			break
-		}
-	}
-	if !hasPrivate {
+	if len(rule.Profile) != 1 || !strings.EqualFold(strings.TrimSpace(rule.Profile[0]), "Private") {
 		return false
 	}
-
-	hasLocalSubnet := false
-	for _, address := range rule.RemoteAddress {
-		address = strings.TrimSpace(address)
-		if strings.EqualFold(address, "Any") {
-			return false
-		}
-		if strings.EqualFold(address, "LocalSubnet") {
-			hasLocalSubnet = true
-		}
+	if len(rule.RemoteAddress) != 1 || !strings.EqualFold(strings.TrimSpace(rule.RemoteAddress[0]), "LocalSubnet") {
+		return false
 	}
-	return hasLocalSubnet
+	return true
 }
 
 func IsSupported() bool {
