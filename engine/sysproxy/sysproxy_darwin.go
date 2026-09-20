@@ -153,28 +153,44 @@ func enablePACProxy(pacURL string) error {
 
 func disablePACProxy(force bool) error {
 	svcs := macGetServicesOrdered()
+	var errs []string
 	for _, s := range svcs {
 		currURL, _ := macGetAutoProxyInfo(s)
-		isOur := strings.Contains(strings.ToLower(currURL), "/proxy.pac") &&
-			(strings.Contains(currURL, "127.0.0.1") || strings.Contains(currURL, "localhost"))
+		isOur := strings.EqualFold(strings.TrimSpace(currURL), strings.TrimSpace(managedPACURL))
 
+		// Do not overwrite a service whose PAC was changed by another application
+		// after we mounted ours. With force=false, only our own PAC may be restored.
+		if !force && isManagingProxy && !isOur {
+			continue
+		}
 		if !force && !isManagingProxy && !isOur {
 			continue
 		}
 
 		if orig, ok := macOriginalSettings[s]; ok {
 			if orig.url != "" {
-				_ = exec.Command("networksetup", "-setautoproxyurl", s, orig.url).Run()
+				if err := exec.Command("networksetup", "-setautoproxyurl", s, orig.url).Run(); err != nil {
+					errs = append(errs, fmt.Sprintf("%s URL restore: %v", s, err))
+					continue
+				}
 			}
 			state := "off"
 			if orig.enabled {
 				state = "on"
 			}
-			_ = exec.Command("networksetup", "-setautoproxystate", s, state).Run()
+			if err := exec.Command("networksetup", "-setautoproxystate", s, state).Run(); err != nil {
+				errs = append(errs, fmt.Sprintf("%s state restore: %v", s, err))
+				continue
+			}
 			delete(macOriginalSettings, s)
 		} else {
-			_ = exec.Command("networksetup", "-setautoproxystate", s, "off").Run()
+			if err := exec.Command("networksetup", "-setautoproxystate", s, "off").Run(); err != nil {
+				errs = append(errs, fmt.Sprintf("%s disable PAC: %v", s, err))
+			}
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to restore PAC on some network services: %s", strings.Join(errs, " • "))
 	}
 	return nil
 }
