@@ -29,56 +29,56 @@
 
 ```mermaid
 flowchart TD
-    Client["客户端 (Chrome / Safari / Edge / AndApp / Steam)"]
-    Proxy["GBF Accelerator 本地代理 (127.0.0.1:8124)"]
-    Dispatcher{"SNI 与路径分流调度"}
-    
+    Client["客户端 (Chrome / Safari / Edge / Steam)"]
+    Proxy["GBF Accelerator (代理 :8124 / 控制台 :8125)"]
+
     Client -->|"PAC 自动分流"| Proxy
-    Proxy --> Dispatcher
 
     subgraph AssetChannel ["⚡ 静态素材通道 (*.akamaized.net)"]
         RAMCheck{"RAM 内存缓存 (0ms)"}
         DiskCheck{"SSD 磁盘缓存 (1~3ms)"}
-        SingleFlight["SingleFlight 并发合并"]
+        SingleFlight["SingleFlight 请求合并<br/>(并发只拉 1 次防击穿)"]
         AssetClient["asset_client (HTTP/2 多路复用)"]
-        CacheStore["Respond-First 即时交付<br/>(RAM 写入即返 + 后台异步落盘)"]
-        PrefetchWorker["后台预加载 Worker<br/>(15~35ms 抖动平滑 / 前台避让)"]
-        
+
         RAMCheck -->|"未命中"| DiskCheck
         DiskCheck -->|"未命中"| SingleFlight
         SingleFlight --> AssetClient
-        PrefetchWorker -.->|"前台活动时让道 (QoS)"| AssetClient
     end
 
     subgraph APIChannel ["🛡️ 动态 API 通道 (game.granbluefantasy.jp)"]
-        APIClient["api_client (HTTP/1.1 Keep-Alive 专用池)<br/>• POST/写操作: 物理禁用 GetBody 严格零重试<br/>• GET 只读白名单: 仅限空闲断开单次重连<br/>• 官方心跳 /ob/r 与 /rest/error/js 100% 穿透"]
+        APIClient["api_client (HTTP/1.1 专属连接池)"]
+        ZeroRetry["写请求: 运行时禁用 GetBody 严格零重试<br/>(杜绝技能双发与状态冲突)"]
+        Heartbeat["官方心跳 /ob/r 100% 穿透<br/>(业务语义零干预)"]
+
+        APIClient --> ZeroRetry
+        APIClient --> Heartbeat
     end
 
     subgraph UpstreamGateway ["🌐 上游网络出口"]
         UpstreamMode{"出口模式"}
-        UpstreamProxy["上游代理 (Clash / v2rayN / 岛风GO)"]
-        DirectNet["公网直连 (Cygames / Akamai)"]
-        
-        UpstreamMode -->|"代理模式 (默认)"| UpstreamProxy
+        UpstreamProxy["上游代理 (Clash / v2rayN)"]
+        DirectNet["公网直连 (Cygames / CDN)"]
+
+        UpstreamMode -->|"代理模式"| UpstreamProxy
         UpstreamMode -->|"直连模式"| DirectNet
     end
 
-    Dispatcher -->|"静态素材 (GET/HEAD)"| RAMCheck
-    Dispatcher -->|"业务接口 / 官方心跳"| APIClient
+    Proxy -->|"静态素材"| RAMCheck
+    Proxy -->|"业务请求 / 心跳"| APIClient
 
     AssetClient --> UpstreamMode
-    APIClient --> UpstreamMode
+    ZeroRetry --> UpstreamMode
+    Heartbeat --> UpstreamMode
 
-    UpstreamProxy -->|"素材数据流"| CacheStore
-    DirectNet -->|"素材数据流"| CacheStore
-    CacheStore -->|"更新缓存并交付"| ResponseDeliver["客户端呈现 (零代理特征 / 纯净响应)"]
+    UpstreamProxy -->|"素材数据流"| RespondFirst["Respond-First 即时交付<br/>(内存先返客户端 · 磁盘后台异步落盘)"]
+    DirectNet -->|"素材数据流"| RespondFirst
 
-    RAMCheck -->|"RAM 命中"| ResponseDeliver
-    DiskCheck -->|"SSD 命中"| ResponseDeliver
+    RAMCheck -->|"RAM 命中 (0ms / 304 协商)"| Deliver["客户端呈现 (零代理特征 / 杜绝白屏)"]
+    DiskCheck -->|"SSD 命中 (1~3ms / 304 协商)"| Deliver
+    RespondFirst --> Deliver
 
-    UpstreamProxy -->|"业务透明透传<br/>多行 Set-Cookie 原样保留"| ResponseDeliver
-    DirectNet -->|"业务透明透传<br/>多行 Set-Cookie 原样保留"| ResponseDeliver
-    ResponseDeliver --> Client
+    UpstreamProxy -->|"业务透明透传"| Deliver
+    DirectNet -->|"业务透明透传"| Deliver
 ```
 
 <details>
