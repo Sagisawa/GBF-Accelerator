@@ -3,8 +3,8 @@ package res
 import (
 	_ "embed"
 	"os"
-	"strings"
 	"path/filepath"
+	"strings"
 
 	"gbf-proxy/proxy"
 )
