@@ -14,6 +14,7 @@ func TestConfigManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp config: %v", err)
 	}
+	_ = tempFile.Close()
 	defer os.Remove(tempFile.Name())
 
 	cfgJSON := `{

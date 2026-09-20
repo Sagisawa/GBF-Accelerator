@@ -29,3 +29,25 @@ func TestGetPACDoesNotUseOverBroadCDNWildcards(t *testing.T) {
 		}
 	}
 }
+
+func TestGetLandingHTML(t *testing.T) {
+	html := GetLandingHTML("192.168.1.50", 8124)
+
+	expectedPhrases := []string{
+		"第一步：安装并信任根证书",
+		"第二步：配置手机 Wi-Fi 代理",
+		"常见问题",
+		"http://192.168.1.50:8124/ca.crt",
+		"http://192.168.1.50:8124/proxy.pac",
+		"game.granbluefantasy.jp",
+		"SkyLeap",
+		"GBF Local Accelerator Root CA",
+		"8124",
+	}
+
+	for _, phrase := range expectedPhrases {
+		if !strings.Contains(html, phrase) {
+			t.Errorf("GetLandingHTML missing expected phrase: %q", phrase)
+		}
+	}
+}

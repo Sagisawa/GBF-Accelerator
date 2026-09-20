@@ -34,6 +34,7 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
   const canUseMobileAccess = isLanEnabled && isProxyRunning
   const pacUrl = `http://${host}:${port}/proxy.pac`
   const guideUrl = `http://${host}:${port}/`
+  const caUrl = `http://${host}:${port}/ca.crt`
 
   const refreshFirewallStatus = React.useCallback(async () => {
     setFirewallLoading(true)
@@ -251,6 +252,82 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
             <span>手动代理主机: <strong className="font-mono text-slate-800">{host}</strong></span>
             <span>端口: <strong className="font-mono text-slate-800">{port}</strong></span>
           </div>
+        </div>
+
+        {/* Detailed Step-by-Step Instructions & FAQ */}
+        <div className="border border-slate-200 rounded-lg overflow-hidden text-xs">
+          <details className="group" open>
+            <summary className="p-3 bg-slate-50 hover:bg-slate-100/80 cursor-pointer font-semibold text-slate-800 flex items-center justify-between transition-colors select-none">
+              <span>📖 详细图文与常见问题说明 (Step by Step)</span>
+              <span className="text-slate-400 group-open:rotate-180 transition-transform">▼</span>
+            </summary>
+            <div className="p-3.5 space-y-3.5 bg-white border-t border-slate-200 text-slate-700 leading-relaxed max-h-[320px] overflow-y-auto">
+              <div className="space-y-1.5">
+                <div className="font-bold text-sky-700">【第一步：安装并信任根证书（iOS 必需，Android 视情况）】</div>
+                <ol className="list-decimal list-inside space-y-1 text-slate-600 pl-1">
+                  <li>确保手机与电脑连接在同一个 Wi-Fi 局域网下。</li>
+                  <li>手机 Safari 访问：<code className="font-mono text-sky-600 bg-slate-100 px-1 py-0.5 rounded select-all">{caUrl}</code>（或访问 <code className="font-mono text-sky-600 bg-slate-100 px-1 py-0.5 rounded select-all">{guideUrl}</code> 查看网页版指引）。</li>
+                  <li>提示时点击【允许】下载描述文件。</li>
+                  <li>打开手机系统【设置】→【已下载描述文件】→ 点击【安装】。</li>
+                  <li>
+                    <strong>系统信任证书：</strong><br />
+                    打开手机【设置】→【通用】→【关于本机】→ 底部【证书信任设置】；<br />
+                    找到【GBF Local Accelerator Root CA】，打开信任开关。
+                  </li>
+                </ol>
+              </div>
+
+              <div className="space-y-1.5 pt-2.5 border-t border-slate-100">
+                <div className="font-bold text-sky-700">【第二步：配置手机 Wi-Fi 代理】</div>
+                <ol className="list-decimal list-inside space-y-1 text-slate-600 pl-1">
+                  <li>打开手机系统【设置】→【无线局域网 (Wi-Fi)】。</li>
+                  <li>点击当前已连接 Wi-Fi 右侧的 ⓘ 图标。</li>
+                  <li>滑动到底部，点击【配置代理】：</li>
+                </ol>
+
+                <div className="mt-2 space-y-2 pl-2">
+                  <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-md">
+                    <div className="font-semibold text-slate-800">方式 1：自动分流（推荐，仅游戏素材走代理）</div>
+                    <div className="text-slate-600 mt-1">• 选择【自动】</div>
+                    <div className="text-slate-600">• URL 填入：<code className="font-mono text-sky-600 select-all">{pacUrl}</code></div>
+                    <div className="text-slate-600">• 存储。</div>
+                  </div>
+
+                  <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-md">
+                    <div className="font-semibold text-slate-800">方式 2：手动代理</div>
+                    <div className="text-slate-600 mt-1">• 选择【手动】</div>
+                    <div className="text-slate-600">• 服务器填入：<code className="font-mono text-sky-600 select-all">{host}</code></div>
+                    <div className="text-slate-600">• 端口填入：<code className="font-mono text-sky-600 select-all">{port}</code></div>
+                    <div className="text-slate-600">• 存储。</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-2.5 border-t border-slate-100">
+                <div className="font-bold text-slate-800">【常见问题】</div>
+                <div className="space-y-2 text-slate-600 text-[11.5px]">
+                  <div>
+                    <strong className="text-slate-700">• 游玩网址与客户端说明：</strong><br />
+                    建议使用手机浏览器（Safari / Chrome）直接访问：<br />
+                    <a href="https://game.granbluefantasy.jp" target="_blank" rel="noreferrer" className="text-sky-600 underline">https://game.granbluefantasy.jp</a><br />
+                    <span className="text-slate-500 leading-relaxed block mt-0.5">说明：SkyLeap 内置使用的是 gbf.game.mbga.jp，该地址主要用于账号登录和跳转，不包含游戏静态素材，无法触发本地缓存加速；在手机浏览器中访问 game.granbluefantasy.jp 才能正常走本地缓存。</span>
+                  </div>
+                  <div>
+                    <strong className="text-slate-700">• 手机打不开网页或提示连接超时？</strong><br />
+                    请检查电脑防火墙是否放行端口 {port}，并确认手机和电脑在同一个 Wi-Fi 网络。
+                  </div>
+                  <div>
+                    <strong className="text-slate-700">• iOS 提示证书不受信任或白屏？</strong><br />
+                    请检查【关于本机】→【证书信任设置】中的完全信任开关是否已开启。
+                  </div>
+                  <div>
+                    <strong className="text-slate-700">• 局域网 IP 变动？</strong><br />
+                    若电脑 IP 变化，请在此处查看最新 IP 并更新手机 Wi-Fi 代理设置。
+                  </div>
+                </div>
+              </div>
+            </div>
+          </details>
         </div>
 
         <div className="flex justify-end pt-1">
