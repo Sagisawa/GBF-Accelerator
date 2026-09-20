@@ -1,6 +1,8 @@
 package control
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -9,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"gbf-proxy/cache"
+	"gbf-proxy/cert"
 	"gbf-proxy/config"
 	"gbf-proxy/proxy"
 	"gbf-proxy/telemetry"
@@ -870,6 +874,317 @@ func TestControlServer_AppQuit(t *testing.T) {
 		t.Fatal("quitFunc was not called within timeout")
 	}
 }
+
+func TestControlServer_LANIsolation(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	// Allocate 2 distinct free ports
+	lP, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate proxy port: %v", err)
+	}
+	proxyPort := lP.Addr().(*net.TCPAddr).Port
+	_ = lP.Close()
+
+	lC, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate control port: %v", err)
+	}
+	ctrlPort := lC.Addr().(*net.TCPAddr).Port
+	_ = lC.Close()
+
+	// Configure with AllowLAN = true
+	cfgMgr.Update(func(c *config.Config) {
+		c.AllowLAN = true
+		c.ListenPort = proxyPort
+		c.ControlPort = ctrlPort
+		c.DirectMode = true
+		c.CacheDir = tempDir
+	})
+
+	certMgr, err := cert.NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+
+	proxySrv := proxy.NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, certMgr, cacheMgr, proxySrv, stats)
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// 1. Verify control server strictly binds to 127.0.0.1, even when AllowLAN = true
+	ctrlAddr := ctrl.listener.Addr().String()
+	expectedCtrlAddr := fmt.Sprintf("127.0.0.1:%d", ctrlPort)
+	if ctrlAddr != expectedCtrlAddr {
+		t.Fatalf("control server must bind strictly to %s, got %s", expectedCtrlAddr, ctrlAddr)
+	}
+
+	// 2. 127.0.0.1:8125 -> Connection SUCCEEDS (HTTP 200)
+	statusURL := fmt.Sprintf("http://127.0.0.1:%d/api/status", ctrlPort)
+	resp, err := http.Get(statusURL)
+	if err != nil {
+		t.Fatalf("failed to connect to control server on 127.0.0.1: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK from 127.0.0.1:%d, got %d", ctrlPort, resp.StatusCode)
+	}
+
+	// 3. 127.0.0.1:8124 -> Connection SUCCEEDS
+	proxyConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort), 1*time.Second)
+	if err != nil {
+		t.Fatalf("failed to connect to proxy on 127.0.0.1: %v", err)
+	}
+	proxyConn.Close()
+
+	// 4. Physical / Virtual LAN Interface test
+	lanIP := config.GetLANIP()
+	if lanIP == "" || lanIP == "127.0.0.1" {
+		t.Log("no non-loopback LAN IP detected on this host, skipping interface-level socket dial")
+		return
+	}
+
+	lanCtrlAddr := net.JoinHostPort(lanIP, fmt.Sprintf("%d", ctrlPort))
+	lanProxyAddr := net.JoinHostPort(lanIP, fmt.Sprintf("%d", proxyPort))
+
+	// LAN-IP:8125 -> Connection MUST FAIL (connection refused or timeout)
+	ctrlConn, err := net.DialTimeout("tcp", lanCtrlAddr, 300*time.Millisecond)
+	if err == nil {
+		ctrlConn.Close()
+		t.Fatalf("CRITICAL SECURITY VIOLATION: control server (port %d) is reachable via LAN IP %s when AllowLAN=true!", ctrlPort, lanIP)
+	}
+
+	// LAN-IP:8124 -> Connection SUCCEEDS (proxy is 0.0.0.0)
+	pLANConn, err := net.DialTimeout("tcp", lanProxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("proxy on LAN IP %s:%d should be accessible when AllowLAN=true, got err: %v", lanIP, proxyPort, err)
+	}
+	defer pLANConn.Close()
+
+	// Verify proxy actually serves HTTP on LAN-IP:8124
+	req := fmt.Sprintf("GET /ca.crt HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", lanIP)
+	if _, err := pLANConn.Write([]byte(req)); err != nil {
+		t.Fatalf("failed to write to proxy via LAN socket: %v", err)
+	}
+	br := bufio.NewReader(pLANConn)
+	pResp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("failed to read response from proxy via LAN socket: %v", err)
+	}
+	pResp.Body.Close()
+	if pResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK from proxy over LAN socket, got %d", pResp.StatusCode)
+	}
+}
+
+func TestControlServer_ApplyConfig_SaveFail_NoRuntimeSideEffects(t *testing.T) {
+	tempDir := t.TempDir()
+	subDir := filepath.Join(tempDir, "config_sub")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("failed to create config subdir: %v", err)
+	}
+	cfgFile := filepath.Join(subDir, "config.json")
+	cfgMgr := config.NewManager(cfgFile)
+
+	initialCacheDir := filepath.Join(tempDir, "initial_cache")
+	if err := os.MkdirAll(initialCacheDir, 0755); err != nil {
+		t.Fatalf("failed to create initial cache dir: %v", err)
+	}
+	unwantedCacheDir := filepath.Join(tempDir, "unwanted_cache")
+
+	cacheMgr := cache.NewManager(initialCacheDir, 32)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	// Pick 2 free ports
+	lP, _ := net.Listen("tcp", "127.0.0.1:0")
+	proxyPort := lP.Addr().(*net.TCPAddr).Port
+	_ = lP.Close()
+
+	lC, _ := net.Listen("tcp", "127.0.0.1:0")
+	ctrlPort := lC.Addr().(*net.TCPAddr).Port
+	_ = lC.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = proxyPort
+		c.ControlPort = ctrlPort
+		c.AutoSystemProxy = false
+		c.AutoStart = false
+		c.CacheDir = initialCacheDir
+		c.RAMCacheMaxMB = 32
+	})
+
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+
+	var sysproxyCalled atomic.Bool
+	var startupCalled atomic.Bool
+
+	ctrl.enablePACProxyFn = func(url string) error {
+		sysproxyCalled.Store(true)
+		return nil
+	}
+	ctrl.disablePACProxyFn = func(force bool) error {
+		sysproxyCalled.Store(true)
+		return nil
+	}
+	ctrl.setStartupEnabledFn = func(enabled bool) error {
+		startupCalled.Store(true)
+		return nil
+	}
+
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// Make Save() fail by replacing subDir directory with a plain regular file
+	if err := os.RemoveAll(subDir); err != nil {
+		t.Fatalf("failed to remove config subdir: %v", err)
+	}
+	if err := os.WriteFile(subDir, []byte("blocker_file"), 0644); err != nil {
+		t.Fatalf("failed to write blocker file: %v", err)
+	}
+
+	// Send POST /api/config/apply requesting side-effecting changes
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", ctrlPort)
+	patchBody := map[string]interface{}{
+		"auto_system_proxy": true,
+		"auto_start":        true,
+		"cache_dir":         unwantedCacheDir,
+		"ram_cache_max_mb":  256,
+	}
+	jsonBytes, _ := json.Marshal(patchBody)
+
+	req, err := http.NewRequest(http.MethodPost, applyURL, bytes.NewReader(jsonBytes))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request to apply config failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected HTTP 500 due to save failure, got %d", resp.StatusCode)
+	}
+
+	var resData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
+		t.Fatalf("failed to decode response JSON: %v", err)
+	}
+	if errMsg, _ := resData["error"].(string); !strings.Contains(errMsg, "配置持久化失败") {
+		t.Errorf("expected error message to contain '配置持久化失败', got %q", errMsg)
+	}
+
+	// 1. Verify sysproxy was NOT called
+	if sysproxyCalled.Load() {
+		t.Errorf("VIOLATION: sysproxy was executed despite Save() failure")
+	}
+
+	// 2. Verify startup was NOT called
+	if startupCalled.Load() {
+		t.Errorf("VIOLATION: startup was executed despite Save() failure")
+	}
+
+	// 3. Verify cache runtime did NOT switch
+	if currentBase := cacheMgr.GetCacheBase(); currentBase != initialCacheDir {
+		t.Errorf("VIOLATION: cache base switched to %s, expected to remain %s", currentBase, initialCacheDir)
+	}
+
+	// 4. Verify in-memory config was rolled back to initial state
+	activeCfg := cfgMgr.Get()
+	if activeCfg.AutoSystemProxy != false {
+		t.Errorf("expected AutoSystemProxy to remain false, got true")
+	}
+	if activeCfg.AutoStart != false {
+		t.Errorf("expected AutoStart to remain false, got true")
+	}
+	if activeCfg.CacheDir != initialCacheDir {
+		t.Errorf("expected CacheDir to remain %s, got %s", initialCacheDir, activeCfg.CacheDir)
+	}
+	if activeCfg.RAMCacheMaxMB != 32 {
+		t.Errorf("expected RAMCacheMaxMB to remain 32, got %d", activeCfg.RAMCacheMaxMB)
+	}
+}
+
+func TestControlServer_ReloadListener_SamePortNoOp(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	lC, _ := net.Listen("tcp", "127.0.0.1:0")
+	ctrlPort := lC.Addr().(*net.TCPAddr).Port
+	_ = lC.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ControlPort = ctrlPort
+	})
+
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	ctrl.mu.RLock()
+	origLn := ctrl.listener
+	origGen := ctrl.listenerGen
+	ctrl.mu.RUnlock()
+
+	// Calling ReloadListener with same port
+	err := ctrl.ReloadListener(ctrlPort)
+	if err != nil {
+		t.Fatalf("expected ReloadListener with same port to succeed, got %v", err)
+	}
+
+	ctrl.mu.RLock()
+	currentLn := ctrl.listener
+	currentGen := ctrl.listenerGen
+	ctrl.mu.RUnlock()
+
+	if currentLn != origLn {
+		t.Errorf("expected control listener pointer to remain unchanged, orig=%p, current=%p", origLn, currentLn)
+	}
+	if currentGen != origGen {
+		t.Errorf("expected control generation to remain %d, got %d", origGen, currentGen)
+	}
+
+	// Verify server is still responding
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/status", ctrlPort))
+	if err != nil {
+		t.Fatalf("failed to request status after no-op reload: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+	}
+}
+
 
 
 

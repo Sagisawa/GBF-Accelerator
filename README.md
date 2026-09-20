@@ -131,6 +131,44 @@ flowchart TD
 ```
 </details>
 
+### 事务与安全边界 (Transaction & Security Boundaries)
+
+明确界定双平面监听策略与暴露边界，守住核心安全红线：
+
+- **8124 = 数据平面 (Data Plane)**
+  - 默认监听：`127.0.0.1`
+  - 开启局域网共享（`AllowLAN = true`）时：动态重载至 `0.0.0.0`
+  - 承载职责与公开端点：
+    - HTTP / HTTPS 核心代理与流量分流
+    - `/ca.crt`（根证书直接下载）
+    - `/proxy.pac`（PAC 自动代理脚本）
+    - 局域网移动端接入引导向导页
+- **8125 = 控制平面 (Control Plane)**
+  - 监听策略：**永远严格绑定 `127.0.0.1`，绝不向局域网暴露（Never exposed to LAN）**
+  - 承载职责：
+    - 内嵌 Web 管理控制台 React SPA 前端资源
+    - 系统管理与配置变更 REST API（`/api/config`、`/api/status`、`/api/app/quit` 等）
+    - 实时性能与连接 SSE 遥测流
+    - 内置 DNS Rebinding 防护与 Host / Origin 白名单严格校验
+
+### 配置热重载流水线与强事务保障 (Hot-Reload Pipeline & Safe Rollback)
+
+系统配置热重载（`POST /api/config/apply`）遵循严格的四阶段强事务流水线：
+
+```text
+[Candidate] (候选配置生成与字段校验)
+    ↓
+[Listener Rebind] (网络监听强事务重载: 8124 / 8125 端口与 Host 切换)
+    ↓
+[Commit] (内存配置原子提交与磁盘持久化)
+    ↓
+[Post-Commit Runtime Sync] (非监听运行时副作用生效: 缓存目录/RAM 上限/PAC 代理/自启)
+```
+
+- **Rebind 阶段失败**：遇端口占用立即自动回滚，旧 Listener 保持不变，配置状态完全不变；
+- **Save/Commit 阶段失败**：两端 Listener 自动回滚至原端口与原监听地址，内存配置瞬时还原，磁盘配置未变，且**彻底阻断 Post-Commit 运行时副作用**（sysproxy 不执行、startup 不执行、cache runtime 不切换）；
+- **语义约束**：`cfgMgr.Update()` 仅用于安全的内存就地原子更新；`cfgMgr.Commit()` 承载包含磁盘落盘校验、两端监听联动与强事务回滚保障的完整语义。
+
 ---
 
 ## 核心功能矩阵
@@ -424,6 +462,30 @@ cd engine
 go test -v ./...
 go vet ./...
 ```
+
+#### 自动化测试矩阵 (Test Matrix)
+
+| 测试项 (Test) | 状态 (Status) | 说明 |
+|:---|:---:|:---|
+| `go test -count=1 ./...` | **PASS** | 覆盖全部 12 个 Go 核心功能包单元测试，无缓存全量通过 |
+| `go test -race -count=1 ./...` | **PASS** | 并发竞争检测（CI / CGO 环境） |
+| `go vet ./...` | **PASS** | 静态代码分析与语法合规检查通过，零告警 |
+| Proxy → Control rollback | **PASS** | 代理端口重绑成功但控制端口重绑失败时，代理端口与监听地址原子回滚 |
+| Save failure rollback | **PASS** | 磁盘配置持久化失败时两端 Listener 均回滚，且完全阻断 Post-Commit 运行时副作用 |
+| Existing connection survival | **PASS** | 监听地址动态重载期间，已建立的 HTTP Keep-Alive 连接平滑存活不受打断 |
+| Real LAN interface socket E2E | **PASS** | 真实物理/虚拟网卡局域网 IP（非 loopback）端到端 Socket 拨号与 HTTP 交付通过 |
+| Control-plane LAN isolation | **PASS** | `AllowLAN=true` 时物理 LAN-IP 访问 8125 端口严格连接拒绝，守住安全红线 |
+
+#### 验证边界 (Verification Boundaries)
+
+- **已验证 (Verified)**：
+  - Windows 10 / 11 真实桌面环境、WinINet 系统 PAC 代理托管、系统托盘常驻与 Chromium App Mode 独立窗口
+  - Linux amd64 与 arm64 交叉编译无头运行（nogui）
+  - Darwin amd64（Intel）与 Darwin arm64（Apple Silicon）跨平台交叉编译及符号表校验
+  - 本机真实非 loopback 局域网 IP（物理 NIC / 虚拟网卡）端到端 Socket 监听、连接与数据链路验证
+  - macOS 实机 Universal2 双架构包加载与 Gatekeeper 隔离属性清除
+- **未验证 (Unverified)**：
+  - 跨物理设备 Wi-Fi E2E（不同物理硬件设备通过无线 Wi-Fi 路由器的端到端真机联调，受路由器 AP 隔离与局域网防火墙策略影响，需在具体网络拓扑下实机验证）
 
 ### 打包为独立可执行文件 / 便携发布包
 

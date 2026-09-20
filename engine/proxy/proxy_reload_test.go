@@ -311,3 +311,63 @@ func TestReloadListener_RealLANInterfaceConnection(t *testing.T) {
 		t.Error("expected non-empty CA certificate over LAN socket")
 	}
 }
+
+// 7. TestReloadListener_SameAddressNoOp: Calling ReloadListener with identical host:port is a no-op
+func TestReloadListener_SameAddressNoOp(t *testing.T) {
+	proxySrv, port := setupTestProxyForReload(t, false)
+	defer proxySrv.Stop()
+
+	proxySrv.mu.RLock()
+	origLn := proxySrv.listener
+	origGen := proxySrv.listenerGen
+	origAddr := origLn.Addr().String()
+	proxySrv.mu.RUnlock()
+
+	expectedAddr := fmt.Sprintf("127.0.0.1:%d", port)
+	if origAddr != expectedAddr {
+		t.Fatalf("expected initial addr %s, got %s", expectedAddr, origAddr)
+	}
+
+	// Call ReloadListener with the exact same host and port
+	err := proxySrv.ReloadListener("127.0.0.1", port)
+	if err != nil {
+		t.Fatalf("expected ReloadListener with same address to succeed with nil, got: %v", err)
+	}
+
+	proxySrv.mu.RLock()
+	currentLn := proxySrv.listener
+	currentGen := proxySrv.listenerGen
+	proxySrv.mu.RUnlock()
+
+	// 1. Must NOT close or replace the listener
+	if currentLn != origLn {
+		t.Errorf("expected listener pointer to remain unchanged, orig=%p, current=%p", origLn, currentLn)
+	}
+
+	// 2. Must NOT increment generation
+	if currentGen != origGen {
+		t.Errorf("expected generation to remain %d, got %d", origGen, currentGen)
+	}
+
+	// 3. Listener must remain fully functional and accept connections
+	conn, err := net.DialTimeout("tcp", expectedAddr, 1*time.Second)
+	if err != nil {
+		t.Fatalf("listener should still be accepting connections, but dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	req := "GET /ca.crt HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("failed to send request over existing listener: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("failed to read response over existing listener: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+	}
+}
+

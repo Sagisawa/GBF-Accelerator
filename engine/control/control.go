@@ -70,6 +70,11 @@ type ControlServer struct {
 	// Broadcasters for SSE custom events
 	sseMu      sync.RWMutex
 	sseClients []chan []byte
+
+	// Side-effect hooks for system proxy and startup registration (mockable in tests)
+	enablePACProxyFn   func(string) error
+	disablePACProxyFn  func(bool) error
+	setStartupEnabledFn func(bool) error
 }
 
 func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cache.Manager, proxySrv *proxy.ProxyServer, stats *telemetry.Stats) *ControlServer {
@@ -95,13 +100,16 @@ func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *c
 	}
 
 	return &ControlServer{
-		cfgMgr:     cfgMgr,
-		certMgr:    certMgr,
-		cacheMgr:   cacheMgr,
-		proxySrv:   proxySrv,
-		stats:      stats,
-		distDir:    distDir,
-		closedChan: make(chan struct{}),
+		cfgMgr:              cfgMgr,
+		certMgr:             certMgr,
+		cacheMgr:            cacheMgr,
+		proxySrv:            proxySrv,
+		stats:               stats,
+		distDir:             distDir,
+		closedChan:          make(chan struct{}),
+		enablePACProxyFn:    sysproxy.EnablePACProxy,
+		disablePACProxyFn:   sysproxy.DisablePACProxy,
+		setStartupEnabledFn: startup.SetStartupEnabled,
 	}
 }
 
@@ -805,13 +813,13 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	}
 	if candidate.AutoSystemProxy != oldCandidate.AutoSystemProxy || candidate.ListenPort != oldCandidate.ListenPort {
 		if candidate.AutoSystemProxy {
-			_ = sysproxy.EnablePACProxy(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", candidate.ListenPort))
+			_ = c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", candidate.ListenPort))
 		} else {
-			_ = sysproxy.DisablePACProxy(false)
+			_ = c.disablePACProxyFn(false)
 		}
 	}
 	if candidate.AutoStart != oldCandidate.AutoStart {
-		_ = startup.SetStartupEnabled(candidate.AutoStart)
+		_ = c.setStartupEnabledFn(candidate.AutoStart)
 	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
@@ -1360,7 +1368,7 @@ func (c *ControlServer) handleStartupSet(w http.ResponseWriter, req *http.Reques
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "invalid JSON"})
 		return
 	}
-	err := startup.SetStartupEnabled(body.Enabled)
+	err := c.setStartupEnabledFn(body.Enabled)
 	if err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 		return
@@ -1377,7 +1385,7 @@ func (c *ControlServer) handleStartupSet(w http.ResponseWriter, req *http.Reques
 func (c *ControlServer) handleSysProxyEnable(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()
 	pacURL := fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort)
-	err := sysproxy.EnablePACProxy(pacURL)
+	err := c.enablePACProxyFn(pacURL)
 	if err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 		return
@@ -1393,7 +1401,7 @@ func (c *ControlServer) handleSysProxyEnable(w http.ResponseWriter, req *http.Re
 }
 
 func (c *ControlServer) handleSysProxyDisable(w http.ResponseWriter, req *http.Request) {
-	err := sysproxy.DisablePACProxy(false)
+	err := c.disablePACProxyFn(false)
 	if err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 		return
