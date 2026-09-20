@@ -831,17 +831,20 @@ export const App: React.FC = () => {
   const ramMaxMb = config.ram_cache_max_mb ?? 256
 
   const uptimeSec = status?.uptime_seconds ?? 0
-  const hitsCount = status?.requests?.total_hits ?? 0
-  const ramHitsCount = status?.requests?.ram_hits ?? 0
-  const downloadsCount = status?.requests?.cache_misses ?? 0
-  const diskHitsCount = status?.requests?.disk_hits ?? 0
+  // Runtime telemetry is meaningful only while the proxy is running.
+  // Keep cached storage statistics visible, but do not present the previous
+  // session's request activity as current activity after shutdown.
+  const hitsCount = isRunning ? (status?.requests?.total_hits ?? 0) : 0
+  const ramHitsCount = isRunning ? (status?.requests?.ram_hits ?? 0) : 0
+  const downloadsCount = isRunning ? (status?.requests?.cache_misses ?? 0) : 0
+  const diskHitsCount = isRunning ? (status?.requests?.disk_hits ?? 0) : 0
   const evaluatedAssetTotal = ramHitsCount + diskHitsCount + downloadsCount
   const ramHitPct = evaluatedAssetTotal > 0 ? Math.round((ramHitsCount / evaluatedAssetTotal) * 100) : 0
   const diskHitPct = evaluatedAssetTotal > 0 ? Math.round((diskHitsCount / evaluatedAssetTotal) * 100) : 0
   const missHitPct = evaluatedAssetTotal > 0 ? Math.max(0, 100 - ramHitPct - diskHitPct) : 0
   const totalHitRate = evaluatedAssetTotal > 0 ? Math.round(((ramHitsCount + diskHitsCount) / evaluatedAssetTotal) * 1000) / 10 : 0
 
-  const telemetryData = status?.telemetry
+  const telemetryData = isRunning ? status?.telemetry : null
   const reusedConnections = telemetryData?.reused_connections ?? 0
   const newConnections = telemetryData?.new_connections ?? 0
   const totalConnections = reusedConnections + newConnections
@@ -851,9 +854,9 @@ export const App: React.FC = () => {
   const latencySamples = telemetryData?.percentiles?.samples ?? 0
   const p50Latency = telemetryData?.percentiles?.p50_ms ?? 0
   const p95Latency = telemetryData?.percentiles?.p95_ms ?? 0
-  const activeApiCount = status?.active_api_count ?? 0
-  const activeForeground = status?.active_foreground_assets ?? 0
-  const prefetchReusedCount = status?.requests?.prefetch_reused ?? 0
+  const activeApiCount = isRunning ? (status?.active_api_count ?? 0) : 0
+  const activeForeground = isRunning ? (status?.active_foreground_assets ?? 0) : 0
+  const prefetchReusedCount = isRunning ? (status?.requests?.prefetch_reused ?? 0) : 0
 
   return (
     <div className="min-h-screen w-full flex flex-col bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-sky-100">
