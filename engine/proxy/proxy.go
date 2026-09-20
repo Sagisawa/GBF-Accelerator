@@ -46,7 +46,8 @@ type ProxyServer struct {
 	serveLoopWg sync.WaitGroup
 	mu          sync.RWMutex
 	apiClient   atomic.Pointer[http.Client]
-	assetClient atomic.Pointer[http.Client]
+	assetClient   atomic.Pointer[http.Client]
+	upstreamProxy atomic.Pointer[string]
 	running     bool
 	closedChan  chan struct{}
 }
@@ -154,11 +155,13 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 			tr.CloseIdleConnections()
 		}
 	}
-	if oldAsset != nil {
+		if oldAsset != nil {
 		if tr, ok := oldAsset.Transport.(*http.Transport); ok {
 			tr.CloseIdleConnections()
 		}
 	}
+	resolvedProxy := effProxy
+	s.upstreamProxy.Store(&resolvedProxy)
 }
 
 func (s *ProxyServer) getAPIClient() *http.Client {
@@ -167,6 +170,17 @@ func (s *ProxyServer) getAPIClient() *http.Client {
 
 func (s *ProxyServer) getAssetClient() *http.Client {
 	return s.assetClient.Load()
+}
+
+// GetEffectiveUpstreamProxy returns the already-resolved upstream proxy used by
+// the current transport clients. It avoids re-probing local proxy ports per
+// passthrough request or status poll when the configuration is set to "auto".
+func (s *ProxyServer) GetEffectiveUpstreamProxy() string {
+	p := s.upstreamProxy.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // tracedRequest attaches a non-intrusive httptrace hook that records real
@@ -603,7 +617,7 @@ var tunnelBufferPool = sync.Pool{
 }
 
 func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader io.Reader, target string) {
-	effProxy := s.cfgMgr.GetEffectiveUpstreamProxy()
+	effProxy := s.GetEffectiveUpstreamProxy()
 
 	targetHost := target
 	if _, _, err := net.SplitHostPort(targetHost); err != nil {
