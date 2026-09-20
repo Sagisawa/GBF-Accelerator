@@ -94,6 +94,16 @@ func main() {
 
 	flag.Parse()
 
+	flagWasSet := func(name string) bool {
+		set := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == name {
+				set = true
+			}
+		})
+		return set
+	}
+
 	if *showVersion || *showVersionLong {
 		fmt.Printf("GBF-Accelerator v%s\n", config.AppVersion)
 		os.Exit(0)
@@ -108,28 +118,30 @@ func main() {
 	// 1. Initialize Configuration
 	cfgMgr := config.NewManager(actualCfgPath)
 	cfgMgr.Update(func(c *config.Config) {
-		if *proxyPort > 0 {
+		// Command-line defaults must not overwrite values persisted in config.json.
+		// Only explicitly supplied flags act as overrides.
+		if flagWasSet("proxy-port") && *proxyPort > 0 {
 			c.ListenPort = *proxyPort
 		}
-		if *controlPort > 0 {
+		if flagWasSet("control-port") && *controlPort > 0 {
 			c.ControlPort = *controlPort
 		}
-		if *upstreamProxy != "" {
+		if flagWasSet("upstream-proxy") {
 			c.UpstreamProxy = *upstreamProxy
 			c.DirectMode = false
 			c.VerifyUpstreamTLS = false // Disable TLS verify for mock upstream proxy
 		}
-		if *directMode {
-			c.DirectMode = true
+		if flagWasSet("direct-mode") {
+			c.DirectMode = *directMode
 		}
-		if *allowLAN {
-			c.AllowLAN = true
+		if flagWasSet("allow-lan") {
+			c.AllowLAN = *allowLAN
 		}
-		if *cacheDir != "" {
+		if flagWasSet("cache-dir") && *cacheDir != "" {
 			c.CacheDir = config.NormalizeCacheDir(*cacheDir)
 		}
-		if *verifyUpstreamTLS {
-			c.VerifyUpstreamTLS = true
+		if flagWasSet("verify-upstream-tls") {
+			c.VerifyUpstreamTLS = *verifyUpstreamTLS
 		}
 	})
 
