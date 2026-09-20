@@ -38,6 +38,8 @@ func IsPACProxyEnabled(port int) bool {
 // CheckProxyConflict checks if an external system proxy or external PAC script is configured.
 // Returns a descriptive conflict message if detected, or empty string if clear.
 func CheckProxyConflict(port int) string {
+	mu.Lock()
+	defer mu.Unlock()
 	return checkProxyConflict(port)
 }
 
