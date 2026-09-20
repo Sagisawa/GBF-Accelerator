@@ -197,6 +197,12 @@ func main() {
 
 	// 5. Initialize Cache
 	cacheMgr := cache.NewManager(curCfg.CacheDir, curCfg.RAMCacheMaxMB)
+	cacheMgr.SetRAMEnabled(curCfg.EnableRAMCache)
+	cacheMgr.SetAutoRepair(curCfg.EnableAutoRepair)
+	cfgMgr.OnUpdate(func(c *config.Config) {
+		cacheMgr.SetRAMEnabled(c.EnableRAMCache)
+		cacheMgr.SetAutoRepair(c.EnableAutoRepair)
+	})
 
 	if curCfg.EnableRAMWarmup {
 		go func() {
