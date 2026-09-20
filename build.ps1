@@ -157,7 +157,7 @@ function Build-Windows {
         $ZipPath = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_GUI.zip"
         if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
-        $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.bat", "start_proxy.bat", "LICENSE")
+        $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.bat", "start_proxy.bat", "LICENSE", "使用说明.txt")
         $FilesToZip = @($ExePath)
         foreach ($Aux in $AuxFiles) {
             $AuxPath = Join-Path $RootDir $Aux
