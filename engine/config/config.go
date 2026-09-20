@@ -110,8 +110,13 @@ func (m *Manager) Load(cfgPath string) error {
 	if err := json.Unmarshal(data, &loaded); err != nil {
 		return err
 	}
+	var present map[string]json.RawMessage
+	if err := json.Unmarshal(data, &present); err != nil {
+		return err
+	}
 
-	// Merge into defaults
+	// Merge into defaults; only overwrite fields whose keys are actually present.
+	// This preserves defaults for older or hand-edited partial configuration files.
 	if loaded.ListenHost != "" {
 		m.cfg.ListenHost = loaded.ListenHost
 	}
@@ -121,26 +126,48 @@ func (m *Manager) Load(cfgPath string) error {
 	if loaded.ControlPort > 0 {
 		m.cfg.ControlPort = loaded.ControlPort
 	}
-	m.cfg.AllowLAN = loaded.AllowLAN
-	m.cfg.UpstreamProxy = loaded.UpstreamProxy
-	m.cfg.DirectMode = loaded.DirectMode
+	if _, ok := present["allow_lan"]; ok {
+		m.cfg.AllowLAN = loaded.AllowLAN
+	}
+	if _, ok := present["upstream_proxy"]; ok {
+		m.cfg.UpstreamProxy = loaded.UpstreamProxy
+	}
+	if _, ok := present["direct_mode"]; ok {
+		m.cfg.DirectMode = loaded.DirectMode
+	}
 	if loaded.CacheDir != "" {
 		m.cfg.CacheDir = NormalizeCacheDir(loaded.CacheDir)
 	}
-	m.cfg.CleanZombies = loaded.CleanZombies
-	m.cfg.AutoSystemProxy = loaded.AutoSystemProxy
-	m.cfg.EnableRAMCache = loaded.EnableRAMCache
+	if _, ok := present["clean_zombies"]; ok {
+		m.cfg.CleanZombies = loaded.CleanZombies
+	}
+	if _, ok := present["auto_system_proxy"]; ok {
+		m.cfg.AutoSystemProxy = loaded.AutoSystemProxy
+	}
+	if _, ok := present["enable_ram_cache"]; ok {
+		m.cfg.EnableRAMCache = loaded.EnableRAMCache
+	}
 	if loaded.RAMCacheMaxMB > 0 {
 		m.cfg.RAMCacheMaxMB = loaded.RAMCacheMaxMB
 	}
-	m.cfg.EnableBrowserCache = loaded.EnableBrowserCache
-	m.cfg.EnableAutoRepair = loaded.EnableAutoRepair
-	m.cfg.EnablePrefetch = loaded.EnablePrefetch
-	m.cfg.EnableRAMWarmup = loaded.EnableRAMWarmup
+	if _, ok := present["enable_browser_cache"]; ok {
+		m.cfg.EnableBrowserCache = loaded.EnableBrowserCache
+	}
+	if _, ok := present["enable_auto_repair"]; ok {
+		m.cfg.EnableAutoRepair = loaded.EnableAutoRepair
+	}
+	if _, ok := present["enable_prefetch"]; ok {
+		m.cfg.EnablePrefetch = loaded.EnablePrefetch
+	}
+	if _, ok := present["enable_ram_warmup"]; ok {
+		m.cfg.EnableRAMWarmup = loaded.EnableRAMWarmup
+	}
 	if loaded.RAMWarmupMaxItems > 0 {
 		m.cfg.RAMWarmupMaxItems = loaded.RAMWarmupMaxItems
 	}
-	m.cfg.VerifyUpstreamTLS = loaded.VerifyUpstreamTLS
+	if _, ok := present["verify_upstream_tls"]; ok {
+		m.cfg.VerifyUpstreamTLS = loaded.VerifyUpstreamTLS
+	}
 	if loaded.APIMaxConnections > 0 {
 		m.cfg.APIMaxConnections = loaded.APIMaxConnections
 	}
@@ -153,10 +180,18 @@ func (m *Manager) Load(cfgPath string) error {
 	if loaded.AssetMaxKeepalive > 0 {
 		m.cfg.AssetMaxKeepalive = loaded.AssetMaxKeepalive
 	}
-	m.cfg.ShimakazeMode = loaded.ShimakazeMode
-	m.cfg.AutoStart = loaded.AutoStart
-	m.cfg.AutoCheckUpdate = loaded.AutoCheckUpdate
-	m.cfg.EnableAPITelemetry = loaded.EnableAPITelemetry
+	if _, ok := present["shimakaze_mode"]; ok {
+		m.cfg.ShimakazeMode = loaded.ShimakazeMode
+	}
+	if _, ok := present["auto_start"]; ok {
+		m.cfg.AutoStart = loaded.AutoStart
+	}
+	if _, ok := present["auto_check_update"]; ok {
+		m.cfg.AutoCheckUpdate = loaded.AutoCheckUpdate
+	}
+	if _, ok := present["enable_api_telemetry"]; ok {
+		m.cfg.EnableAPITelemetry = loaded.EnableAPITelemetry
+	}
 	if loaded.APIKeepaliveExpiry > 0 {
 		m.cfg.APIKeepaliveExpiry = loaded.APIKeepaliveExpiry
 	}
