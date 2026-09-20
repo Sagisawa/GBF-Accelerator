@@ -62,3 +62,11 @@ func ChooseFolder(prompt string) (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// ShowNotification displays a native macOS user notification banner using osascript.
+func ShowNotification(title, message string) {
+	escapedTitle := strings.ReplaceAll(title, `"`, `\"`)
+	escapedMsg := strings.ReplaceAll(message, `"`, `\"`)
+	script := fmt.Sprintf(`display notification "%s" with title "%s"`, escapedMsg, escapedTitle)
+	_ = exec.Command("osascript", "-e", script).Start()
+}
