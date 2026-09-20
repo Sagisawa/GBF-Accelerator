@@ -131,6 +131,49 @@ export async function detectACGPower(): Promise<any> {
   return res.json()
 }
 
+export interface FirewallStatus {
+  ok: boolean
+  supported: boolean
+  allowed: boolean
+  port: number
+  network_categories: string[]
+  has_private: boolean
+  has_public: boolean
+  has_domain: boolean
+  rule_name: string
+}
+
+export class APIError extends Error {
+  code?: string
+
+  constructor(message: string, code?: string) {
+    super(message)
+    this.name = 'APIError'
+    this.code = code
+  }
+}
+
+export async function fetchFirewallStatus(): Promise<FirewallStatus> {
+  const res = await fetch(`${BASE}/api/firewall/status`, { cache: 'no-store' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new APIError(data.message || data.error || `HTTP ${res.status}`, data.code)
+  }
+  return data
+}
+
+export async function applyFirewallRule(): Promise<any> {
+  const res = await fetch(`${BASE}/api/firewall/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new APIError(data.message || data.error || `HTTP ${res.status}`, data.code)
+  }
+  return data
+}
+
 export async function fetchCertStatus(): Promise<any> {
   const res = await fetch(`${BASE}/api/cert/status`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
