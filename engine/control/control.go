@@ -771,7 +771,6 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	}
 
 	proxyRebound := false
-	controlRebound := false
 
 	// 2. Apply listener changes only after configuration persistence succeeds.
 	if proxyNeedsReload {
@@ -810,7 +809,6 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 			})
 			return
 		}
-		controlRebound = true
 	}
 
 	// 3. Apply non-listener runtime state
