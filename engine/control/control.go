@@ -608,6 +608,11 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 	isSlimming := c.isSlimming
 	c.cacheTaskMu.Unlock()
 
+	effectiveUpstreamProxy := c.cfgMgr.GetEffectiveUpstreamProxy()
+	if c.proxySrv != nil {
+		effectiveUpstreamProxy = c.proxySrv.GetEffectiveUpstreamProxy()
+	}
+
 	return map[string]interface{}{
 		"version":                  config.AppVersion,
 		"engine":                   "go",
@@ -615,7 +620,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"listen_host":              c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":              cfg.ListenPort,
 		"control_port":             cfg.ControlPort,
-		"upstream_proxy":           c.proxySrv.GetEffectiveUpstreamProxy(),
+		"upstream_proxy":           effectiveUpstreamProxy,
 		"direct_mode":              cfg.DirectMode,
 		"allow_lan":                cfg.AllowLAN,
 		"lan_ip":                   lanIP,
