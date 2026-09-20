@@ -736,6 +736,11 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 	wg.Wait()
 }
 
+func isPrivateProxyHost(host string) bool {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.To4() != nil && ip.IsPrivate()
+}
+
 func safeLocalAddr(conn net.Conn) (localIP string, localPort string) {
 	if conn == nil {
 		return "", ""
@@ -794,8 +799,13 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		(localIP != "" && hostTrimmed == localIP) ||
 		(config.GetLANIP() != "" && hostTrimmed == config.GetLANIP())
 
+	// A proxy client may address the listener using any of the machine's private
+	// LAN addresses (important on multi-NIC hosts). The proxy port is the anchor:
+	// public/external hosts are never treated as internal, while RFC1918 addresses
+	// on this listener can use the local helper endpoints.
+	isProxyEndpointHost := isLocalHost || (isProxyPort && isPrivateProxyHost(hostTrimmed))
 	isDirectLocal := false
-	if isLocalHost {
+	if isProxyEndpointHost {
 		if isInternalCertOrPac {
 			isDirectLocal = true
 		} else if isLandingPage {
