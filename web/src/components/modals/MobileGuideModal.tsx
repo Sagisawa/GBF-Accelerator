@@ -23,8 +23,10 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
 }) => {
   const [copied, setCopied] = React.useState(false)
   const isLanEnabled = Boolean(status?.allow_lan)
+  const isProxyRunning = Boolean(status?.proxy_running)
   const host = status?.lan_ip || '192.168.x.x'
   const port = status?.listen_port || 8124
+  const canUseMobileAccess = isLanEnabled && isProxyRunning
   const pacUrl = `http://${host}:${port}/proxy.pac`
   const guideUrl = `http://${host}:${port}/`
 
@@ -79,8 +81,14 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
 
         {/* QR Code and Instructions */}
         <div className="flex flex-col sm:flex-row items-center gap-4 p-4 bg-slate-50 border border-slate-200 rounded-lg">
-          <div className="bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0">
-            <QRCodeSVG value={guideUrl} size={120} level="M" />
+          <div className={`bg-white p-2.5 rounded-lg border border-slate-200 shadow-sm shrink-0 ${!canUseMobileAccess ? 'opacity-45' : ''}`}>
+            {canUseMobileAccess ? (
+              <QRCodeSVG value={guideUrl} size={120} level="M" />
+            ) : (
+              <div className="w-[120px] h-[120px] flex items-center justify-center text-center text-[11px] leading-relaxed text-slate-400">
+                {!isLanEnabled ? '先开启\n局域网共享' : '请先启动\n加速代理服务'}
+              </div>
+            )}
           </div>
 
           <div className="space-y-1.5 text-xs text-slate-600">
@@ -88,9 +96,10 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
               <Wifi className="w-3.5 h-3.5 text-emerald-600" /> 扫码一键打开手机指引
             </div>
             <p className="leading-relaxed">
-              1. 确保手机 / iPad 与电脑连入<strong>同一 Wi-Fi 网络</strong>；<br />
-              2. 手机自带相机扫码打开指引页，一键下载并信任根证书；<br />
-              3. 在 Wi-Fi 代理设置中选择【自动】并填入下方 PAC 地址：
+              1. 确保手机 / iPad 与电脑连入<strong>同一局域网</strong>；<br />
+              2. 在电脑端先开启【允许局域网连接】，并确保加速代理正在运行；<br />
+              3. 再用手机相机扫码，或手动打开下方局域网地址；<br />
+              4. 打开指引页后，再按页面提示设置 PAC。
             </p>
           </div>
         </div>
@@ -110,6 +119,13 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
           </div>
           <div className="font-mono text-[11px] text-blue-600 bg-white p-2 rounded border border-slate-300 select-all break-all">
             {pacUrl}
+          </div>
+          <div className="text-[11px] text-slate-500 leading-relaxed">
+            {canUseMobileAccess
+              ? <>局域网指引地址：<strong className="font-mono text-slate-800">{guideUrl}</strong></>
+              : !isLanEnabled
+                ? '当前尚未开放局域网监听，二维码和局域网地址暂时不可访问。'
+                : '代理服务尚未启动，8124 端口当前不会接受移动端连接。'}
           </div>
 
           <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
