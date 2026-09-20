@@ -1770,8 +1770,7 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 				"active_api": c.stats.ActiveAPICount.Load(),
 				"active_fg":  c.stats.ActiveForegroundAssets.Load(),
 				"telemetry":  c.getTelemetrySummary(),
-				"hits":       c.stats.TotalHits.Load(),
-				"misses":     c.stats.CacheMisses.Load(),
+				"requests":   c.stats.RequestsMap(),
 			})
 			if _, err := fmt.Fprintf(w, "event: metrics\ndata: %s\n\n", pulseData); err != nil {
 				return
