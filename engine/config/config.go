@@ -180,7 +180,6 @@ func (m *Manager) Candidate() Config {
 
 func (m *Manager) Commit(candidate Config) error {
 	m.commitMu.Lock()
-	defer m.commitMu.Unlock()
 
 	m.mu.Lock()
 	oldCfg := m.cfg
@@ -191,6 +190,7 @@ func (m *Manager) Commit(candidate Config) error {
 		m.mu.Lock()
 		m.cfg = oldCfg
 		m.mu.Unlock()
+		m.commitMu.Unlock()
 		return fmt.Errorf("failed to save config: %w", err)
 	}
 
@@ -200,6 +200,10 @@ func (m *Manager) Commit(candidate Config) error {
 	copy(callbacks, m.onSave)
 	m.mu.RUnlock()
 
+	// Release commitMu before invoking callbacks to avoid re-entrant deadlock
+	// if a callback initiates a nested config commit or query.
+	m.commitMu.Unlock()
+
 	for _, cb := range callbacks {
 		cb(&updated)
 	}
@@ -207,6 +211,8 @@ func (m *Manager) Commit(candidate Config) error {
 }
 
 func (m *Manager) Update(fn func(c *Config)) Config {
+	m.commitMu.Lock()
+
 	m.mu.Lock()
 	fn(&m.cfg)
 	updated := m.cfg
@@ -215,6 +221,8 @@ func (m *Manager) Update(fn func(c *Config)) Config {
 	m.mu.Unlock()
 
 	_ = m.Save()
+	m.commitMu.Unlock()
+
 	for _, cb := range callbacks {
 		cb(&updated)
 	}

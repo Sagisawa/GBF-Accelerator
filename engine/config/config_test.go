@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestConfigManager(t *testing.T) {
@@ -132,6 +134,48 @@ func TestConfigManager_CommitConcurrency(t *testing.T) {
 	if loadedMgr.Get().RAMCacheMaxMB != finalCfg.RAMCacheMaxMB {
 		t.Errorf("disk config (%d) does not match in-memory (%d)",
 			loadedMgr.Get().RAMCacheMaxMB, finalCfg.RAMCacheMaxMB)
+	}
+}
+
+func TestConfigManager_CommitCallbackNoDeadlock(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "gbf_callback_test_*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	_ = tempFile.Close()
+	defer os.Remove(tempFile.Name())
+
+	mgr := NewManager(tempFile.Name())
+
+	var reentrantRan atomic.Bool
+	done := make(chan struct{})
+
+	mgr.OnUpdate(func(c *Config) {
+		if !reentrantRan.Swap(true) {
+			// Callback invokes Commit re-entrantly. If commitMu was still held during callback invocation,
+			// this would cause an immediate re-entrant deadlock.
+			cand := mgr.Candidate()
+			cand.ListenPort = 9999
+			_ = mgr.Commit(cand)
+			close(done)
+		}
+	})
+
+	cand := mgr.Candidate()
+	cand.ListenPort = 8888
+	if err := mgr.Commit(cand); err != nil {
+		t.Fatalf("initial Commit failed: %v", err)
+	}
+
+	select {
+	case <-done:
+		// Completed without deadlock
+	case <-time.After(2 * time.Second):
+		t.Fatal("deadlock detected: callback could not acquire commit lock")
+	}
+
+	if mgr.Get().ListenPort != 9999 {
+		t.Errorf("expected ListenPort 9999 after re-entrant commit, got %d", mgr.Get().ListenPort)
 	}
 }
 

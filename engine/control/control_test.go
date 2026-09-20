@@ -6,9 +6,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gbf-proxy/cache"
 	"gbf-proxy/config"
@@ -571,6 +573,262 @@ func TestControlServer_ReloadListener_InFlightRequestCompletes(t *testing.T) {
 	sResp.Body.Close()
 	if sResp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 on new port, got %d", sResp.StatusCode)
+	}
+}
+
+func TestControlServer_ApplyConfig_ProxySuccess_ControlFail_Rollback(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgFile := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgFile)
+
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	// Pick 4 ports:
+	// proxyPort1: initial proxy port
+	// proxyPort2: target proxy port
+	// ctrlPort1: initial control port
+	// ctrlPort2: target control port (occupied by dummy listener to force Control reload failure)
+	lP1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to pick proxyPort1: %v", err)
+	}
+	proxyPort1 := lP1.Addr().(*net.TCPAddr).Port
+	_ = lP1.Close()
+
+	lP2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to pick proxyPort2: %v", err)
+	}
+	proxyPort2 := lP2.Addr().(*net.TCPAddr).Port
+	_ = lP2.Close()
+
+	lC1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to pick ctrlPort1: %v", err)
+	}
+	ctrlPort1 := lC1.Addr().(*net.TCPAddr).Port
+	_ = lC1.Close()
+
+	// Keep lC2 open so ctrlPort2 is OCCUPIED
+	lC2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to bind dummy listener on ctrlPort2: %v", err)
+	}
+	defer lC2.Close()
+	ctrlPort2 := lC2.Addr().(*net.TCPAddr).Port
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = proxyPort1
+		c.ControlPort = ctrlPort1
+	})
+
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// Verify initial proxy connectivity on proxyPort1
+	pConn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort1), 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("failed to connect to initial proxy port %d: %v", proxyPort1, err)
+	}
+	_ = pConn.Close()
+
+	// Send POST /api/config/apply requesting proxyPort2 (succeeds) and ctrlPort2 (fails)
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", ctrlPort1)
+	body := fmt.Sprintf(`{"listen_port": %d, "control_port": %d}`, proxyPort2, ctrlPort2)
+	req, err := http.NewRequest(http.MethodPost, applyURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request to apply config failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Expect HTTP 500 Internal Server Error due to control rebind failure
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected HTTP 500, got %d", resp.StatusCode)
+	}
+
+	var resData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
+		t.Fatalf("failed to decode response JSON: %v", err)
+	}
+	if errMsg, _ := resData["error"].(string); !strings.Contains(errMsg, "控制端口重载失败") {
+		t.Errorf("expected error message to contain '控制端口重载失败', got %q", errMsg)
+	}
+
+	// Verify proxy rolled back to proxyPort1
+	pConnRollback, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort1), 500*time.Millisecond)
+	if err != nil {
+		t.Errorf("proxy failed to rollback to original port %d: %v", proxyPort1, err)
+	} else {
+		_ = pConnRollback.Close()
+	}
+
+	// Verify proxy is NOT listening on proxyPort2
+	pConnP2, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort2), 100*time.Millisecond)
+	if err == nil {
+		_ = pConnP2.Close()
+		t.Errorf("proxy is unexpectedly still listening on port %d after rollback", proxyPort2)
+	}
+
+	// Verify control server is still running on ctrlPort1
+	statusURL := fmt.Sprintf("http://127.0.0.1:%d/api/status", ctrlPort1)
+	sResp, err := http.Get(statusURL)
+	if err != nil {
+		t.Fatalf("control server on original port %d unreachable after rollback: %v", ctrlPort1, err)
+	}
+	sResp.Body.Close()
+	if sResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 on original control port, got %d", sResp.StatusCode)
+	}
+
+	// Verify configuration was NOT committed
+	currentCfg := cfgMgr.Get()
+	if currentCfg.ListenPort != proxyPort1 {
+		t.Errorf("expected ListenPort to remain %d, got %d", proxyPort1, currentCfg.ListenPort)
+	}
+	if currentCfg.ControlPort != ctrlPort1 {
+		t.Errorf("expected ControlPort to remain %d, got %d", ctrlPort1, currentCfg.ControlPort)
+	}
+}
+
+func TestControlServer_ApplyConfig_SaveFail_RollbackBoth(t *testing.T) {
+	tempDir := t.TempDir()
+	subDir := filepath.Join(tempDir, "config_sub")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("failed to create config subdir: %v", err)
+	}
+	cfgFile := filepath.Join(subDir, "config.json")
+	cfgMgr := config.NewManager(cfgFile)
+
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	// Pick 4 free ports
+	lP1, _ := net.Listen("tcp", "127.0.0.1:0")
+	proxyPort1 := lP1.Addr().(*net.TCPAddr).Port
+	_ = lP1.Close()
+
+	lP2, _ := net.Listen("tcp", "127.0.0.1:0")
+	proxyPort2 := lP2.Addr().(*net.TCPAddr).Port
+	_ = lP2.Close()
+
+	lC1, _ := net.Listen("tcp", "127.0.0.1:0")
+	ctrlPort1 := lC1.Addr().(*net.TCPAddr).Port
+	_ = lC1.Close()
+
+	lC2, _ := net.Listen("tcp", "127.0.0.1:0")
+	ctrlPort2 := lC2.Addr().(*net.TCPAddr).Port
+	_ = lC2.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = proxyPort1
+		c.ControlPort = ctrlPort1
+	})
+
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// Make Save() fail by replacing subDir directory with a plain regular file
+	if err := os.RemoveAll(subDir); err != nil {
+		t.Fatalf("failed to remove config subdir: %v", err)
+	}
+	if err := os.WriteFile(subDir, []byte("blocker_file"), 0644); err != nil {
+		t.Fatalf("failed to write blocker file: %v", err)
+	}
+
+	// Send POST /api/config/apply requesting both ports to change
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", ctrlPort1)
+	body := fmt.Sprintf(`{"listen_port": %d, "control_port": %d}`, proxyPort2, ctrlPort2)
+	req, err := http.NewRequest(http.MethodPost, applyURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request to apply config failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected HTTP 500 due to save failure, got %d", resp.StatusCode)
+	}
+
+	var resData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
+		t.Fatalf("failed to decode response JSON: %v", err)
+	}
+	if errMsg, _ := resData["error"].(string); !strings.Contains(errMsg, "配置持久化失败") {
+		t.Errorf("expected error message to contain '配置持久化失败', got %q", errMsg)
+	}
+
+	// Verify proxy rolled back to proxyPort1
+	pConn1, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort1), 500*time.Millisecond)
+	if err != nil {
+		t.Errorf("proxy failed to rollback to proxyPort1 %d: %v", proxyPort1, err)
+	} else {
+		_ = pConn1.Close()
+	}
+
+	// Verify proxy is NOT listening on proxyPort2
+	pConn2, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort2), 100*time.Millisecond)
+	if err == nil {
+		_ = pConn2.Close()
+		t.Errorf("proxy should NOT be listening on proxyPort2 after rollback")
+	}
+
+	// Verify control rolled back to ctrlPort1
+	statusURL := fmt.Sprintf("http://127.0.0.1:%d/api/status", ctrlPort1)
+	sResp, err := http.Get(statusURL)
+	if err != nil {
+		t.Fatalf("control server unreachable on rolled-back port %d: %v", ctrlPort1, err)
+	}
+	sResp.Body.Close()
+	if sResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 on rolled-back control port, got %d", sResp.StatusCode)
+	}
+
+	// Verify ctrlPort2 is NOT listening
+	cConn2, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", ctrlPort2), 100*time.Millisecond)
+	if err == nil {
+		_ = cConn2.Close()
+		t.Errorf("control should NOT be listening on ctrlPort2 after rollback")
+	}
+
+	// Verify memory config rolled back to old values
+	currentCfg := cfgMgr.Get()
+	if currentCfg.ListenPort != proxyPort1 {
+		t.Errorf("expected ListenPort %d, got %d", proxyPort1, currentCfg.ListenPort)
+	}
+	if currentCfg.ControlPort != ctrlPort1 {
+		t.Errorf("expected ControlPort %d, got %d", ctrlPort1, currentCfg.ControlPort)
 	}
 }
 
