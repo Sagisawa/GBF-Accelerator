@@ -1391,9 +1391,21 @@ export const App: React.FC = () => {
 
               <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
                 <span>预加载命中复用</span>
-                <span className="font-mono font-semibold text-indigo-600">
-                  {prefetchReusedCount} 项
-                </span>
+                {!isPrefetch ? (
+                  <span className="text-slate-400 font-medium">未启用</span>
+                ) : prefetchReusedCount > 0 ? (
+                  <span className="font-mono font-semibold text-indigo-600">
+                    {prefetchReusedCount} 项 · 已命中
+                  </span>
+                ) : diskHitsCount + ramHitsCount > 0 ? (
+                  <span className="font-medium text-emerald-600">
+                    0 项 (缓存已完备)
+                  </span>
+                ) : (
+                  <span className="font-medium text-slate-400">
+                    待命中 (0 项)
+                  </span>
+                )}
               </div>
             </div>
           </div>
