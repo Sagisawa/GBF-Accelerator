@@ -213,6 +213,7 @@ func (s *ProxyServer) Start() error {
 		s.prefetch = newPrefetchEngine(s)
 	}
 
+	s.serveLoopWg.Add(1)
 	go s.serveLoop(ln, s.listenerGen)
 	return nil
 }
@@ -243,6 +244,7 @@ func (s *ProxyServer) ReloadListener(newHost string, newPort int) error {
 			if rollbackLn, rErr := net.Listen("tcp", oldAddr); rErr == nil {
 				s.listener = rollbackLn
 				s.listenerGen++
+				s.serveLoopWg.Add(1)
 				go s.serveLoop(rollbackLn, s.listenerGen)
 				return fmt.Errorf("failed to listen on %s: %w (rolled back to %s)", newAddr, err, oldAddr)
 			} else {
@@ -255,6 +257,7 @@ func (s *ProxyServer) ReloadListener(newHost string, newPort int) error {
 
 	s.listener = newLn
 	s.listenerGen++
+	s.serveLoopWg.Add(1)
 	go s.serveLoop(newLn, s.listenerGen)
 	if s.stats != nil {
 		s.stats.Log("INFO", fmt.Sprintf("[PROXY] 监听地址已动态重载至: %s (generation: %d)", newAddr, s.listenerGen))
@@ -331,7 +334,6 @@ func (s *ProxyServer) WaitServeLoops(timeout time.Duration) bool {
 }
 
 func (s *ProxyServer) serveLoop(ln net.Listener, gen uint64) {
-	s.serveLoopWg.Add(1)
 	defer s.serveLoopWg.Done()
 
 	for {
@@ -793,11 +795,11 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		(config.GetLANIP() != "" && hostTrimmed == config.GetLANIP())
 
 	isDirectLocal := false
-	if !isExternalGBFDomain(hostTrimmed) {
+	if isLocalHost {
 		if isInternalCertOrPac {
 			isDirectLocal = true
 		} else if isLandingPage {
-			isDirectLocal = !req.URL.IsAbs() || isLocalHost || isProxyPort
+			isDirectLocal = !req.URL.IsAbs() || isProxyPort
 		}
 	}
 
@@ -907,7 +909,12 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 
 	var bodyBytes []byte
 	if req.Body != nil {
-		bodyBytes, _ = io.ReadAll(req.Body)
+		var bodyErr error
+		bodyBytes, bodyErr = io.ReadAll(req.Body)
+		if bodyErr != nil {
+			writeHTTPResponse(conn, http.StatusBadRequest, nil, nil, req.Method == http.MethodHead, req.Close)
+			return !req.Close
+		}
 	}
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
@@ -970,7 +977,11 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	}
 	defer resp.Body.Close()
 
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
+		return !req.Close
+	}
 	s.forwardDynamicResponse(conn, resp, respBytes, req.Method == http.MethodHead, req.Close)
 	elapsed := time.Since(startTime).Milliseconds()
 	s.stats.RecordProtocol(resp.Proto)
@@ -1329,7 +1340,12 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	startTime := time.Now()
 	var bodyBytes []byte
 	if req.Body != nil {
-		bodyBytes, _ = io.ReadAll(req.Body)
+		var bodyErr error
+		bodyBytes, bodyErr = io.ReadAll(req.Body)
+		if bodyErr != nil {
+			writeHTTPResponse(w, http.StatusBadRequest, nil, nil, req.Method == http.MethodHead, req.Close)
+			return !req.Close
+		}
 	}
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
@@ -1393,7 +1409,11 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	}
 	defer resp.Body.Close()
 
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
+		return !req.Close
+	}
 	s.forwardDynamicResponse(w, resp, respBytes, req.Method == http.MethodHead, req.Close)
 	elapsed := time.Since(startTime).Milliseconds()
 	s.stats.RecordProtocol(resp.Proto)
