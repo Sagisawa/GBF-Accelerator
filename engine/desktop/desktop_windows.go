@@ -89,10 +89,12 @@ func activateExplorerWindow(hwnd uintptr) bool {
 	attachedForeground := false
 	attachedTarget := false
 	if foregroundThread != 0 && currentThread != 0 && foregroundThread != currentThread {
-		attachedForeground = attachThreadInput.Call(currentThread, foregroundThread, 1) != 0
+		ret, _, _ := attachThreadInput.Call(currentThread, foregroundThread, 1)
+		attachedForeground = ret != 0
 	}
 	if targetThread != 0 && currentThread != 0 && targetThread != currentThread {
-		attachedTarget = attachThreadInput.Call(currentThread, targetThread, 1) != 0
+		ret, _, _ := attachThreadInput.Call(currentThread, targetThread, 1)
+		attachedTarget = ret != 0
 	}
 
 	if attachedTarget {
@@ -104,7 +106,8 @@ func activateExplorerWindow(hwnd uintptr) bool {
 
 	showWindow.Call(hwnd, swShowNormal)
 	bringWindowToTop.Call(hwnd)
-	return setForegroundWindow.Call(hwnd) != 0
+	ret, _, _ := setForegroundWindow.Call(hwnd)
+	return ret != 0
 }
 
 func openFolderNative(path string) error {
