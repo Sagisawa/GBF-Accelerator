@@ -21,11 +21,12 @@ import (
 )
 
 type persistTask struct {
-	ns       string
-	cleanKey string
-	filePath string
-	headers  map[string]string
-	data     []byte
+	ns         string
+	cleanKey   string
+	filePath   string
+	headers    map[string]string
+	data       []byte
+	generation uint64
 }
 
 type Manager struct {
@@ -39,6 +40,10 @@ type Manager struct {
 	stopPersist  chan struct{}
 	persistDone  chan struct{}
 	stopOnce     sync.Once
+	persistMu    sync.RWMutex
+	generation   uint64
+	ramEnabled   atomic.Bool
+	autoRepair   atomic.Bool
 }
 
 var mimeFallbacks = map[string]string{
@@ -78,7 +83,10 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 		persistQueue: make(chan *persistTask, 1024),
 		stopPersist:  make(chan struct{}),
 		persistDone:  make(chan struct{}),
+		generation:   1,
 	}
+	m.ramEnabled.Store(true)
+	m.autoRepair.Store(true)
 	var wg sync.WaitGroup
 	for i := 0; i < defaultPersistWorkers; i++ {
 		wg.Add(1)
@@ -109,7 +117,7 @@ func (m *Manager) persistWorker(wg *sync.WaitGroup) {
 			for {
 				select {
 				case task := <-m.persistQueue:
-					m.saveToDisk(task.filePath, task.headers, task.data)
+					m.saveToDisk(task.filePath, task.headers, task.data, task.generation)
 				default:
 					return
 				}
@@ -121,13 +129,29 @@ func (m *Manager) persistWorker(wg *sync.WaitGroup) {
 }
 
 func (m *Manager) SetCacheBase(base string) {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+
+	m.generation++
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.cacheBase = base
+	m.mu.Unlock()
+
 	m.ramCache.Clear()
 	m.missingMu.Lock()
 	m.missingCache = make(map[string]struct{})
 	m.missingMu.Unlock()
+}
+
+func (m *Manager) SetRAMEnabled(enabled bool) {
+	m.ramEnabled.Store(enabled)
+	if !enabled {
+		m.ramCache.Clear()
+	}
+}
+
+func (m *Manager) SetAutoRepair(enabled bool) {
+	m.autoRepair.Store(enabled)
 }
 
 func (m *Manager) GetCacheBase() string {
@@ -230,7 +254,7 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 		return false
 	}
 	ramKey := makeRAMKey(ns, cleanKey)
-	if m.ramCache.Contains(ramKey) {
+	if m.ramEnabled.Load() && m.ramCache.Contains(ramKey) {
 		return true
 	}
 	m.missingMu.RLock()
@@ -312,8 +336,10 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	// 1. Check RAM Cache
-	if item, ok := m.ramCache.Get(ramKey); ok {
-		return item, "RAM"
+	if m.ramEnabled.Load() {
+		if item, ok := m.ramCache.Get(ramKey); ok {
+			return item, "RAM"
+		}
 	}
 
 	// Negative cache check
@@ -358,7 +384,7 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		}
 	}
 
-	if strings.HasSuffix(cleanKey, "set-error-handler.js") {
+	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
 		if m.CheckAndQuarantineTamperedJS(filePath) {
 			m.markMissing(ramKey)
 			return nil, ""
@@ -439,8 +465,10 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		Size:            int64(len(data)),
 	}
 
-	// Store into RAM cache
-	m.ramCache.Set(ramKey, item)
+	// Store into RAM cache only when enabled.
+	if m.ramEnabled.Load() {
+		m.ramCache.Set(ramKey, item)
+	}
 	return item, "DISK"
 }
 
@@ -513,16 +541,19 @@ func getHeader(h map[string]string, key string) string {
 	return ""
 }
 
-func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, string, string, bool) {
+func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, string, string, uint64, bool) {
+	m.persistMu.RLock()
+	defer m.persistMu.RUnlock()
+	generation := m.generation
 	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
 	ct := getHeader(headers, "content-type")
 	if !IsValidCacheContent(cleanKey, ct, data) {
-		return nil, "", "", false
+		return nil, "", "", 0, false
 	}
 
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
-		return nil, "", "", false
+		return nil, "", "", 0, false
 	}
 
 	ce := getHeader(headers, "content-encoding")
@@ -545,13 +576,15 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 		LastModified:    lastMod,
 		Size:            int64(len(data)),
 	}
-	m.ramCache.Set(ramKey, item)
+	if m.ramEnabled.Load() {
+		m.ramCache.Set(ramKey, item)
+	}
 
 	m.missingMu.Lock()
 	delete(m.missingCache, ramKey)
 	m.missingMu.Unlock()
 
-	return item, cleanKey, filePath, true
+	return item, cleanKey, filePath, generation, true
 }
 
 func (m *Manager) SaveRAM(urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
@@ -559,7 +592,7 @@ func (m *Manager) SaveRAM(urlPath string, headers map[string]string, data []byte
 }
 
 func (m *Manager) SaveRAMWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
-	item, cleanKey, filePath, ok := m.saveRAMInternal(ns, urlPath, headers, data)
+	item, cleanKey, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data)
 	if !ok || item == nil {
 		return nil, false
 	}
@@ -574,11 +607,12 @@ func (m *Manager) SaveRAMWithNamespace(ns, urlPath string, headers map[string]st
 	// Enqueue async disk persistence (bounded, non-blocking)
 	select {
 	case m.persistQueue <- &persistTask{
-		ns:       ns,
-		cleanKey: cleanKey,
-		filePath: filePath,
-		headers:  headers,
-		data:     data,
+		ns:         ns,
+		cleanKey:   cleanKey,
+		filePath:   filePath,
+		headers:    headers,
+		data:       data,
+		generation: generation,
 	}:
 	default:
 		// Queue full, drop disk persist without delaying foreground
@@ -592,11 +626,11 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 }
 
 func (m *Manager) SaveWithNamespace(ns, urlPath string, headers map[string]string, data []byte) bool {
-	item, _, filePath, ok := m.saveRAMInternal(ns, urlPath, headers, data)
+	item, _, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data)
 	if !ok || item == nil {
 		return false
 	}
-	return m.saveToDisk(filePath, headers, data)
+	return m.saveToDisk(filePath, headers, data, generation)
 }
 
 func renameWithRetry(src, dst string, maxAttempts int) error {
@@ -611,7 +645,12 @@ func renameWithRetry(src, dst string, maxAttempts int) error {
 	return err
 }
 
-func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []byte) bool {
+func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []byte, generation uint64) bool {
+	m.persistMu.RLock()
+	defer m.persistMu.RUnlock()
+	if generation != m.generation {
+		return false
+	}
 	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
 		return false
 	}
@@ -677,6 +716,9 @@ func (m *Manager) ClearRAM() {
 }
 
 func (m *Manager) ClearAll() (int, int64) {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+	m.generation++
 	m.ClearRAM()
 	m.mu.RLock()
 	base := m.cacheBase
@@ -724,6 +766,8 @@ type SlimProgress struct {
 }
 
 func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), cancelCh <-chan struct{}) map[string]interface{} {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
@@ -824,6 +868,8 @@ func (m *Manager) AuditAndRepair() map[string]interface{} {
 }
 
 func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(p SlimProgress), cancelCh <-chan struct{}) (int, int, int64) {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
 	if keepCount <= 0 {
 		keepCount = 8
 	}
