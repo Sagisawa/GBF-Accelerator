@@ -435,7 +435,33 @@ func TestHandlePlainHTTP_DirectLocalAndPAC(t *testing.T) {
 		t.Errorf("expected cached game asset, got %s", conn2.writeBuf.String())
 	}
 
-	// 3. PAC extraction with port omitted
+	// 3. An external host must not be able to claim internal proxy endpoints.
+	// Use a loopback HTTP proxy so this regression test remains fully local.
+	upstreamProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("upstream-resource"))
+	}))
+	defer upstreamProxy.Close()
+	cfgMgr.Update(func(c *config.Config) {
+		c.AllowLAN = true
+		c.UpstreamProxy = upstreamProxy.URL
+	})
+	connExternal := &dummyConn{}
+	reqExternal := &http.Request{
+		Method: http.MethodGet,
+		Host:   "example.com",
+		URL:    &url.URL{Scheme: "http", Host: "example.com", Path: "/ca.crt"},
+	}
+	srv.handlePlainHTTP(connExternal, reqExternal)
+	if strings.Contains(connExternal.writeBuf.String(), "application/x-x509-ca-cert") ||
+		strings.Contains(connExternal.writeBuf.String(), "gbf_ca.crt") {
+		t.Fatal("external /ca.crt must never return the proxy's root CA")
+	}
+	if !strings.Contains(connExternal.writeBuf.String(), "upstream-resource") {
+		t.Fatalf("external /ca.crt should be forwarded, got %s", connExternal.writeBuf.String())
+	}
+
+	// 4. PAC extraction with port omitted
 	cfgMgr.Update(func(c *config.Config) {
 		c.AllowLAN = true
 	})
@@ -455,7 +481,7 @@ func TestHandlePlainHTTP_DirectLocalAndPAC(t *testing.T) {
 		t.Errorf("expected PAC script to contain host %s, got %s", expectedAddr, conn3.writeBuf.String())
 	}
 
-	// 4. Direct local IPv6 request for /ca.crt with Host: [::1] (port omitted)
+	// 5. Direct local IPv6 request for /ca.crt with Host: [::1] (port omitted)
 	conn4 := &dummyConn{}
 	req4 := &http.Request{
 		Method: http.MethodGet,
