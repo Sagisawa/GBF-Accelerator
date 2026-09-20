@@ -23,6 +23,7 @@ import (
 	"gbf-proxy/config"
 	"gbf-proxy/desktop"
 	"gbf-proxy/proxy"
+	"gbf-proxy/res"
 	"gbf-proxy/startup"
 	"gbf-proxy/sysproxy"
 	"gbf-proxy/telemetry"
@@ -913,6 +914,10 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 			})
 			return
 		}
+	}
+
+	if err := res.EnsureHelperFiles(config.GetBaseDir(), candidate.ListenPort); err != nil {
+		c.stats.Log("WARN", fmt.Sprintf("[RES] 更新辅助文件失败: %v", err))
 	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
