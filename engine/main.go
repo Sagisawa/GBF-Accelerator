@@ -177,7 +177,9 @@ func main() {
 	}
 
 	// 3. Ensure bundled helper files exist (proxy.pac, SwitchyOmega_GBF.bak, 使用说明.txt)
-	_ = res.EnsureHelperFiles(baseDir, curCfg.ListenPort)
+	if err := res.EnsureHelperFiles(baseDir, curCfg.ListenPort); err != nil {
+		stats.Log("WARN", fmt.Sprintf("[RES] Failed to prepare helper files: %v", err))
+	}
 
 	// 4. Initialize Certificates
 	certsDir := filepath.Join(baseDir, "certs")
@@ -243,7 +245,9 @@ func main() {
 	defer sysproxy.CleanupOnExit()
 
 	if curCfg.AutoStart {
-		_ = startup.SetStartupEnabled(true)
+		if err := startup.SetStartupEnabled(true); err != nil {
+			stats.Log("WARN", fmt.Sprintf("[STARTUP] Failed to enable auto-start: %v", err))
+		}
 	}
 
 	fmt.Printf("[+] GBF Accelerator Go Core v%s started\n", config.AppVersion)
