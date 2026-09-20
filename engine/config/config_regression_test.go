@@ -53,3 +53,10 @@ func itoa(v int) string {
     }
     return string(buf)
 }
+
+func TestDefaultConfigUsesAutomaticUpstreamProxy(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.UpstreamProxy != "auto" {
+		t.Fatalf("default UpstreamProxy=%q, want auto", cfg.UpstreamProxy)
+	}
+}
