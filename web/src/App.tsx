@@ -50,6 +50,7 @@ export const App: React.FC = () => {
   const [config, setConfig] = useState<Record<string, any>>({})
   const [logs, setLogs] = useState<LogItem[]>([])
   const [loadingProxy, setLoadingProxy] = useState<boolean>(false)
+  const [loadingBrowse, setLoadingBrowse] = useState<boolean>(false)
 
   // Editable Form Inputs
   const [cacheDirInput, setCacheDirInput] = useState<string>('D:\\acgpower\\cache\\gbf\\https')
@@ -318,6 +319,9 @@ export const App: React.FC = () => {
 
   // Browse Directory
   const handleBrowseDir = async () => {
+    if (loadingBrowse) return
+
+    setLoadingBrowse(true)
     try {
       const chosen = await browseDirectory()
       if (chosen) {
@@ -329,6 +333,8 @@ export const App: React.FC = () => {
       }
     } catch (e: any) {
       showToast(`选择目录失败: ${e.message}`, 'error')
+    } finally {
+      setLoadingBrowse(false)
     }
   }
 
@@ -871,9 +877,11 @@ export const App: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleBrowseDir}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
+                    disabled={loadingBrowse}
+                    aria-busy={loadingBrowse}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
                   >
-                    浏览...
+                    {loadingBrowse ? '正在打开...' : '浏览...'}
                   </button>
                   <button
                     type="button"
