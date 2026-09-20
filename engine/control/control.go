@@ -687,10 +687,7 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		candidate.ControlPort = int(val)
 	}
 	if val, ok := patch["upstream_proxy"].(string); ok {
-		if strings.EqualFold(val, "auto") {
-			val = config.AutoDetectUpstreamProxy()
-		}
-		candidate.UpstreamProxy = val
+			candidate.UpstreamProxy = strings.TrimSpace(val)
 	}
 	if val, ok := patch["direct_mode"].(bool); ok {
 		candidate.DirectMode = val
