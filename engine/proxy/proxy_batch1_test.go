@@ -451,32 +451,51 @@ func TestBug3_HandlePassthroughTunnel_BidirectionalClose(t *testing.T) {
 	cacheMgr := cache.NewManager(tempDir, 16)
 	defer cacheMgr.Close()
 	stats := telemetry.NewStats()
+	cfgMgr.Update(func(c *config.Config) {
+		c.DirectMode = true
+	})
 	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
 
 	t.Run("UpstreamCloses_BothClosedWithoutDeadlock", func(t *testing.T) {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Fatalf("failed to listen: %v", err)
+			t.Fatalf("failed to listen upstream: %v", err)
 		}
-		defer ln.Close()
+		defer upstreamLn.Close()
 
-		clientSide, serverSide := net.Pipe()
-		defer clientSide.Close()
+		clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to listen client: %v", err)
+		}
+		defer clientLn.Close()
+
+		clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+		if err != nil {
+			t.Fatalf("failed to dial client: %v", err)
+		}
+		defer clientConn.Close()
+
+		proxyConn, err := clientLn.Accept()
+		if err != nil {
+			t.Fatalf("failed to accept client: %v", err)
+		}
+		defer proxyConn.Close()
 
 		done := make(chan struct{})
 		go func() {
-			srv.handlePassthroughTunnel(serverSide, serverSide, ln.Addr().String())
+			srv.handlePassthroughTunnel(proxyConn, proxyConn, upstreamLn.Addr().String())
 			close(done)
 		}()
 
-		upConn, err := ln.Accept()
+		upConn, err := upstreamLn.Accept()
 		if err != nil {
 			t.Fatalf("failed to accept upstream conn: %v", err)
 		}
+		defer upConn.Close()
 
 		// Read the 200 Connection Established
 		buf := make([]byte, 128)
-		n, err := clientSide.Read(buf)
+		n, err := clientConn.Read(buf)
 		if err != nil || !strings.Contains(string(buf[:n]), "200 Connection Established") {
 			t.Fatalf("expected 200 Connection Established, got: %s, err: %v", string(buf[:n]), err)
 		}
@@ -493,31 +512,50 @@ func TestBug3_HandlePassthroughTunnel_BidirectionalClose(t *testing.T) {
 	})
 
 	t.Run("ClientCloses_BothClosedWithoutDeadlock", func(t *testing.T) {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Fatalf("failed to listen: %v", err)
+			t.Fatalf("failed to listen upstream: %v", err)
 		}
-		defer ln.Close()
+		defer upstreamLn.Close()
 
-		clientSide, serverSide := net.Pipe()
+		clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to listen client: %v", err)
+		}
+		defer clientLn.Close()
+
+		clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+		if err != nil {
+			t.Fatalf("failed to dial client: %v", err)
+		}
+		defer clientConn.Close()
+
+		proxyConn, err := clientLn.Accept()
+		if err != nil {
+			t.Fatalf("failed to accept client: %v", err)
+		}
+		defer proxyConn.Close()
 
 		done := make(chan struct{})
 		go func() {
-			srv.handlePassthroughTunnel(serverSide, serverSide, ln.Addr().String())
+			srv.handlePassthroughTunnel(proxyConn, proxyConn, upstreamLn.Addr().String())
 			close(done)
 		}()
 
-		upConn, err := ln.Accept()
+		upConn, err := upstreamLn.Accept()
 		if err != nil {
 			t.Fatalf("failed to accept upstream conn: %v", err)
 		}
 		defer upConn.Close()
 
 		buf := make([]byte, 128)
-		_, _ = clientSide.Read(buf)
+		n, err := clientConn.Read(buf)
+		if err != nil || !strings.Contains(string(buf[:n]), "200 Connection Established") {
+			t.Fatalf("expected 200 Connection Established, got: %s, err: %v", string(buf[:n]), err)
+		}
 
 		// Client closes connection
-		_ = clientSide.Close()
+		_ = clientConn.Close()
 
 		select {
 		case <-done:
