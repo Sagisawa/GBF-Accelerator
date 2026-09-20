@@ -73,28 +73,32 @@ const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ ba
   return <>{hours}h {minutes}m {seconds}s</>
 }
 
-const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null }> = ({ status }) => {
+const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: boolean }> = ({ status, running }) => {
   const [counts, setCounts] = useState(() => ({
-    totalHits: status?.requests?.total_hits ?? 0,
-    ramHits: status?.requests?.ram_hits ?? 0,
-    downloads: status?.requests?.cache_misses ?? 0,
-    apis: status?.requests?.total_apis ?? 0,
+    totalHits: running ? (status?.requests?.total_hits ?? 0) : 0,
+    ramHits: running ? (status?.requests?.ram_hits ?? 0) : 0,
+    downloads: running ? (status?.requests?.cache_misses ?? 0) : 0,
+    apis: running ? (status?.requests?.total_apis ?? 0) : 0,
   }))
 
   useEffect(() => {
+    if (!running) {
+      setCounts({ totalHits: 0, ramHits: 0, downloads: 0, apis: 0 })
+      return
+    }
     setCounts({
       totalHits: status?.requests?.total_hits ?? 0,
       ramHits: status?.requests?.ram_hits ?? 0,
       downloads: status?.requests?.cache_misses ?? 0,
       apis: status?.requests?.total_apis ?? 0,
     })
-  }, [status?.requests?.total_hits, status?.requests?.ram_hits, status?.requests?.cache_misses, status?.requests?.total_apis])
+  }, [running, status?.requests?.total_hits, status?.requests?.ram_hits, status?.requests?.cache_misses, status?.requests?.total_apis])
 
   useEffect(() => {
     const onMetrics = (event: Event) => {
       const data = (event as CustomEvent).detail
       const requests = data?.requests
-      if (!requests) return
+      if (!requests || !running) return
       setCounts((prev) => ({
         totalHits: typeof requests.total_hits === 'number' ? requests.total_hits : prev.totalHits,
         ramHits: typeof requests.ram_hits === 'number' ? requests.ram_hits : prev.ramHits,
@@ -105,7 +109,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null }> = ({ status
 
     window.addEventListener('gbf-metrics', onMetrics)
     return () => window.removeEventListener('gbf-metrics', onMetrics)
-  }, [])
+  }, [running])
 
   return (
     <div className="grid grid-cols-3 gap-2.5 sm:gap-4 pt-1">
@@ -940,7 +944,7 @@ export const App: React.FC = () => {
           </div>
 
           {/* Realtime request counters: isolated from the root App render loop */}
-          <RealtimeRequestHud status={status} />
+          <RealtimeRequestHud status={status} running={isRunning} />
         </div>
       </header>
 
