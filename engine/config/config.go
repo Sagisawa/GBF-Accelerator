@@ -288,14 +288,82 @@ func (m *Manager) GetEffectiveUpstreamProxy() string {
 	return m.cfg.GetEffectiveUpstreamProxy()
 }
 
+func isPrivateRFC1918(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	if ip4[0] == 10 {
+		return true
+	}
+	if ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31 {
+		return true
+	}
+	if ip4[0] == 192 && ip4[1] == 168 {
+		return true
+	}
+	return false
+}
+
 func GetLANIP() string {
+	// 1. Prefer enumerating active, non-virtual physical interfaces
+	if ifaces, err := net.Interfaces(); err == nil {
+		var fallbackIP string
+		for _, iface := range ifaces {
+			if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			nameLower := strings.ToLower(iface.Name)
+			// Skip known TUN/TAP/virtual interfaces (e.g. Clash, Mihomo, WinTun, Tailscale, ZeroTier, Docker)
+			if strings.Contains(nameLower, "tun") || strings.Contains(nameLower, "tap") ||
+				strings.Contains(nameLower, "wintun") || strings.Contains(nameLower, "mihomo") ||
+				strings.Contains(nameLower, "clash") || strings.Contains(nameLower, "tailscale") ||
+				strings.Contains(nameLower, "zerotier") || strings.Contains(nameLower, "docker") ||
+				strings.Contains(nameLower, "vethernet") {
+				continue
+			}
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ip net.IP
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				}
+				if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+					continue
+				}
+				ip4 := ip.To4()
+				if isPrivateRFC1918(ip4) {
+					return ip4.String()
+				}
+				if fallbackIP == "" && !ip4.IsLinkLocalUnicast() && !strings.HasPrefix(ip4.String(), "198.18.") && !strings.HasPrefix(ip4.String(), "198.19.") {
+					fallbackIP = ip4.String()
+				}
+			}
+		}
+		if fallbackIP != "" {
+			return fallbackIP
+		}
+	}
+
+	// 2. Fallback to UDP routing socket
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err != nil {
 		return ""
 	}
 	defer conn.Close()
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String()
+	ipStr := localAddr.IP.String()
+	// Disallow virtual benchmark / fake-IP subnet (RFC 2544, 198.18.0.0/15)
+	if strings.HasPrefix(ipStr, "198.18.") || strings.HasPrefix(ipStr, "198.19.") {
+		return ""
+	}
+	return ipStr
 }
 
 // GetBaseDir returns the base directory for writable user data (config.json, certs, cache).
