@@ -777,15 +777,58 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	}
 
 	proxyRebound := false
+	controlRebound := false
+
+	rollbackRuntime := func() error {
+		var errs []string
+		if controlRebound {
+			if err := c.ReloadListener(oldCandidate.ControlPort); err != nil {
+				errs = append(errs, fmt.Sprintf("control rollback: %v", err))
+			}
+		}
+		if proxyRebound && c.proxySrv != nil {
+			if err := c.proxySrv.ReloadListener(oldCandidate.GetEffectiveListenHost(), oldCandidate.ListenPort); err != nil {
+				errs = append(errs, fmt.Sprintf("proxy rollback: %v", err))
+			}
+		}
+		if err := c.cfgMgr.Commit(oldCandidate); err != nil {
+			errs = append(errs, fmt.Sprintf("config rollback: %v", err))
+		}
+		if len(errs) > 0 {
+			return fmt.Errorf("%s", strings.Join(errs, "; "))
+		}
+		return nil
+	}
+
+	restoreSystemSideEffects := func() error {
+		var errs []string
+		if candidate.AutoSystemProxy != oldCandidate.AutoSystemProxy || candidate.ListenPort != oldCandidate.ListenPort {
+			var err error
+			if oldCandidate.AutoSystemProxy {
+				err = c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", oldCandidate.ListenPort))
+			} else {
+				err = c.disablePACProxyFn(false)
+			}
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("system proxy restore: %v", err))
+			}
+		}
+		if candidate.AutoStart != oldCandidate.AutoStart {
+			if err := c.setStartupEnabledFn(oldCandidate.AutoStart); err != nil {
+				errs = append(errs, fmt.Sprintf("startup restore: %v", err))
+			}
+		}
+		if len(errs) > 0 {
+			return fmt.Errorf("%s", strings.Join(errs, "; "))
+		}
+		return nil
+	}
 
 	// 2. Apply listener changes only after configuration persistence succeeds.
 	if proxyNeedsReload {
 		newHost := candidate.GetEffectiveListenHost()
 		if err := c.proxySrv.ReloadListener(newHost, candidate.ListenPort); err != nil {
-			// Restore configuration because the persisted candidate cannot be used
-			// safely while the proxy listener remains on the old address.
-			rollbackErr := c.cfgMgr.Commit(oldCandidate)
-			if rollbackErr != nil {
+			if rollbackErr := c.cfgMgr.Commit(oldCandidate); rollbackErr != nil {
 				c.stats.Log("ERROR", fmt.Sprintf("[CONFIG] 严重：代理监听重载失败且配置回滚也失败: reload=%v rollback=%v", err, rollbackErr))
 			}
 			c.sendJSON(w, http.StatusInternalServerError, map[string]string{
@@ -815,6 +858,7 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 			})
 			return
 		}
+		controlRebound = true
 	}
 
 	// 3. Apply non-listener runtime state
@@ -824,15 +868,39 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if candidate.RAMCacheMaxMB != oldCandidate.RAMCacheMaxMB {
 		c.cacheMgr.SetRAMLimit(candidate.RAMCacheMaxMB)
 	}
+
 	if candidate.AutoSystemProxy != oldCandidate.AutoSystemProxy || candidate.ListenPort != oldCandidate.ListenPort {
+		var err error
 		if candidate.AutoSystemProxy {
-			_ = c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", candidate.ListenPort))
+			err = c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", candidate.ListenPort))
 		} else {
-			_ = c.disablePACProxyFn(false)
+			err = c.disablePACProxyFn(false)
+		}
+		if err != nil {
+			restoreErr := restoreSystemSideEffects()
+			runtimeRollbackErr := rollbackRuntime()
+			if restoreErr != nil || runtimeRollbackErr != nil {
+				c.stats.Log("ERROR", fmt.Sprintf("[CONFIG] 严重：系统代理应用失败且回滚存在错误: apply=%v restore=%v runtime=%v", err, restoreErr, runtimeRollbackErr))
+			}
+			c.sendJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("系统代理设置失败: %v", err),
+			})
+			return
 		}
 	}
+
 	if candidate.AutoStart != oldCandidate.AutoStart {
-		_ = c.setStartupEnabledFn(candidate.AutoStart)
+		if err := c.setStartupEnabledFn(candidate.AutoStart); err != nil {
+			restoreErr := restoreSystemSideEffects()
+			runtimeRollbackErr := rollbackRuntime()
+			if restoreErr != nil || runtimeRollbackErr != nil {
+				c.stats.Log("ERROR", fmt.Sprintf("[CONFIG] 严重：开机启动设置失败且回滚存在错误: apply=%v restore=%v runtime=%v", err, restoreErr, runtimeRollbackErr))
+			}
+			c.sendJSON(w, http.StatusInternalServerError, map[string]string{
+				"error": fmt.Sprintf("开机启动设置失败: %v", err),
+			})
+			return
+		}
 	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
