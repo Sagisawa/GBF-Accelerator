@@ -61,7 +61,9 @@
   - 管理接口 (`/api/config/apply`, `/api/cache/*`, `/api/cert/*`, `/api/sysproxy/*`, `/api/startup/*`, `/api/update/*` 等) 仅限 Loopback。
   - 严禁因 `AllowLAN=true` 改绑非 Loopback; 严禁改 Origin 或白名单向 LAN 暴露 8125。
 - **AllowLAN 语义**:
-  - 仅控制 8124 是否接受非 Loopback 连接; 绝不开放 Control Plane 与后台, 不改防火墙。
+  - 仅控制 8124 是否接受非 Loopback 连接; 绝不开放 Control Plane 与后台。
+  - `AllowLAN` 本身不得自动修改系统防火墙；Windows 防火墙若需适配，仅允许通过独立、用户明确触发的防火墙操作配置。
+  - 防火墙适配必须严格限定 `Private + LocalSubnet + TCP + 当前代理端口 + Inbound + Allow`，不得开放 Public 或 Any。
 
 ### 2. Listener 生命周期与热重载
 - **重绑顺序**:
