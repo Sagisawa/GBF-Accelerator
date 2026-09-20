@@ -411,18 +411,15 @@ export const App: React.FC = () => {
 
   // Enable Shimakaze mode from suggestion modal
   const handleEnableShimakaze = async () => {
-    await runConfigAction('shimakaze', async () => {
-      try {
-        await applyConfig({ shimakaze_mode: true })
-        setConfig((prev) => ({ ...prev, shimakaze_mode: true }))
-        showToast('已成功启用【岛风GO 兼容优化模式】', 'success')
-        loadState()
-      } catch (e: any) {
-        showToast(`启用岛风GO兼容模式失败: ${e.message}`, 'error')
-      }
-    })
-  }
-  // Save Upstream Proxy
+    try {
+      await applyConfig({ shimakaze_mode: true })
+      setConfig((prev) => ({ ...prev, shimakaze_mode: true }))
+      showToast('已成功启用【岛风GO 兼容优化模式】', 'success')
+      loadState()
+    } catch (e: any) {
+      showToast(`启用岛风GO兼容模式失败: ${e.message}`, 'error')
+    }
+  }  // Save Upstream Proxy
   const handleSaveUpstream = async () => {
     const trimmed = upstreamInput.trim()
     if (!trimmed) {
