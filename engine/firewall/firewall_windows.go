@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -174,11 +175,24 @@ func runPowerShell(script string) (string, error) {
 		"-ExecutionPolicy", "Bypass",
 		"-EncodedCommand", encoded,
 	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", NewError(CodeOperationFailed, fmt.Errorf("PowerShell query failed: %w: %s", err, strings.TrimSpace(string(out))))
+
+	// Keep stdout (the machine-readable JSON protocol) isolated from stderr.
+	// Windows PowerShell serializes native error records to stderr as CLIXML
+	// beginning with "#< CLIXML". Mixing that stream into stdout makes otherwise
+	// valid JSON fail with "invalid character '#'", even when the query produced
+	// useful JSON before a non-fatal diagnostic.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = strings.TrimSpace(stdout.String())
+		}
+		return "", NewError(CodeOperationFailed, fmt.Errorf("PowerShell query failed: %w: %s", err, message))
 	}
-	return string(out), nil
+	return stdout.String(), nil
 }
 
 func buildElevationScript(encodedApply string) string {
