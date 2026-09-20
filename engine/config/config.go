@@ -46,10 +46,11 @@ type Config struct {
 }
 
 type Manager struct {
-	mu     sync.RWMutex
-	cfg    Config
-	path   string
-	onSave []func(*Config)
+	commitMu sync.Mutex
+	mu       sync.RWMutex
+	cfg      Config
+	path     string
+	onSave   []func(*Config)
 }
 
 func DefaultConfig() Config {
@@ -178,6 +179,9 @@ func (m *Manager) Candidate() Config {
 }
 
 func (m *Manager) Commit(candidate Config) error {
+	m.commitMu.Lock()
+	defer m.commitMu.Unlock()
+
 	m.mu.Lock()
 	oldCfg := m.cfg
 	m.cfg = candidate

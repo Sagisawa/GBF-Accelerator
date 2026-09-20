@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -84,6 +85,53 @@ func TestConfigManager(t *testing.T) {
 	resAssets := NormalizeCacheDir(acgpPath)
 	if resAssets != expectedRoot {
 		t.Errorf("NormalizeCacheDir(assets) = %q; expected %q", resAssets, expectedRoot)
+	}
+}
+
+func TestConfigManager_CommitConcurrency(t *testing.T) {
+	tempFile, err := os.CreateTemp("", "gbf_commit_test_*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	_ = tempFile.Close()
+	defer os.Remove(tempFile.Name())
+
+	mgr := NewManager(tempFile.Name())
+
+	const numGoroutines = 20
+	var wg sync.WaitGroup
+	errCh := make(chan error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			candidate := mgr.Candidate()
+			candidate.RAMCacheMaxMB = 100 + idx
+			if err := mgr.Commit(candidate); err != nil {
+				errCh <- err
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Errorf("concurrent Commit error: %v", err)
+	}
+
+	// Verify consistent state
+	finalCfg := mgr.Get()
+	if finalCfg.RAMCacheMaxMB < 100 || finalCfg.RAMCacheMaxMB >= 100+numGoroutines {
+		t.Errorf("unexpected final RAMCacheMaxMB: %d", finalCfg.RAMCacheMaxMB)
+	}
+
+	// Verify disk file is valid JSON and matches in-memory
+	loadedMgr := NewManager(tempFile.Name())
+	if loadedMgr.Get().RAMCacheMaxMB != finalCfg.RAMCacheMaxMB {
+		t.Errorf("disk config (%d) does not match in-memory (%d)",
+			loadedMgr.Get().RAMCacheMaxMB, finalCfg.RAMCacheMaxMB)
 	}
 }
 

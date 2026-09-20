@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -498,4 +499,79 @@ func TestControlProxyStartNilProxyServer(t *testing.T) {
 		t.Errorf("expected ok=false in error response, got %v", failResp["ok"])
 	}
 }
+
+func TestControlServer_ReloadListener_InFlightRequestCompletes(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	// Pick two free ports
+	l1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to pick port 1: %v", err)
+	}
+	port1 := l1.Addr().(*net.TCPAddr).Port
+	_ = l1.Close()
+
+	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to pick port 2: %v", err)
+	}
+	port2 := l2.Addr().(*net.TCPAddr).Port
+	_ = l2.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ControlPort = port1
+	})
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server on port %d: %v", port1, err)
+	}
+	defer ctrl.Stop()
+
+	// Send HTTP POST to port1 requesting migration to port2
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", port1)
+	body := fmt.Sprintf(`{"control_port": %d}`, port2)
+	req, err := http.NewRequest(http.MethodPost, applyURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("in-flight request failed during reload: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", resp.StatusCode)
+	}
+
+	var resData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
+		t.Fatalf("failed to decode response JSON: %v", err)
+	}
+
+	expectedURL := fmt.Sprintf("http://127.0.0.1:%d", port2)
+	if resData["control_url"] != expectedURL {
+		t.Errorf("expected control_url=%q, got %v", expectedURL, resData["control_url"])
+	}
+
+	// Verify new port2 is responsive
+	statusURL := fmt.Sprintf("http://127.0.0.1:%d/api/status", port2)
+	sResp, err := http.Get(statusURL)
+	if err != nil {
+		t.Fatalf("failed to reach new control port %d: %v", port2, err)
+	}
+	sResp.Body.Close()
+	if sResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 on new port, got %d", sResp.StatusCode)
+	}
+}
+
 

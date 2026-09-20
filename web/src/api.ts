@@ -15,13 +15,34 @@ export async function fetchConfig(): Promise<Record<string, any>> {
   return data.config || {}
 }
 
-export async function applyConfig(patch: Record<string, any>): Promise<void> {
+export interface ApplyConfigResponse {
+  ok: boolean
+  message?: string
+  config?: Record<string, any>
+  control_url?: string
+}
+
+export async function applyConfig(patch: Record<string, any>): Promise<ApplyConfigResponse> {
   const res = await fetch(`${BASE}/api/config/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  const data: ApplyConfigResponse = await res.json()
+  if (data.control_url && data.config?.control_port) {
+    const targetPort = String(data.config.control_port)
+    const currentPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+    if (targetPort !== currentPort && (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')) {
+      setTimeout(() => {
+        window.location.href = data.control_url!
+      }, 500)
+    }
+  }
+  return data
 }
 
 export async function toggleProxy(start: boolean): Promise<RuntimeStatus> {

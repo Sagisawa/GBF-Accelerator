@@ -220,7 +220,7 @@ func TestReloadListener_ExistingConnectionSurvives(t *testing.T) {
 	}
 }
 
-// 5. TestReloadListener_ConcurrentReloadStop: Race and concurrency safety
+// 5. TestReloadListener_ConcurrentReloadStop: Race, concurrency safety, and serveLoop goroutine lifecycle
 func TestReloadListener_ConcurrentReloadStop(t *testing.T) {
 	proxySrv, port := setupTestProxyForReload(t, false)
 
@@ -246,4 +246,68 @@ func TestReloadListener_ConcurrentReloadStop(t *testing.T) {
 	}()
 
 	wg.Wait()
+
+	// Verify all serveLoop goroutines exited cleanly and without leak
+	if ok := proxySrv.WaitServeLoops(2 * time.Second); !ok {
+		t.Fatal("serveLoop goroutines failed to terminate after Stop()")
+	}
+	if proxySrv.IsRunning() {
+		t.Error("expected proxy server to not be running after Stop()")
+	}
+}
+
+// 6. TestReloadListener_RealLANInterfaceConnection: True end-to-end socket dial on non-loopback LAN IP
+func TestReloadListener_RealLANInterfaceConnection(t *testing.T) {
+	lanIP := config.GetLANIP()
+	if lanIP == "" || lanIP == "127.0.0.1" {
+		t.Skip("no non-loopback LAN IP detected on this host, skipping interface-level test")
+	}
+
+	proxySrv, port := setupTestProxyForReload(t, false)
+	defer proxySrv.Stop()
+
+	lanAddr := net.JoinHostPort(lanIP, fmt.Sprintf("%d", port))
+
+	// 1. Initially bound to 127.0.0.1: dial to LAN IP must fail (connection refused or timeout)
+	connFail, err := net.DialTimeout("tcp", lanAddr, 300*time.Millisecond)
+	if err == nil {
+		connFail.Close()
+		t.Fatalf("expected dial to LAN IP %s to fail when bound to 127.0.0.1, but succeeded", lanAddr)
+	}
+
+	// 2. Hot-reload to 0.0.0.0 with AllowLAN = true
+	proxySrv.cfgMgr.Update(func(c *config.Config) {
+		c.AllowLAN = true
+	})
+	if err := proxySrv.ReloadListener("0.0.0.0", port); err != nil {
+		t.Fatalf("failed to reload to 0.0.0.0: %v", err)
+	}
+
+	// 3. Now dial to LAN IP must SUCCEED over the real physical/virtual LAN interface
+	connSuccess, err := net.DialTimeout("tcp", lanAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("expected dial to LAN IP %s to succeed when bound to 0.0.0.0, but failed: %v", lanAddr, err)
+	}
+	defer connSuccess.Close()
+
+	// 4. Request /ca.crt directly through the LAN socket
+	req := fmt.Sprintf("GET /ca.crt HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", lanIP)
+	if _, err := connSuccess.Write([]byte(req)); err != nil {
+		t.Fatalf("failed to write request via LAN socket: %v", err)
+	}
+
+	br := bufio.NewReader(connSuccess)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("failed to read response via LAN socket: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK from LAN socket, got %d", resp.StatusCode)
+	}
+	caData, _ := io.ReadAll(resp.Body)
+	if len(caData) == 0 {
+		t.Error("expected non-empty CA certificate over LAN socket")
+	}
 }

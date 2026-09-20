@@ -161,38 +161,37 @@ func (c *ControlServer) ReloadListener(newPort int) error {
 		return nil
 	}
 
-	oldLn := c.listener
-	oldSrv := c.server
-	var oldAddr string
-	if oldLn != nil {
-		oldAddr = oldLn.Addr().String()
-		_ = oldLn.Close()
-	}
-	if oldSrv != nil {
-		_ = oldSrv.Close()
-	}
-
+	// 1. Bind new listener on the new port FIRST without closing old listener.
+	// If binding fails, the old server and in-flight requests remain completely intact.
 	newLn, err := net.Listen("tcp", newAddr)
 	if err != nil {
-		if oldAddr != "" {
-			if rollbackLn, rErr := net.Listen("tcp", oldAddr); rErr == nil {
-				c.listener = rollbackLn
-				c.listenerGen++
-				c.startServe(rollbackLn, c.listenerGen)
-				return fmt.Errorf("failed to listen on %s: %w (rolled back to %s)", newAddr, err, oldAddr)
-			} else {
-				c.listener = nil
-				return fmt.Errorf("failed to listen on %s: %v (rollback to %s failed: %v)", newAddr, err, oldAddr, rErr)
-			}
-		}
 		return fmt.Errorf("failed to listen on %s: %w", newAddr, err)
 	}
 
+	oldLn := c.listener
+	oldSrv := c.server
+
+	// 2. Set new listener and start new http.Server on the new port
 	c.listener = newLn
 	c.listenerGen++
 	c.startServe(newLn, c.listenerGen)
+
+	// 3. Gracefully shut down old server in background so in-flight HTTP requests
+	// (specifically POST /api/config/apply that initiated this reload) can finish sending
+	// their response to the browser before the old socket is terminated.
+	if oldLn != nil {
+		_ = oldLn.Close() // stop accepting new connections on the old port
+	}
+	if oldSrv != nil {
+		go func(srv *http.Server) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(ctx)
+		}(oldSrv)
+	}
+
 	if c.stats != nil {
-		c.stats.Log("INFO", fmt.Sprintf("[CONTROL] 管理控制面已动态重载至: %s", newAddr))
+		c.stats.Log("INFO", fmt.Sprintf("[CONTROL] 管理控制面已动态迁移至: %s (generation: %d)", newAddr, c.listenerGen))
 	}
 	return nil
 }
@@ -786,9 +785,10 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":      true,
-		"message": "Configuration updated",
-		"config":  candidate,
+		"ok":          true,
+		"message":     "Configuration updated",
+		"config":      candidate,
+		"control_url": fmt.Sprintf("http://127.0.0.1:%d", candidate.ControlPort),
 	})
 }
 

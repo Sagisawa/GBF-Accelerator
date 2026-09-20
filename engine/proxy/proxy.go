@@ -43,6 +43,7 @@ type ProxyServer struct {
 	prefetch    *PrefetchEngine
 	listener    net.Listener
 	listenerGen uint64
+	serveLoopWg sync.WaitGroup
 	mu          sync.RWMutex
 	apiClient   atomic.Pointer[http.Client]
 	assetClient atomic.Pointer[http.Client]
@@ -315,7 +316,24 @@ func (s *ProxyServer) IsRunning() bool {
 	return s.running
 }
 
+func (s *ProxyServer) WaitServeLoops(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.serveLoopWg.Wait()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 func (s *ProxyServer) serveLoop(ln net.Listener, gen uint64) {
+	s.serveLoopWg.Add(1)
+	defer s.serveLoopWg.Done()
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
