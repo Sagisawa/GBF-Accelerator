@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import {
   RuntimeStatus,
   CacheStats,
@@ -44,6 +44,35 @@ import {
   Power,
 } from 'lucide-react'
 
+const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ baseSeconds, running }) => {
+  const [displaySeconds, setDisplaySeconds] = useState(() => Math.max(0, Math.floor(baseSeconds)))
+
+  useEffect(() => {
+    const base = Math.max(0, Math.floor(baseSeconds))
+    const startedAt = Date.now()
+
+    const refresh = () => {
+      if (!running) {
+        setDisplaySeconds(base)
+        return
+      }
+      setDisplaySeconds(base + Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
+    }
+
+    refresh()
+    if (!running) return
+
+    const timer = window.setInterval(refresh, 1000)
+    return () => window.clearInterval(timer)
+  }, [baseSeconds, running])
+
+  const hours = Math.floor(displaySeconds / 3600)
+  const minutes = Math.floor((displaySeconds % 3600) / 60)
+  const seconds = displaySeconds % 60
+
+  return <>{hours}h {minutes}m {seconds}s</>
+}
+
 export const App: React.FC = () => {
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
@@ -51,10 +80,12 @@ export const App: React.FC = () => {
   const [logs, setLogs] = useState<LogItem[]>([])
   const [loadingProxy, setLoadingProxy] = useState<boolean>(false)
   const [loadingBrowse, setLoadingBrowse] = useState<boolean>(false)
+  const [loadingAction, setLoadingAction] = useState<string | null>(null)
+  const loadingActionRef = useRef<string | null>(null)
 
   // Editable Form Inputs
-  const [cacheDirInput, setCacheDirInput] = useState<string>('D:\\acgpower\\cache\\gbf\\https')
-  const [upstreamInput, setUpstreamInput] = useState<string>('http://127.0.0.1:8099')
+  const [cacheDirInput, setCacheDirInput] = useState<string>('cache/gbf/https')
+  const [upstreamInput, setUpstreamInput] = useState<string>('auto')
   const [portInput, setPortInput] = useState<string>('8124')
   const [ramMbInput, setRamMbInput] = useState<string>('256')
 
@@ -276,37 +307,50 @@ export const App: React.FC = () => {
     }
   }
 
+  const runConfigAction = useCallback(async (id: string, task: () => Promise<void>) => {
+    if (loadingActionRef.current) return
+    loadingActionRef.current = id
+    setLoadingAction(id)
+    try {
+      await task()
+    } finally {
+      loadingActionRef.current = null
+      setLoadingAction(null)
+    }
+  }, [])
+
+  const isActionLoading = (id: string) => loadingAction === id
+
   // Toggle Direct Mode
   const handleToggleDirect = async () => {
     const currentDirect = Boolean(config.direct_mode ?? status?.direct_mode)
     const nextDirect = !currentDirect
-    try {
-      await applyConfig({ direct_mode: nextDirect })
-      setConfig((prev) => ({ ...prev, direct_mode: nextDirect }))
-      showToast(
-        nextDirect ? '已开启直连模式 (使用本机网络，不经过上游代理)' : '已恢复上游代理转发链路',
-        'info'
-      )
-      loadState()
-    } catch (e: any) {
-      showToast(`切换直连模式失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('direct', async () => {
+      try {
+        await applyConfig({ direct_mode: nextDirect })
+        setConfig((prev) => ({ ...prev, direct_mode: nextDirect }))
+        showToast(nextDirect ? '已开启直连模式 (使用本机网络，不经过上游代理)' : '已恢复上游代理转发链路', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`切换直连模式失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Toggle Shimakaze Mode
   const handleToggleShimakaze = async () => {
     const current = Boolean(config.shimakaze_mode ?? false)
     const next = !current
-    try {
-      await applyConfig({ shimakaze_mode: next })
-      setConfig((prev) => ({ ...prev, shimakaze_mode: next }))
-      showToast(next ? '已开启岛风GO 兼容优化模式' : '已关闭岛风GO 兼容优化模式', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置岛风GO模式失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('shimakaze', async () => {
+      try {
+        await applyConfig({ shimakaze_mode: next })
+        setConfig((prev) => ({ ...prev, shimakaze_mode: next }))
+        showToast(next ? '已开启岛风GO 兼容优化模式' : '已关闭岛风GO 兼容优化模式', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置岛风GO模式失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Open Cache Folder
   const handleOpenCacheFolder = async () => {
     try {
@@ -340,21 +384,22 @@ export const App: React.FC = () => {
 
   // Detect ACGPower Cache
   const handleDetectAcgp = async () => {
-    try {
-      const data = await detectACGPower()
-      if (data && data.found && data.path) {
-        setCacheDirInput(data.path)
-        await applyConfig({ cache_dir: data.path })
-        showToast(`已检测并关联 ACGPower 缓存目录: ${data.path}`, 'success')
-      } else {
-        showToast(data?.message || '未检测到正在运行的 ACGPower 或默认缓存目录', 'info')
+    await runConfigAction('detect-acgp', async () => {
+      try {
+        const data = await detectACGPower()
+        if (data && data.found && data.path) {
+          await applyConfig({ cache_dir: data.path })
+          setCacheDirInput(data.path)
+          showToast(`已检测并关联 ACGPower 缓存目录: ${data.path}`, 'success')
+        } else {
+          showToast(data?.message || '未检测到正在运行的 ACGPower 或默认缓存目录', 'info')
+        }
+        loadState()
+      } catch (e: any) {
+        showToast(`检测 ACGP 失败: ${e.message}`, 'error')
       }
-      loadState()
-    } catch (e: any) {
-      showToast(`检测 ACGP 失败: ${e.message}`, 'error')
-    }
+    })
   }
-
   // Check and prompt if upstream is Shimakaze GO (port 8099)
   const checkShimakazeSuggest = (url: string) => {
     const is8099 = url.includes(':8099')
@@ -366,16 +411,17 @@ export const App: React.FC = () => {
 
   // Enable Shimakaze mode from suggestion modal
   const handleEnableShimakaze = async () => {
-    try {
-      await applyConfig({ shimakaze_mode: true })
-      setConfig((prev) => ({ ...prev, shimakaze_mode: true }))
-      showToast('已成功启用【岛风GO 兼容优化模式】', 'success')
-      loadState()
-    } catch (e: any) {
-      showToast(`启用岛风GO兼容模式失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('shimakaze', async () => {
+      try {
+        await applyConfig({ shimakaze_mode: true })
+        setConfig((prev) => ({ ...prev, shimakaze_mode: true }))
+        showToast('已成功启用【岛风GO 兼容优化模式】', 'success')
+        loadState()
+      } catch (e: any) {
+        showToast(`启用岛风GO兼容模式失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Save Upstream Proxy
   const handleSaveUpstream = async () => {
     const trimmed = upstreamInput.trim()
@@ -383,56 +429,59 @@ export const App: React.FC = () => {
       showToast('上游代理地址不能为空', 'error')
       return
     }
-    try {
-      await applyConfig({ upstream_proxy: trimmed })
-      setConfig((prev) => ({ ...prev, upstream_proxy: trimmed }))
-      showToast(`上游代理地址已保存并切换至：${trimmed}`, 'success')
-      loadState()
-      checkShimakazeSuggest(trimmed)
-    } catch (e: any) {
-      showToast(`保存上游代理失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('save-upstream', async () => {
+      try {
+        await applyConfig({ upstream_proxy: trimmed })
+        setConfig((prev) => ({ ...prev, upstream_proxy: trimmed }))
+        showToast(`上游代理地址已保存并切换至：${trimmed}`, 'success')
+        loadState()
+        checkShimakazeSuggest(trimmed)
+      } catch (e: any) {
+        showToast(`保存上游代理失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Auto Probe Upstream Proxy
   const handleProbeUpstream = async () => {
-    try {
-      const data = await detectUpstream()
-      const candidates: ProxyCandidate[] = Array.isArray(data?.candidates) ? data.candidates : []
-
-      if (candidates.length > 1) {
-        setUpstreamCandidates(candidates)
-        setIsUpstreamSelectModalOpen(true)
-      } else if (candidates.length === 1 || (data && data.found && data.primary)) {
-        const chosen = candidates.length === 1 ? candidates[0].url : data.primary
-        setUpstreamInput(chosen)
-        await applyConfig({ upstream_proxy: chosen })
-        showToast(`已探测并应用上游代理: ${chosen}`, 'success')
-        loadState()
-        checkShimakazeSuggest(chosen)
-      } else {
-        await applyConfig({ upstream_proxy: 'auto' })
-        showToast('未检测到活跃上游代理端口，已重置为 auto 模式', 'info')
-        loadState()
+    await runConfigAction('probe-upstream', async () => {
+      try {
+        const data = await detectUpstream()
+        const candidates: ProxyCandidate[] = Array.isArray(data?.candidates) ? data.candidates : []
+        if (candidates.length > 1) {
+          setUpstreamCandidates(candidates)
+          setIsUpstreamSelectModalOpen(true)
+        } else if (candidates.length === 1 || (data && data.found && data.primary)) {
+          const chosen = candidates.length === 1 ? candidates[0].url : data.primary
+          await applyConfig({ upstream_proxy: chosen })
+          setUpstreamInput(chosen)
+          showToast(`已探测并应用上游代理: ${chosen}`, 'success')
+          loadState()
+          checkShimakazeSuggest(chosen)
+        } else {
+          await applyConfig({ upstream_proxy: 'auto' })
+          setUpstreamInput('auto')
+          showToast('未检测到活跃上游代理端口，已重置为 auto 模式', 'info')
+          loadState()
+        }
+      } catch (e: any) {
+        showToast(`探测上游代理失败: ${e.message}`, 'error')
       }
-    } catch (e: any) {
-      showToast(`探测上游代理失败: ${e.message}`, 'error')
-    }
+    })
   }
-
   // Handle selection from UpstreamSelectModal
   const handleSelectUpstreamCandidate = async (candidate: ProxyCandidate) => {
-    try {
-      setUpstreamInput(candidate.url)
-      await applyConfig({ upstream_proxy: candidate.url })
-      showToast(`已切换至上游代理: ${candidate.name} (${candidate.url})`, 'success')
-      loadState()
-      checkShimakazeSuggest(candidate.url)
-    } catch (e: any) {
-      showToast(`切换上游代理失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('upstream-select', async () => {
+      try {
+        await applyConfig({ upstream_proxy: candidate.url })
+        setUpstreamInput(candidate.url)
+        showToast(`已切换至上游代理: ${candidate.name} (${candidate.url})`, 'success')
+        loadState()
+        checkShimakazeSuggest(candidate.url)
+      } catch (e: any) {
+        showToast(`切换上游代理失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Save Listen Port
   const handleSavePort = async () => {
     const p = parseInt(portInput.trim(), 10)
@@ -440,167 +489,179 @@ export const App: React.FC = () => {
       showToast('请输入 1 到 65535 之间的有效端口号', 'error')
       return
     }
-    try {
-      await applyConfig({ listen_port: p, port: p })
-      setConfig((prev) => ({ ...prev, listen_port: p }))
-      showToast(`本地监听端口已更新为 ${p} (重启代理生效)`, 'success')
-      loadState()
-    } catch (e: any) {
-      showToast(`保存端口失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('save-port', async () => {
+      try {
+        await applyConfig({ listen_port: p, port: p })
+        setConfig((prev) => ({ ...prev, listen_port: p }))
+        showToast(isRunning ? `本地监听端口已切换为 ${p}，运行中的代理已热重载` : `本地监听端口已保存为 ${p}，下次启动代理时生效`, 'success')
+        loadState()
+      } catch (e: any) {
+        showToast(`保存端口失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Reset Listen Port Default
   const handleResetPort = async () => {
-    setPortInput('8124')
-    try {
-      await applyConfig({ listen_port: 8124, port: 8124 })
-      setConfig((prev) => ({ ...prev, listen_port: 8124 }))
-      showToast('监听端口已恢复默认 (8124)', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`恢复端口失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('reset-port', async () => {
+      try {
+        await applyConfig({ listen_port: 8124, port: 8124 })
+        setPortInput('8124')
+        setConfig((prev) => ({ ...prev, listen_port: 8124 }))
+        showToast(isRunning ? '监听端口已恢复默认 (8124)，运行中的代理已热重载' : '监听端口已恢复默认 (8124)', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`恢复端口失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Toggle Allow LAN
   const handleToggleAllowLan = async () => {
     const current = Boolean(config.allow_lan ?? status?.allow_lan ?? false)
     const next = !current
-    try {
-      await applyConfig({ allow_lan: next })
-      setConfig((prev) => ({ ...prev, allow_lan: next }))
-      showToast(next ? '允许局域网连接已开启 (绑定 0.0.0.0)' : '局域网连接已关闭', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置局域网共享失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('allow-lan', async () => {
+      try {
+        await applyConfig({ allow_lan: next })
+        setConfig((prev) => ({ ...prev, allow_lan: next }))
+        showToast(next ? '允许局域网连接已开启 (绑定 0.0.0.0)' : '局域网连接已关闭', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置局域网共享失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Toggle System Proxy PAC
   const handleToggleAutoPac = async () => {
-    const current = Boolean(config.auto_system_proxy ?? config.auto_pac ?? true)
+    const current = Boolean(config.auto_system_proxy ?? config.auto_pac ?? false)
     const next = !current
-    try {
-      await applyConfig({ auto_system_proxy: next, auto_pac: next })
-      setConfig((prev) => ({ ...prev, auto_system_proxy: next, auto_pac: next }))
-      showToast(next ? '自动配置 Windows 系统 PAC 代理已开启' : '系统 PAC 代理已关闭', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置系统 PAC 代理失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('auto-pac', async () => {
+      try {
+        await applyConfig({ auto_system_proxy: next, auto_pac: next })
+        setConfig((prev) => ({ ...prev, auto_system_proxy: next, auto_pac: next }))
+        showToast(next ? '自动配置系统 PAC 代理已开启' : '系统 PAC 代理已关闭', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置系统 PAC 代理失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Toggle Auto Start
   const handleToggleAutoStart = async () => {
     const current = Boolean(config.auto_start ?? false)
     const next = !current
-    try {
-      await applyConfig({ auto_start: next })
-      setConfig((prev) => ({ ...prev, auto_start: next }))
-      showToast(next ? '开机自启已开启' : '开机自启已关闭', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置开机自启失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('auto-start', async () => {
+      try {
+        await applyConfig({ auto_start: next })
+        setConfig((prev) => ({ ...prev, auto_start: next }))
+        showToast(next ? '开机自启已开启' : '开机自启已关闭', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置开机自启失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Toggle Auto Check Update
   const handleToggleAutoUpdate = async () => {
     const current = Boolean(config.auto_check_update ?? true)
     const next = !current
-    try {
-      await applyConfig({ auto_check_update: next })
-      setConfig((prev) => ({ ...prev, auto_check_update: next }))
-      showToast(next ? '启动时自动检测新版本已开启' : '自动检测更新已关闭', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置自动更新失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('auto-update', async () => {
+      try {
+        await applyConfig({ auto_check_update: next })
+        setConfig((prev) => ({ ...prev, auto_check_update: next }))
+        showToast(next ? '启动时自动检测新版本已开启' : '自动检测更新已关闭', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置自动更新失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Performance Options
   const handleToggleRamCache = async () => {
     const current = Boolean(config.enable_ram_cache ?? true)
     const next = !current
-    try {
-      await applyConfig({ enable_ram_cache: next })
-      setConfig((prev) => ({ ...prev, enable_ram_cache: next }))
-      showToast(next ? '启用内存热点缓存 (RAM Cache)' : '已关闭内存热点缓存', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置内存缓存失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('ram-cache', async () => {
+      try {
+        await applyConfig({ enable_ram_cache: next })
+        setConfig((prev) => ({ ...prev, enable_ram_cache: next }))
+        showToast(next ? '启用内存热点缓存 (RAM Cache)' : '已关闭内存热点缓存', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置内存缓存失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   const handleApplyRamMb = async () => {
     const mb = parseInt(ramMbInput.trim(), 10)
     if (isNaN(mb) || mb < 64 || mb > 2048) {
       showToast('请输入 64 到 2048 MB 之间的有效内存上限', 'error')
       return
     }
-    try {
-      await applyConfig({ ram_cache_max_mb: mb })
-      setConfig((prev) => ({ ...prev, ram_cache_max_mb: mb }))
-      showToast(`内存缓存上限已设置为 ${mb} MB`, 'success')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置内存上限失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('ram-mb', async () => {
+      try {
+        await applyConfig({ ram_cache_max_mb: mb })
+        setConfig((prev) => ({ ...prev, ram_cache_max_mb: mb }))
+        showToast(`内存缓存上限已设置为 ${mb} MB`, 'success')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置内存上限失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   const handleToggleBrowserCache = async () => {
-    const current = Boolean(config.enable_browser_cache ?? false)
+    const current = Boolean(config.enable_browser_cache ?? true)
     const next = !current
-    try {
-      await applyConfig({ enable_browser_cache: next })
-      setConfig((prev) => ({ ...prev, enable_browser_cache: next }))
-      showToast(next ? '浏览器强缓存与渲染留存已开启' : '浏览器强缓存已关闭', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置浏览器强缓存失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('browser-cache', async () => {
+      try {
+        await applyConfig({ enable_browser_cache: next })
+        setConfig((prev) => ({ ...prev, enable_browser_cache: next }))
+        showToast(next ? '浏览器强缓存与渲染留存已开启' : '浏览器强缓存已关闭', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置浏览器强缓存失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   const handleToggleAutoRepair = async () => {
     const current = Boolean(config.enable_auto_repair ?? true)
     const next = !current
-    try {
-      await applyConfig({ enable_auto_repair: next })
-      setConfig((prev) => ({ ...prev, enable_auto_repair: next }))
-      showToast(next ? '自动检测并修复损坏/空缓存已开启' : '自动修复已关闭', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置自动修复失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('auto-repair', async () => {
+      try {
+        await applyConfig({ enable_auto_repair: next })
+        setConfig((prev) => ({ ...prev, enable_auto_repair: next }))
+        showToast(next ? '自动检测并修复损坏/空缓存已开启' : '自动修复已关闭', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置自动修复失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   const handleTogglePrefetch = async () => {
     const current = Boolean(config.enable_prefetch ?? true)
     const next = !current
-    try {
-      await applyConfig({ enable_prefetch: next })
-      setConfig((prev) => ({ ...prev, enable_prefetch: next }))
-      showToast(next ? '场景素材智能预加载已开启' : '素材预加载已关闭', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置预加载失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('prefetch', async () => {
+      try {
+        await applyConfig({ enable_prefetch: next })
+        setConfig((prev) => ({ ...prev, enable_prefetch: next }))
+        showToast(next ? '场景素材智能预加载已开启' : '素材预加载已关闭', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置预加载失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   const handleToggleRamWarmup = async () => {
-    const current = Boolean(config.enable_ram_warmup ?? true)
+    const current = Boolean(config.enable_ram_warmup ?? false)
     const next = !current
-    try {
-      await applyConfig({ enable_ram_warmup: next })
-      setConfig((prev) => ({ ...prev, enable_ram_warmup: next }))
-      showToast(next ? '启动时预热内存缓存已开启' : '预热内存已关闭', 'info')
-      loadState()
-    } catch (e: any) {
-      showToast(`设置预热内存失败: ${e.message}`, 'error')
-    }
+    await runConfigAction('ram-warmup', async () => {
+      try {
+        await applyConfig({ enable_ram_warmup: next })
+        setConfig((prev) => ({ ...prev, enable_ram_warmup: next }))
+        showToast(next ? '启动时预热内存缓存已开启' : '预热内存已关闭', 'info')
+        loadState()
+      } catch (e: any) {
+        showToast(`设置预热内存失败: ${e.message}`, 'error')
+      }
+    })
   }
-
   // Close all modals
   const handleCloseAll = () => {
     setIsLogDrawerOpen(false)
@@ -658,20 +719,18 @@ export const App: React.FC = () => {
   const isDirect = Boolean(config.direct_mode ?? status?.direct_mode ?? false)
   const isShimakaze = Boolean(config.shimakaze_mode ?? false)
   const isAllowLan = Boolean(config.allow_lan ?? status?.allow_lan ?? false)
-  const isAutoPac = Boolean(config.auto_system_proxy ?? config.auto_pac ?? true)
+  const isAutoPac = Boolean(config.auto_system_proxy ?? config.auto_pac ?? false)
   const isAutoStart = Boolean(config.auto_start ?? false)
   const isAutoUpdate = Boolean(config.auto_check_update ?? true)
   const isRamCache = Boolean(config.enable_ram_cache ?? true)
-  const isBrowserCache = Boolean(config.enable_browser_cache ?? false)
+  const isBrowserCache = Boolean(config.enable_browser_cache ?? true)
   const isAutoRepair = Boolean(config.enable_auto_repair ?? true)
   const isPrefetch = Boolean(config.enable_prefetch ?? true)
-  const isRamWarmup = Boolean(config.enable_ram_warmup ?? true)
+  const isRamWarmup = Boolean(config.enable_ram_warmup ?? false)
 
-  const isCaInstalled = Boolean(status?.ca_installed ?? true)
-  const caFingerprint =
-    status?.ca_fingerprint ||
-    status?.ca_thumbprint ||
-    '8D:7A:35:CA:F9:19:9B:C5:EE:3B:B4:0D:F9:41:15:F4:F3:57:12:65:94:3D:8B:14:D4:0A:43:19:20:B7:5E:75'
+  const caStatusKnown = status !== null && typeof status?.ca_installed === 'boolean'
+  const isCaInstalled = status?.ca_installed === true
+  const caFingerprint = status?.ca_fingerprint || status?.ca_thumbprint || ''
 
   const currentListenPort = config.listen_port ?? status?.listen_port ?? 8124
   const currentControlPort = config.control_port ?? status?.control_port ?? 8125
@@ -708,7 +767,7 @@ export const App: React.FC = () => {
     <div className="min-h-screen w-full flex flex-col bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-sky-100">
       {/* Toast Notification */}
       {toast && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 animate-in fade-in slide-in-from-top-3 duration-200">
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[60] animate-in fade-in slide-in-from-top-3 duration-200">
           <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
             {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
             {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
@@ -886,9 +945,11 @@ export const App: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleDetectAcgp}
+                    disabled={Boolean(loadingAction)}
+                    aria-busy={isActionLoading('detect-acgp')}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
                   >
-                    检测 ACGP
+                    {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
                   </button>
                 </div>
                 {/* Health & Slim buttons */}
@@ -919,10 +980,11 @@ export const App: React.FC = () => {
                     type="checkbox"
                     checked={isRamCache}
                     onChange={handleToggleRamCache}
+                    disabled={Boolean(loadingAction)}
                     className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                   />
                   <span>
-                    启用内存热点缓存 (RAM Cache) - 占用约 256MB 内存，高频静态资源 0 磁盘 I/O 直接响应
+                    启用内存热点缓存 (RAM Cache) - 占用上限约 {ramMaxMb}MB，高频静态资源 0 磁盘 I/O 直接响应
                   </span>
                 </label>
 
@@ -937,9 +999,11 @@ export const App: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleApplyRamMb}
+                    disabled={Boolean(loadingAction)}
+                    aria-busy={isActionLoading('ram-mb')}
                     className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                   >
-                    应用
+                    {isActionLoading('ram-mb') ? '应用中...' : '应用'}
                   </button>
                   <span className="text-slate-500 font-mono text-xs">
                     {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
@@ -985,19 +1049,20 @@ export const App: React.FC = () => {
                   />
                   <button
                     type="button"
-                    disabled={isDirect}
+                    disabled={isDirect || Boolean(loadingAction)}
                     onClick={handleSaveUpstream}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
                   >
-                    确认
+                    {isActionLoading('save-upstream') ? '保存中...' : '确认'}
                   </button>
                   <button
                     type="button"
-                    disabled={isDirect}
+                    disabled={isDirect || Boolean(loadingAction)}
+                    aria-busy={isActionLoading('probe-upstream')}
                     onClick={handleProbeUpstream}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
                   >
-                    自动探测
+                    {isActionLoading('probe-upstream') ? '探测中...' : '自动探测'}
                   </button>
                 </div>
               </div>
@@ -1009,6 +1074,7 @@ export const App: React.FC = () => {
                     type="checkbox"
                     checked={isDirect}
                     onChange={handleToggleDirect}
+                    disabled={Boolean(loadingAction)}
                     className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                   />
                   <span>直连模式（使用本机网络，不经过上游代理；仍使用本地缓存）</span>
@@ -1018,7 +1084,7 @@ export const App: React.FC = () => {
                   <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
                     <input
                       type="checkbox"
-                      disabled={isDirect}
+                      disabled={isDirect || Boolean(loadingAction)}
                       checked={isShimakaze}
                       onChange={handleToggleShimakaze}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
@@ -1049,16 +1115,20 @@ export const App: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleSavePort}
+                    disabled={Boolean(loadingAction)}
+                    aria-busy={isActionLoading('save-port')}
                     className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                   >
-                    保存配置
+                    {isActionLoading('save-port') ? '保存中...' : '保存配置'}
                   </button>
                   <button
                     type="button"
                     onClick={handleResetPort}
+                    disabled={Boolean(loadingAction)}
+                    aria-busy={isActionLoading('reset-port')}
                     className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/80 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                   >
-                    恢复默认 (8124)
+                    {isActionLoading('reset-port') ? '恢复中...' : '恢复默认 (8124)'}
                   </button>
                 </div>
 
@@ -1069,6 +1139,7 @@ export const App: React.FC = () => {
                         type="checkbox"
                         checked={isAllowLan}
                         onChange={handleToggleAllowLan}
+                        disabled={Boolean(loadingAction)}
                         className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                       />
                       <span>允许局域网连接 (Allow LAN)</span>
@@ -1109,7 +1180,7 @@ export const App: React.FC = () => {
                       : 'bg-rose-50 text-rose-700 border-rose-200/60'
                   }`}
                 >
-                  {isCaInstalled ? '已信任' : '未安装'}
+                  {!caStatusKnown ? '检查中' : isCaInstalled ? '已信任' : '未安装'}
                 </span>
               </div>
 
@@ -1119,7 +1190,7 @@ export const App: React.FC = () => {
                   <span className="text-[13px] sm:text-sm text-slate-700 font-medium">
                     证书状态：
                     <strong className={isCaInstalled ? 'text-emerald-700 ml-1' : 'text-rose-600 ml-1'}>
-                      {isCaInstalled ? '已信任 (正常解析)' : '未安装信任'}
+                      {!caStatusKnown ? '检查中...' : isCaInstalled ? '已信任 (正常解析)' : '未安装信任'}
                     </strong>
                   </span>
                   <div className="flex items-center gap-2">
@@ -1140,7 +1211,7 @@ export const App: React.FC = () => {
                   </div>
                 </div>
                 <div className="text-xs font-mono text-slate-500 pt-0.5 select-all break-all leading-normal">
-                  SHA-256 指纹： {caFingerprint}
+                  SHA-256 指纹： {caFingerprint || '读取中...'}
                 </div>
               </div>
 
@@ -1152,10 +1223,11 @@ export const App: React.FC = () => {
                       type="checkbox"
                       checked={isAutoPac}
                       onChange={handleToggleAutoPac}
+                      disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                     />
                     <span>
-                      自动配置 Windows 系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）
+                      自动配置系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）
                     </span>
                   </label>
                 </div>
@@ -1166,6 +1238,7 @@ export const App: React.FC = () => {
                       type="checkbox"
                       checked={isAutoStart}
                       onChange={handleToggleAutoStart}
+                      disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                     />
                     <span>开机自启（启动后自动缩小到系统托盘，默认关闭）</span>
@@ -1178,6 +1251,7 @@ export const App: React.FC = () => {
                       type="checkbox"
                       checked={isAutoUpdate}
                       onChange={handleToggleAutoUpdate}
+                      disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                     />
                     <span>启动时自动检测新版本（发现新版时右上角提醒，默认开启）</span>
@@ -1209,6 +1283,7 @@ export const App: React.FC = () => {
                       type="checkbox"
                       checked={isAutoRepair}
                       onChange={handleToggleAutoRepair}
+                      disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
@@ -1223,6 +1298,7 @@ export const App: React.FC = () => {
                       type="checkbox"
                       checked={isPrefetch}
                       onChange={handleTogglePrefetch}
+                      disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
@@ -1237,6 +1313,7 @@ export const App: React.FC = () => {
                       type="checkbox"
                       checked={isRamWarmup}
                       onChange={handleToggleRamWarmup}
+                      disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
@@ -1251,6 +1328,7 @@ export const App: React.FC = () => {
                       type="checkbox"
                       checked={isBrowserCache}
                       onChange={handleToggleBrowserCache}
+                      disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
@@ -1278,7 +1356,7 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-2 text-xs sm:text-[13px] text-slate-500 font-mono">
               <span className="text-slate-400">运行:</span>
               <span className="text-slate-700 font-semibold">
-                {Math.floor(uptimeSec / 3600)}h {Math.floor((uptimeSec % 3600) / 60)}m {Math.floor(uptimeSec % 60)}s
+                <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
               </span>
             </div>
           </div>
