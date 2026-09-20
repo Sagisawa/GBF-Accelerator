@@ -1178,9 +1178,11 @@ export const App: React.FC = () => {
                 </div>
                 <span
                   className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
-                    isCaInstalled
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
-                      : 'bg-rose-50 text-rose-700 border-rose-200/60'
+                    !caStatusKnown
+                      ? 'bg-slate-50 text-slate-500 border-slate-200/60'
+                      : isCaInstalled
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
+                        : 'bg-rose-50 text-rose-700 border-rose-200/60'
                   }`}
                 >
                   {!caStatusKnown ? '检查中' : isCaInstalled ? '已信任' : '未安装'}
@@ -1192,7 +1194,7 @@ export const App: React.FC = () => {
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <span className="text-[13px] sm:text-sm text-slate-700 font-medium">
                     证书状态：
-                    <strong className={isCaInstalled ? 'text-emerald-700 ml-1' : 'text-rose-600 ml-1'}>
+                    <strong className={!caStatusKnown ? 'text-slate-500 ml-1' : isCaInstalled ? 'text-emerald-700 ml-1' : 'text-rose-600 ml-1'}>
                       {!caStatusKnown ? '检查中...' : isCaInstalled ? '已信任 (正常解析)' : '未安装信任'}
                     </strong>
                   </span>
