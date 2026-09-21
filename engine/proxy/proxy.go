@@ -1265,6 +1265,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	ns, _ := NormalizeAssetNamespace(targetHost)
 
 	// 1. Cache Lookup (RAM first, then SSD)
+	cacheStart := time.Now()
 	item, hitSrc := s.cacheMgr.GetWithNamespace(ns, req.URL.Path)
 	if item != nil {
 		s.stats.CheckAndRecordPrefetchReused(cleanPath)
@@ -1273,12 +1274,12 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 			// P2: Hot path optimization: lightweight atomic counters only for RAM hits
 		} else {
 			s.stats.IncDiskHit()
-			s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] HIT -> %s (%d B)", cleanPath, len(item.Data)))
+			s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] HIT %dms -> %s (%d B)", time.Since(cacheStart).Milliseconds(), cleanPath, len(item.Data)))
 		}
 
 		// Conditional GET: 304 Not Modified check
 		if isClientNotModified(req, item) {
-			s.stats.Log("INFO", fmt.Sprintf("[%s] 304 Not Modified -> %s", "CACHE-"+hitSrc, cleanPath))
+			s.stats.Log("INFO", fmt.Sprintf("[%s] 304 %dms Not Modified -> %s", "CACHE-"+hitSrc, time.Since(cacheStart).Milliseconds(), cleanPath))
 			s.sendNotModifiedResponse(w, item, req.URL.Path, req.Close)
 			return !req.Close
 		}
@@ -1376,7 +1377,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		if s.prefetch != nil {
 			s.prefetch.MaybeEnqueueDiscovery(targetHost, req.URL.Path, data)
 		}
-		s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 OK -> %s%s (%d B)", targetHost, cleanPath, len(data)))
+		s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 %dms -> %s%s (%d B)", time.Since(fetchStart).Milliseconds(), targetHost, cleanPath, len(data)))
 
 		return savedItem, nil
 	})

@@ -153,12 +153,41 @@ function parseLogLine(
 
   // 2. FETCH-ASSET
   if (tag.includes('FETCH')) {
-    // e.g.: 200 OK & STREAMED (132ms) -> /assets/... or 200 OK -> host/path (123 B)
-    const m = msg.match(/(?:200 OK & STREAMED \((\d+)ms\)|200 OK)\s*->\s*([^\s(]+)(.*)/)
+    // New format: 200 184ms -> host/path (N B)
+    // Legacy format: 200 OK -> host/path (N B) or 200 OK & STREAMED (132ms) -> ...
+    const m = msg.match(/200\s+(\d+)ms\s+->\s*([^\s(]+)(.*)/)
     if (m) {
-      const ms = m[1] ? parseInt(m[1], 10) : undefined
+      const ms = parseInt(m[1], 10)
       const fullUrl = m[2]
       const extra = m[3] || ''
+      let path = fullUrl
+      let hostTag: string | undefined
+      if (compactDomain && fullUrl.includes('akamaized.net')) {
+        hostTag = '[asset]'
+        path = '/' + (fullUrl.split('/')[1] || fullUrl)
+      }
+      return {
+        raw: line,
+        time: timeStr,
+        levelTag: tag,
+        method: 'GET ',
+        statusCode: '200',
+        latencyMs: ms,
+        latencyStr: `${ms.toString().padStart(4, ' ')}ms`,
+        stateTag: '[fetch ]',
+        hostTag,
+        urlPath: path,
+        urlExtra: extra,
+        isError,
+        isSystem: false,
+      }
+    }
+    // Legacy: 200 OK & STREAMED or 200 OK
+    const mLegacy = msg.match(/(?:200 OK & STREAMED \((\d+)ms\)|200 OK)\s*->\s*([^\s(]+)(.*)/)
+    if (mLegacy) {
+      const ms = mLegacy[1] ? parseInt(mLegacy[1], 10) : undefined
+      const fullUrl = mLegacy[2]
+      const extra = mLegacy[3] || ''
       let path = fullUrl
       let hostTag: string | undefined
       if (compactDomain && fullUrl.includes('akamaized.net')) {
@@ -187,9 +216,13 @@ function parseLogLine(
   if (tag.includes('CACHE')) {
     const isDisk = tag.includes('DISK')
     const tagLabel = isDisk ? '[disk  ]' : '[ram   ]'
-    if (msg.includes('304 Not Modified')) {
-      const pMatch = msg.match(/->\s+(.+)/)
-      const path = pMatch ? pMatch[1].trim() : msg
+    if (msg.includes('Not Modified')) {
+      // New format: 304 2ms Not Modified -> path
+      // Legacy format: 304 Not Modified -> path
+      const mNew = msg.match(/304\s+(\d+)ms\s+Not Modified\s+->\s+(.+)/)
+      const mLeg = !mNew ? msg.match(/304\s+Not Modified\s+->\s+(.+)/) : null
+      const ms = mNew ? parseInt(mNew[1], 10) : 0
+      const path = (mNew ? mNew[2] : mLeg ? mLeg[1] : msg).trim()
       const subTag = isDisk ? '[hit304]' : '[ram304]'
       return {
         raw: line,
@@ -197,8 +230,8 @@ function parseLogLine(
         levelTag: tag,
         method: 'GET ',
         statusCode: '304',
-        latencyMs: 0,
-        latencyStr: '   0ms',
+        latencyMs: ms,
+        latencyStr: `${ms.toString().padStart(4, ' ')}ms`,
         stateTag: subTag,
         hostTag: compactDomain ? '[asset]' : undefined,
         urlPath: path,
@@ -206,9 +239,12 @@ function parseLogLine(
         isSystem: false,
       }
     } else if (msg.includes('HIT')) {
-      const pMatch = msg.match(/HIT(?:\s+\((\d+)ms\))?\s+->\s+([^\s(]+)(.*)/)
+      // New format: HIT 2ms -> path (bytes B)
+      // Legacy format: HIT -> path (bytes B)
+      const pMatch = msg.match(/HIT\s+(\d+)ms\s+->\s+([^\s(]+)(.*)/)
+      const pLeg = !pMatch ? msg.match(/HIT\s+->\s+([^\s(]+)(.*)/) : null
       if (pMatch) {
-        const ms = pMatch[1] ? parseInt(pMatch[1], 10) : 0
+        const ms = parseInt(pMatch[1], 10)
         const path = pMatch[2]
         const extra = pMatch[3] || ''
         return {
@@ -219,6 +255,24 @@ function parseLogLine(
           statusCode: '200',
           latencyMs: ms,
           latencyStr: `${ms.toString().padStart(4, ' ')}ms`,
+          stateTag: tagLabel,
+          hostTag: compactDomain ? '[asset]' : undefined,
+          urlPath: path,
+          urlExtra: extra,
+          isError,
+          isSystem: false,
+        }
+      } else if (pLeg) {
+        const path = pLeg[1]
+        const extra = pLeg[2] || ''
+        return {
+          raw: line,
+          time: timeStr,
+          levelTag: tag,
+          method: 'GET ',
+          statusCode: '200',
+          latencyMs: 0,
+          latencyStr: '   0ms',
           stateTag: tagLabel,
           hostTag: compactDomain ? '[asset]' : undefined,
           urlPath: path,
@@ -282,11 +336,37 @@ function parseLogLine(
 
   // 6. PREFETCH
   if (tag.includes('PREFETCH')) {
-    const m = msg.match(/Warmed \(P(\d+)\)\s+->\s+([^\s(]+)(.*)/)
-    if (m) {
-      const prio = m[1]
-      const fullUrl = m[2]
-      const extra = m[3] || ''
+    // New format: P1 wait=0ms fetch=236ms -> host/path (N B)
+    const mNew = msg.match(/P(\d+)\s+wait=(\d+)ms\s+fetch=(\d+)ms\s+->\s+([^\s(]+)(.*)/)
+    if (mNew) {
+      const prio = mNew[1]
+      const waitMs = parseInt(mNew[2], 10)
+      const fetchMs = parseInt(mNew[3], 10)
+      const fullUrl = mNew[4]
+      const extra = mNew[5] || ''
+      const waitInfo = waitMs > 0 ? ` wait=${waitMs}ms` : ''
+      return {
+        raw: line,
+        time: timeStr,
+        levelTag: tag,
+        method: 'GET ',
+        statusCode: '200',
+        latencyMs: fetchMs,
+        latencyStr: `${fetchMs.toString().padStart(4, ' ')}ms`,
+        stateTag: `[pf-p${prio.padEnd(2, ' ')}]`,
+        hostTag: compactDomain ? '[asset]' : undefined,
+        urlPath: fullUrl,
+        urlExtra: extra + waitInfo,
+        isError,
+        isSystem: false,
+      }
+    }
+    // Legacy format: Warmed (P1) -> host/path (N B)
+    const mLeg = msg.match(/Warmed \(P(\d+)\)\s+->\s+([^\s(]+)(.*)/)
+    if (mLeg) {
+      const prio = mLeg[1]
+      const fullUrl = mLeg[2]
+      const extra = mLeg[3] || ''
       return {
         raw: line,
         time: timeStr,
@@ -493,7 +573,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
 
   // Export logs to local file
   const exportLogs = () => {
-    const text = renderedRecords.map((r) => `[${r.time}] [${r.levelTag}] ${r.raw}`).join('\n')
+    const text = renderedRecords.map((r) => `[${r.time}] ${r.raw}`).join('\n')
     const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')

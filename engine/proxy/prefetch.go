@@ -356,9 +356,11 @@ func (pe *PrefetchEngine) fetchWorker() {
 
 func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	// P1 Dynamic yielding: pause if active dynamic API or foreground assets
+	waitStart := time.Now()
 	if !pe.srv.stats.WaitForegroundIdle(pe.stopChan) {
 		return
 	}
+	waitMs := time.Since(waitStart).Milliseconds()
 
 	if !pe.srv.cfgMgr.Get().EnablePrefetch {
 		return
@@ -379,6 +381,7 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	req.Header.Set("Accept-Encoding", "gzip")
 	req.Host = item.host
 
+	fetchStart := time.Now()
 	resp, err := pe.srv.getAssetClient().Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil && resp.Body != nil {
@@ -389,6 +392,7 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 
 	data, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
+	fetchMs := time.Since(fetchStart).Milliseconds()
 	if err != nil || len(data) == 0 {
 		return
 	}
@@ -415,7 +419,7 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	if pe.srv.cacheMgr.SaveWithNamespace(ns, item.path, headersMap, data) {
 		pe.srv.stats.IncPrefetchSuccess()
 		pe.srv.stats.MarkPrefetchSaved(item.path)
-		pe.srv.stats.Log("INFO", fmt.Sprintf("[PREFETCH] Warmed (P%d) -> %s%s (%d B)", item.prio, item.host, item.path, len(data)))
+		pe.srv.stats.Log("INFO", fmt.Sprintf("[PREFETCH] P%d wait=%dms fetch=%dms -> %s%s (%d B)", item.prio, waitMs, fetchMs, item.host, item.path, len(data)))
 	}
 
 	// Pacing jitter (15~35ms)
