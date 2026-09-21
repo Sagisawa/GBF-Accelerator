@@ -10,7 +10,7 @@ import {
   ArrowUpCircle,
   Sparkles,
 } from 'lucide-react'
-import { checkForUpdate, downloadUpdate, fetchDownloadStatus, cancelDownload } from '../../api'
+import { checkForUpdate, downloadUpdate, fetchDownloadStatus, cancelDownload, applyDownloadedUpdate } from '../../api'
 import { isNewerVersion } from '../../utils/version'
 
 export interface UpdateModalProps {
@@ -174,11 +174,13 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   const [checkError, setCheckError] = useState<string | null>(null)
   const [releaseUrl, setReleaseUrl] = useState<string>('https://github.com/Sagisawa/GBF-Accelerator/releases')
   const [assetDownloadUrl, setAssetDownloadUrl] = useState<string>('')
+  const [assetSHA256, setAssetSHA256] = useState<string>('')
   const [bodyText, setBodyText] = useState<string>('')
   const [hasChecked, setHasChecked] = useState(false)
 
   // Download state
   const [downloading, setDownloading] = useState(false)
+  const [applying, setApplying] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState<{
     percent: number
     downloaded: number
@@ -210,6 +212,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         setReleaseUrl(data.release_url || data.html_url || 'https://github.com/Sagisawa/GBF-Accelerator/releases')
         setBodyText(data.release_notes || '暂无详细更新日志。')
         setAssetDownloadUrl(data.asset_download_url || data.download_url || '')
+        setAssetSHA256(data.sha256 || '')
         setCheckError(null)
       } else {
         setHasUpdate(false)
@@ -250,7 +253,9 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     setDownloading(true)
     setDownloadProgress(null)
     try {
-      await downloadUpdate(assetDownloadUrl)
+      // Let the control plane re-check the latest release and bind the downloaded
+      // archive to its server-side checksum/version before an apply is possible.
+      await downloadUpdate('', '', '', latestVersion)
       pollTimerRef.current = setInterval(async () => {
         try {
           const st = await fetchDownloadStatus()
@@ -281,6 +286,30 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         done: false,
         error: e.message || '启动下载失败',
       })
+    }
+  }
+
+  const handleApplyUpdate = async () => {
+    if (applying || !downloadProgress?.done) return
+    setApplying(true)
+    try {
+      await applyDownloadedUpdate()
+      setDownloadProgress((prev) => (prev ? { ...prev, error: '' } : prev))
+      window.setTimeout(() => window.location.reload(), 2500)
+    } catch (e: any) {
+      setApplying(false)
+      setDownloadProgress((prev) =>
+        prev
+          ? { ...prev, error: e?.message || '启动自动更新失败' }
+          : {
+              percent: 100,
+              downloaded: 0,
+              total: 0,
+              dest: '',
+              done: true,
+              error: e?.message || '启动自动更新失败',
+            }
+      )
     }
   }
 
@@ -478,12 +507,29 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 <button
                   type="button"
                   onClick={handleStartDownload}
-                  className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-bold shadow-xs transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
+                  disabled={!assetDownloadUrl && !latestVersion}
+                  className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-white text-sm font-bold shadow-xs transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
                 >
                   <Download className="w-4 h-4" />
                   <span>一键下载新版安装包</span>
                 </button>
               )
+            )}
+
+            {hasNew && downloadProgress?.done && !downloadProgress?.error && (
+              <button
+                type="button"
+                onClick={handleApplyUpdate}
+                disabled={applying}
+                className="px-6 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 active:bg-sky-800 disabled:bg-slate-300 text-white text-sm font-bold shadow-xs transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
+              >
+                {applying ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <ArrowUpCircle className="w-4 h-4" />
+                )}
+                <span>{applying ? '正在重启更新…' : '立即更新并重启'}</span>
+              </button>
             )}
 
             <button
