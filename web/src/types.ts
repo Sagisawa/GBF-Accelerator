@@ -104,6 +104,7 @@ export interface UpdateInfo {
   download_url?: string;
   asset_download_url?: string;
   published_at?: string;
+  sha256?: string;
   error?: string;
 }
 
