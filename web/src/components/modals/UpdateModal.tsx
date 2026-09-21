@@ -174,7 +174,6 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   const [checkError, setCheckError] = useState<string | null>(null)
   const [releaseUrl, setReleaseUrl] = useState<string>('https://github.com/Sagisawa/GBF-Accelerator/releases')
   const [assetDownloadUrl, setAssetDownloadUrl] = useState<string>('')
-  const [assetSHA256, setAssetSHA256] = useState<string>('')
   const [bodyText, setBodyText] = useState<string>('')
   const [hasChecked, setHasChecked] = useState(false)
 
@@ -212,7 +211,6 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         setReleaseUrl(data.release_url || data.html_url || 'https://github.com/Sagisawa/GBF-Accelerator/releases')
         setBodyText(data.release_notes || '暂无详细更新日志。')
         setAssetDownloadUrl(data.asset_download_url || data.download_url || '')
-        setAssetSHA256(data.sha256 || '')
         setCheckError(null)
       } else {
         setHasUpdate(false)
