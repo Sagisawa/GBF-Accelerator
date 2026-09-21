@@ -11,7 +11,6 @@ import {
   Sparkles,
   ShieldCheck,
   ShieldAlert,
-  RotateCcw,
   FolderOpen,
 } from 'lucide-react'
 import {
@@ -864,14 +863,6 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   </button>
                 ) : downloadStatus?.done && !downloadStatus?.error ? (
                   <>
-                    <button
-                      type="button"
-                      onClick={handleStartDownload}
-                      className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold transition-all cursor-pointer flex items-center gap-1.5"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>重新下载</span>
-                    </button>
                     <button
                       type="button"
                       onClick={handleOpenFolder}
