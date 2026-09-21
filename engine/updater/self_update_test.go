@@ -2,6 +2,7 @@ package updater
 
 import (
 	"archive/zip"
+	"encoding/json"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -85,5 +86,46 @@ func TestVerifyArchiveSHA256(t *testing.T) {
 	}
 	if err := verifyArchiveSHA256(path, "0000000000000000000000000000000000000000000000000000000000000000"); err == nil {
 		t.Fatal("expected checksum mismatch")
+	}
+}
+
+
+func TestParseApplyArgsAndRestartArgs(t *testing.T) {
+	tempDir := t.TempDir()
+	argsPath := filepath.Join(tempDir, "restart.json")
+	wantArgs := []string{"--minimized", "--proxy-port", "8124", "--custom-flag=value"}
+	data, err := json.Marshal(wantArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(argsPath, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := parseApplyArgs([]string{
+		"helper.exe",
+		updateApplyFlag,
+		updateArchiveFlag, filepath.Join(tempDir, "update.zip"),
+		updateTargetFlag, filepath.Join(tempDir, "GBF_Accelerator.exe"),
+		updateSHA256Flag, "abcdef",
+		updateVersionFlag, "2.1.0",
+		updateRestartArgsFlag, argsPath,
+	})
+	if err != nil {
+		t.Fatalf("parseApplyArgs failed: %v", err)
+	}
+	if parsed.ArchivePath == "" || parsed.TargetPath == "" || parsed.ExpectedSHA256 != "abcdef" || parsed.Version != "2.1.0" {
+		t.Fatalf("unexpected parsed request: %+v", parsed)
+	}
+	if len(parsed.RestartArgs) != len(wantArgs) {
+		t.Fatalf("unexpected restart args: %#v", parsed.RestartArgs)
+	}
+	for i := range wantArgs {
+		if parsed.RestartArgs[i] != wantArgs[i] {
+			t.Fatalf("restart arg %d = %q, want %q", i, parsed.RestartArgs[i], wantArgs[i])
+		}
+	}
+	if _, err := os.Stat(argsPath); !os.IsNotExist(err) {
+		t.Fatalf("restart args file should be removed after parsing")
 	}
 }
