@@ -113,8 +113,13 @@ export async function browseDirectory(): Promise<string> {
   return data.path || ''
 }
 
-export async function testLatency(): Promise<any> {
-  const res = await fetch(`${BASE}/api/latency-test`, { cache: 'no-store' })
+export async function testLatency(proxy?: string, fast: boolean = false): Promise<any> {
+  const params = new URLSearchParams()
+  if (proxy) params.set('proxy', proxy)
+  if (fast) params.set('fast', '1')
+  const qs = params.toString()
+  const url = qs ? `${BASE}/api/latency-test?${qs}` : `${BASE}/api/latency-test`
+  const res = await fetch(url, { cache: 'no-store' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }

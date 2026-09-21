@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1185,6 +1186,49 @@ func TestControlServer_ReloadListener_SamePortNoOp(t *testing.T) {
 	}
 }
 
+func TestHandleLatencyTestWithMockServer(t *testing.T) {
+	mockTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("mock-target-response"))
+	}))
+	defer mockTarget.Close()
 
+	ctrl := &ControlServer{
+		cfgMgr: config.NewManager(""),
+	}
 
+	// Test 1: Direct mode with custom target and fast=1
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/latency-test?target=%s&fast=1", url.QueryEscape(mockTarget.URL)), nil)
+	w := httptest.NewRecorder()
+	ctrl.handleLatencyTest(w, req)
 
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", w.Code)
+	}
+
+	var res map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if ok, _ := res["ok"].(bool); !ok {
+		t.Fatalf("expected ok=true, got response: %v", res)
+	}
+	if coldMs, ok := res["cold_ms"].(float64); !ok || coldMs < 0 {
+		t.Errorf("expected valid cold_ms, got: %v", res["cold_ms"])
+	}
+
+	// Test 2: Custom proxy pointing to an unreachable port with fast=1 should return ok=false quickly
+	unreachableReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/latency-test?target=%s&proxy=http://127.0.0.1:59999&fast=1", url.QueryEscape(mockTarget.URL)), nil)
+	wUnreach := httptest.NewRecorder()
+	ctrl.handleLatencyTest(wUnreach, unreachableReq)
+
+	if wUnreach.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for error report, got %d", wUnreach.Code)
+	}
+	var unreachRes map[string]interface{}
+	_ = json.Unmarshal(wUnreach.Body.Bytes(), &unreachRes)
+	if ok, _ := unreachRes["ok"].(bool); ok {
+		t.Errorf("expected ok=false for unreachable proxy, got %v", unreachRes)
+	}
+}

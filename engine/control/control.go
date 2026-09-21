@@ -1190,23 +1190,40 @@ func (c *ControlServer) handleDetectUpstream(w http.ResponseWriter, req *http.Re
 func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()
 	target := "https://game.granbluefantasy.jp/"
+	if customTarget := strings.TrimSpace(req.URL.Query().Get("target")); customTarget != "" {
+		if u, err := url.Parse(customTarget); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+			target = customTarget
+		}
+	}
+
 	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
+	if custom := strings.TrimSpace(req.URL.Query().Get("proxy")); custom != "" {
+		if u, err := url.Parse(custom); err == nil && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "socks5") {
+			proxyURL = custom
+		}
+	}
 
 	routeDesc := fmt.Sprintf("经上游代理 %s", proxyURL)
-	if cfg.DirectMode || proxyURL == "" {
+	if proxyURL == "" || cfg.DirectMode && strings.TrimSpace(req.URL.Query().Get("proxy")) == "" {
 		routeDesc = "直连模式（不经过上游代理）"
+	}
+
+	isFast := req.URL.Query().Get("fast") == "1"
+	timeout := 12 * time.Second
+	if isFast {
+		timeout = 4 * time.Second
 	}
 
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: !cfg.VerifyUpstreamTLS || cfg.ShimakazeMode,
+			InsecureSkipVerify: !cfg.VerifyUpstreamTLS || cfg.ShimakazeMode || strings.Contains(proxyURL, ":8099") || strings.Contains(proxyURL, ":8123"),
 		},
 		DisableKeepAlives: false,
 		MaxIdleConns:      5,
 		IdleConnTimeout:   30 * time.Second,
 	}
 
-	if !cfg.DirectMode && proxyURL != "" {
+	if proxyURL != "" {
 		if u, err := url.Parse(proxyURL); err == nil {
 			transport.Proxy = http.ProxyURL(u)
 		}
@@ -1214,7 +1231,7 @@ func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Reque
 
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   12 * time.Second,
+		Timeout:   timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -1248,10 +1265,16 @@ func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Reque
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 
-	// Probes 2-4: Warm keep-alive RTT
+	// Probes: Warm keep-alive RTT
+	warmCount := 3
+	sleepDuration := 30 * time.Millisecond
+	if isFast {
+		warmCount = 2
+		sleepDuration = 15 * time.Millisecond
+	}
 	var warm []float64
-	for i := 0; i < 3; i++ {
-		time.Sleep(50 * time.Millisecond)
+	for i := 0; i < warmCount; i++ {
+		time.Sleep(sleepDuration)
 		tw0 := time.Now()
 		warmReq, _ := http.NewRequest(http.MethodGet, target, nil)
 		warmReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
