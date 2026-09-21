@@ -451,7 +451,7 @@ func copyCurrentExecutableToTemp(currentExe string) (string, error) {
 	if runtime.GOOS == "windows" {
 		ext = ".exe"
 	}
-	f, err := os.CreateTemp(os.TempDir(), "gbf-accelerator-updater-*"+ext)
+	f, err := os.CreateTemp(os.TempDir(), "gbf-accelerator-helper-*"+ext)
 	if err != nil {
 		return "", fmt.Errorf("无法创建更新助手: %w", err)
 	}
@@ -548,7 +548,7 @@ func CleanupStaleHelpers() {
 	cutoff := time.Now().Add(-10 * time.Minute)
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasPrefix(name, "gbf-accelerator-updater-") {
+		if !strings.HasPrefix(name, "gbf-accelerator-helper-") && !strings.HasPrefix(name, "gbf-accelerator-updater-") {
 			continue
 		}
 		info, err := entry.Info()
