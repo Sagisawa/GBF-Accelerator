@@ -1432,9 +1432,24 @@ func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	archivePath := c.dlDest
-	sha256 := c.dlSHA256
-	version := c.dlVersion
+	sha256 := strings.TrimSpace(c.dlSHA256)
+	version := strings.TrimSpace(c.dlVersion)
 	c.dlMu.Unlock()
+
+	if sha256 == "" {
+		c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
+			"ok":    false,
+			"error": "该 Release 没有可验证的 SHA-256，暂不能执行自动更新，请手动下载更新包",
+		})
+		return
+	}
+	if version == "" {
+		c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
+			"ok":    false,
+			"error": "缺少更新版本信息，暂不能执行自动更新",
+		})
+		return
+	}
 
 	restartArgs := append([]string(nil), os.Args[1:]...)
 	if err := updater.LaunchSelfUpdater(archivePath, sha256, version, restartArgs); err != nil {
