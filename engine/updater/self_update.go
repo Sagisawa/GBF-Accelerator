@@ -97,9 +97,9 @@ func HandleApplyArgs(args []string) (handled bool, err error) {
 		return true, parseErr
 	}
 	if applyErr := applyUpdate(req); applyErr != nil {
-		// The helper owns the only remaining running copy at this point. Keep the
-		// old executable intact whenever replacement fails, then restart it.
-		_ = launchRestartTarget(req.TargetPath, req.RestartArgs)
+		// Never start another copy on failure. The original process is already
+		// shutting down after the apply request; preserving a single-process
+		// invariant is safer than risking a duplicate instance.
 		return true, applyErr
 	}
 	return true, nil
