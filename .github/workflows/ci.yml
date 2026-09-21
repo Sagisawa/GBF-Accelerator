@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - "feat/**"
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   pull_request:
     branches:
       - main
