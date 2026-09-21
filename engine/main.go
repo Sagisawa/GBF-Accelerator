@@ -23,6 +23,7 @@ import (
 	"gbf-proxy/sysproxy"
 	"gbf-proxy/telemetry"
 	"gbf-proxy/ui"
+	"gbf-proxy/updater"
 )
 
 type appController struct {
@@ -75,6 +76,15 @@ func (a *appController) Quit() {
 }
 
 func main() {
+	if handled, err := updater.HandleApplyArgs(os.Args); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[UPDATE] %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	updater.CleanupStaleHelpers()
+
 	desktop.AttachConsole()
 
 	showVersion := flag.Bool("v", false, "Print application version and exit")
