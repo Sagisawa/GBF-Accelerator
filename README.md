@@ -273,7 +273,7 @@ flowchart TD
 2. 解压到任意非中文路径（例如 `D:\GBF_Accelerator\`）。
 3. 确保你的上游代理（Clash Verge / v2rayN 等）已开启并正常联网。
 4. 双击运行 `GBF_Accelerator.exe`。
-5. 检查上游代理端口与本地端口（默认 `8124`），勾选“自动配置系统 PAC 代理”（或使用 ZeroOmega / SmartProxy 插件分流），点击“启动加速”。
+5. 检查上游代理端口与本地端口（默认 `8124`），勾选“自动配置系统 PAC 代理”（或在 ZeroOmega / SwitchyOmega 扩展中新建 PAC 情景模式填入 `http://127.0.0.1:8124/proxy.pac`），点击“启动加速”。
 6. 在浏览器中打开游戏页面即可正常游玩。
 
 #### macOS 用户
@@ -281,7 +281,7 @@ flowchart TD
 2. 解压并将 `GBF_Accelerator.app` 拖入系统的【应用程序】文件夹（首次打开若遇 Gatekeeper 拦截，请执行 `xattr -cr /Applications/GBF_Accelerator.app`）。
 3. 确保 Clash / Surge 等上游代理正常运行。
 4. 启动后程序会自动打开内嵌 Web 控制台（支持 Chromium App Mode 独立窗口）；若首次使用，根据界面提示一键完成钥匙串根证书信任。
-5. 点击“启动加速”，系统 PAC 代理将自动挂载（或在浏览器中使用插件分流），即可在 Safari 或 Chrome 中开始游戏。
+5. 点击“启动加速”，系统 PAC 代理将自动挂载（或在浏览器扩展中新建 PAC 情景模式指向 `http://127.0.0.1:8124/proxy.pac`），即可在 Safari 或 Chrome 中开始游戏。
 
 ---
 

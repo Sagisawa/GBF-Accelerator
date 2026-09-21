@@ -61,11 +61,24 @@ export const RoutingGuideModal: React.FC<RoutingGuideModalProps> = ({
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5">
           <div className="font-bold text-slate-900 text-sm">方案 2：SwitchyOmega / ZeroOmega 浏览器插件</div>
           <p className="leading-relaxed text-slate-600">
-            若你习惯使用浏览器插件管理代理，可使用 ZeroOmega / SwitchyOmega 导入项目根目录下的 <strong className="font-mono text-slate-900">SwitchyOmega_GBF.bak</strong> 配置文件。
+            若你习惯使用浏览器插件管理代理，推荐以下两种配置方式之一：
           </p>
-          <div className="text-[11px] text-slate-500 bg-white p-2 rounded border border-slate-200 space-y-1 font-mono">
-            <div>• 代理协议：HTTP 127.0.0.1:{listenPort}</div>
-            <div>• 匹配域名：*.granbluefantasy.jp、*.mbga.jp、prd-game-a-granbluefantasy.akamaized.net</div>
+          <div className="text-[11px] text-slate-600 bg-white p-2.5 rounded border border-slate-200 space-y-2 leading-relaxed font-mono">
+            <div>
+              <strong className="text-slate-900">方式 A（强烈推荐，PAC 情景模式）</strong>：
+              <div className="pl-3 pt-0.5 text-slate-600 space-y-0.5 font-sans">
+                <div>1. 打开插件设置 → 点击左侧【新建情景模式】 → 选择【PAC 情景模式】；</div>
+                <div>2. PAC 网址填入：<code className="text-blue-600 font-mono select-all">{pacUrl}</code>，点击【立即更新】后点击左侧【应用选项】；</div>
+                <div>3. 点击浏览器右上角插件图标，直接切换为该情景模式即可（规则全内置、自动同步，绝不漏分片）。</div>
+              </div>
+            </div>
+            <div>
+              <strong className="text-slate-900">方式 B（导入备份文件）</strong>：
+              <div className="pl-3 pt-0.5 text-slate-600 space-y-0.5 font-sans">
+                <div>1. 打开插件设置 → 【导入/导出】 → 导入项目根目录下的 <strong className="font-mono text-slate-900">SwitchyOmega_GBF.bak</strong>；</div>
+                <div>2. <strong className="text-amber-700">关键步骤：</strong>导入完成后，<strong>必须在浏览器右上角插件图标处手动切换为【GBF_AutoSwitch】</strong>。</div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -82,7 +95,9 @@ export const RoutingGuideModal: React.FC<RoutingGuideModalProps> = ({
                 <div>• granbluefantasy.jp</div>
                 <div>• granbluefantasy.com</div>
                 <div>• mbga.jp</div>
+                <div>• mobage.jp</div>
                 <div>• *granbluefantasy.akamaized.net</div>
+                <div>• *gbf.akamaized.net</div>
                 <div>• *granbluefantasy-steam.akamaized.net（Steam版）</div>
               </div>
             </div>

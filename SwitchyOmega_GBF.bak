@@ -122,6 +122,27 @@
       {
         "condition": {
           "conditionType": "HostWildcardCondition",
+          "pattern": "mbga.jp"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.mobage.jp"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "mobage.jp"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
           "pattern": "prd-game-a-granbluefantasy-steam.akamaized.net"
         },
         "profileName": "GBF_Speed"
