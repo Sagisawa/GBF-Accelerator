@@ -40,8 +40,11 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
     try {
       const res = await installCert()
       if (res.ok) {
-        setMessage({ type: 'success', text: res.message || 'HTTPS 根证书已成功安装并受系统信任' })
-        if (onToast) onToast('根证书已成功安装并信任', 'success')
+        setMessage({
+          type: 'success',
+          text: (res.message || 'HTTPS 根证书已成功安装并受系统信任！') + ' 【注意】：若当前浏览器已打开，请彻底关闭并重启一次浏览器以刷新证书缓存。'
+        })
+        if (onToast) onToast('根证书已安装并信任！若浏览器已打开请完全重启浏览器', 'success')
         if (onRefresh) onRefresh()
       } else {
         setMessage({ type: 'error', text: res.error || res.message || '安装失败' })
@@ -247,6 +250,15 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
           <p className="text-xs text-slate-600">
             自动将证书注入系统根证书存储区（Windows: CurrentUser\Root；macOS: System Keychain）
           </p>
+        </div>
+
+        {/* Restart browser notice */}
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 leading-relaxed flex items-start gap-2.5">
+          <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
+          <div>
+            <strong className="font-semibold text-amber-950">【安装后重要提醒】：</strong>
+            证书安装/信任成功后，如果你的浏览器（Chrome / Edge 等）当前正处于打开状态，<strong>请务必完全退出并重新打开一次浏览器</strong>（关闭所有窗口）。Chromium 浏览器会缓存系统证书库与历史 SSL 握手状态，必须重启浏览器重载证书库，以避免访问游戏时报错“证书不受信任”或白屏。
+          </div>
         </div>
 
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2 leading-relaxed">
