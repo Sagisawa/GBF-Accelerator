@@ -108,7 +108,23 @@ export interface UpdateInfo {
   error?: string;
 }
 
+export interface UpdateDownloadStatus {
+  ok: boolean;
+  active: boolean;
+  done: boolean;
+  downloaded: number;
+  total: number;
+  percent: number;
+  dest: string;
+  version: string;
+  sha256: string;
+  managed: boolean;
+  applying: boolean;
+  error: string;
+}
+
 export interface ProxyCandidate {
   url: string;
   name: string;
 }
+
