@@ -22,6 +22,7 @@ var probePorts = []struct {
 	{10809, "v2rayN (HTTP)"},
 	{10808, "v2rayN (SOCKS5)"},
 	{8099, "岛风 GO (HTTP)"},
+	{8123, "ACGPower (HTTP)"},
 }
 
 // IsPortOpen checks if a TCP port on host is open and reachable within timeout.
@@ -55,7 +56,7 @@ func DetectUpstreamProxies() []ProxyCandidate {
 		}
 
 		scheme := "http"
-		if cand.port != 8099 && cand.port != 7890 && cand.port != 7897 && cand.port != 7891 {
+		if cand.port != 8099 && cand.port != 7890 && cand.port != 7897 && cand.port != 7891 && cand.port != 8123 {
 			// v2rayN commonly uses either 10808 or 10809 for HTTP/SOCKS5 depending
 			// on configuration; probe the listener instead of hard-coding the scheme.
 			if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", cand.port), 300*time.Millisecond); err == nil {

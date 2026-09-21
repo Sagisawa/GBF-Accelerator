@@ -56,7 +56,7 @@ go run . --headless
 
 1. 在程序同目录生成 `certs/ca.crt`、`certs/*.key`；
 2. 在程序同目录生成 `proxy.pac` 与《使用说明.txt》；
-3. 自动探测本机 7897 / 7890 / 10808 / 10809 等常见上游代理端口（Clash / v2rayN），也可在 `config.json` 手动指定；
+3. 自动探测本机 7897 / 7890 / 8123 / 10808 / 10809 等常见上游代理端口（Clash / v2rayN / ACGPower），也可在 `config.json` 手动指定；
 4. 启动本地代理服务并监听 `http://127.0.0.1:8124`（默认端口，可在 `config.json` 中修改），控制面监听 `http://127.0.0.1:8125`。
 
 按 `Ctrl+C` 即可安全退出。
@@ -149,7 +149,7 @@ certutil -A -n GBF-Accelerator -t C,C \
 | `listen_host` | `127.0.0.1` | 本地监听地址；局域网共享改为 `0.0.0.0` |
 | `listen_port` | `8124` | 本地监听端口 |
 | `allow_lan` | `false` | 是否允许局域网内其他设备连入 |
-| `upstream_proxy` | `auto` | 上游代理；`auto` 自动探测 7897/7890/10808/10809；也可填 `http://127.0.0.1:7897` 等 |
+| `upstream_proxy` | `auto` | 上游代理；`auto` 自动探测 7897/7890/8123/10808/10809；也可填 `http://127.0.0.1:7897` 等 |
 | `direct_mode` | `false` | 直连模式（仍使用本地缓存，但跳过上游代理） |
 | `cache_dir` | `auto` | 静态资源缓存目录 |
 | `asset_max_connections` | `100` | 静态素材连接池上限（HTTP/2 多路复用，无需调高） |

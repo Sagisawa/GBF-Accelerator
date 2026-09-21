@@ -5,7 +5,7 @@ import (
 )
 
 func TestIsPortProtected(t *testing.T) {
-	protected := []int{80, 443, 6152, 7890, 7891, 7897, 8099, 10808, 10809}
+	protected := []int{80, 443, 6152, 7890, 7891, 7897, 8099, 8123, 10808, 10809}
 	for _, p := range protected {
 		if !IsPortProtected(p) {
 			t.Errorf("expected port %d to be protected", p)

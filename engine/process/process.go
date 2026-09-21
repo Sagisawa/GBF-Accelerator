@@ -8,6 +8,7 @@ var protectedPorts = map[int]bool{
 	7891:  true, // Clash Verge / Mihomo
 	7897:  true, // Clash Verge Mixed
 	8099:  true, // 岛风 GO
+	8123:  true, // ACGPower
 	10808: true, // v2rayN HTTP
 	10809: true, // v2rayN SOCKS/HTTP
 }
