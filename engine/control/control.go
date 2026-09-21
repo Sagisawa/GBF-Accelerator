@@ -70,6 +70,7 @@ type ControlServer struct {
 	dlError    string
 	dlVersion  string
 	dlSHA256   string
+	dlManaged  bool
 	dlApplying bool
 	dlCancelFn context.CancelFunc
 
@@ -1344,6 +1345,7 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 	destPath := strings.TrimSpace(reqBody["dest"])
 	expectedSHA256 := strings.TrimSpace(reqBody["sha256"])
 	releaseVersion := strings.TrimSpace(reqBody["version"])
+	managedDownload := false
 
 	if downloadURL == "" {
 		proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
@@ -1356,6 +1358,14 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 			})
 			return
 		}
+		if !info.HasUpdate {
+			c.dlMu.Unlock()
+			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"ok":    false,
+				"error": "当前已经是最新版本，无需下载",
+			})
+			return
+		}
 		downloadURL = info.DownloadURL
 		if expectedSHA256 == "" {
 			expectedSHA256 = info.SHA256
@@ -1363,6 +1373,15 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 		if releaseVersion == "" {
 			releaseVersion = info.LatestVersion
 		}
+		if strings.TrimSpace(expectedSHA256) == "" {
+			c.dlMu.Unlock()
+			c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
+				"ok":    false,
+				"error": "该 Release 缺少 SHA-256 校验值，已阻止自动更新下载",
+			})
+			return
+		}
+		managedDownload = true
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1375,6 +1394,7 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 	c.dlDest = ""
 	c.dlVersion = releaseVersion
 	c.dlSHA256 = expectedSHA256
+	c.dlManaged = managedDownload
 	c.dlCancelFn = cancel
 	c.dlMu.Unlock()
 
@@ -1425,11 +1445,11 @@ func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Reque
 		})
 		return
 	}
-	if !c.dlDone || c.dlDest == "" {
+	if !c.dlDone || c.dlDest == "" || !c.dlManaged {
 		c.dlMu.Unlock()
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"ok":    false,
-			"error": "没有可应用的已验证更新包",
+			"error": "没有可应用的已验证官方更新包",
 		})
 		return
 	}
@@ -1504,6 +1524,7 @@ func (c *ControlServer) handleUpdateDownloadStatus(w http.ResponseWriter, req *h
 		"dest":       c.dlDest,
 		"version":    c.dlVersion,
 		"sha256":     c.dlSHA256,
+		"managed":    c.dlManaged,
 		"applying":   c.dlApplying,
 		"error":      c.dlError,
 	})
