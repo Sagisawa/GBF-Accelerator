@@ -281,7 +281,8 @@ flowchart TD
 6. **配置浏览器分流**：
    - **插件分流（强烈推荐，永不漏分片）**：在 ZeroOmega / SwitchyOmega 扩展中新建【PAC 情景模式】，PAC 网址填入 `http://127.0.0.1:8124/proxy.pac`，保存后在扩展图标切换为该模式即可。
    - **系统代理（免插件）**：在软件界面直接勾选【自动配置 Windows 系统 PAC 代理】（若安装了 SwitchyOmega，插件图标需切到 `[系统代理]` 或停用插件）。
-7. **开始游戏**：浏览器直接打开 `https://game.granbluefantasy.jp` 开始游玩（勿通过 SkyLeap 的 `gbf.game.mbga.jp` 登录地址游玩，该地址不走素材缓存）。
+7. **开始游戏与加速确认**：浏览器直接打开 `https://game.granbluefantasy.jp` 开始游玩（勿通过 SkyLeap 的 `gbf.game.mbga.jp` 登录地址游玩，该地址不走素材缓存）。
+   > 💡 **缓存命中技术说明**：首次游玩新副本时素材经网络首次下载并写入加速器本地磁盘缓存；**同一浏览器会话短时间内重复游玩时，现代浏览器自带的 Memory Cache（内存缓存）会直接在内部交付（开发者工具 Network 显示 from memory cache），根本不会向外部网络或本地代理发请求**。因此，只有游玩一段时间后（浏览器内部内存缓存置换淘汰）、重启浏览器、或第二天再次进入相同副本时，请求才会由加速器本地缓存（RAM 0ms / SSD 1~3ms）极速交付，控制台顶部的【本地缓存命中】数字会快速跳动增加。
 
 #### macOS 用户
 1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.0.0_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
@@ -487,6 +488,10 @@ go run . --headless
 - **含义**：程序检测到当前系统中存在其他 PAC 脚本或手动 HTTP / HTTPS / SOCKS 代理配置。
 - **处理方式**：先确认是否正在使用 Clash、v2rayN、Surge 等其他代理工具；如需使用 GBF Accelerator 的系统 PAC，请避免让多个工具同时管理同一套系统代理配置。
 - **安全边界**：程序仅提供诊断提示，不会擅自覆盖其他软件设置。Windows 的防火墙适配也必须由用户明确触发，不会因开启局域网共享而自动修改系统防火墙。
+
+### Q7: 为什么短时间内打两次同一个副本，控制台的【本地缓存命中】数字没有立即增加？
+- **原因**：现代 Chromium 浏览器（Chrome、Edge 等）内置了两级缓存体系。在首次下载静态素材后，浏览器自身会在标签页进程内存中保留副本（Memory Cache）。短时间内再次需要该素材时，浏览器直接由内存瞬间交付，**根本不会向本地代理端口发起任何 HTTP 请求**（开发者工具 Network 面板显示 `from memory cache`）。
+- **如何观察命中**：只有当游玩一段时间后（内存副本被浏览器置换淘汰）、彻底重启浏览器、或者次日重新游玩时，浏览器才会向代理重新请求素材，此时加速器的高速 RAM LRU 与本地磁盘缓存才会全部接管，命中计数将快速增加。若想快速验证加速效果，可完全重启浏览器后重新进入曾打过的副本观察控制台监控。
 
 ---
 
