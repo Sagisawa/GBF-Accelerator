@@ -269,19 +269,26 @@ flowchart TD
 ### 方式一：使用预构建便携版（推荐）
 
 #### Windows 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.0.0_GUI.zip`。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新便携包 `GBF_Accelerator_v2.0.0_GUI.zip`。
 2. 解压到任意非中文路径（例如 `D:\GBF_Accelerator\`）。
-3. 确保你的上游代理（Clash Verge / v2rayN 等）已开启并正常联网。
-4. 双击运行 `GBF_Accelerator.exe`。
-5. 检查上游代理端口与本地端口（默认 `8124`），勾选“自动配置系统 PAC 代理”（或在 ZeroOmega / SwitchyOmega 扩展中新建 PAC 情景模式填入 `http://127.0.0.1:8124/proxy.pac`），点击“启动加速”。
-6. 在浏览器中打开游戏页面即可正常游玩。
+3. **准备上游网络**：确保你的代理软件（Clash Verge / Clash / v2rayN 等）已开启并正常翻墙联网（若有日本专线也可在界面中勾选【直连模式】）。
+4. **启动程序**：双击运行 `GBF_Accelerator.exe`。
+   > 💡 **未签名安全提示**：由于开源软件未采购昂贵的商业代码签名证书，首次运行若弹出 Windows Defender SmartScreen「Windows 已保护你的电脑」提示，请点击**【更多信息】**（More info）并选择**【仍要运行】**（Run anyway）。
+5. **安装 HTTPS 根证书（【必做】，仅首次需执行）**：
+   - 在自动打开的控制台界面顶部点击**【一键安装根证书】**（或双击运行目录下的 `install_ca.bat`）；
+   - 在 Windows 安全警告弹窗中点击**【是】**确认信任（用于安全解析与本地缓存 Akamai CDN 静态素材，不安装会导致素材加载报证书错误或白屏）。
+6. **配置浏览器分流**：
+   - **插件分流（强烈推荐，永不漏分片）**：在 ZeroOmega / SwitchyOmega 扩展中新建【PAC 情景模式】，PAC 网址填入 `http://127.0.0.1:8124/proxy.pac`，保存后在扩展图标切换为该模式即可。
+   - **系统代理（免插件）**：在软件界面直接勾选【自动配置 Windows 系统 PAC 代理】（若安装了 SwitchyOmega，插件图标需切到 `[系统代理]` 或停用插件）。
+7. **开始游戏**：浏览器直接打开 `https://game.granbluefantasy.jp` 开始游玩（勿通过 SkyLeap 的 `gbf.game.mbga.jp` 登录地址游玩，该地址不走素材缓存）。
 
 #### macOS 用户
 1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.0.0_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
-2. 解压并将 `GBF_Accelerator.app` 拖入系统的【应用程序】文件夹（首次打开若遇 Gatekeeper 拦截，请执行 `xattr -cr /Applications/GBF_Accelerator.app`）。
+2. 解压并将 `GBF_Accelerator.app` 拖入系统的【应用程序】文件夹。
+   > 💡 **Gatekeeper 提示**：首次打开若提示“无法验证开发者”或“已损坏”，请按住 Control 键并鼠标右键点击应用选择【打开】；或在终端执行 `xattr -cr /Applications/GBF_Accelerator.app` 解除系统隔离。
 3. 确保 Clash / Surge 等上游代理正常运行。
-4. 启动后程序会自动打开内嵌 Web 控制台（支持 Chromium App Mode 独立窗口）；若首次使用，根据界面提示一键完成钥匙串根证书信任。
-5. 点击“启动加速”，系统 PAC 代理将自动挂载（或在浏览器扩展中新建 PAC 情景模式指向 `http://127.0.0.1:8124/proxy.pac`），即可在 Safari 或 Chrome 中开始游戏。
+4. 启动后程序会自动打开内嵌 Web 控制台，首次运行点击**【一键安装根证书】**，输入 Mac 密码或按触控 ID 允许信任钥匙串。
+5. 在浏览器扩展中新建 PAC 情景模式指向 `http://127.0.0.1:8124/proxy.pac`（或勾选系统 PAC），即可在 Safari 或 Chrome 中流畅游玩。
 
 ---
 

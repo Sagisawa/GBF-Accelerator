@@ -123,13 +123,13 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
               ) : (
                 <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
               )}
-              <span className="text-[11px] leading-relaxed">{message.text}</span>
+              <span className="text-xs leading-relaxed">{message.text}</span>
             </div>
           )}
 
           <div className="p-3 bg-red-50/70 border border-red-200 rounded-lg space-y-2 text-slate-700 leading-relaxed">
             <div className="font-bold text-red-800">一键自动注销：</div>
-            <p className="text-[11px] text-slate-600">
+            <p className="text-xs text-slate-600">
               点击下方按钮即可通过系统接口自动从当前用户的受信任根证书库中移除该证书。
             </p>
             <div className="pt-1">
@@ -147,7 +147,7 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
 
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5 text-slate-700 leading-relaxed">
             <div className="font-bold text-slate-800">手动卸载说明（备用）：</div>
-            <ol className="list-decimal list-inside space-y-1 text-slate-600 text-[11px]">
+            <ol className="list-decimal list-inside space-y-1 text-slate-600 text-xs">
               <li>按 <strong>Win + R</strong> 打开运行窗口，输入 <strong>certmgr.msc</strong> 回车；</li>
               <li>展开【受信任的根证书颁发机构】 -&gt; 【证书】；</li>
               <li>找到名为 <strong>GBF Local Accelerator Root CA</strong> 的证书，右键点击【删除】；</li>
@@ -192,7 +192,7 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
             ) : (
               <AlertCircle className="w-4 h-4 shrink-0 text-red-600 mt-0.5" />
             )}
-            <span className="text-[11px] leading-relaxed">{message.text}</span>
+            <span className="text-xs leading-relaxed">{message.text}</span>
           </div>
         )}
 
@@ -206,7 +206,7 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
 
           <div className="space-y-1">
             <div className="flex items-center justify-between">
-              <span className="text-slate-500 font-mono text-[11px]">SHA-256 唯一指纹：</span>
+              <span className="text-slate-500 font-mono text-xs">SHA-256 唯一指纹：</span>
               <Button
                 variant="desktop"
                 size="xs"
@@ -216,7 +216,7 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
                 {copied ? '已复制' : '复制指纹'}
               </Button>
             </div>
-            <div className="bg-white p-2 rounded border border-slate-200 font-mono text-[10px] text-slate-600 break-all select-all">
+            <div className="bg-white p-2 rounded border border-slate-200 font-mono text-[11px] text-slate-700 break-all select-all">
               {fingerprint}
             </div>
           </div>
@@ -244,14 +244,14 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
               清理历史泄露 CA
             </Button>
           </div>
-          <p className="text-[11px] text-slate-500">
+          <p className="text-xs text-slate-600">
             自动将证书注入系统根证书存储区（Windows: CurrentUser\Root；macOS: System Keychain）
           </p>
         </div>
 
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2 leading-relaxed">
           <div className="font-bold text-slate-900">手动安装方式（备用）：</div>
-          <div className="space-y-1.5 text-slate-600 text-[11px]">
+          <div className="space-y-1.5 text-slate-600 text-xs">
             <div>
               <strong>方式 1（脚本安装）：</strong>
               直接运行本加速器根目录下的 <code className="font-mono bg-white px-1.5 py-0.5 border border-slate-200 rounded text-blue-600">install_ca.bat</code>（macOS 为 <code className="font-mono bg-white px-1.5 py-0.5 border border-slate-200 rounded text-blue-600">./install_ca.sh</code>）。
