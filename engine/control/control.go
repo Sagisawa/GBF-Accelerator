@@ -70,6 +70,7 @@ type ControlServer struct {
 	dlError    string
 	dlVersion  string
 	dlSHA256   string
+	dlApplying bool
 	dlCancelFn context.CancelFunc
 
 	// Broadcasters for SSE custom events
@@ -1328,11 +1329,11 @@ func (c *ControlServer) handleUpdateCheck(w http.ResponseWriter, req *http.Reque
 
 func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Request) {
 	c.dlMu.Lock()
-	if c.dlActive {
+	if c.dlActive || c.dlApplying {
 		c.dlMu.Unlock()
 		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 			"ok":    false,
-			"error": "下载任务已在进行中",
+			"error": "更新任务正在进行中",
 		})
 		return
 	}
@@ -1415,11 +1416,11 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 
 func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
 	c.dlMu.Lock()
-	if c.dlActive {
+	if c.dlActive || c.dlApplying {
 		c.dlMu.Unlock()
 		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 			"ok":    false,
-			"error": "更新包仍在下载中",
+			"error": "更新任务正在进行中",
 		})
 		return
 	}
@@ -1434,9 +1435,13 @@ func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Reque
 	archivePath := c.dlDest
 	sha256 := strings.TrimSpace(c.dlSHA256)
 	version := strings.TrimSpace(c.dlVersion)
+	c.dlApplying = true
 	c.dlMu.Unlock()
 
 	if sha256 == "" {
+		c.dlMu.Lock()
+		c.dlApplying = false
+		c.dlMu.Unlock()
 		c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
 			"ok":    false,
 			"error": "该 Release 没有可验证的 SHA-256，暂不能执行自动更新，请手动下载更新包",
@@ -1444,6 +1449,9 @@ func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Reque
 		return
 	}
 	if version == "" {
+		c.dlMu.Lock()
+		c.dlApplying = false
+		c.dlMu.Unlock()
 		c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
 			"ok":    false,
 			"error": "缺少更新版本信息，暂不能执行自动更新",
@@ -1454,6 +1462,7 @@ func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Reque
 	restartArgs := append([]string(nil), os.Args[1:]...)
 	if err := updater.LaunchSelfUpdater(archivePath, sha256, version, restartArgs); err != nil {
 		c.dlMu.Lock()
+		c.dlApplying = false
 		c.dlError = err.Error()
 		c.dlMu.Unlock()
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -1494,6 +1503,7 @@ func (c *ControlServer) handleUpdateDownloadStatus(w http.ResponseWriter, req *h
 		"dest":       c.dlDest,
 		"version":    c.dlVersion,
 		"sha256":     c.dlSHA256,
+		"applying":   c.dlApplying,
 		"error":      c.dlError,
 	})
 }
