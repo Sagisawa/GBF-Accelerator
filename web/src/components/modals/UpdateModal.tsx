@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   ShieldAlert,
   RotateCcw,
+  FolderOpen,
 } from 'lucide-react'
 import {
   checkForUpdate,
@@ -19,6 +20,7 @@ import {
   fetchDownloadStatus,
   cancelDownload,
   applyDownloadedUpdate,
+  openUpdateFolder,
 } from '../../api'
 import { UpdateDownloadStatus } from '../../types'
 import { isNewerVersion } from '../../utils/version'
@@ -211,6 +213,8 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   const [applyingState, setApplyingState] = useState<ApplyingState>('idle')
   const [applyingError, setApplyingError] = useState<string | null>(null)
   const [reconnectAttempt, setReconnectAttempt] = useState<number>(0)
+  const [openingFolder, setOpeningFolder] = useState<boolean>(false)
+  const [openFolderError, setOpenFolderError] = useState<string | null>(null)
 
   const pollTimerRef = useRef<any>(null)
   const reconnectTimerRef = useRef<any>(null)
@@ -437,6 +441,18 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     } catch (e: any) {
       setApplyingState('failed')
       setApplyingError(e?.message || '启动自动更新失败')
+    }
+  }
+
+  const handleOpenFolder = async () => {
+    setOpeningFolder(true)
+    setOpenFolderError(null)
+    try {
+      await openUpdateFolder()
+    } catch (err: any) {
+      setOpenFolderError(err?.message || '打开下载目录失败')
+    } finally {
+      setOpeningFolder(false)
     }
   }
 
@@ -712,7 +728,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     {downloadStatus?.done && !downloadStatus?.error ? (
                       <>
                         <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                        <span className="text-emerald-700 font-bold">下载完成，归档与 SHA-256 校验通过</span>
+                        <span className="text-emerald-700 font-bold">更新包已下载并校验通过</span>
                       </>
                     ) : downloadStatus?.error ? (
                       <>
@@ -744,12 +760,37 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 )}
 
                 {downloadStatus?.done && !downloadStatus?.error && downloadStatus.dest && (
-                  <div className="space-y-1">
-                    <p className="text-xs text-emerald-700 break-all font-mono bg-emerald-50/80 p-2.5 rounded-xl border border-emerald-200/60">
-                      安装包已就绪: {downloadStatus.dest}
-                    </p>
+                  <div className="space-y-2 pt-0.5">
+                    <div className="flex items-center justify-between gap-2 bg-emerald-50/80 p-3 rounded-xl border border-emerald-200/60 flex-wrap">
+                      <div className="space-y-0.5 min-w-0 flex-1">
+                        <div className="text-[11px] font-semibold text-emerald-800">安装包保存位置</div>
+                        <p className="text-xs text-emerald-900 break-all font-mono">
+                          {downloadStatus.dest}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleOpenFolder}
+                        disabled={openingFolder}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-emerald-300 hover:bg-emerald-100 text-emerald-900 text-xs font-semibold shadow-2xs transition-all cursor-pointer shrink-0 active:scale-95"
+                      >
+                        {openingFolder ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <FolderOpen className="w-3.5 h-3.5 text-emerald-700" />
+                        )}
+                        <span>打开下载目录</span>
+                      </button>
+                    </div>
+
+                    {openFolderError && (
+                      <p className="text-xs text-rose-600 bg-rose-50/80 p-2.5 rounded-xl border border-rose-200/60">
+                        打开目录失败: {openFolderError}
+                      </p>
+                    )}
+
                     <p className="text-[11px] text-slate-500 px-1">
-                      点击下方『立即更新并重启』将启动更新助手完成文件平滑替换并自动重启服务。
+                      您可以点击下方『立即更新并重启』由更新助手自动完成替换，或点击『打开下载目录』手动解压替换。
                     </p>
                   </div>
                 )}
@@ -826,10 +867,23 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     <button
                       type="button"
                       onClick={handleStartDownload}
-                      className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold transition-all cursor-pointer flex items-center gap-1.5"
+                      className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-semibold transition-all cursor-pointer flex items-center gap-1.5"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
                       <span>重新下载</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleOpenFolder}
+                      disabled={openingFolder}
+                      className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-sm font-semibold border border-slate-200 transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
+                    >
+                      {openingFolder ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <FolderOpen className="w-4 h-4 text-slate-600" />
+                      )}
+                      <span>打开下载目录</span>
                     </button>
                     <button
                       type="button"

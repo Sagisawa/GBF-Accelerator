@@ -292,6 +292,16 @@ export async function cancelDownload(): Promise<{ ok: boolean; message?: string 
   return data
 }
 
+export async function openUpdateFolder(): Promise<{ ok: boolean; path?: string }> {
+  const res = await fetch(`${BASE}/api/update/open-folder`, { method: 'POST' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+
 export async function quitApp(): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/app/quit`, { method: 'POST' })
   if (!res.ok) {

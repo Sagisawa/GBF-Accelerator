@@ -444,6 +444,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleUpdateApply(w, req)
 			return
 		}
+	case "/api/update/open-folder", "/api/updater/open-folder":
+		if req.Method == http.MethodPost || req.Method == http.MethodGet {
+			c.handleUpdateOpenFolder(w, req)
+			return
+		}
 	case "/api/firewall/status":
 		if req.Method == http.MethodGet {
 			c.handleFirewallStatus(w, req)
@@ -1541,6 +1546,31 @@ func (c *ControlServer) handleUpdateDownloadCancel(w http.ResponseWriter, req *h
 		"message": "Download cancelled",
 	})
 }
+
+func (c *ControlServer) handleUpdateOpenFolder(w http.ResponseWriter, req *http.Request) {
+	c.dlMu.Lock()
+	dest := strings.TrimSpace(c.dlDest)
+	c.dlMu.Unlock()
+
+	target := dest
+	if target == "" {
+		target = updater.GetDefaultDownloadDir()
+	}
+
+	if err := desktop.ShowInFolder(target); err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("无法打开文件夹: %v", err),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":   true,
+		"path": target,
+	})
+}
+
 
 func (c *ControlServer) handleFirewallStatus(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()
