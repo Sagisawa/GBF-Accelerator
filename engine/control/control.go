@@ -68,6 +68,8 @@ type ControlServer struct {
 	dlDone     bool
 	dlDest     string
 	dlError    string
+	dlVersion  string
+	dlSHA256   string
 	dlCancelFn context.CancelFunc
 
 	// Broadcasters for SSE custom events
@@ -433,6 +435,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	case "/api/update/download-cancel", "/api/updater/download-cancel":
 		if req.Method == http.MethodPost {
 			c.handleUpdateDownloadCancel(w, req)
+			return
+		}
+	case "/api/update/apply", "/api/updater/apply":
+		if req.Method == http.MethodPost {
+			c.handleUpdateApply(w, req)
 			return
 		}
 	case "/api/firewall/status":
@@ -1330,15 +1337,13 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 		return
 	}
 
-	var reqBody struct {
-		URL    string `json:"url"`
-		Dest   string `json:"dest"`
-		SHA256 string `json:"sha256"`
-	}
+	var reqBody map[string]string
 	_ = json.NewDecoder(req.Body).Decode(&reqBody)
+	downloadURL := strings.TrimSpace(reqBody["url"])
+	destPath := strings.TrimSpace(reqBody["dest"])
+	expectedSHA256 := strings.TrimSpace(reqBody["sha256"])
+	releaseVersion := strings.TrimSpace(reqBody["version"])
 
-	downloadURL := reqBody.URL
-	expectedSHA256 := reqBody.SHA256
 	if downloadURL == "" {
 		proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
 		info := updater.CheckForUpdate(proxyURL, 8*time.Second, config.AppVersion)
@@ -1354,6 +1359,8 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 		if expectedSHA256 == "" {
 			expectedSHA256 = info.SHA256
 		}
+		if releaseVersion == "" {
+			releaseVersion = info.LatestVersion
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1364,11 +1371,12 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 	c.dlPercent = 0.0
 	c.dlError = ""
 	c.dlDest = ""
+	c.dlVersion = releaseVersion
+	c.dlSHA256 = expectedSHA256
 	c.dlCancelFn = cancel
 	c.dlMu.Unlock()
 
 	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
-	destPath := reqBody.Dest
 
 	go func() {
 		finalPath, err := updater.DownloadReleaseAsset(
@@ -1405,6 +1413,58 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 	})
 }
 
+func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
+	c.dlMu.Lock()
+	if c.dlActive {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "更新包仍在下载中",
+		})
+		return
+	}
+	if !c.dlDone || c.dlDest == "" {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "没有可应用的已验证更新包",
+		})
+		return
+	}
+	archivePath := c.dlDest
+	sha256 := c.dlSHA256
+	version := c.dlVersion
+	c.dlMu.Unlock()
+
+	restartArgs := append([]string(nil), os.Args[1:]...)
+	if err := updater.LaunchSelfUpdater(archivePath, sha256, version, restartArgs); err != nil {
+		c.dlMu.Lock()
+		c.dlError = err.Error()
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": fmt.Sprintf("v%s 更新已准备，程序即将重启", version),
+		"version": version,
+	})
+
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		c.mu.RLock()
+		quit := c.quitFunc
+		c.mu.RUnlock()
+		if quit != nil {
+			quit()
+		}
+	}()
+}
+
 func (c *ControlServer) handleUpdateDownloadStatus(w http.ResponseWriter, req *http.Request) {
 	c.dlMu.Lock()
 	defer c.dlMu.Unlock()
@@ -1417,6 +1477,8 @@ func (c *ControlServer) handleUpdateDownloadStatus(w http.ResponseWriter, req *h
 		"total":      c.dlTotal,
 		"percent":    c.dlPercent,
 		"dest":       c.dlDest,
+		"version":    c.dlVersion,
+		"sha256":     c.dlSHA256,
 		"error":      c.dlError,
 	})
 }
