@@ -1193,8 +1193,16 @@ func TestHandleLatencyTestWithMockServer(t *testing.T) {
 	}))
 	defer mockTarget.Close()
 
+	cfgMgr := config.NewManager("")
+	// Keep this unit test hermetic: CI runners may expose unrelated local proxies.
+	// The first probe must exercise the mock server directly.
+	cfgMgr.Update(func(cfg *config.Config) {
+		cfg.DirectMode = true
+		cfg.UpstreamProxy = ""
+	})
+
 	ctrl := &ControlServer{
-		cfgMgr: config.NewManager(""),
+		cfgMgr: cfgMgr,
 	}
 
 	// Test 1: Direct mode with custom target and fast=1
