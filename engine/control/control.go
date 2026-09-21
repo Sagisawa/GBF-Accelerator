@@ -1362,6 +1362,7 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 		}
 		if releaseVersion == "" {
 			releaseVersion = info.LatestVersion
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
