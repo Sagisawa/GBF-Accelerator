@@ -411,7 +411,7 @@ go run . --headless
 | `enable_ram_warmup` | 布尔 | `false` | 启动时是否预热高频静态素材至 RAM 缓存。 |
 | `ram_warmup_max_items` | 整数 | `1500` | 启动预热扫描素材数量上限，平衡启动耗时与热点命中。 |
 | `verify_upstream_tls` | 布尔 | `true` | 请求上游时是否校验 TLS 证书安全性。 |
-| `shimakaze_mode` | 布尔 | `false` | 岛风 GO 兼容优化模式（适配其证书与超时参数）。 |
+| `shimakaze_mode` | 布尔 | `false` | 岛风 GO / ACGPower 兼容优化模式（适配自签证书与超时参数，放行证书）。 |
 | `auto_check_update` | 布尔 | `true` | 启动时是否自动检查 GitHub Releases 最新版本。 |
 | `api_max_connections` | 整数 | `16` | 动态 API 专属连接池最大连接数。 |
 | `api_max_keepalive` | 整数 | `4` | 动态 API 连接池空闲长连接保留数。 |

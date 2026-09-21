@@ -207,6 +207,7 @@ export const App: React.FC = () => {
   const [isUpstreamSelectModalOpen, setIsUpstreamSelectModalOpen] = useState<boolean>(false)
   const [upstreamCandidates, setUpstreamCandidates] = useState<ProxyCandidate[]>([])
   const [isShimakazeSuggestOpen, setIsShimakazeSuggestOpen] = useState<boolean>(false)
+  const [shimakazeTargetName, setShimakazeTargetName] = useState<string>('岛风 GO (8099)')
   const [caModalAction, setCaModalAction] = useState<'install' | 'uninstall' | null>(null)
   const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version: string } | null>(null)
   const [isQuitModalOpen, setIsQuitModalOpen] = useState<boolean>(false)
@@ -498,11 +499,13 @@ export const App: React.FC = () => {
       }
     })
   }
-  // Check and prompt if upstream is Shimakaze GO (port 8099)
+  // Check and prompt if upstream is Shimakaze GO (port 8099) or ACGPower (port 8123)
   const checkShimakazeSuggest = (url: string) => {
     const is8099 = url.includes(':8099')
+    const is8123 = url.includes(':8123')
     const currentShimakaze = Boolean(config.shimakaze_mode ?? false)
-    if (is8099 && !currentShimakaze) {
+    if ((is8099 || is8123) && !currentShimakaze) {
+      setShimakazeTargetName(is8123 ? 'ACGPower (8123)' : '岛风 GO (8099)')
       setIsShimakazeSuggestOpen(true)
     }
   }
@@ -512,10 +515,11 @@ export const App: React.FC = () => {
     try {
       await applyConfig({ shimakaze_mode: true })
       setConfig((prev) => ({ ...prev, shimakaze_mode: true }))
-      showToast('已成功启用【岛风GO 兼容优化模式】', 'success')
+      const isAcgp = shimakazeTargetName.includes('8123')
+      showToast(`已成功启用【${isAcgp ? 'ACGPower' : '岛风GO'} 兼容优化模式（放行证书）】`, 'success')
       loadState()
     } catch (e: any) {
-      showToast(`启用岛风GO兼容模式失败: ${e.message}`, 'error')
+      showToast(`启用兼容模式失败: ${e.message}`, 'error')
     }
   }  // Save Upstream Proxy
   const handleSaveUpstream = async () => {
@@ -1139,13 +1143,13 @@ export const App: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
                     />
                     <span className={isDirect ? 'text-slate-400' : 'text-slate-800'}>
-                      岛风GO 兼容优化模式（放宽超时、自愈重试、适配自签证书；默认关闭）
+                      岛风GO / ACGPower 兼容优化模式（放宽超时、自愈重试、放行自签证书；默认关闭）
                     </span>
                   </label>
 
                   {isShimakaze && !isDirect && (
                     <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs">
-                      提示：本软件架构升级后，日常使用可按需开启岛风GO【使用远端缓存】（可显著加快初次冷启动下载速度）；若遇游戏维护更新后新素材显示异常，在主界面点击【清理缓存】或临时关闭远端缓存即可。
+                      提示：已开启兼容优化模式，放行岛风GO / ACGPower 等本地自签证书并优化网络超时；若遇游戏维护更新后新素材显示异常，在主界面点击【清理缓存】即可。
                     </div>
                   )}
                 </div>
@@ -1699,6 +1703,7 @@ export const App: React.FC = () => {
         isOpen={isShimakazeSuggestOpen}
         onClose={() => setIsShimakazeSuggestOpen(false)}
         onEnable={handleEnableShimakaze}
+        targetName={shimakazeTargetName}
       />
 
       <UpdateModal
