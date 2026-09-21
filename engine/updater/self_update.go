@@ -528,13 +528,14 @@ func isSafeZipPath(name string) bool {
 	if name == "" || strings.HasPrefix(name, "/") || strings.Contains(name, ":") {
 		return false
 	}
-	for _, part := range strings.Split(name, "/") {
-		if part == ".." || part == "" {
-			continue
+	parts := strings.Split(name, "/")
+	for _, part := range parts {
+		if part == ".." {
+			return false
 		}
 	}
 	clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(name)))
-	return clean == name && !strings.HasPrefix(clean, "../") && clean != ".."
+	return clean == name && clean != ".." && !strings.HasPrefix(clean, "../")
 }
 
 // CleanupStaleHelpers removes old updater helper files left behind by Windows,
