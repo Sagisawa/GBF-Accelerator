@@ -91,20 +91,31 @@ func uninstallCA(sha1 string) error {
 		return fmt.Errorf("empty sha1 thumbprint")
 	}
 
-	// 1. Delete registry key if present
-	for _, hive := range []string{"HKCU", "HKLM"} {
-		regPath := fmt.Sprintf(`%s\Software\Microsoft\SystemCertificates\Root\Certificates\%s`, hive, cleanSHA1)
-		delCmd := exec.Command("reg", "delete", regPath, "/f")
-		delCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		_ = delCmd.Run()
+	// 1. Remove through the certificate store API first (certutil -delstore).
+	//    The native Windows confirmation dialog must stay visible here (no
+	//    SysProcAttr.HideWindow), matching v1.6 behavior. Deleting only via a
+	//    raw registry write instead makes CryptoAPI treat the next addstore of
+	//    the same certificate as a silent re-add, which suppresses the Root CA
+	//    security warning on the following install.
+	cmd := exec.Command("certutil", "-f", "-user", "-delstore", "Root", cleanSHA1)
+	cmd.Stdin = bytes.NewReader([]byte("y\r\n"))
+	delErr := cmd.Run()
+
+	// 2. Registry cleanup as secondary fallback (HKCU / HKLM). Only runs after
+	//    a successful store-level deletion, so a dialog dismissed by the user
+	//    never leaves the store bypassed in a half-removed state.
+	if delErr == nil {
+		for _, hive := range []string{"HKCU", "HKLM"} {
+			regPath := fmt.Sprintf(`%s\Software\Microsoft\SystemCertificates\Root\Certificates\%s`, hive, cleanSHA1)
+			delCmd := exec.Command("reg", "delete", regPath, "/f")
+			delCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			_ = delCmd.Run()
+		}
 	}
 
-	// 2. certutil -f -user -delstore Root <sha1>
-	cmd := exec.Command("certutil", "-f", "-user", "-delstore", "Root", cleanSHA1)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	cmd.Stdin = bytes.NewReader([]byte("y\r\n"))
-	_ = cmd.Run()
-
+	if delErr != nil {
+		return fmt.Errorf("certutil delstore failed: %w", delErr)
+	}
 	return nil
 }
 
