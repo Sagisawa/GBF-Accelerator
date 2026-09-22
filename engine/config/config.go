@@ -35,7 +35,8 @@ type Config struct {
 	VerifyUpstreamTLS    bool    `json:"verify_upstream_tls"`
 	ShimakazeMode        bool    `json:"shimakaze_mode"`
 	AutoStart            bool    `json:"auto_start"`
-	AutoCheckUpdate      bool    `json:"auto_check_update"`
+	AutoCheckUpdate        bool    `json:"auto_check_update"`
+	EnableTarouIntegration bool    `json:"enable_tarou_integration"`
 	APIMaxConnections    int     `json:"api_max_connections"`
 	APIMaxKeepalive      int     `json:"api_max_keepalive"`
 	APIKeepaliveExpiry   float64 `json:"api_keepalive_expiry"`
@@ -74,7 +75,8 @@ func DefaultConfig() Config {
 		VerifyUpstreamTLS:    true,
 		ShimakazeMode:        false,
 		AutoStart:            false,
-		AutoCheckUpdate:      true,
+		AutoCheckUpdate:        true,
+		EnableTarouIntegration: false,
 		APIMaxConnections:    16,
 		APIMaxKeepalive:      4,
 		APIKeepaliveExpiry:   20.0,
@@ -222,6 +224,9 @@ func (m *Manager) Load(cfgPath string) error {
 	}
 	if _, ok := present["auto_check_update"]; ok {
 		m.cfg.AutoCheckUpdate = loaded.AutoCheckUpdate
+	}
+	if _, ok := present["enable_tarou_integration"]; ok {
+		m.cfg.EnableTarouIntegration = loaded.EnableTarouIntegration
 	}
 	if _, ok := present["enable_api_telemetry"]; ok {
 		m.cfg.EnableAPITelemetry = loaded.EnableAPITelemetry
