@@ -1237,9 +1237,10 @@ func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, tar
 	}
 
 	// Rule 2: Static Asset vs Dynamic Game API
-	isStatic := (req.Method == http.MethodGet || req.Method == http.MethodHead) && isStaticTarget(targetHost, req.URL.Path)
+	pathLower := strings.ToLower(req.URL.Path)
+	isStatic := (req.Method == http.MethodGet || req.Method == http.MethodHead) && isStaticTargetLower(targetHost, pathLower)
 	if isStatic {
-		return s.handleStaticAsset(w, req, targetHost)
+		return s.handleStaticAssetLower(w, req, targetHost, pathLower)
 	}
 
 	return s.handleDynamicAPI(w, req, targetHost)
@@ -1317,14 +1318,18 @@ func (s *ProxyServer) sendNotModifiedResponse(w io.Writer, item *cache.CacheItem
 }
 
 func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHost string) bool {
-	cleanPath := strings.Split(req.URL.Path, "?")[0]
+	return s.handleStaticAssetLower(w, req, targetHost, strings.ToLower(req.URL.Path))
+}
+
+func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, targetHost, pathLower string) bool {
+	cleanPath, _, _ := strings.Cut(req.URL.Path, "?")
 
 	// Security: Reject path traversal sequences immediately
 	// Extract the path portion from raw req.RequestURI before unescaping
 	// (so that query parameters like ?t=12:34:56 do not falsely trigger colon checks,
 	// and encoded %3F in path is not confused with query delimiter).
-	rawURIPath := strings.Split(req.RequestURI, "?")[0]
-	rawURIPath = strings.Split(rawURIPath, "#")[0]
+	rawURIPath, _, _ := strings.Cut(req.RequestURI, "?")
+	rawURIPath, _, _ = strings.Cut(rawURIPath, "#")
 
 	if idx := strings.Index(rawURIPath, "://"); idx != -1 {
 		afterScheme := rawURIPath[idx+3:]
@@ -1368,8 +1373,10 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	unescapedLower := strings.ToLower(unescapedURI)
 	unescapedPathLower := strings.ToLower(unescapedPath)
 	reqURILower := strings.ToLower(req.RequestURI)
-	pathLower := strings.ToLower(req.URL.Path)
-	cleanLower := strings.ToLower(cleanPath)
+	cleanLower := pathLower
+	if cleanPath != req.URL.Path {
+		cleanLower = strings.ToLower(cleanPath)
+	}
 	if strings.Contains(req.RequestURI, "..") ||
 		strings.Contains(req.URL.Path, "..") ||
 		strings.Contains(unescapedURI, "..") ||
@@ -1993,10 +2000,14 @@ func isPrivateOrLocalHost(host string) bool {
 }
 
 func isStaticTarget(host, path string) bool {
+	return isStaticTargetLower(host, strings.ToLower(path))
+}
+
+func isStaticTargetLower(host, pathLower string) bool {
 	if hp, _, err := net.SplitHostPort(host); err == nil {
 		host = hp
 	}
-	p := strings.ToLower(path)
+	p := pathLower
 
 	// Dynamic prefixes are strictly non-static
 	dynamicPrefixes := []string{
@@ -2029,7 +2040,7 @@ func isStaticTarget(host, path string) bool {
 		".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm",
 		".wasm", ".woff", ".woff2", ".ttf", ".otf", ".svg", ".ico",
 	}
-	clean := strings.Split(p, "?")[0]
+	clean, _, _ := strings.Cut(p, "?")
 	for _, ext := range staticExts {
 		if strings.HasSuffix(clean, ext) {
 			return true
