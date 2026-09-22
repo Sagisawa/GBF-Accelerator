@@ -12,15 +12,27 @@ type call struct {
 	err  error
 }
 
-type SingleFlight struct {
+const singleFlightShardCount = 16
+
+type singleFlightShard struct {
 	mu sync.Mutex
 	m  map[string]*call
 }
 
+type SingleFlight struct {
+	shards [singleFlightShardCount]singleFlightShard
+}
+
 func NewSingleFlight() *SingleFlight {
-	return &SingleFlight{
-		m: make(map[string]*call),
+	g := &SingleFlight{}
+	for i := range g.shards {
+		g.shards[i].m = make(map[string]*call)
 	}
+	return g
+}
+
+func (g *SingleFlight) shard(key string) *singleFlightShard {
+	return &g.shards[fnv32(key)&(singleFlightShardCount-1)]
 }
 
 // Do executes and returns the results of the given function, making
@@ -39,9 +51,10 @@ func (g *SingleFlight) DoContext(ctx context.Context, key string, fn func() (int
 		return nil, ctx.Err()
 	}
 
-	g.mu.Lock()
-	if c, ok := g.m[key]; ok {
-		g.mu.Unlock()
+	shard := g.shard(key)
+	shard.mu.Lock()
+	if c, ok := shard.m[key]; ok {
+		shard.mu.Unlock()
 		if ctx == nil {
 			<-c.done
 			return c.val, c.err
@@ -57,8 +70,8 @@ func (g *SingleFlight) DoContext(ctx context.Context, key string, fn func() (int
 	c := &call{
 		done: make(chan struct{}),
 	}
-	g.m[key] = c
-	g.mu.Unlock()
+	shard.m[key] = c
+	shard.mu.Unlock()
 
 	var (
 		normalReturn bool
@@ -72,10 +85,10 @@ func (g *SingleFlight) DoContext(ctx context.Context, key string, fn func() (int
 				c.err = fmt.Errorf("singleflight panic: %v", recovered)
 			}
 		}
-		g.mu.Lock()
-		delete(g.m, key)
+		shard.mu.Lock()
+		delete(shard.m, key)
 		close(c.done)
-		g.mu.Unlock()
+		shard.mu.Unlock()
 
 		if recovered != nil {
 			panic(recovered)
@@ -90,7 +103,8 @@ func (g *SingleFlight) DoContext(ctx context.Context, key string, fn func() (int
 // Forget tells singleflight to forget about a key. Future calls
 // with this key will call the function rather than waiting on an earlier call.
 func (g *SingleFlight) Forget(key string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.m, key)
+	shard := g.shard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	delete(shard.m, key)
 }

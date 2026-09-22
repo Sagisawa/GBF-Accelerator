@@ -538,8 +538,11 @@ func (m *Manager) GetFallback(urlPath string) (*CacheItem, string) {
 
 func getHeader(h map[string]string, key string) string {
 	kLower := strings.ToLower(key)
+	if v, ok := h[kLower]; ok {
+		return v
+	}
 	for k, v := range h {
-		if strings.ToLower(k) == kLower {
+		if strings.EqualFold(k, kLower) {
 			return v
 		}
 	}
