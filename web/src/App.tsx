@@ -33,6 +33,7 @@ import { CaCertModal } from './components/modals/CaCertModal'
 import { UpdateModal } from './components/modals/UpdateModal'
 import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
 import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal'
+import { TarouIntegrationModal } from './components/modals/TarouIntegrationModal'
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { isNewerVersion } from './utils/version'
@@ -207,6 +208,7 @@ export const App: React.FC = () => {
   const [isUpstreamSelectModalOpen, setIsUpstreamSelectModalOpen] = useState<boolean>(false)
   const [upstreamCandidates, setUpstreamCandidates] = useState<ProxyCandidate[]>([])
   const [isShimakazeSuggestOpen, setIsShimakazeSuggestOpen] = useState<boolean>(false)
+  const [isTarouModalOpen, setIsTarouModalOpen] = useState<boolean>(false)
   const [shimakazeTargetName, setShimakazeTargetName] = useState<string>('岛风 GO (8099)')
   const [caModalAction, setCaModalAction] = useState<'install' | 'uninstall' | null>(null)
   const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version: string } | null>(null)
@@ -772,6 +774,7 @@ export const App: React.FC = () => {
     setIsAuditModalOpen(false)
     setIsSlimModalOpen(false)
     setIsUpdateModalOpen(false)
+    setIsTarouModalOpen(false)
     setCaModalAction(null)
   }
 
@@ -785,6 +788,7 @@ export const App: React.FC = () => {
     isAuditModalOpen ||
     isSlimModalOpen ||
     isUpdateModalOpen ||
+    isTarouModalOpen ||
     caModalAction !== null
 
   // Keyboard Shortcuts
@@ -1615,6 +1619,15 @@ export const App: React.FC = () => {
 
           <button
             type="button"
+            onClick={() => setIsTarouModalOpen(true)}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+          >
+            <span className="text-base">🧩</span>
+            <span>Tarou 集成</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setIsLatencyModalOpen(true)}
             className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
           >
@@ -1710,6 +1723,12 @@ export const App: React.FC = () => {
         isOpen={isUpdateModalOpen}
         onClose={() => setIsUpdateModalOpen(false)}
         currentVersion={status?.version || '2.0.0'}
+      />
+
+      <TarouIntegrationModal
+        isOpen={isTarouModalOpen}
+        onClose={() => setIsTarouModalOpen(false)}
+        onToast={showToast}
       />
 
       <LiveLogsWindow
