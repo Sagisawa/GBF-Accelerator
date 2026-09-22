@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -58,6 +59,7 @@ type Manager struct {
 	commitMu sync.Mutex
 	mu       sync.RWMutex
 	cfg      Config
+	snapshot atomic.Pointer[Config]
 	path     string
 	onSave   []func(*Config)
 }
@@ -111,7 +113,15 @@ func NewManager(cfgPath string) *Manager {
 	if cfgPath != "" {
 		_ = m.Load(cfgPath)
 	}
+	m.publishSnapshot()
 	return m
+}
+
+func (m *Manager) publishSnapshot() {
+	m.mu.RLock()
+	cfg := m.cfg
+	m.mu.RUnlock()
+	m.snapshot.Store(&cfg)
 }
 
 func normalizeRAMCacheMaxMB(v int) int {
@@ -284,10 +294,15 @@ func (m *Manager) Load(cfgPath string) error {
 	if loaded.AssetKeepaliveExpiry > 0 {
 		m.cfg.AssetKeepaliveExpiry = loaded.AssetKeepaliveExpiry
 	}
+	cfg := m.cfg
+	m.snapshot.Store(&cfg)
 	return nil
 }
 
 func (m *Manager) Get() Config {
+	if cfg := m.snapshot.Load(); cfg != nil {
+		return *cfg
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.cfg
@@ -311,11 +326,15 @@ func (m *Manager) Commit(candidate Config) error {
 	m.mu.Lock()
 	oldCfg := m.cfg
 	m.cfg = candidate
+	snapshot := m.cfg
+	m.snapshot.Store(&snapshot)
 	m.mu.Unlock()
 
 	if err := m.Save(); err != nil {
 		m.mu.Lock()
 		m.cfg = oldCfg
+		rollbackSnapshot := m.cfg
+		m.snapshot.Store(&rollbackSnapshot)
 		m.mu.Unlock()
 		m.commitMu.Unlock()
 		return fmt.Errorf("failed to save config: %w", err)
@@ -355,6 +374,7 @@ func (m *Manager) UpdateWithError(fn func(c *Config)) (Config, error) {
 	m.cfg.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(m.cfg.UpstreamFailoverConsecutiveFailures)
 	m.cfg.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(m.cfg.UpstreamFailoverCooldownSeconds)
 	updated := m.cfg
+	m.snapshot.Store(&updated)
 	callbacks := make([]func(*Config), len(m.onSave))
 	copy(callbacks, m.onSave)
 	m.mu.Unlock()
@@ -362,6 +382,8 @@ func (m *Manager) UpdateWithError(fn func(c *Config)) (Config, error) {
 	if err := m.Save(); err != nil {
 		m.mu.Lock()
 		m.cfg = oldCfg
+		rollbackSnapshot := m.cfg
+		m.snapshot.Store(&rollbackSnapshot)
 		m.mu.Unlock()
 		m.commitMu.Unlock()
 		return oldCfg, fmt.Errorf("failed to save config: %w", err)
