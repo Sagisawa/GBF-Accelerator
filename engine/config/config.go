@@ -21,6 +21,12 @@ type Config struct {
 	ControlPort          int     `json:"control_port"`
 	AllowLAN             bool    `json:"allow_lan"`
 	UpstreamProxy        string  `json:"upstream_proxy"`
+	BackupUpstreamProxy  string  `json:"backup_upstream_proxy"`
+	EnableUpstreamFailover bool    `json:"enable_upstream_failover"`
+	UpstreamFailoverThresholdMS int `json:"upstream_failover_threshold_ms"`
+	UpstreamFailoverConsecutiveFailures int `json:"upstream_failover_consecutive_failures"`
+	UpstreamFailoverCooldownSeconds int `json:"upstream_failover_cooldown_seconds"`
+	UpstreamFailoverAutoRecover bool    `json:"upstream_failover_auto_recover"`
 	DirectMode           bool    `json:"direct_mode"`
 	CacheDir             string  `json:"cache_dir"`
 	CleanZombies         bool    `json:"clean_zombies"`
@@ -60,6 +66,12 @@ func DefaultConfig() Config {
 		ControlPort:          8125,
 		AllowLAN:             false,
 		UpstreamProxy:        "auto",
+		BackupUpstreamProxy:  "",
+		EnableUpstreamFailover: false,
+		UpstreamFailoverThresholdMS: 2000,
+		UpstreamFailoverConsecutiveFailures: 3,
+		UpstreamFailoverCooldownSeconds: 60,
+		UpstreamFailoverAutoRecover: true,
 		DirectMode:           false,
 		CacheDir:             filepath.Join("cache", "gbf", "https"),
 		CleanZombies:         true,
@@ -130,6 +142,25 @@ func normalizeAssetMaxKeepalive(v int) int {
 	return v
 }
 
+func normalizeUpstreamFailoverThresholdMS(v int) int {
+	const maxMS = 60000
+	if v < 0 { return 0 }
+	if v > maxMS { return maxMS }
+	return v
+}
+
+func normalizeUpstreamFailoverConsecutiveFailures(v int) int {
+	if v < 1 { return 3 }
+	if v > 10 { return 10 }
+	return v
+}
+
+func normalizeUpstreamFailoverCooldownSeconds(v int) int {
+	if v < 1 { return 60 }
+	if v > 3600 { return 3600 }
+	return v
+}
+
 func (m *Manager) Load(cfgPath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -166,6 +197,12 @@ func (m *Manager) Load(cfgPath string) error {
 	if _, ok := present["upstream_proxy"]; ok {
 		m.cfg.UpstreamProxy = loaded.UpstreamProxy
 	}
+	if _, ok := present["backup_upstream_proxy"]; ok { m.cfg.BackupUpstreamProxy = strings.TrimSpace(loaded.BackupUpstreamProxy) }
+	if _, ok := present["enable_upstream_failover"]; ok { m.cfg.EnableUpstreamFailover = loaded.EnableUpstreamFailover }
+	if _, ok := present["upstream_failover_threshold_ms"]; ok { m.cfg.UpstreamFailoverThresholdMS = normalizeUpstreamFailoverThresholdMS(loaded.UpstreamFailoverThresholdMS) }
+	if _, ok := present["upstream_failover_consecutive_failures"]; ok { m.cfg.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(loaded.UpstreamFailoverConsecutiveFailures) }
+	if _, ok := present["upstream_failover_cooldown_seconds"]; ok { m.cfg.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(loaded.UpstreamFailoverCooldownSeconds) }
+	if _, ok := present["upstream_failover_auto_recover"]; ok { m.cfg.UpstreamFailoverAutoRecover = loaded.UpstreamFailoverAutoRecover }
 	if _, ok := present["direct_mode"]; ok {
 		m.cfg.DirectMode = loaded.DirectMode
 	}
@@ -251,6 +288,9 @@ func (m *Manager) Commit(candidate Config) error {
 	candidate.RAMCacheMaxMB = normalizeRAMCacheMaxMB(candidate.RAMCacheMaxMB)
 	candidate.AssetMaxConnections = normalizeAssetMaxConnections(candidate.AssetMaxConnections)
 	candidate.AssetMaxKeepalive = normalizeAssetMaxKeepalive(candidate.AssetMaxKeepalive)
+	candidate.UpstreamFailoverThresholdMS = normalizeUpstreamFailoverThresholdMS(candidate.UpstreamFailoverThresholdMS)
+	candidate.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(candidate.UpstreamFailoverConsecutiveFailures)
+	candidate.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(candidate.UpstreamFailoverCooldownSeconds)
 	m.commitMu.Lock()
 
 	m.mu.Lock()
@@ -296,6 +336,9 @@ func (m *Manager) UpdateWithError(fn func(c *Config)) (Config, error) {
 	m.cfg.RAMCacheMaxMB = normalizeRAMCacheMaxMB(m.cfg.RAMCacheMaxMB)
 	m.cfg.AssetMaxConnections = normalizeAssetMaxConnections(m.cfg.AssetMaxConnections)
 	m.cfg.AssetMaxKeepalive = normalizeAssetMaxKeepalive(m.cfg.AssetMaxKeepalive)
+	m.cfg.UpstreamFailoverThresholdMS = normalizeUpstreamFailoverThresholdMS(m.cfg.UpstreamFailoverThresholdMS)
+	m.cfg.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(m.cfg.UpstreamFailoverConsecutiveFailures)
+	m.cfg.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(m.cfg.UpstreamFailoverCooldownSeconds)
 	updated := m.cfg
 	callbacks := make([]func(*Config), len(m.onSave))
 	copy(callbacks, m.onSave)

@@ -128,3 +128,16 @@ export interface ProxyCandidate {
   name: string;
 }
 
+export interface UpstreamRuntimeStatus {
+  enabled: boolean;
+  backup_configured: boolean;
+  active: 'primary' | 'backup';
+  failure_count: number;
+  last_switch_at?: string;
+  reason?: string;
+  auto_recover: boolean;
+  threshold_ms: number;
+  consecutive_failures: number;
+  cooldown_seconds: number;
+}
+

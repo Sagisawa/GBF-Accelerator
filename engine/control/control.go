@@ -414,6 +414,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleDetectUpstream(w, req)
 			return
 		}
+	case "/api/upstream/status":
+		if req.Method == http.MethodGet {
+			c.handleUpstreamStatus(w, req)
+			return
+		}
 	case "/api/latency-test", "/api/utils/test-latency":
 		if req.Method == http.MethodGet || req.Method == http.MethodPost {
 			c.handleLatencyTest(w, req)
@@ -713,6 +718,30 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	}
 	if val, ok := patch["upstream_proxy"].(string); ok {
 			candidate.UpstreamProxy = strings.TrimSpace(val)
+	}
+
+	if val, ok := patch["backup_upstream_proxy"].(string); ok {
+			backup := strings.TrimSpace(val)
+			if backup != "" && !isSupportedBackupProxyURL(backup) {
+				c.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid backup_upstream_proxy"})
+				return
+			}
+			candidate.BackupUpstreamProxy = backup
+	}
+	if val, ok := patch["enable_upstream_failover"].(bool); ok {
+		candidate.EnableUpstreamFailover = val
+	}
+	if val, ok := patch["upstream_failover_threshold_ms"].(float64); ok {
+		candidate.UpstreamFailoverThresholdMS = int(val)
+	}
+	if val, ok := patch["upstream_failover_consecutive_failures"].(float64); ok {
+		candidate.UpstreamFailoverConsecutiveFailures = int(val)
+	}
+	if val, ok := patch["upstream_failover_cooldown_seconds"].(float64); ok {
+		candidate.UpstreamFailoverCooldownSeconds = int(val)
+	}
+	if val, ok := patch["upstream_failover_auto_recover"].(bool); ok {
+		candidate.UpstreamFailoverAutoRecover = val
 	}
 	if val, ok := patch["direct_mode"].(bool); ok {
 		candidate.DirectMode = val
@@ -1201,6 +1230,40 @@ func (c *ControlServer) handleDetectUpstream(w http.ResponseWriter, req *http.Re
 	})
 }
 
+func (c *ControlServer) handleUpstreamStatus(w http.ResponseWriter, req *http.Request) {
+	if c.proxySrv == nil {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok": true,
+			"status": proxy.UpstreamRuntimeStatus{Active: "primary"},
+		})
+		return
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true,
+		"status": c.proxySrv.GetUpstreamStatus(),
+	})
+}
+
+func isSupportedBackupProxyURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if strings.EqualFold(raw, "direct") {
+		return true
+	}
+	if raw == "" {
+		return false
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()
 	target := "https://game.granbluefantasy.jp/"
@@ -1212,7 +1275,9 @@ func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Reque
 
 	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
 	if custom := strings.TrimSpace(req.URL.Query().Get("proxy")); custom != "" {
-		if u, err := url.Parse(custom); err == nil && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "socks5") {
+		if strings.EqualFold(custom, "direct") {
+			proxyURL = ""
+		} else if u, err := url.Parse(custom); err == nil && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "socks5") {
 			proxyURL = custom
 		}
 	}

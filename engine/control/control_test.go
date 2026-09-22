@@ -282,6 +282,19 @@ func TestNewControlAPIs(t *testing.T) {
 	if wUp.Code != http.StatusOK {
 		t.Errorf("/api/upstream/detect expected 200, got %d", wUp.Code)
 	}
+	// 1b. /api/upstream/status
+	wUs := testRoute(http.MethodGet, "/api/upstream/status", "")
+	if wUs.Code != http.StatusOK {
+		t.Fatalf("/api/upstream/status expected 200, got %d", wUs.Code)
+	}
+	var us map[string]interface{}
+	if err := json.Unmarshal(wUs.Body.Bytes(), &us); err != nil {
+		t.Fatalf("decode upstream status: %v", err)
+	}
+	statusObj, ok := us["status"].(map[string]interface{})
+	if !ok || statusObj["active"] != "primary" {
+		t.Fatalf("expected primary status, got %v", us["status"])
+	}
 
 	// 2. /api/cache/detect-acgpower
 	wAcg := testRoute(http.MethodGet, "/api/cache/detect-acgpower", "")
@@ -1238,5 +1251,26 @@ func TestHandleLatencyTestWithMockServer(t *testing.T) {
 	_ = json.Unmarshal(wUnreach.Body.Bytes(), &unreachRes)
 	if ok, _ := unreachRes["ok"].(bool); ok {
 		t.Errorf("expected ok=false for unreachable proxy, got %v", unreachRes)
+	}
+}
+
+
+func TestControlRejectsInvalidBackupUpstream(t *testing.T) {
+	d := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(d, "config.json"))
+	cacheMgr := cache.NewManager(d, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/config/apply", strings.NewReader(`{"backup_upstream_proxy":"ftp://127.0.0.1:21"}`))
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+	if cfgMgr.Get().BackupUpstreamProxy != "" {
+		t.Fatalf("invalid proxy committed: %q", cfgMgr.Get().BackupUpstreamProxy)
 	}
 }

@@ -35,160 +35,284 @@ func (b *bufferedConn) Read(p []byte) (int, error) {
 	return b.r.Read(p)
 }
 
+type upstreamClients struct {
+	api   *http.Client
+	asset *http.Client
+	proxy string
+}
+
+func (u *upstreamClients) closeIdle() {
+	if u == nil { return }
+	if u.api != nil {
+		if tr, ok := u.api.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
+	}
+	if u.asset != nil {
+		if tr, ok := u.asset.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
+	}
+}
+
 type ProxyServer struct {
-	cfgMgr      *config.Manager
-	certMgr     *cert.Manager
-	cacheMgr    *cache.Manager
-	stats       *telemetry.Stats
-	prefetch    *PrefetchEngine
-	listener    net.Listener
-	listenerGen uint64
-	serveLoopWg sync.WaitGroup
-	mu          sync.RWMutex
-	connMu      sync.Mutex
-	activeConns map[net.Conn]struct{}
-	apiClient   atomic.Pointer[http.Client]
+	cfgMgr        *config.Manager
+	certMgr       *cert.Manager
+	cacheMgr      *cache.Manager
+	stats         *telemetry.Stats
+	prefetch      *PrefetchEngine
+	listener      net.Listener
+	listenerGen   uint64
+	serveLoopWg   sync.WaitGroup
+	mu            sync.RWMutex
+	connMu        sync.Mutex
+	activeConns   map[net.Conn]struct{}
+	apiClient     atomic.Pointer[http.Client]
 	assetClient   atomic.Pointer[http.Client]
+	primaryClient atomic.Pointer[upstreamClients]
+	backupClient  atomic.Pointer[upstreamClients]
 	upstreamProxy atomic.Pointer[string]
-	running     bool
-	closedChan  chan struct{}
+	failover      *failoverManager
+	running       bool
+	closedChan    chan struct{}
 }
 
 func NewProxyServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cache.Manager, stats *telemetry.Stats) *ProxyServer {
 	s := &ProxyServer{
-		cfgMgr:     cfgMgr,
-		certMgr:    certMgr,
-		cacheMgr:   cacheMgr,
-		stats:      stats,
-		closedChan: make(chan struct{}),
-		activeConns: make(map[net.Conn]struct{}),
+		cfgMgr: cfgMgr, certMgr: certMgr, cacheMgr: cacheMgr, stats: stats,
+		closedChan: make(chan struct{}), activeConns: make(map[net.Conn]struct{}), failover: newFailoverManager(),
 	}
 	s.prefetch = newPrefetchEngine(s)
 	initialCfg := cfgMgr.Get()
 	s.updateClients(&initialCfg)
-	cfgMgr.OnUpdate(func(c *config.Config) {
-		s.updateClients(c)
-	})
+	cfgMgr.OnUpdate(func(c *config.Config) { s.updateClients(c) })
 	return s
+}
+
+func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	var dialFunc func(context.Context, string, string) (net.Conn, error)
+	normalized := strings.TrimSpace(proxyURL)
+	if strings.EqualFold(normalized, "direct") {
+		normalized = ""
+	} else if normalized != "" {
+		if u, err := url.Parse(normalized); err == nil {
+			switch strings.ToLower(u.Scheme) {
+			case "http", "https":
+				proxyFunc = http.ProxyURL(u)
+			case "socks5", "socks5h":
+				ph, pp := u.Hostname(), u.Port()
+				if pp == "" { pp = "1080" }
+				pa := net.JoinHostPort(ph, pp)
+				user, pass := "", ""
+				if u.User != nil { user = u.User.Username(); pass, _ = u.User.Password() }
+				dialFunc = func(ctx context.Context, network, target string) (net.Conn, error) {
+					t := 10 * time.Second
+					if d, ok := ctx.Deadline(); ok {
+						r := time.Until(d)
+						if r <= 0 { return nil, ctx.Err() }
+						if r < t { t = r }
+					}
+					if err := ctx.Err(); err != nil { return nil, err }
+					conn, err := dialSOCKS5(pa, target, user, pass, t)
+					if err != nil { return nil, err }
+					if err := ctx.Err(); err != nil { _ = conn.Close(); return nil, err }
+					return conn, nil
+				}
+			}
+		}
+	}
+
+	apiMaxConn, apiMaxIdle := c.APIMaxConnections, c.APIMaxKeepalive
+	if apiMaxConn <= 0 { apiMaxConn = 16 }
+	if apiMaxIdle <= 0 { apiMaxIdle = 4 }
+	assetMaxConn, assetMaxIdle := c.AssetMaxConnections, c.AssetMaxKeepalive
+	if assetMaxConn <= 0 { assetMaxConn = 32 }
+	if assetMaxIdle <= 0 { assetMaxIdle = 16 }
+	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 15 * time.Second}
+
+	apiTr := &http.Transport{
+		Proxy: proxyFunc, DialContext: dialer.DialContext,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode},
+		MaxConnsPerHost: apiMaxConn, MaxIdleConns: apiMaxConn, MaxIdleConnsPerHost: apiMaxIdle,
+		IdleConnTimeout: time.Duration(c.APIKeepaliveExpiry * float64(time.Second)),
+		ForceAttemptHTTP2: false, DisableCompression: true,
+	}
+	assetTr := &http.Transport{
+		Proxy: proxyFunc, DialContext: dialer.DialContext,
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode},
+		MaxConnsPerHost: assetMaxConn, MaxIdleConns: assetMaxConn, MaxIdleConnsPerHost: assetMaxIdle,
+		IdleConnTimeout: time.Duration(c.AssetKeepaliveExpiry * float64(time.Second)),
+		ForceAttemptHTTP2: true, DisableCompression: true,
+	}
+	if dialFunc != nil {
+		apiTr.Proxy, apiTr.DialContext = nil, dialFunc
+		assetTr.Proxy, assetTr.DialContext = nil, dialFunc
+	}
+	return &upstreamClients{
+		api: &http.Client{Transport: apiTr, Timeout: 45 * time.Second},
+		asset: &http.Client{Transport: assetTr, Timeout: 45 * time.Second},
+		proxy: normalized,
+	}
 }
 
 func (s *ProxyServer) updateClients(c *config.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	oldPrimary, oldBackup := s.primaryClient.Load(), s.backupClient.Load()
 
-	oldAPI := s.apiClient.Load()
-	oldAsset := s.assetClient.Load()
+	primaryProxy := c.GetEffectiveUpstreamProxy()
+	if c.DirectMode { primaryProxy = "" }
+	backupProxy := strings.TrimSpace(c.BackupUpstreamProxy)
+	if c.DirectMode || !isSupportedFailoverProxy(backupProxy) { backupProxy = "" }
 
-	var proxyFunc func(*http.Request) (*url.URL, error)
-	effProxy := c.GetEffectiveUpstreamProxy()
-	if c.DirectMode {
-		effProxy = ""
+	newPrimary := buildUpstreamClients(c, primaryProxy)
+	var newBackup *upstreamClients
+	if backupProxy != "" { newBackup = buildUpstreamClients(c, backupProxy) }
+
+	s.primaryClient.Store(newPrimary)
+	s.backupClient.Store(newBackup)
+	s.failover.configure(
+		c.EnableUpstreamFailover, newBackup != nil,
+		time.Duration(c.UpstreamFailoverThresholdMS)*time.Millisecond,
+		c.UpstreamFailoverConsecutiveFailures,
+		time.Duration(c.UpstreamFailoverCooldownSeconds)*time.Second,
+		c.UpstreamFailoverAutoRecover,
+	)
+	s.activateRouteLocked(s.failover.activeRoute())
+
+	if oldPrimary != nil { oldPrimary.closeIdle() }
+	if oldBackup != nil && oldBackup != newBackup { oldBackup.closeIdle() }
+}
+
+func isSupportedFailoverProxy(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if strings.EqualFold(raw, "direct") { return true }
+	if raw == "" { return false }
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" { return false }
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "socks5", "socks5h":
+		return true
+	default:
+		return false
 	}
-	if effProxy != "" {
-		if u, err := url.Parse(effProxy); err == nil {
-			proxyFunc = http.ProxyURL(u)
+}
+
+func (s *ProxyServer) activateRouteLocked(route failoverRoute) {
+	pair := s.primaryClient.Load()
+	activeProxy := ""
+	if route == failoverRouteBackup {
+		if backup := s.backupClient.Load(); backup != nil {
+			pair, activeProxy = backup, backup.proxy
+		} else {
+			route = failoverRoutePrimary
 		}
 	}
+	if route == failoverRoutePrimary && pair != nil { activeProxy = pair.proxy }
+	if pair == nil { return }
+	s.apiClient.Store(pair.api)
+	s.assetClient.Store(pair.asset)
+	v := activeProxy
+	s.upstreamProxy.Store(&v)
+}
 
-	apiMaxConn := c.APIMaxConnections
-	if apiMaxConn <= 0 {
-		apiMaxConn = 16
+func (s *ProxyServer) activateRoute(route failoverRoute) {
+	s.mu.Lock()
+	oldAPI, oldAsset := s.apiClient.Load(), s.assetClient.Load()
+	s.activateRouteLocked(route)
+	newAPI, newAsset := s.apiClient.Load(), s.assetClient.Load()
+	s.mu.Unlock()
+	if oldAPI != nil && oldAPI != newAPI {
+		if tr, ok := oldAPI.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
 	}
-	apiMaxIdle := c.APIMaxKeepalive
-	if apiMaxIdle <= 0 {
-		apiMaxIdle = 4
+	if oldAsset != nil && oldAsset != newAsset {
+		if tr, ok := oldAsset.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
 	}
+}
 
-	assetMaxConn := c.AssetMaxConnections
-	if assetMaxConn <= 0 {
-		assetMaxConn = 32
-	}
-	assetMaxIdle := c.AssetMaxKeepalive
-	if assetMaxIdle <= 0 {
-		assetMaxIdle = 16
-	}
-
-	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 15 * time.Second,
-	}
-
-	apiTransport := &http.Transport{
-		Proxy:       proxyFunc,
-		DialContext: dialer.DialContext,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode,
-		},
-		MaxConnsPerHost:     apiMaxConn,
-		MaxIdleConns:        apiMaxConn,
-		MaxIdleConnsPerHost: apiMaxIdle,
-		IdleConnTimeout:     time.Duration(c.APIKeepaliveExpiry * float64(time.Second)),
-		DisableKeepAlives:   false,
-		ForceAttemptHTTP2:   false, // Dedicated HTTP/1.1 pool for dynamic APIs
-		DisableCompression: true,  // P0: Business semantic transparency
-	}
-	newAPI := &http.Client{
-		Transport: apiTransport,
-		Timeout:   45 * time.Second,
-	}
-	s.apiClient.Store(newAPI)
-
-	assetTransport := &http.Transport{
-		Proxy:       proxyFunc,
-		DialContext: dialer.DialContext,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode,
-		},
-		MaxConnsPerHost:     assetMaxConn,
-		MaxIdleConns:        assetMaxConn,
-		MaxIdleConnsPerHost: assetMaxIdle,
-		IdleConnTimeout:     time.Duration(c.AssetKeepaliveExpiry * float64(time.Second)),
-		DisableKeepAlives:   false,
-		ForceAttemptHTTP2:   true, // HTTP/2 multiplexed for Akamai CDN
-		DisableCompression: true,  // P0: Byte-for-byte fidelity
-	}
-	newAsset := &http.Client{
-		Transport: assetTransport,
-		Timeout:   45 * time.Second,
-	}
-	s.assetClient.Store(newAsset)
-
-	if oldAPI != nil {
-		if tr, ok := oldAPI.Transport.(*http.Transport); ok {
-			tr.CloseIdleConnections()
+func (s *ProxyServer) getRouteForRequest(method string) (failoverRoute, bool) {
+	if s.failover == nil { return failoverRoutePrimary, false }
+	return s.failover.routeForRequest(method == http.MethodGet || method == http.MethodHead, time.Now())
+}
+func (s *ProxyServer) getAPIClient() *http.Client { return s.apiClient.Load() }
+func (s *ProxyServer) getAssetClient() *http.Client { return s.assetClient.Load() }
+func (s *ProxyServer) getAPIClientForRequest(method string) (*http.Client, failoverRoute, bool) {
+	r, trial := s.getRouteForRequest(method)
+	if r == failoverRouteBackup {
+		if pair := s.backupClient.Load(); pair != nil {
+			return pair.api, r, trial
 		}
 	}
-		if oldAsset != nil {
-		if tr, ok := oldAsset.Transport.(*http.Transport); ok {
-			tr.CloseIdleConnections()
+	return s.apiClient.Load(), r, trial
+}
+func (s *ProxyServer) observeUpstream(r failoverRoute, trial bool, elapsed time.Duration, err error) {
+	if s.failover == nil { return }
+	if tr := s.failover.observe(r, trial, elapsed, err, time.Now()); tr != nil { s.activateRoute(tr.to); s.logFailoverTransition(tr) }
+}
+func (s *ProxyServer) logFailoverTransition(t *failoverTransition) {
+	if t != nil && s.stats != nil { s.stats.Log("INFO", fmt.Sprintf("[UPSTREAM] %s -> %s (%s)", t.from.String(), t.to.String(), t.reason)) }
+}
+
+type inFlightTracker struct {
+	stopOnce sync.Once
+	timer    *time.Timer
+	fired    atomic.Bool
+	start    time.Time
+}
+
+func (s *ProxyServer) startInFlightWatch(route failoverRoute, trial bool) *inFlightTracker {
+	if s.failover == nil || !s.failover.isEnabled() || route != failoverRoutePrimary {
+		return nil
+	}
+	threshold := s.failover.getThreshold()
+	if threshold <= 0 {
+		return nil
+	}
+
+	tracker := &inFlightTracker{start: time.Now()}
+	tracker.timer = time.AfterFunc(threshold, func() {
+		tracker.fired.Store(true)
+		s.observeInFlightTimeout(route, trial)
+	})
+	return tracker
+}
+
+func (s *ProxyServer) observeInFlightTimeout(route failoverRoute, trial bool) {
+	if s.failover == nil { return }
+	if tr := s.failover.observeInFlightTimeout(route, trial, time.Now()); tr != nil {
+		s.activateRoute(tr.to)
+		s.logFailoverTransition(tr)
+	}
+}
+
+func (s *ProxyServer) finishInFlightWatch(tracker *inFlightTracker, route failoverRoute, trial bool, elapsed time.Duration, err error) {
+	if tracker == nil {
+		s.observeUpstream(route, trial, elapsed, err)
+		return
+	}
+	stopped := false
+	tracker.stopOnce.Do(func() {
+		if tracker.timer != nil {
+			stopped = tracker.timer.Stop()
 		}
+	})
+	if stopped {
+		s.observeUpstream(route, trial, elapsed, err)
+		return
 	}
-	resolvedProxy := effProxy
-	s.upstreamProxy.Store(&resolvedProxy)
-}
-
-func (s *ProxyServer) getAPIClient() *http.Client {
-	return s.apiClient.Load()
-}
-
-func (s *ProxyServer) getAssetClient() *http.Client {
-	return s.assetClient.Load()
-}
-
-// GetEffectiveUpstreamProxy returns the already-resolved upstream proxy used by
-// the current transport clients. It avoids re-probing local proxy ports per
-// passthrough request or status poll when the configuration is set to "auto".
-func (s *ProxyServer) GetEffectiveUpstreamProxy() string {
-	p := s.upstreamProxy.Load()
-	if p == nil {
-		return ""
+	// The watchdog already fired and recorded a soft latency failure for this
+	// request. A clean completion (err == nil) must NOT be re-observed to avoid
+	// double counting. A genuine hard error, however, is an immediate-failover
+	// trigger and must NOT be swallowed: it still reaches observe(), whose
+	// route != active guard makes this call idempotent when the watchdog
+	// already switched the route to backup.
+	if err != nil {
+		s.observeUpstream(route, trial, elapsed, err)
 	}
-	return *p
+}
+func (s *ProxyServer) GetEffectiveUpstreamProxy() string { if p:=s.upstreamProxy.Load(); p!=nil { return *p }; return "" }
+func (s *ProxyServer) GetUpstreamStatus() UpstreamRuntimeStatus {
+	if s.failover == nil { return UpstreamRuntimeStatus{Active:"primary"} }
+	return s.failover.status()
 }
 
-// tracedRequest attaches a non-intrusive httptrace hook that records real
-// connection reuse for telemetry. It never mutates the request or its bytes.
-// The negotiated protocol is recorded separately from the response.
 func (s *ProxyServer) telemetryEnabled() bool {
 	return s.cfgMgr != nil && s.cfgMgr.Get().EnableAPITelemetry
 }
@@ -1008,7 +1132,8 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	// Strict P0 Safe Retry Rule:
 	// Only read-only idempotent GET requests to whitelisted paths may be retried on connection drop.
 	// All POST/PUT/DELETE requests have maxAttempts = 1 (strictly zero retry).
-	isRetryable := (req.Method == http.MethodGet && isRetryableAPI(cleanPath))
+	isGet := (req.Method == http.MethodGet || req.Method == http.MethodHead)
+	isRetryable := (isGet && isRetryableAPI(cleanPath))
 	maxAttempts := 1
 	if isRetryable {
 		maxAttempts = 2
@@ -1017,6 +1142,8 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	var resp *http.Response
 	var fetchErr error
 	var reqReused bool
+	apiClient, route, trial := s.getAPIClientForRequest(req.Method)
+	var lastAttemptElapsed time.Duration
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		reqCtx := req.Context()
@@ -1045,19 +1172,22 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		}
 		upReq.Host = req.Host
 
-		resp, fetchErr = s.getAPIClient().Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
+		var tracker *inFlightTracker
+		if isGet {
+			tracker = s.startInFlightWatch(route, trial)
+		}
+		attemptStart := time.Now()
+		resp, fetchErr = apiClient.Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
 			reqReused = reused
 		}))
-		if fetchErr == nil {
-			break
+		lastAttemptElapsed = time.Since(attemptStart)
+		if isGet {
+			s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, fetchErr)
 		}
-		if attempt+1 < maxAttempts && isConnectionDropError(fetchErr) {
-			s.stats.IncAPIRetry()
-			continue
-		}
+		if fetchErr == nil { break }
+		if attempt+1 < maxAttempts && isConnectionDropError(fetchErr) { s.stats.IncAPIRetry(); continue }
 		break
 	}
-
 	if fetchErr != nil || resp == nil {
 		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
@@ -1066,6 +1196,9 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 
 	respBytes, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
+		if isGet {
+			s.observeUpstream(route, trial, lastAttemptElapsed, readErr)
+		}
 		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}
@@ -1314,12 +1447,22 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 		}
 		upReq.Host = targetHost
 
+		route, trial := s.getRouteForRequest(req.Method)
+		assetClient := s.getAssetClient()
+		if route == failoverRouteBackup {
+			if pair := s.backupClient.Load(); pair != nil {
+				assetClient = pair.asset
+			}
+		}
+		tracker := s.startInFlightWatch(route, trial)
 		fetchStart := time.Now()
-		resp, err := s.getAssetClient().Do(s.tracedRequest(upReq))
+		resp, err := assetClient.Do(s.tracedRequest(upReq))
+		fetchElapsed := time.Since(fetchStart)
 		if err == nil && resp != nil && s.telemetryEnabled() {
 			s.stats.RecordProtocol(resp.Proto)
-			s.stats.RecordLatency(float64(time.Since(fetchStart).Milliseconds()))
+			s.stats.RecordLatency(float64(fetchElapsed.Milliseconds()))
 		}
+		s.finishInFlightWatch(tracker, route, trial, fetchElapsed, err)
 		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -1442,7 +1585,8 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	// Strict P0 Safe Retry Rule:
 	// Only read-only idempotent GET requests to whitelisted paths may be retried on connection drop.
 	// All POST/PUT/DELETE requests have maxAttempts = 1 (strictly zero retry).
-	isRetryable := (req.Method == http.MethodGet && isRetryableAPI(cleanPath))
+	isGet := (req.Method == http.MethodGet || req.Method == http.MethodHead)
+	isRetryable := (isGet && isRetryableAPI(cleanPath))
 	maxAttempts := 1
 	if isRetryable {
 		maxAttempts = 2
@@ -1452,6 +1596,8 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	var resp *http.Response
 	var fetchErr error
 	var reqReused bool
+	apiClient, route, trial := s.getAPIClientForRequest(req.Method)
+	var lastAttemptElapsed time.Duration
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		reqCtx := req.Context()
@@ -1480,9 +1626,19 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		}
 		upReq.Host = targetHost
 
-		resp, fetchErr = s.getAPIClient().Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
+		var tracker *inFlightTracker
+		if isGet {
+			tracker = s.startInFlightWatch(route, trial)
+		}
+		attemptStart := time.Now()
+		resp, fetchErr = apiClient.Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
 			reqReused = reused
 		}))
+		lastAttemptElapsed = time.Since(attemptStart)
+		if isGet {
+			s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, fetchErr)
+		}
+
 		if fetchErr == nil {
 			break
 		}
@@ -1501,6 +1657,9 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 
 	respBytes, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
+		if isGet {
+			s.observeUpstream(route, trial, lastAttemptElapsed, readErr)
+		}
 		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}

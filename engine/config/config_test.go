@@ -208,3 +208,53 @@ func TestConfigManager_PartialConfigPreservesDefaults(t *testing.T) {
 		t.Fatalf("partial config reset defaults: %+v", cfg)
 	}
 }
+
+
+func TestUpstreamFailoverDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.EnableUpstreamFailover {
+		t.Fatal("upstream failover must be disabled by default")
+	}
+	if cfg.BackupUpstreamProxy != "" {
+		t.Fatalf("backup upstream default %q", cfg.BackupUpstreamProxy)
+	}
+	if cfg.UpstreamFailoverThresholdMS != 2000 {
+		t.Fatalf("threshold default %d", cfg.UpstreamFailoverThresholdMS)
+	}
+	if cfg.UpstreamFailoverConsecutiveFailures != 3 {
+		t.Fatalf("consecutive default %d", cfg.UpstreamFailoverConsecutiveFailures)
+	}
+	if cfg.UpstreamFailoverCooldownSeconds != 60 {
+		t.Fatalf("cooldown default %d", cfg.UpstreamFailoverCooldownSeconds)
+	}
+	if !cfg.UpstreamFailoverAutoRecover {
+		t.Fatal("auto recovery should default to true")
+	}
+}
+
+func TestUpstreamFailoverConfigPersistsAndNormalizes(t *testing.T) {
+	d := t.TempDir()
+	path := filepath.Join(d, "config.json")
+	mgr := NewManager(path)
+	mgr.Update(func(c *Config) {
+		c.BackupUpstreamProxy = "socks5://127.0.0.1:10808"
+		c.EnableUpstreamFailover = true
+		c.UpstreamFailoverThresholdMS = 999999
+		c.UpstreamFailoverConsecutiveFailures = 99
+		c.UpstreamFailoverCooldownSeconds = 0
+		c.UpstreamFailoverAutoRecover = false
+	})
+	got := mgr.Get()
+	if got.UpstreamFailoverThresholdMS != 60000 || got.UpstreamFailoverConsecutiveFailures != 10 || got.UpstreamFailoverCooldownSeconds != 60 {
+		t.Fatalf("normalized config: %+v", got)
+	}
+	loaded := NewManager(path).Get()
+	if loaded.BackupUpstreamProxy != got.BackupUpstreamProxy ||
+		loaded.EnableUpstreamFailover != got.EnableUpstreamFailover ||
+		loaded.UpstreamFailoverThresholdMS != got.UpstreamFailoverThresholdMS ||
+		loaded.UpstreamFailoverConsecutiveFailures != got.UpstreamFailoverConsecutiveFailures ||
+		loaded.UpstreamFailoverCooldownSeconds != got.UpstreamFailoverCooldownSeconds ||
+		loaded.UpstreamFailoverAutoRecover != got.UpstreamFailoverAutoRecover {
+		t.Fatalf("persisted mismatch: got=%+v loaded=%+v", got, loaded)
+	}
+}
