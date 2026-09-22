@@ -38,6 +38,7 @@ import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { isNewerVersion } from './utils/version'
+import { shouldAutoOpenCaGuide } from './utils/caGuide'
 import {
   CheckCircle2,
   Info,
@@ -224,6 +225,19 @@ export const App: React.FC = () => {
   const [isQuitModalOpen, setIsQuitModalOpen] = useState<boolean>(false)
   const [quitting, setQuitting] = useState<boolean>(false)
   const [isTerminated, setIsTerminated] = useState<boolean>(false)
+
+  // First-launch Root CA install guide (restores the v1.6 behavior): when the
+  // runtime status first authoritatively reports the CA as not installed, auto
+  // open the cert guide modal exactly once per app launch. An already-trusted
+  // CA never triggers the prompt, and closing without installing does not
+  // re-prompt within the same launch.
+  const caGuidePromptedRef = useRef(false)
+  useEffect(() => {
+    if (shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
+      caGuidePromptedRef.current = true
+      setCaModalAction('install')
+    }
+  }, [status])
 
   const handleQuitApp = async () => {
     setQuitting(true)

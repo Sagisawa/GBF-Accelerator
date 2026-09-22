@@ -1696,10 +1696,12 @@ func (c *ControlServer) handleCertStatus(w http.ResponseWriter, req *http.Reques
 	installed := false
 	sha256 := ""
 	sha1 := ""
+	store := ""
 	if c.certMgr != nil {
 		installed = c.certMgr.IsInstalled()
 		sha256 = c.certMgr.GetFingerprintSHA256()
 		sha1 = c.certMgr.GetFingerprintSHA1()
+		store = c.certMgr.GetInstallStore()
 	}
 	legacy := cert.CheckLegacyLeakedCAInstalled()
 
@@ -1708,6 +1710,7 @@ func (c *ControlServer) handleCertStatus(w http.ResponseWriter, req *http.Reques
 		"installed":               installed,
 		"sha256":                  sha256,
 		"sha1":                    sha1,
+		"store":                   store,
 		"legacy_leaked_installed": legacy,
 	})
 }
@@ -1719,6 +1722,11 @@ func (c *ControlServer) handleCertInstall(w http.ResponseWriter, req *http.Reque
 	}
 	err := c.certMgr.Install("")
 	if err != nil {
+		// Persist the full install failure (including certutil output) to the
+		// program log for diagnostics, while returning the same detail in JSON.
+		if c.stats != nil {
+			c.stats.Log("ERROR", fmt.Sprintf("[CERT] Root CA install failed: %v", err))
+		}
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
 		return
 	}

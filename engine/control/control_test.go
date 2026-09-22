@@ -1274,3 +1274,95 @@ func TestControlRejectsInvalidBackupUpstream(t *testing.T) {
 		t.Fatalf("invalid proxy committed: %q", cfgMgr.Get().BackupUpstreamProxy)
 	}
 }
+
+func TestCertStatusDiagnostics(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))
+	if err != nil {
+		t.Fatalf("cert.NewManager failed: %v", err)
+	}
+
+	ctrl := NewControlServer(cfgMgr, certMgr, cacheMgr, nil, stats)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/cert/status", nil)
+	r.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("/api/cert/status expected 200, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode cert status: %v", err)
+	}
+
+	sha1, ok := body["sha1"].(string)
+	if !ok || len(sha1) != 40 {
+		t.Errorf("expected 40-char sha1 thumbprint, got %v", body["sha1"])
+	}
+	sha256, ok := body["sha256"].(string)
+	if !ok || len(strings.Split(sha256, ":")) != 32 {
+		t.Errorf("expected colon-separated sha256 fingerprint, got %v", body["sha256"])
+	}
+	if _, ok := body["installed"].(bool); !ok {
+		t.Errorf("expected boolean installed field, got %v", body["installed"])
+	}
+	store, ok := body["store"].(string)
+	if !ok {
+		t.Fatalf("expected string store field, got %v", body["store"])
+	}
+	// Freshly generated CA is not trusted by the system yet.
+	if store != "" {
+		t.Errorf("expected empty store for non-installed CA, got %q", store)
+	}
+	if installed, _ := body["installed"].(bool); installed {
+		t.Errorf("expected installed=false for freshly generated CA")
+	}
+	if want := certMgr.GetFingerprintSHA1(); sha1 != want {
+		t.Errorf("sha1 mismatch: got %q, want %q", sha1, want)
+	}
+	if want := certMgr.GetFingerprintSHA256(); sha256 != want {
+		t.Errorf("sha256 mismatch: got %q, want %q", sha256, want)
+	}
+}
+
+func TestCertInstallErrorExposure(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	// nil certMgr forces the install failure path.
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	r := httptest.NewRequest(http.MethodPost, "/api/cert/install", nil)
+	r.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, r)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode install response: %v", err)
+	}
+	if ok, _ := body["ok"].(bool); ok {
+		t.Errorf("expected ok=false on install failure, got %v", body["ok"])
+	}
+	errStr, ok := body["error"].(string)
+	if !ok || errStr == "" {
+		t.Fatalf("expected non-empty specific error in JSON, got %v", body["error"])
+	}
+	if !strings.Contains(errStr, "certificate manager uninitialized") {
+		t.Errorf("expected specific error detail preserved, got %q", errStr)
+	}
+}
+
