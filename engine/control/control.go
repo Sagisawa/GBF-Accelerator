@@ -859,9 +859,9 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		if err := c.cfgMgr.Commit(oldCandidate); err != nil {
 			errs = append(errs, fmt.Sprintf("config rollback: %v", err))
 		} else {
-			// Config callbacks restore connection/runtime switches, but CacheDir and
-			// RAM limit are managed explicitly by this handler and therefore must be
-			// restored here as well.
+			// Config callbacks restore connection/runtime switches, but CacheDir,
+			// RAM limit, and the optional Tarou bridge state are managed explicitly
+			// by this handler and therefore must be restored here as well.
 			if c.cacheMgr != nil {
 				if candidate.CacheDir != oldCandidate.CacheDir {
 					c.cacheMgr.SetCacheBase(oldCandidate.CacheDir)
@@ -869,6 +869,9 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 				if candidate.RAMCacheMaxMB != oldCandidate.RAMCacheMaxMB {
 					c.cacheMgr.SetRAMLimit(oldCandidate.RAMCacheMaxMB)
 				}
+			}
+			if c.tarouMgr != nil && candidate.EnableTarouIntegration != oldCandidate.EnableTarouIntegration {
+				c.tarouMgr.SetEnabled(oldCandidate.EnableTarouIntegration)
 			}
 		}
 		if len(errs) > 0 {
