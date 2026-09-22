@@ -85,6 +85,12 @@ func (m *failoverManager) configure(enabled, backupConfigured bool, threshold ti
 	}
 }
 
+func (m *failoverManager) thresholdDuration() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.threshold
+}
+
 func (m *failoverManager) activeRoute() failoverRoute {
 	m.mu.Lock()
 	defer m.mu.Unlock()
