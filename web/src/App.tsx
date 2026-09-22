@@ -566,9 +566,9 @@ export const App: React.FC = () => {
       return
     }
 
-    const threshold = Number.parseInt(failoverThresholdInput.trim(), 10)
-    const consecutive = Number.parseInt(failoverConsecutiveInput.trim(), 10)
-    const cooldown = Number.parseInt(failoverCooldownInput.trim(), 10)
+    const threshold = Number(failoverThresholdInput.trim())
+    const consecutive = Number(failoverConsecutiveInput.trim())
+    const cooldown = Number(failoverCooldownInput.trim())
 
     if (!Number.isInteger(threshold) || threshold < 0 || threshold > 60000) {
       showToast('延迟阈值须为 0 到 60000 ms', 'error')
