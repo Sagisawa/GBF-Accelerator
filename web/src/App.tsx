@@ -1344,7 +1344,7 @@ export const App: React.FC = () => {
                         </strong>
                       </span>
                       <span className="font-mono text-slate-500">
-                        连续异常 {upstreamRuntime?.failure_count ?? 0} / {upstreamRuntime?.consecutive_failures ?? Number.parseInt(failoverConsecutiveInput, 10) || 3}
+                        连续异常 {upstreamRuntime?.failure_count ?? 0} / {upstreamRuntime?.consecutive_failures ?? (Number.parseInt(failoverConsecutiveInput, 10) || 3)}
                       </span>
                     </div>
                     <div className="mt-1.5 flex items-center justify-between gap-2 flex-wrap">
