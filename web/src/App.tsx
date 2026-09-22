@@ -904,8 +904,6 @@ export const App: React.FC = () => {
   const isAutoPac = Boolean(config.auto_system_proxy ?? config.auto_pac ?? false)
   const isAutoStart = Boolean(config.auto_start ?? false)
   const isAutoUpdate = Boolean(config.auto_check_update ?? true)
-  const isFailoverEnabled = Boolean(config.enable_upstream_failover ?? failoverEnabledInput)
-  const backupUpstreamConfigured = Boolean(String(config.backup_upstream_proxy ?? backupUpstreamInput).trim())
   const isRamCache = Boolean(config.enable_ram_cache ?? true)
   const isBrowserCache = Boolean(config.enable_browser_cache ?? true)
   const isAutoRepair = Boolean(config.enable_auto_repair ?? true)
