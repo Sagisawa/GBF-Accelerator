@@ -269,14 +269,11 @@ func isAllowedTarouOrigin(path, origin string) bool {
 	if origin == "" || isAllowedOrigin(origin) {
 		return true
 	}
-	if !strings.HasPrefix(path, "/api/integrations/tarou/") {
-		return false
-	}
 	u, err := url.Parse(origin)
-	if err != nil {
+	if err != nil || !strings.EqualFold(u.Scheme, "chrome-extension") || u.Hostname() == "" {
 		return false
 	}
-	return strings.EqualFold(u.Scheme, "chrome-extension") && u.Hostname() != ""
+	return path == "/api/integrations/tarou/status" || path == "/api/integrations/tarou/heartbeat"
 }
 
 func isAllowedControlHost(reqHost string, allowLAN bool) bool {
@@ -306,7 +303,7 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
- 	path := req.URL.Path
+	path := req.URL.Path
 	origin := req.Header.Get("Origin")
 	if origin != "" {
 		if !isAllowedTarouOrigin(path, origin) {
@@ -335,7 +332,7 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	}
 
 	switch path {
- 	case "/api/status":
+	case "/api/status":
 		if req.Method == http.MethodGet {
 			c.handleStatus(w, req)
 			return
