@@ -614,9 +614,10 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 		m.ramCache.Set(ramKey, item)
 	}
 
-	m.missingMu.Lock()
-	delete(m.missingCache, ramKey)
-	m.missingMu.Unlock()
+	shard := m.missingShard(ramKey)
+	shard.mu.Lock()
+	delete(shard.items, ramKey)
+	shard.mu.Unlock()
 
 	return item, cleanKey, filePath, generation, true
 }
