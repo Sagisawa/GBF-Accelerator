@@ -12,6 +12,8 @@ export interface UpstreamSelectModalProps {
   candidates: ProxyCandidate[]
   currentProxy?: string
   onSelect: (candidate: ProxyCandidate) => Promise<void>
+  title?: React.ReactNode
+  subtitle?: string
 }
 
 interface LatencyState {
@@ -30,6 +32,8 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
   candidates,
   currentProxy,
   onSelect,
+  title,
+  subtitle,
 }) => {
   const [selectedUrl, setSelectedUrl] = useState<string>('')
   const [submitting, setSubmitting] = useState(false)
@@ -248,12 +252,14 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
       isOpen={isOpen}
       onClose={onClose}
       title={
-        <div className="flex items-center gap-2">
-          <Network className="w-4 h-4 text-blue-600" />
-          <span>选择上游网络代理</span>
-        </div>
+        title || (
+          <div className="flex items-center gap-2">
+            <Network className="w-4 h-4 text-blue-600" />
+            <span>选择上游网络代理</span>
+          </div>
+        )
       }
-      subtitle={`检测到本机有 ${candidates.length} 个活跃代理端口，请选择要使用的服务`}
+      subtitle={subtitle || `检测到本机有 ${candidates.length} 个活跃代理端口，请选择要使用的服务`}
       maxWidth="max-w-lg"
     >
       <div className="space-y-3">

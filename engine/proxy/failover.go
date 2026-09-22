@@ -108,7 +108,9 @@ func (m *failoverManager) observe(route failoverRoute, trial bool, elapsed time.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	bad := err != nil || (m.threshold > 0 && elapsed >= m.threshold)
+	hardError := err != nil
+	softError := !hardError && m.threshold > 0 && elapsed >= m.threshold
+	bad := hardError || softError
 
 	if trial {
 		if m.active != failoverRouteBackup || !m.trialInFlight { return nil }
@@ -133,14 +135,20 @@ func (m *failoverManager) observe(route failoverRoute, trial bool, elapsed time.
 		return nil
 	}
 
-	m.failureCount++
 	m.lastFailureAt = now
-	if m.failureCount < m.consecutive { return nil }
+
+	// Hard errors (connection refused, TCP timeout) bypass the consecutive
+	// counter and trigger immediate failover. Soft errors (latency threshold
+	// exceeded) still accumulate against the configured consecutive limit.
+	if !hardError {
+		m.failureCount++
+		if m.failureCount < m.consecutive { return nil }
+	}
 
 	from := m.active
 	m.active, m.failureCount = failoverRouteBackup, 0
 	m.lastSwitchAt = now
-	if err != nil {
+	if hardError {
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			m.reason = "timeout"
@@ -150,6 +158,45 @@ func (m *failoverManager) observe(route failoverRoute, trial bool, elapsed time.
 	} else {
 		m.reason = "latency_threshold"
 	}
+	return &failoverTransition{from: from, to: m.active, reason: m.reason}
+}
+
+func (m *failoverManager) isEnabled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.enabled && m.backupConfigured
+}
+
+func (m *failoverManager) getThreshold() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.threshold
+}
+
+func (m *failoverManager) observeInFlightTimeout(route failoverRoute, trial bool, now time.Time) *failoverTransition {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if trial {
+		if m.active != failoverRouteBackup || !m.trialInFlight { return nil }
+		m.trialInFlight = false
+		m.lastFailureAt, m.lastSwitchAt = now, now
+		m.reason = "primary_recovery_failed"
+		return nil
+	}
+
+	if !m.enabled || !m.backupConfigured || route != m.active || route != failoverRoutePrimary {
+		return nil
+	}
+
+	m.failureCount++
+	m.lastFailureAt = now
+	if m.failureCount < m.consecutive { return nil }
+
+	from := m.active
+	m.active, m.failureCount = failoverRouteBackup, 0
+	m.lastSwitchAt = now
+	m.reason = "latency_threshold"
 	return &failoverTransition{from: from, to: m.active, reason: m.reason}
 }
 

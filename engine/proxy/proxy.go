@@ -249,6 +249,54 @@ func (s *ProxyServer) observeUpstream(r failoverRoute, trial bool, elapsed time.
 func (s *ProxyServer) logFailoverTransition(t *failoverTransition) {
 	if t != nil && s.stats != nil { s.stats.Log("INFO", fmt.Sprintf("[UPSTREAM] %s -> %s (%s)", t.from.String(), t.to.String(), t.reason)) }
 }
+
+type inFlightTracker struct {
+	stopOnce sync.Once
+	timer    *time.Timer
+	fired    atomic.Bool
+	start    time.Time
+}
+
+func (s *ProxyServer) startInFlightWatch(route failoverRoute, trial bool) *inFlightTracker {
+	if s.failover == nil || !s.failover.isEnabled() || route != failoverRoutePrimary {
+		return nil
+	}
+	threshold := s.failover.getThreshold()
+	if threshold <= 0 {
+		return nil
+	}
+
+	tracker := &inFlightTracker{start: time.Now()}
+	tracker.timer = time.AfterFunc(threshold, func() {
+		tracker.fired.Store(true)
+		s.observeInFlightTimeout(route, trial)
+	})
+	return tracker
+}
+
+func (s *ProxyServer) observeInFlightTimeout(route failoverRoute, trial bool) {
+	if s.failover == nil { return }
+	if tr := s.failover.observeInFlightTimeout(route, trial, time.Now()); tr != nil {
+		s.activateRoute(tr.to)
+		s.logFailoverTransition(tr)
+	}
+}
+
+func (s *ProxyServer) finishInFlightWatch(tracker *inFlightTracker, route failoverRoute, trial bool, elapsed time.Duration, err error) {
+	if tracker == nil {
+		s.observeUpstream(route, trial, elapsed, err)
+		return
+	}
+	stopped := false
+	tracker.stopOnce.Do(func() {
+		if tracker.timer != nil {
+			stopped = tracker.timer.Stop()
+		}
+	})
+	if stopped {
+		s.observeUpstream(route, trial, elapsed, err)
+	}
+}
 func (s *ProxyServer) GetEffectiveUpstreamProxy() string { if p:=s.upstreamProxy.Load(); p!=nil { return *p }; return "" }
 func (s *ProxyServer) GetUpstreamStatus() UpstreamRuntimeStatus {
 	if s.failover == nil { return UpstreamRuntimeStatus{Active:"primary"} }
@@ -1074,7 +1122,8 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	// Strict P0 Safe Retry Rule:
 	// Only read-only idempotent GET requests to whitelisted paths may be retried on connection drop.
 	// All POST/PUT/DELETE requests have maxAttempts = 1 (strictly zero retry).
-	isRetryable := (req.Method == http.MethodGet && isRetryableAPI(cleanPath))
+	isGet := (req.Method == http.MethodGet || req.Method == http.MethodHead)
+	isRetryable := (isGet && isRetryableAPI(cleanPath))
 	maxAttempts := 1
 	if isRetryable {
 		maxAttempts = 2
@@ -1113,16 +1162,22 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		}
 		upReq.Host = req.Host
 
+		var tracker *inFlightTracker
+		if isGet {
+			tracker = s.startInFlightWatch(route, trial)
+		}
 		attemptStart := time.Now()
 		resp, fetchErr = apiClient.Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
 			reqReused = reused
 		}))
 		lastAttemptElapsed = time.Since(attemptStart)
+		if isGet {
+			s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, fetchErr)
+		}
 		if fetchErr == nil { break }
 		if attempt+1 < maxAttempts && isConnectionDropError(fetchErr) { s.stats.IncAPIRetry(); continue }
 		break
 	}
-	if req.Method == http.MethodGet && isRetryable { s.observeUpstream(route, trial, lastAttemptElapsed, fetchErr) }
 	if fetchErr != nil || resp == nil {
 		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
@@ -1131,7 +1186,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 
 	respBytes, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		if req.Method == http.MethodGet && isRetryable {
+		if isGet {
 			s.observeUpstream(route, trial, lastAttemptElapsed, readErr)
 		}
 		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
@@ -1389,6 +1444,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 				assetClient = pair.asset
 			}
 		}
+		tracker := s.startInFlightWatch(route, trial)
 		fetchStart := time.Now()
 		resp, err := assetClient.Do(s.tracedRequest(upReq))
 		fetchElapsed := time.Since(fetchStart)
@@ -1396,7 +1452,7 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 			s.stats.RecordProtocol(resp.Proto)
 			s.stats.RecordLatency(float64(fetchElapsed.Milliseconds()))
 		}
-		s.observeUpstream(route, trial, fetchElapsed, err)
+		s.finishInFlightWatch(tracker, route, trial, fetchElapsed, err)
 		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -1519,7 +1575,8 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	// Strict P0 Safe Retry Rule:
 	// Only read-only idempotent GET requests to whitelisted paths may be retried on connection drop.
 	// All POST/PUT/DELETE requests have maxAttempts = 1 (strictly zero retry).
-	isRetryable := (req.Method == http.MethodGet && isRetryableAPI(cleanPath))
+	isGet := (req.Method == http.MethodGet || req.Method == http.MethodHead)
+	isRetryable := (isGet && isRetryableAPI(cleanPath))
 	maxAttempts := 1
 	if isRetryable {
 		maxAttempts = 2
@@ -1559,11 +1616,18 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		}
 		upReq.Host = targetHost
 
+		var tracker *inFlightTracker
+		if isGet {
+			tracker = s.startInFlightWatch(route, trial)
+		}
 		attemptStart := time.Now()
 		resp, fetchErr = apiClient.Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
 			reqReused = reused
 		}))
 		lastAttemptElapsed = time.Since(attemptStart)
+		if isGet {
+			s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, fetchErr)
+		}
 
 		if fetchErr == nil {
 			break
@@ -1575,9 +1639,6 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		break
 	}
 
-	if req.Method == http.MethodGet && isRetryable {
-		s.observeUpstream(route, trial, lastAttemptElapsed, fetchErr)
-	}
 	if fetchErr != nil || resp == nil {
 		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
@@ -1586,7 +1647,9 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 
 	respBytes, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
-		if req.Method == http.MethodGet && isRetryable { s.observeUpstream(route, trial, lastAttemptElapsed, readErr) }
+		if isGet {
+			s.observeUpstream(route, trial, lastAttemptElapsed, readErr)
+		}
 		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}

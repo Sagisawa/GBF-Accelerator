@@ -751,3 +751,128 @@ func TestProxy_SingleFlight_HighConcurrencyCacheMissStampede_UpstreamError(t *te
 		t.Fatalf("expected upstreamRequests to be 2 after recovery fetch, got %d", reqCount)
 	}
 }
+
+func TestDynamicAPIFailoverOnNonRetryableGET(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	defer srv.Stop()
+
+	// Closed listener for primary to immediately cause connection refused
+	deadListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	deadAddr := "http://" + deadListener.Addr().String()
+	_ = deadListener.Close() // close immediately so connect fails
+
+	// Update config with failover enabled
+	cfg := cfgMgr.Get()
+	cfg.EnableUpstreamFailover = true
+	cfg.UpstreamProxy = deadAddr
+	cfg.BackupUpstreamProxy = "http://127.0.0.1:8123"
+	cfg.UpstreamFailoverConsecutiveFailures = 2
+	cfg.UpstreamFailoverThresholdMS = 2000
+	srv.updateClients(&cfg)
+
+	// Non-retryable dynamic GET API path
+	targetHost := "game.granbluefantasy.jp"
+	nonRetryablePath := "/rest/user/status"
+	if isRetryableAPI(nonRetryablePath) {
+		t.Fatalf("%s must NOT be in retryable API whitelist", nonRetryablePath)
+	}
+
+	// Request 1: fails via primary (dead, connection refused) — hard errors
+	// bypass the consecutive counter and trigger immediate failover.
+	req1, _ := http.NewRequest(http.MethodGet, "https://"+targetHost+nonRetryablePath, nil)
+	var buf1 bytes.Buffer
+	srv.handleDecryptedRequest(&buf1, req1, targetHost)
+	if !strings.HasPrefix(buf1.String(), "HTTP/1.1 502 Bad Gateway") {
+		t.Fatalf("expected 502 Bad Gateway, got: %s", firstLine(buf1.String()))
+	}
+	st1 := srv.GetUpstreamStatus()
+	if st1.Active != "backup" {
+		t.Fatalf("expected immediate failover to backup on hard connection error, got active=%s", st1.Active)
+	}
+	if st1.Reason != "connection_error" {
+		t.Fatalf("expected reason connection_error, got %s", st1.Reason)
+	}
+}
+
+func TestDynamicAPIInFlightWatchdogFailover(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	defer srv.Stop()
+
+	// Slow primary proxy: hangs for 300ms
+	slowPrimary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("slow ok"))
+	}))
+	defer slowPrimary.Close()
+
+	// Configure proxy with 60ms threshold and consecutive=1
+	cfg := cfgMgr.Get()
+	cfg.EnableUpstreamFailover = true
+	cfg.UpstreamProxy = slowPrimary.URL
+	cfg.BackupUpstreamProxy = "http://127.0.0.1:8123"
+	cfg.UpstreamFailoverConsecutiveFailures = 1
+	cfg.UpstreamFailoverThresholdMS = 60
+	srv.updateClients(&cfg)
+
+	targetHost := "game.granbluefantasy.jp"
+	nonRetryablePath := "/rest/user/status"
+
+	reqDone := make(chan struct{})
+	go func() {
+		defer close(reqDone)
+		req, _ := http.NewRequest(http.MethodGet, "https://"+targetHost+nonRetryablePath, nil)
+		var buf bytes.Buffer
+		srv.handleDecryptedRequest(&buf, req, targetHost)
+	}()
+
+	// Wait 120ms (more than threshold 60ms, less than server response 300ms)
+	time.Sleep(120 * time.Millisecond)
+
+	// In-flight watchdog MUST have fired and switched active route to backup while request is still pending!
+	st := srv.GetUpstreamStatus()
+	if st.Active != "backup" {
+		t.Fatalf("expected active backup while request in-flight, got active=%s", st.Active)
+	}
+	if st.Reason != "latency_threshold" {
+		t.Fatalf("expected reason latency_threshold, got %s", st.Reason)
+	}
+
+	// Wait for the slow request to finish
+	select {
+	case <-reqDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for slow request to complete")
+	}
+
+	// Route must remain backup
+	stAfter := srv.GetUpstreamStatus()
+	if stAfter.Active != "backup" {
+		t.Fatalf("expected active to remain backup, got %s", stAfter.Active)
+	}
+}

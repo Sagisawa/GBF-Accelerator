@@ -133,7 +133,8 @@ export async function detectUpstream(): Promise<any> {
 export async function fetchUpstreamStatus(): Promise<any> {
   const res = await fetch(`${BASE}/api/upstream/status`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const data = await res.json()
+  return data?.status ?? data
 }
 
 export async function detectACGPower(): Promise<any> {

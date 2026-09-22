@@ -1275,7 +1275,9 @@ func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Reque
 
 	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
 	if custom := strings.TrimSpace(req.URL.Query().Get("proxy")); custom != "" {
-		if u, err := url.Parse(custom); err == nil && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "socks5") {
+		if strings.EqualFold(custom, "direct") {
+			proxyURL = ""
+		} else if u, err := url.Parse(custom); err == nil && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "socks5") {
 			proxyURL = custom
 		}
 	}

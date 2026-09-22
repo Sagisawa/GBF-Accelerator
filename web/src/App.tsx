@@ -44,6 +44,7 @@ import {
   XCircle,
   Zap,
   Power,
+  Network,
 } from 'lucide-react'
 
 const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ baseSeconds, running }) => {
@@ -215,6 +216,7 @@ export const App: React.FC = () => {
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false)
   const [isUpstreamSelectModalOpen, setIsUpstreamSelectModalOpen] = useState<boolean>(false)
   const [upstreamCandidates, setUpstreamCandidates] = useState<ProxyCandidate[]>([])
+  const [upstreamSelectTarget, setUpstreamSelectTarget] = useState<'primary' | 'backup'>('primary')
   const [isShimakazeSuggestOpen, setIsShimakazeSuggestOpen] = useState<boolean>(false)
   const [shimakazeTargetName, setShimakazeTargetName] = useState<string>('岛风 GO (8099)')
   const [caModalAction, setCaModalAction] = useState<'install' | 'uninstall' | null>(null)
@@ -440,8 +442,13 @@ export const App: React.FC = () => {
     const nextDirect = !currentDirect
     await runConfigAction('direct', async () => {
       try {
-        await applyConfig({ direct_mode: nextDirect })
-        setConfig((prev) => ({ ...prev, direct_mode: nextDirect }))
+        const patch: Record<string, any> = { direct_mode: nextDirect }
+        if (nextDirect && failoverEnabledInput) {
+          patch.enable_upstream_failover = false
+          setFailoverEnabledInput(false)
+        }
+        await applyConfig(patch)
+        setConfig((prev) => ({ ...prev, ...patch }))
         showToast(nextDirect ? '已开启直连模式 (使用本机网络，不经过上游代理)' : '已恢复上游代理转发链路', 'info')
         loadState()
       } catch (e: any) {
@@ -558,6 +565,24 @@ export const App: React.FC = () => {
       }
     })
   }
+  // Toggle Failover Enabled
+  const handleToggleFailoverEnabled = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const checked = e.target.checked
+    setFailoverEnabledInput(checked)
+    if (!checked) {
+      await runConfigAction('disable-failover', async () => {
+        try {
+          await applyConfig({ enable_upstream_failover: false })
+          setConfig((prev) => ({ ...prev, enable_upstream_failover: false }))
+          showToast('已关闭备用上游自动切换', 'info')
+          loadState()
+        } catch (e: any) {
+          showToast(`关闭自动切换失败: ${e.message}`, 'error')
+        }
+      })
+    }
+  }
+
   // Save and configure backup upstream failover
   const handleSaveFailover = async () => {
     const backup = backupUpstreamInput.trim()
@@ -631,6 +656,7 @@ export const App: React.FC = () => {
         const candidates: ProxyCandidate[] = Array.isArray(data?.candidates) ? data.candidates : []
         if (candidates.length > 1) {
           setUpstreamCandidates(candidates)
+          setUpstreamSelectTarget('primary')
           setIsUpstreamSelectModalOpen(true)
         } else if (candidates.length === 1 || (data && data.found && data.primary)) {
           const chosen = candidates.length === 1 ? candidates[0].url : data.primary
@@ -650,8 +676,32 @@ export const App: React.FC = () => {
       }
     })
   }
+  // Auto Probe Backup Upstream Proxy
+  const handleProbeBackupUpstream = async () => {
+    await runConfigAction('probe-backup-upstream', async () => {
+      try {
+        const data = await detectUpstream()
+        const rawCandidates: ProxyCandidate[] = Array.isArray(data?.candidates) ? [...data.candidates] : []
+        const candidates: ProxyCandidate[] = rawCandidates.filter((c) => c.url.toLowerCase() !== 'direct')
+        candidates.push({
+          name: '⚡ 本机物理直连 (故障时降级直连，不走代理)',
+          url: 'direct',
+        })
+        setUpstreamCandidates(candidates)
+        setUpstreamSelectTarget('backup')
+        setIsUpstreamSelectModalOpen(true)
+      } catch (e: any) {
+        showToast(`探测备用代理失败: ${e.message}`, 'error')
+      }
+    })
+  }
   // Handle selection from UpstreamSelectModal
   const handleSelectUpstreamCandidate = async (candidate: ProxyCandidate) => {
+    if (upstreamSelectTarget === 'backup') {
+      setBackupUpstreamInput(candidate.url)
+      showToast(`已选择备用上游: ${candidate.name} (${candidate.url})，请点击保存`, 'success')
+      return
+    }
     await runConfigAction('upstream-select', async () => {
       try {
         await applyConfig({ upstream_proxy: candidate.url })
@@ -1079,31 +1129,20 @@ export const App: React.FC = () => {
                   </button>
                   <button
                     type="button"
+                    onClick={handleOpenCacheFolder}
+                    disabled={loadingOpenFolder}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
+                  >
+                    {loadingOpenFolder ? '打开中...' : '打开目录'}
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleDetectAcgp}
                     disabled={Boolean(loadingAction)}
                     aria-busy={isActionLoading('detect-acgp')}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
                   >
                     {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
-                  </button>
-                </div>
-                {/* Health & Slim buttons */}
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setIsAuditModalOpen(true)}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                  >
-                    <span>🩺</span>
-                    <span>一键体检缓存</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsSlimModalOpen(true)}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                  >
-                    <span>🧹</span>
-                    <span>缓存安全瘦身</span>
                   </button>
                 </div>
               </div>
@@ -1123,33 +1162,82 @@ export const App: React.FC = () => {
                   </span>
                 </label>
 
-                <div className="ml-6 flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
-                  <span>上限 (MB):</span>
+                {isRamCache && (
+                  <div className="ml-6 space-y-2">
+                    <div className="flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
+                      <span>上限 (MB):</span>
+                      <input
+                        type="text"
+                        disabled={Boolean(loadingAction)}
+                        value={ramMbInput}
+                        onChange={(e) => setRamMbInput(e.target.value)}
+                        className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleApplyRamMb}
+                        disabled={Boolean(loadingAction)}
+                        aria-busy={isActionLoading('ram-mb')}
+                        className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                      >
+                        {isActionLoading('ram-mb') ? '应用中...' : '应用'}
+                      </button>
+                      <span className="text-slate-500 font-mono text-xs">
+                        {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
+                      </span>
+                      <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
+                        <div
+                          className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                          style={{ width: `${Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    <label className="inline-flex items-start gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none leading-snug">
+                      <input
+                        type="checkbox"
+                        checked={isRamWarmup}
+                        onChange={handleToggleRamWarmup}
+                        disabled={Boolean(loadingAction)}
+                        className="w-3.5 h-3.5 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
+                      />
+                      <span>启动时预热内存缓存 - 把高频小文件预载入 RAM，消除初次会话磁盘 I/O 延迟</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+
+
+              {/* Cache Maintenance & Integrity */}
+              <div className="space-y-2 pt-1.5 border-t border-slate-100">
+                <label className="inline-flex items-start gap-2 text-xs sm:text-[13px] text-slate-800 cursor-pointer select-none leading-snug">
                   <input
-                    type="text"
+                    type="checkbox"
+                    checked={isAutoRepair}
+                    onChange={handleToggleAutoRepair}
                     disabled={Boolean(loadingAction)}
-                    value={ramMbInput}
-                    onChange={(e) => setRamMbInput(e.target.value)}
-                    className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                    className="w-3.5 h-3.5 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                   />
+                  <span>自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防黑屏卡死</span>
+                </label>
+
+                <div className="flex items-center gap-2 pt-0.5">
                   <button
                     type="button"
-                    onClick={handleApplyRamMb}
-                    disabled={Boolean(loadingAction)}
-                    aria-busy={isActionLoading('ram-mb')}
-                    className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                    onClick={() => setIsAuditModalOpen(true)}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
-                    {isActionLoading('ram-mb') ? '应用中...' : '应用'}
+                    <span>🩺</span>
+                    <span>一键体检缓存</span>
                   </button>
-                  <span className="text-slate-500 font-mono text-xs">
-                    {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
-                  </span>
-                  <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
-                    <div
-                      className="h-full bg-emerald-500 rounded-full transition-all duration-300"
-                      style={{ width: `${Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%` }}
-                    />
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsSlimModalOpen(true)}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                  >
+                    <span>🧹</span>
+                    <span>缓存安全瘦身</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1211,166 +1299,203 @@ export const App: React.FC = () => {
                       备用上游（自动故障转移）
                     </div>
                     <div className="text-xs text-slate-400 mt-0.5">
-                      主上游连续异常后切换；不会在同一请求内重放业务请求
+                      主上游连接失败立即切换；响应超时累计达到水线后切换
                     </div>
                   </div>
                   <span
                     className={
-                      !failoverEnabledInput || !backupUpstreamInput.trim()
+                      isDirect || !failoverEnabledInput || !backupUpstreamInput.trim()
                         ? 'text-xs font-semibold px-2.5 py-0.5 rounded-full bg-slate-50 text-slate-500 border border-slate-200/60'
                         : upstreamRuntime?.active === 'backup'
                           ? 'text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200/70'
                           : 'text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70'
                     }
                   >
-                    {!failoverEnabledInput || !backupUpstreamInput.trim()
-                      ? '未启用'
-                      : isDirect
-                        ? '直连模式不参与切换'
+                    {isDirect
+                      ? '直连模式下不可用'
+                      : !failoverEnabledInput || !backupUpstreamInput.trim()
+                        ? '未启用'
                         : upstreamRuntime?.active === 'backup'
                           ? '当前：备用'
                           : '当前：主上游'}
                   </span>
                 </div>
 
-                <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
+                <label
+                  className={`inline-flex items-start gap-2 text-[13px] sm:text-sm ${
+                    isDirect ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 cursor-pointer'
+                  } select-none leading-snug`}
+                >
                   <input
                     type="checkbox"
-                    checked={failoverEnabledInput}
-                    onChange={(e) => setFailoverEnabledInput(e.target.checked)}
+                    checked={!isDirect && failoverEnabledInput}
+                    onChange={handleToggleFailoverEnabled}
                     disabled={isDirect || Boolean(loadingAction)}
                     className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
                   />
                   <span>
                     启用备用上游自动切换
+                    {isDirect && <span className="text-xs text-slate-400 ml-1">（直连模式下不走代理，此功能不可用）</span>}
                   </span>
                 </label>
 
-                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-                  <label className="text-xs sm:text-[13px] text-slate-600 shrink-0">
-                    备用地址
-                  </label>
-                  <input
-                    type="text"
-                    value={backupUpstreamInput}
-                    onChange={(e) => setBackupUpstreamInput(e.target.value)}
-                    disabled={Boolean(loadingAction)}
-                    placeholder="http://127.0.0.1:8080 / socks5://127.0.0.1:1080 / direct"
-                    className="flex-1 min-w-[180px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
-                  />
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  <label className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70 text-xs">
-                    <span className="text-slate-600">延迟阈值</span>
-                    <span className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={0}
-                        max={60000}
-                        step={100}
-                        value={failoverThresholdInput}
-                        onChange={(e) => setFailoverThresholdInput(e.target.value)}
-                        disabled={Boolean(loadingAction)}
-                        className="w-20 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-slate-800"
-                      />
-                      <span className="text-slate-400">ms</span>
-                    </span>
-                  </label>
-                  <label className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70 text-xs">
-                    <span className="text-slate-600">连续异常</span>
-                    <span className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={1}
-                        max={10}
-                        step={1}
-                        value={failoverConsecutiveInput}
-                        onChange={(e) => setFailoverConsecutiveInput(e.target.value)}
-                        disabled={Boolean(loadingAction)}
-                        className="w-16 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-slate-800"
-                      />
-                      <span className="text-slate-400">次</span>
-                    </span>
-                  </label>
-                  <label className="flex items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70 text-xs">
-                    <span className="text-slate-600">切回等待</span>
-                    <span className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min={60}
-                        max={3600}
-                        step={10}
-                        value={failoverCooldownInput}
-                        onChange={(e) => setFailoverCooldownInput(e.target.value)}
-                        disabled={Boolean(loadingAction)}
-                        className="w-16 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-slate-800"
-                      />
-                      <span className="text-slate-400">秒</span>
-                    </span>
-                  </label>
-                </div>
-
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={failoverAutoRecoverInput}
-                      onChange={(e) => setFailoverAutoRecoverInput(e.target.checked)}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                    />
-                    <span>冷却后自动尝试切回主上游</span>
-                  </label>
-
-                  <button
-                    type="button"
-                    onClick={handleSaveFailover}
-                    disabled={Boolean(loadingAction)}
-                    aria-busy={isActionLoading('save-failover')}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 active:bg-sky-800 border border-sky-600 active:scale-[0.98] transition-all cursor-pointer shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isActionLoading('save-failover') ? '保存中...' : '保存备用上游'}
-                  </button>
-                </div>
-
-                {failoverEnabledInput && backupUpstreamInput.trim() && !isDirect && (
-                  <div className="p-2.5 rounded-lg bg-slate-50/80 border border-slate-200/70 text-xs text-slate-600">
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <span>
-                        当前链路：
-                        <strong className={upstreamRuntime?.active === 'backup' ? 'text-amber-700' : 'text-emerald-700'}>
-                          {upstreamRuntime?.active === 'backup' ? '备用上游' : '主上游'}
-                        </strong>
-                      </span>
-                      <span className="font-mono text-slate-500">
-                        连续异常 {upstreamRuntime?.failure_count ?? 0} / {upstreamRuntime?.consecutive_failures ?? (Number(failoverConsecutiveInput) || 3)}
-                      </span>
+                {!isDirect && failoverEnabledInput && (
+                  <div className="space-y-2.5 pt-0.5">
+                    {/* Backup upstream input + probe button */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                        <label className="text-xs sm:text-[13px] text-slate-600 shrink-0">
+                          备用地址
+                        </label>
+                        <input
+                          type="text"
+                          value={backupUpstreamInput}
+                          onChange={(e) => setBackupUpstreamInput(e.target.value)}
+                          disabled={Boolean(loadingAction)}
+                          placeholder="例如 direct 或 http://127.0.0.1:8080 / socks5://127.0.0.1:1080"
+                          className="flex-1 min-w-[180px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
+                        />
+                        <button
+                          type="button"
+                          disabled={Boolean(loadingAction)}
+                          aria-busy={isActionLoading('probe-backup-upstream')}
+                          onClick={handleProbeBackupUpstream}
+                          className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
+                        >
+                          {isActionLoading('probe-backup-upstream') ? '探测中...' : '自动探测'}
+                        </button>
+                      </div>
+                      <div className="text-[11px] sm:text-xs text-slate-500 leading-relaxed">
+                        💡 支持填写其他代理地址（如 <code className="text-slate-700 font-mono">http://127.0.0.1:7890</code>），或直接填写 <code className="text-sky-700 font-bold font-mono">direct</code>（当主代理故障时自动降级为本机直连，不走代理）。
+                      </div>
                     </div>
-                    <div className="mt-1.5 flex items-center justify-between gap-2 flex-wrap">
-                      <span className="text-slate-500">
-                        {upstreamRuntime?.reason
-                          ? ({
-                              timeout: '响应超时',
-                              connection_error: '连接异常',
-                              latency_threshold: '超过延迟阈值',
-                              primary_recovered: '主上游已恢复',
-                              primary_recovery_failed: '主上游恢复尝试未成功',
-                            } as Record<string, string>)[upstreamRuntime.reason] || upstreamRuntime.reason
-                          : '等待运行数据'}
-                      </span>
-                      <span className="font-mono text-slate-400">
-                        {upstreamRuntime?.last_switch_at
-                          ? `上次切换 ${new Date(upstreamRuntime.last_switch_at).toLocaleTimeString('zh-CN', { hour12: false })}`
-                          : '尚未发生切换'}
-                      </span>
-                    </div>
-                  </div>
-                )}
 
-                {failoverEnabledInput && !backupUpstreamInput.trim() && (
-                  <div className="text-xs text-amber-700 bg-amber-50/80 border border-amber-200/70 rounded-lg px-3 py-2">
-                    已勾选自动切换，但尚未填写备用上游地址；保存时会要求补全。
+                    {/* 3 Parameter Inputs: Redesigned with label on top, input on bottom, NEVER vertical wrapping */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
+                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap" title="在途首包响应耗时超过该阈值时判定为延迟异常；仅监测静态素材与只读白名单接口">
+                          上游响应阈值
+                        </span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <input
+                            type="number"
+                            min={0}
+                            max={60000}
+                            step={100}
+                            value={failoverThresholdInput}
+                            onChange={(e) => setFailoverThresholdInput(e.target.value)}
+                            disabled={Boolean(loadingAction)}
+                            className="w-full min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-xs text-slate-800 focus:ring-1 focus:ring-sky-500 focus:outline-none"
+                          />
+                          <span className="text-xs text-slate-400 shrink-0 font-mono">ms</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
+                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap" title="响应超过阈值的连续异常次数达到此水线后切换备用；连接失败（端口关闭/拒绝）不受此限制，立即切换">
+                          连续异常水线
+                        </span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <input
+                            type="number"
+                            min={1}
+                            max={10}
+                            step={1}
+                            value={failoverConsecutiveInput}
+                            onChange={(e) => setFailoverConsecutiveInput(e.target.value)}
+                            disabled={Boolean(loadingAction)}
+                            className="w-full min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-xs text-slate-800 focus:ring-1 focus:ring-sky-500 focus:outline-none"
+                          />
+                          <span className="text-xs text-slate-400 shrink-0">次</span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
+                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap">
+                          切回等待
+                        </span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <input
+                            type="number"
+                            min={60}
+                            max={3600}
+                            step={10}
+                            value={failoverCooldownInput}
+                            onChange={(e) => setFailoverCooldownInput(e.target.value)}
+                            disabled={Boolean(loadingAction)}
+                            className="w-full min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-xs text-slate-800 focus:ring-1 focus:ring-sky-500 focus:outline-none"
+                          />
+                          <span className="text-xs text-slate-400 shrink-0">秒</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-400 leading-relaxed px-0.5">
+                      ⏱️ 上游连接失败（端口关闭/拒绝连接）<strong>立即切换备用</strong>；响应超过阈值仍未返回则计为延迟异常，累计达到水线后切换。
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
+                      <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={failoverAutoRecoverInput}
+                          onChange={(e) => setFailoverAutoRecoverInput(e.target.checked)}
+                          disabled={Boolean(loadingAction)}
+                          className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                        />
+                        <span>冷却后自动尝试切回主上游</span>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={handleSaveFailover}
+                        disabled={Boolean(loadingAction)}
+                        aria-busy={isActionLoading('save-failover')}
+                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 active:bg-sky-800 border border-sky-600 active:scale-[0.98] transition-all cursor-pointer shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isActionLoading('save-failover') ? '保存中...' : '保存备用上游'}
+                      </button>
+                    </div>
+
+                    {backupUpstreamInput.trim() && !isDirect && (
+                      <div className="p-2.5 rounded-lg bg-slate-50/80 border border-slate-200/70 text-xs text-slate-600">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span>
+                            当前链路：
+                            <strong className={upstreamRuntime?.active === 'backup' ? 'text-amber-700' : 'text-emerald-700'}>
+                              {upstreamRuntime?.active === 'backup' ? '备用上游' : '主上游'}
+                            </strong>
+                          </span>
+                          <span className="font-mono text-slate-500">
+                            连续异常 {upstreamRuntime?.failure_count ?? 0} / {upstreamRuntime?.consecutive_failures ?? (Number(failoverConsecutiveInput) || 3)}
+                          </span>
+                        </div>
+                        <div className="mt-1.5 flex items-center justify-between gap-2 flex-wrap">
+                          <span className="text-slate-500">
+                            {upstreamRuntime?.reason
+                              ? ({
+                                  timeout: '响应超时',
+                                  connection_error: '连接异常',
+                                  latency_threshold: '超过延迟阈值',
+                                  primary_recovered: '主上游已恢复',
+                                  primary_recovery_failed: '主上游恢复尝试未成功',
+                                } as Record<string, string>)[upstreamRuntime.reason] || upstreamRuntime.reason
+                              : '等待运行数据'}
+                          </span>
+                          <span className="font-mono text-slate-400">
+                            {upstreamRuntime?.last_switch_at
+                              ? `上次切换 ${new Date(upstreamRuntime.last_switch_at).toLocaleTimeString('zh-CN', { hour12: false })}`
+                              : '尚未发生切换'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {!backupUpstreamInput.trim() && (
+                      <div className="text-xs text-amber-700 bg-amber-50/80 border border-amber-200/70 rounded-lg px-3 py-2">
+                        已勾选自动切换，但尚未填写备用上游地址；保存时会要求补全。
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1598,21 +1723,6 @@ export const App: React.FC = () => {
                   <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
                     <input
                       type="checkbox"
-                      checked={isAutoRepair}
-                      onChange={handleToggleAutoRepair}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                    />
-                    <span>
-                      自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防止黑屏卡死
-                    </span>
-                  </label>
-                </div>
-
-                <div>
-                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
-                    <input
-                      type="checkbox"
                       checked={isPrefetch}
                       onChange={handleTogglePrefetch}
                       disabled={Boolean(loadingAction)}
@@ -1620,21 +1730,6 @@ export const App: React.FC = () => {
                     />
                     <span>
                       启用资源预加载 - 解析场景 JS 引用的素材并后台预热，首次进新副本/活动更流畅
-                    </span>
-                  </label>
-                </div>
-
-                <div>
-                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
-                    <input
-                      type="checkbox"
-                      checked={isRamWarmup}
-                      onChange={handleToggleRamWarmup}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                    />
-                    <span>
-                      启动时预热内存缓存 - 把高频小文件预先载入 RAM，消除会话首读的磁盘延迟
                     </span>
                   </label>
                 </div>
@@ -1652,6 +1747,16 @@ export const App: React.FC = () => {
                       启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认开启）
                     </span>
                   </label>
+                </div>
+
+                <div className="p-3 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 leading-relaxed shadow-2xs space-y-1">
+                  <div className="font-semibold flex items-center gap-1.5 text-amber-800">
+                    <span>🛡️</span>
+                    <span>动态避让与温和调度保障</span>
+                  </div>
+                  <p className="text-amber-800/90 text-[11px] sm:text-xs">
+                    资源预加载采用随机抖动平滑削峰填谷；当前台检测到战斗或动态 API 请求时主动挂起避让，绝不挤占游戏核心网络带宽。
+                  </p>
                 </div>
               </div>
             </div>
@@ -1950,7 +2055,24 @@ export const App: React.FC = () => {
         isOpen={isUpstreamSelectModalOpen}
         onClose={() => setIsUpstreamSelectModalOpen(false)}
         candidates={upstreamCandidates}
-        currentProxy={upstreamInput || config.upstream_proxy || status?.upstream_proxy}
+        currentProxy={
+          upstreamSelectTarget === 'backup'
+            ? backupUpstreamInput
+            : (upstreamInput || config.upstream_proxy || status?.upstream_proxy)
+        }
+        title={
+          upstreamSelectTarget === 'backup' ? (
+            <div className="flex items-center gap-2">
+              <Network className="w-4 h-4 text-sky-600" />
+              <span>选择备用上游代理</span>
+            </div>
+          ) : undefined
+        }
+        subtitle={
+          upstreamSelectTarget === 'backup'
+            ? '检测到本机候选网络出口，支持选择其他代理或降级为直连'
+            : undefined
+        }
         onSelect={handleSelectUpstreamCandidate}
       />
 

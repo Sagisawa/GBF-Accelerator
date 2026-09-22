@@ -23,15 +23,14 @@ func TestFailoverManagerRequiresConsecutiveFailures(t *testing.T) {
 
 func TestFailoverManagerConnectionErrorCounts(t *testing.T) {
 	m := newFailoverManager()
-	m.configure(true, true, 0, 2, 60*time.Second, true)
+	m.configure(true, true, 0, 3, 60*time.Second, true)
 	now := time.Unix(200, 0)
 	err := errors.New("connect failed")
 
-	if tr := m.observe(failoverRoutePrimary, false, 50*time.Millisecond, err, now); tr != nil {
-		t.Fatalf("unexpected early transition: %+v", tr)
-	}
-	if tr := m.observe(failoverRoutePrimary, false, 50*time.Millisecond, err, now.Add(time.Second)); tr == nil || tr.reason != "connection_error" {
-		t.Fatalf("expected connection error, got %+v", tr)
+	// Hard connection errors bypass the consecutive counter — first error
+	// triggers immediate failover regardless of threshold setting.
+	if tr := m.observe(failoverRoutePrimary, false, 50*time.Millisecond, err, now); tr == nil || tr.reason != "connection_error" {
+		t.Fatalf("expected immediate connection_error transition, got %+v", tr)
 	}
 }
 
@@ -110,5 +109,56 @@ func TestFailoverProxySchemeValidation(t *testing.T) {
 	}
 	for _, raw := range []string{"", "ftp://127.0.0.1:21", "not-a-url"} {
 		if isSupportedFailoverProxy(raw) { t.Errorf("unexpected support: %q", raw) }
+	}
+}
+
+func TestFailoverManagerInFlightTimeout(t *testing.T) {
+	m := newFailoverManager()
+	m.configure(true, true, 2*time.Second, 2, 60*time.Second, true)
+	now := time.Unix(600, 0)
+
+	// First in-flight timeout: count becomes 1, no switch yet
+	if tr := m.observeInFlightTimeout(failoverRoutePrimary, false, now); tr != nil {
+		t.Fatalf("unexpected transition on first in-flight timeout: %+v", tr)
+	}
+	if m.status().FailureCount != 1 {
+		t.Fatalf("expected failure count 1, got %d", m.status().FailureCount)
+	}
+
+	// Second in-flight timeout: reaches consecutive (2), switches to backup!
+	tr := m.observeInFlightTimeout(failoverRoutePrimary, false, now.Add(time.Second))
+	if tr == nil || tr.to != failoverRouteBackup || tr.reason != "latency_threshold" {
+		t.Fatalf("expected backup transition with latency_threshold, got %+v", tr)
+	}
+	if m.activeRoute() != failoverRouteBackup {
+		t.Fatalf("expected active route backup, got %s", m.activeRoute())
+	}
+}
+
+func TestFailoverManagerInFlightRecoveryTrialTimeout(t *testing.T) {
+	m := newFailoverManager()
+	m.configure(true, true, 2*time.Second, 1, 10*time.Second, true)
+	now := time.Unix(700, 0)
+
+	// Switch to backup
+	if tr := m.observeInFlightTimeout(failoverRoutePrimary, false, now); tr == nil {
+		t.Fatal("expected switch to backup")
+	}
+
+	// Trial request
+	_, trial := m.routeForRequest(true, now.Add(11*time.Second))
+	if !trial {
+		t.Fatal("expected recovery trial")
+	}
+
+	// Trial request times out in flight
+	if tr := m.observeInFlightTimeout(failoverRoutePrimary, true, now.Add(13*time.Second)); tr != nil {
+		t.Fatalf("unexpected transition on failed trial: %+v", tr)
+	}
+	if m.activeRoute() != failoverRouteBackup {
+		t.Fatalf("expected active route to remain backup, got %s", m.activeRoute())
+	}
+	if m.status().Reason != "primary_recovery_failed" {
+		t.Fatalf("expected reason primary_recovery_failed, got %s", m.status().Reason)
 	}
 }
