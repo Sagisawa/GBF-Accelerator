@@ -1240,3 +1240,27 @@ func TestHandleLatencyTestWithMockServer(t *testing.T) {
 		t.Errorf("expected ok=false for unreachable proxy, got %v", unreachRes)
 	}
 }
+
+func TestIsAllowedTarouOrigin(t *testing.T) {
+	cases := []struct {
+		name   string
+		path   string
+		origin string
+		want   bool
+	}{
+		{name: "localhost status", path: "/api/integrations/tarou/status", origin: "http://127.0.0.1:8125", want: true},
+		{name: "extension status", path: "/api/integrations/tarou/status", origin: "chrome-extension://example", want: true},
+		{name: "extension heartbeat", path: "/api/integrations/tarou/heartbeat", origin: "chrome-extension://example", want: true},
+		{name: "extension enable rejected", path: "/api/integrations/tarou/enable", origin: "chrome-extension://example", want: false},
+		{name: "extension disable rejected", path: "/api/integrations/tarou/disable", origin: "chrome-extension://example", want: false},
+		{name: "extension other api rejected", path: "/api/status", origin: "chrome-extension://example", want: false},
+		{name: "remote web origin rejected", path: "/api/integrations/tarou/status", origin: "https://example.com", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isAllowedTarouOrigin(tc.path, tc.origin); got != tc.want {
+				t.Fatalf("isAllowedTarouOrigin(%q, %q) = %v, want %v", tc.path, tc.origin, got, tc.want)
+			}
+		})
+	}
+}
