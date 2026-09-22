@@ -21,6 +21,29 @@ func TestFailoverManagerRequiresConsecutiveFailures(t *testing.T) {
 	}
 }
 
+func TestFailoverThresholdWatchTriggersBeforeRequestCompletes(t *testing.T) {
+	m := newFailoverManager()
+	m.configure(true, true, 20*time.Millisecond, 1, 60*time.Second, true)
+
+	s := &ProxyServer{failover: m}
+	watch := s.startFailoverWatch(failoverRoutePrimary, false)
+	if watch == nil {
+		t.Fatal("expected failover watch")
+	}
+
+	time.Sleep(60 * time.Millisecond)
+	if got := m.activeRoute(); got != failoverRouteBackup {
+		t.Fatalf("expected backup before request completion, got %s", got)
+	}
+
+	if !watch.finish() {
+		// Timer already performed the observation. This is expected and confirms
+		// the route transition happened while the request remained in flight.
+		return
+	}
+	t.Fatal("request completed before threshold unexpectedly")
+}
+
 func TestFailoverManagerConnectionErrorCounts(t *testing.T) {
 	m := newFailoverManager()
 	m.configure(true, true, 0, 2, 60*time.Second, true)
