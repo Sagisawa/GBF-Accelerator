@@ -23,6 +23,7 @@ import (
 	"gbf-proxy/config"
 	"gbf-proxy/desktop"
 	"gbf-proxy/firewall"
+	"gbf-proxy/integration/tarou"
 	"gbf-proxy/proxy"
 	"gbf-proxy/res"
 	"gbf-proxy/startup"
@@ -82,6 +83,7 @@ type ControlServer struct {
 	enablePACProxyFn   func(string) error
 	disablePACProxyFn  func(bool) error
 	setStartupEnabledFn func(bool) error
+	tarouMgr            *tarou.Manager
 }
 
 func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cache.Manager, proxySrv *proxy.ProxyServer, stats *telemetry.Stats) *ControlServer {
@@ -117,6 +119,7 @@ func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *c
 		enablePACProxyFn:    sysproxy.EnablePACProxy,
 		disablePACProxyFn:   sysproxy.DisablePACProxy,
 		setStartupEnabledFn: startup.SetStartupEnabled,
+		tarouMgr:             tarou.NewManager(cfgMgr.Get().EnableTarouIntegration),
 	}
 }
 
@@ -262,6 +265,20 @@ func isAllowedOrigin(origin string) bool {
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
 
+func isAllowedTarouOrigin(path, origin string) bool {
+	if origin == "" || isAllowedOrigin(origin) {
+		return true
+	}
+	if !strings.HasPrefix(path, "/api/integrations/tarou/") {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Scheme, "chrome-extension") && u.Hostname() != ""
+}
+
 func isAllowedControlHost(reqHost string, allowLAN bool) bool {
 	if reqHost == "" {
 		return false
@@ -289,9 +306,10 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+ 	path := req.URL.Path
 	origin := req.Header.Get("Origin")
 	if origin != "" {
-		if !isAllowedOrigin(origin) {
+		if !isAllowedTarouOrigin(path, origin) {
 			http.Error(w, "Forbidden: Cross-Origin Request Blocked", http.StatusForbidden)
 			return
 		}
@@ -301,7 +319,7 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 
 	// CORS Preflight
 	if req.Method == http.MethodOptions {
-		if origin != "" && !isAllowedOrigin(origin) {
+		if origin != "" && !isAllowedTarouOrigin(path, origin) {
 			http.Error(w, "Forbidden", http.StatusForbidden)
 			return
 		}
@@ -316,11 +334,30 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	path := req.URL.Path
 	switch path {
-	case "/api/status":
+ 	case "/api/status":
 		if req.Method == http.MethodGet {
 			c.handleStatus(w, req)
+			return
+		}
+	case "/api/integrations/tarou/status":
+		if req.Method == http.MethodGet {
+			c.handleTarouStatus(w, req)
+			return
+		}
+	case "/api/integrations/tarou/enable":
+		if req.Method == http.MethodPost {
+			c.handleTarouSetEnabled(w, req, true)
+			return
+		}
+	case "/api/integrations/tarou/disable":
+		if req.Method == http.MethodPost {
+			c.handleTarouSetEnabled(w, req, false)
+			return
+		}
+	case "/api/integrations/tarou/heartbeat":
+		if req.Method == http.MethodPost {
+			c.handleTarouHeartbeat(w, req)
 			return
 		}
 	case "/api/config":
@@ -757,8 +794,11 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if val, ok := patch["auto_start"].(bool); ok {
 		candidate.AutoStart = val
 	}
-	if val, ok := patch["auto_check_update"].(bool); ok {
+ 	if val, ok := patch["auto_check_update"].(bool); ok {
 		candidate.AutoCheckUpdate = val
+	}
+	if val, ok := patch["enable_tarou_integration"].(bool); ok {
+		candidate.EnableTarouIntegration = val
 	}
 	if val, ok := patch["shimakaze_mode"].(bool); ok {
 		candidate.ShimakazeMode = val
@@ -908,6 +948,9 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if candidate.RAMCacheMaxMB != oldCandidate.RAMCacheMaxMB {
 		c.cacheMgr.SetRAMLimit(candidate.RAMCacheMaxMB)
 	}
+	if candidate.EnableTarouIntegration != oldCandidate.EnableTarouIntegration && c.tarouMgr != nil {
+		c.tarouMgr.SetEnabled(candidate.EnableTarouIntegration)
+	}
 
 	if candidate.AutoSystemProxy != oldCandidate.AutoSystemProxy || candidate.ListenPort != oldCandidate.ListenPort {
 		var err error
@@ -952,6 +995,86 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		"message":     "Configuration updated",
 		"config":      candidate,
 		"control_url": fmt.Sprintf("http://127.0.0.1:%d", candidate.ControlPort),
+	})
+}
+
+func (c *ControlServer) handleTarouStatus(w http.ResponseWriter, req *http.Request) {
+	if c.tarouMgr == nil {
+		c.sendJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"ok": false, "error": "Tarou integration is not initialized",
+		})
+		return
+	}
+	status := c.tarouMgr.Status()
+	status.Enabled = c.cfgMgr.Get().EnableTarouIntegration
+	if !status.Enabled {
+		status.Message = "Tarou 集成已关闭"
+	} else if status.Connected {
+		status.Message = "Tarou 已连接"
+	} else {
+		status.Message = "已启用，等待 Tarou 扩展连接"
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "status": status})
+}
+
+func (c *ControlServer) handleTarouSetEnabled(w http.ResponseWriter, req *http.Request, enabled bool) {
+	if c.tarouMgr == nil {
+		c.sendJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"ok": false, "error": "Tarou integration is not initialized",
+		})
+		return
+	}
+	_, err := c.cfgMgr.UpdateWithError(func(cfg *config.Config) {
+		cfg.EnableTarouIntegration = enabled
+	})
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok": false, "error": fmt.Sprintf("保存 Tarou 集成设置失败: %v", err),
+		})
+		return
+	}
+	c.tarouMgr.SetEnabled(enabled)
+	status := c.tarouMgr.Status()
+	status.Enabled = enabled
+	if !enabled {
+		status.Message = "Tarou 集成已关闭"
+	} else {
+		status.Message = "已启用，等待 Tarou 扩展连接"
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "status": status})
+}
+
+func (c *ControlServer) handleTarouHeartbeat(w http.ResponseWriter, req *http.Request) {
+	if c.tarouMgr == nil {
+		c.sendJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"ok": false, "error": "Tarou integration is not initialized",
+		})
+		return
+	}
+	if !c.cfgMgr.Get().EnableTarouIntegration {
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok": false, "error": "Tarou integration is disabled",
+		})
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(req.Body, 16*1024))
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "failed to read heartbeat"})
+		return
+	}
+	var hb tarou.HeartbeatRequest
+	if err := json.Unmarshal(body, &hb); err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "invalid heartbeat JSON"})
+		return
+	}
+	if err := c.tarouMgr.Heartbeat(hb); err != nil {
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{"ok": false, "error": err.Error()})
+		return
+	}
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok": true,
+		"protocol_version": tarou.ProtocolVersion,
+		"status": c.tarouMgr.Status(),
 	})
 }
 
