@@ -295,6 +295,16 @@ func (s *ProxyServer) finishInFlightWatch(tracker *inFlightTracker, route failov
 	})
 	if stopped {
 		s.observeUpstream(route, trial, elapsed, err)
+		return
+	}
+	// The watchdog already fired and recorded a soft latency failure for this
+	// request. A clean completion (err == nil) must NOT be re-observed to avoid
+	// double counting. A genuine hard error, however, is an immediate-failover
+	// trigger and must NOT be swallowed: it still reaches observe(), whose
+	// route != active guard makes this call idempotent when the watchdog
+	// already switched the route to backup.
+	if err != nil {
+		s.observeUpstream(route, trial, elapsed, err)
 	}
 }
 func (s *ProxyServer) GetEffectiveUpstreamProxy() string { if p:=s.upstreamProxy.Load(); p!=nil { return *p }; return "" }
