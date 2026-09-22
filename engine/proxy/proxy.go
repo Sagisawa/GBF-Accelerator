@@ -246,6 +246,39 @@ func (s *ProxyServer) observeUpstream(r failoverRoute, trial bool, elapsed time.
 	if s.failover == nil { return }
 	if tr := s.failover.observe(r, trial, elapsed, err, time.Now()); tr != nil { s.activateRoute(tr.to); s.logFailoverTransition(tr) }
 }
+
+type failoverWatch struct {
+	timer *time.Timer
+	fired atomic.Bool
+}
+
+func (s *ProxyServer) startFailoverWatch(route failoverRoute, trial bool) *failoverWatch {
+	if s.failover == nil {
+		return nil
+	}
+	threshold := s.failover.thresholdDuration()
+	if threshold <= 0 {
+		return nil
+	}
+	w := &failoverWatch{}
+	w.timer = time.AfterFunc(threshold, func() {
+		if w.fired.CompareAndSwap(false, true) {
+			// The threshold is a runtime signal only: switch the route for future requests.
+			// Never cancel or replay the request that is already in flight.
+			s.observeUpstream(route, trial, threshold, nil)
+		}
+	})
+	return w
+}
+
+func (w *failoverWatch) finish() bool {
+	if w == nil {
+		return false
+	}
+	w.timer.Stop()
+	return w.fired.CompareAndSwap(false, true)
+}
+
 func (s *ProxyServer) logFailoverTransition(t *failoverTransition) {
 	if t != nil && s.stats != nil { s.stats.Log("INFO", fmt.Sprintf("[UPSTREAM] %s -> %s (%s)", t.from.String(), t.to.String(), t.reason)) }
 }
@@ -1085,6 +1118,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	var reqReused bool
 	apiClient, route, trial := s.getAPIClientForRequest(req.Method)
 	var lastAttemptElapsed time.Duration
+	var thresholdObserved bool
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		reqCtx := req.Context()
@@ -1390,13 +1424,16 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 			}
 		}
 		fetchStart := time.Now()
+		watch := s.startFailoverWatch(route, trial)
 		resp, err := assetClient.Do(s.tracedRequest(upReq))
 		fetchElapsed := time.Since(fetchStart)
 		if err == nil && resp != nil && s.telemetryEnabled() {
 			s.stats.RecordProtocol(resp.Proto)
 			s.stats.RecordLatency(float64(fetchElapsed.Milliseconds()))
 		}
-		s.observeUpstream(route, trial, fetchElapsed, err)
+		if watch == nil || watch.finish() {
+			s.observeUpstream(route, trial, fetchElapsed, err)
+		}
 		if err != nil || resp == nil || resp.StatusCode != http.StatusOK {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
@@ -1560,22 +1597,26 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		upReq.Host = targetHost
 
 		attemptStart := time.Now()
+		watch := s.startFailoverWatch(route, trial)
 		resp, fetchErr = apiClient.Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
 			reqReused = reused
 		}))
 		lastAttemptElapsed = time.Since(attemptStart)
+		if watch != nil && !watch.finish() {
+			thresholdObserved = true
+		}
 
 		if fetchErr == nil {
 			break
 		}
-		if attempt+1 < maxAttempts && isConnectionDropError(fetchErr) {
+		if attempt+1 < maxAttempts && !thresholdObserved && isConnectionDropError(fetchErr) {
 			s.stats.IncAPIRetry()
 			continue
 		}
 		break
 	}
 
-	if req.Method == http.MethodGet && isRetryable {
+	if req.Method == http.MethodGet && isRetryable && !thresholdObserved {
 		s.observeUpstream(route, trial, lastAttemptElapsed, fetchErr)
 	}
 	if fetchErr != nil || resp == nil {
