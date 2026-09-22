@@ -34,7 +34,13 @@ type Tray interface {
 // On Windows/macOS, it attempts to launch Edge/Chrome in --app mode or platform webview.
 // If standalone app mode is unavailable, it gracefully falls back to OpenBrowser.
 func OpenAppWindow(url string) error {
-	return openAppWindow(url)
+	return OpenAppWindowWithGeometry(url, 880, 640, false)
+}
+
+// OpenAppWindowWithGeometry opens a standalone application window with the requested size/state.
+// Platform implementations may ignore geometry where the desktop backend does not expose it.
+func OpenAppWindowWithGeometry(url string, width, height int, maximized bool) error {
+	return openAppWindowWithGeometry(url, width, height, maximized)
 }
 
 // OpenBrowser opens the specified URL in the system default web browser.
