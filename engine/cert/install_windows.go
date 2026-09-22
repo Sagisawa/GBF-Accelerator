@@ -75,7 +75,9 @@ func detectCAStore(sha1 string) string {
 
 func installCA(caPath string) error {
 	cmd := exec.Command("certutil", "-addstore", "-user", "Root", caPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	// NOTE: do NOT set SysProcAttr.HideWindow here. certutil must be allowed
+	// to show the native Windows certificate security confirmation dialog so
+	// the user can explicitly approve installing the Root CA (v1.6 parity).
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("certutil addstore failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
