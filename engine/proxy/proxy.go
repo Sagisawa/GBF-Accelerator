@@ -235,9 +235,11 @@ func (s *ProxyServer) getAPIClient() *http.Client { return s.apiClient.Load() }
 func (s *ProxyServer) getAssetClient() *http.Client { return s.assetClient.Load() }
 func (s *ProxyServer) getAPIClientForRequest(method string) (*http.Client, failoverRoute, bool) {
 	r, trial := s.getRouteForRequest(method)
-	if r == failoverRoutePrimary {
-		if pair := s.primaryClient.Load(); pair != nil { return pair.api, r, trial }
-	} else if pair := s.backupClient.Load(); pair != nil { return pair.api, r, trial }
+	if r == failoverRouteBackup {
+		if pair := s.backupClient.Load(); pair != nil {
+			return pair.api, r, trial
+		}
+	}
 	return s.apiClient.Load(), r, trial
 }
 func (s *ProxyServer) observeUpstream(r failoverRoute, trial bool, elapsed time.Duration, err error) {
@@ -1382,9 +1384,11 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 
 		route, trial := s.getRouteForRequest(req.Method)
 		assetClient := s.getAssetClient()
-		if route == failoverRoutePrimary {
-			if pair := s.primaryClient.Load(); pair != nil { assetClient = pair.asset }
-		} else if pair := s.backupClient.Load(); pair != nil { assetClient = pair.asset }
+		if route == failoverRouteBackup {
+			if pair := s.backupClient.Load(); pair != nil {
+				assetClient = pair.asset
+			}
+		}
 		fetchStart := time.Now()
 		resp, err := assetClient.Do(s.tracedRequest(upReq))
 		fetchElapsed := time.Since(fetchStart)
