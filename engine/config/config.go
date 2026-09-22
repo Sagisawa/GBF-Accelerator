@@ -49,6 +49,9 @@ type Config struct {
 	AssetMaxKeepalive    int     `json:"asset_max_keepalive"`
 	AssetKeepaliveExpiry float64 `json:"asset_keepalive_expiry"`
 	EnableAPITelemetry   bool    `json:"enable_api_telemetry"`
+	WindowWidth          int     `json:"window_width"`
+	WindowHeight         int     `json:"window_height"`
+	WindowMaximized      bool    `json:"window_maximized"`
 }
 
 type Manager struct {
@@ -94,6 +97,9 @@ func DefaultConfig() Config {
 		AssetMaxKeepalive:    16,
 		AssetKeepaliveExpiry: 60.0,
 		EnableAPITelemetry:   true,
+		WindowWidth:          880,
+		WindowHeight:         640,
+		WindowMaximized:      false,
 	}
 }
 
@@ -262,6 +268,15 @@ func (m *Manager) Load(cfgPath string) error {
 	}
 	if _, ok := present["enable_api_telemetry"]; ok {
 		m.cfg.EnableAPITelemetry = loaded.EnableAPITelemetry
+	}
+	if _, ok := present["window_width"]; ok && loaded.WindowWidth >= 400 {
+		m.cfg.WindowWidth = loaded.WindowWidth
+	}
+	if _, ok := present["window_height"]; ok && loaded.WindowHeight >= 400 {
+		m.cfg.WindowHeight = loaded.WindowHeight
+	}
+	if _, ok := present["window_maximized"]; ok {
+		m.cfg.WindowMaximized = loaded.WindowMaximized
 	}
 	if loaded.APIKeepaliveExpiry > 0 {
 		m.cfg.APIKeepaliveExpiry = loaded.APIKeepaliveExpiry
