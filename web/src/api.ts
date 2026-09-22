@@ -1,4 +1,4 @@
-import { RuntimeStatus, TelemetrySummary, CacheStats, PrefetchStatus, LogItem, UpdateInfo } from './types'
+import { RuntimeStatus, TelemetrySummary, CacheStats, PrefetchStatus, LogItem, UpdateInfo, UpdateDownloadStatus } from './types'
 
 const BASE = ''
 
@@ -240,31 +240,67 @@ export async function cancelCacheTask(): Promise<any> {
 
 export async function checkForUpdate(): Promise<UpdateInfo> {
   const res = await fetch(`${BASE}/api/update/check`)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
 }
 
-export async function downloadUpdate(url?: string, dest?: string): Promise<any> {
+export async function downloadUpdate(url?: string, dest?: string, sha256?: string, version?: string): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/update/download`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: url || '', dest: dest || '' }),
+    body: JSON.stringify({
+      url: url || '',
+      dest: dest || '',
+      sha256: sha256 || '',
+      version: version || '',
+    }),
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
 }
 
-export async function fetchDownloadStatus(): Promise<any> {
+export async function applyDownloadedUpdate(): Promise<{ ok: boolean; message?: string; version?: string }> {
+  const res = await fetch(`${BASE}/api/update/apply`, { method: 'POST' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function fetchDownloadStatus(): Promise<UpdateDownloadStatus> {
   const res = await fetch(`${BASE}/api/update/download-status`)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
 }
 
-export async function cancelDownload(): Promise<any> {
+export async function cancelDownload(): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/update/download-cancel`, { method: 'POST' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
 }
+
+export async function openUpdateFolder(): Promise<{ ok: boolean; path?: string }> {
+  const res = await fetch(`${BASE}/api/update/open-folder`, { method: 'POST' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
 
 export async function quitApp(): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/app/quit`, { method: 'POST' })

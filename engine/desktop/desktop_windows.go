@@ -143,6 +143,43 @@ func openFolderNative(path string) error {
 	}
 }
 
+func showInFolderNative(path string) error {
+	fi, err := os.Stat(path)
+	if err == nil && !fi.IsDir() {
+		before := enumExplorerWindows()
+		cmd := exec.Command("explorer.exe", "/select,"+path)
+		if startErr := cmd.Start(); startErr != nil {
+			return startErr
+		}
+		go func() {
+			_ = cmd.Wait()
+		}()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			after := enumExplorerWindows()
+			for hwnd := range after {
+				if _, existed := before[hwnd]; existed {
+					continue
+				}
+				if activateExplorerWindow(hwnd) {
+					return nil
+				}
+			}
+			if time.Now().After(deadline) {
+				return nil
+			}
+			time.Sleep(40 * time.Millisecond)
+		}
+	}
+	targetDir := path
+	if err == nil && !fi.IsDir() {
+		targetDir = filepath.Dir(path)
+	} else if err != nil {
+		targetDir = filepath.Dir(path)
+	}
+	return openFolderNative(targetDir)
+}
+
 // prepareAppURL appends standalone=1 to the query string if not already present.
 func prepareAppURL(url string) string {
 	appURL := url

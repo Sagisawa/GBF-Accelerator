@@ -68,6 +68,10 @@ type ControlServer struct {
 	dlDone     bool
 	dlDest     string
 	dlError    string
+	dlVersion  string
+	dlSHA256   string
+	dlManaged  bool
+	dlApplying bool
 	dlCancelFn context.CancelFunc
 
 	// Broadcasters for SSE custom events
@@ -433,6 +437,16 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	case "/api/update/download-cancel", "/api/updater/download-cancel":
 		if req.Method == http.MethodPost {
 			c.handleUpdateDownloadCancel(w, req)
+			return
+		}
+	case "/api/update/apply", "/api/updater/apply":
+		if req.Method == http.MethodPost {
+			c.handleUpdateApply(w, req)
+			return
+		}
+	case "/api/update/open-folder", "/api/updater/open-folder":
+		if req.Method == http.MethodPost || req.Method == http.MethodGet {
+			c.handleUpdateOpenFolder(w, req)
 			return
 		}
 	case "/api/firewall/status":
@@ -1321,24 +1335,23 @@ func (c *ControlServer) handleUpdateCheck(w http.ResponseWriter, req *http.Reque
 
 func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Request) {
 	c.dlMu.Lock()
-	if c.dlActive {
+	if c.dlActive || c.dlApplying {
 		c.dlMu.Unlock()
 		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 			"ok":    false,
-			"error": "下载任务已在进行中",
+			"error": "更新任务正在进行中",
 		})
 		return
 	}
 
-	var reqBody struct {
-		URL    string `json:"url"`
-		Dest   string `json:"dest"`
-		SHA256 string `json:"sha256"`
-	}
+	var reqBody map[string]string
 	_ = json.NewDecoder(req.Body).Decode(&reqBody)
+	downloadURL := strings.TrimSpace(reqBody["url"])
+	destPath := strings.TrimSpace(reqBody["dest"])
+	expectedSHA256 := strings.TrimSpace(reqBody["sha256"])
+	releaseVersion := strings.TrimSpace(reqBody["version"])
+	managedDownload := false
 
-	downloadURL := reqBody.URL
-	expectedSHA256 := reqBody.SHA256
 	if downloadURL == "" {
 		proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
 		info := updater.CheckForUpdate(proxyURL, 8*time.Second, config.AppVersion)
@@ -1350,10 +1363,30 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 			})
 			return
 		}
+		if !info.HasUpdate {
+			c.dlMu.Unlock()
+			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"ok":    false,
+				"error": "当前已经是最新版本，无需下载",
+			})
+			return
+		}
 		downloadURL = info.DownloadURL
 		if expectedSHA256 == "" {
 			expectedSHA256 = info.SHA256
 		}
+		if releaseVersion == "" {
+			releaseVersion = info.LatestVersion
+		}
+		if strings.TrimSpace(expectedSHA256) == "" {
+			c.dlMu.Unlock()
+			c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
+				"ok":    false,
+				"error": "该 Release 缺少 SHA-256 校验值，已阻止自动更新下载",
+			})
+			return
+		}
+		managedDownload = true
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1364,11 +1397,13 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 	c.dlPercent = 0.0
 	c.dlError = ""
 	c.dlDest = ""
+	c.dlVersion = releaseVersion
+	c.dlSHA256 = expectedSHA256
+	c.dlManaged = managedDownload
 	c.dlCancelFn = cancel
 	c.dlMu.Unlock()
 
 	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
-	destPath := reqBody.Dest
 
 	go func() {
 		finalPath, err := updater.DownloadReleaseAsset(
@@ -1405,6 +1440,81 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 	})
 }
 
+func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Request) {
+	c.dlMu.Lock()
+	if c.dlActive || c.dlApplying {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "更新任务正在进行中",
+		})
+		return
+	}
+	if !c.dlDone || c.dlDest == "" || !c.dlManaged {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "没有可应用的已验证官方更新包",
+		})
+		return
+	}
+	archivePath := c.dlDest
+	sha256 := strings.TrimSpace(c.dlSHA256)
+	version := strings.TrimSpace(c.dlVersion)
+	c.dlApplying = true
+	c.dlMu.Unlock()
+
+	if sha256 == "" {
+		c.dlMu.Lock()
+		c.dlApplying = false
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
+			"ok":    false,
+			"error": "该 Release 没有可验证的 SHA-256，暂不能执行自动更新，请手动下载更新包",
+		})
+		return
+	}
+	if version == "" {
+		c.dlMu.Lock()
+		c.dlApplying = false
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
+			"ok":    false,
+			"error": "缺少更新版本信息，暂不能执行自动更新",
+		})
+		return
+	}
+
+	restartArgs := append([]string(nil), os.Args[1:]...)
+	if err := updater.LaunchSelfUpdater(archivePath, sha256, version, restartArgs); err != nil {
+		c.dlMu.Lock()
+		c.dlApplying = false
+		c.dlError = err.Error()
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": fmt.Sprintf("v%s 更新已准备，程序即将重启", version),
+		"version": version,
+	})
+
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		c.mu.RLock()
+		quit := c.quitFunc
+		c.mu.RUnlock()
+		if quit != nil {
+			quit()
+		}
+	}()
+}
+
 func (c *ControlServer) handleUpdateDownloadStatus(w http.ResponseWriter, req *http.Request) {
 	c.dlMu.Lock()
 	defer c.dlMu.Unlock()
@@ -1417,6 +1527,10 @@ func (c *ControlServer) handleUpdateDownloadStatus(w http.ResponseWriter, req *h
 		"total":      c.dlTotal,
 		"percent":    c.dlPercent,
 		"dest":       c.dlDest,
+		"version":    c.dlVersion,
+		"sha256":     c.dlSHA256,
+		"managed":    c.dlManaged,
+		"applying":   c.dlApplying,
 		"error":      c.dlError,
 	})
 }
@@ -1432,6 +1546,31 @@ func (c *ControlServer) handleUpdateDownloadCancel(w http.ResponseWriter, req *h
 		"message": "Download cancelled",
 	})
 }
+
+func (c *ControlServer) handleUpdateOpenFolder(w http.ResponseWriter, req *http.Request) {
+	c.dlMu.Lock()
+	dest := strings.TrimSpace(c.dlDest)
+	c.dlMu.Unlock()
+
+	target := dest
+	if target == "" {
+		target = updater.GetDefaultDownloadDir()
+	}
+
+	if err := desktop.ShowInFolder(target); err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("无法打开文件夹: %v", err),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":   true,
+		"path": target,
+	})
+}
+
 
 func (c *ControlServer) handleFirewallStatus(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()

@@ -59,3 +59,13 @@ func OpenFolder(path string) error {
 	return openFolderNative(cleanPath)
 }
 
+// ShowInFolder opens the system file explorer revealing the target file or opening its parent directory.
+func ShowInFolder(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("empty path")
+	}
+	cleanPath := filepath.Clean(path)
+	return showInFolderNative(cleanPath)
+}
+
+
