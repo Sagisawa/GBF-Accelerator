@@ -225,6 +225,7 @@ func (s *ProxyServer) activateRoute(route failoverRoute) {
 	if oldAsset != nil && oldAsset != newAsset {
 		if tr, ok := oldAsset.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
 	}
+}
 
 func (s *ProxyServer) getRouteForRequest(method string) (failoverRoute, bool) {
 	if s.failover == nil { return failoverRoutePrimary, false }
