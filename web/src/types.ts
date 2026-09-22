@@ -93,6 +93,21 @@ export interface LogItem {
   msg: string;
 }
 
+export interface TarouIntegrationStatus {
+  id: string;
+  name: string;
+  enabled: boolean;
+  connected: boolean;
+  protocol_version: number;
+  supported_protocol_version: number;
+  extension_version?: string;
+  last_seen_at?: string;
+  capabilities: string[];
+  source_url: string;
+  author: string;
+  message: string;
+}
+
 export interface UpdateInfo {
   has_update: boolean;
   latest_version: string;
