@@ -193,6 +193,11 @@ func isCAInstalled(sha1 string, caPath string) bool {
 	return checkTrustSettings(rootCAName)
 }
 
+// detectCAStore cannot distinguish HKCU/HKLM on macOS (Keychain-based).
+func detectCAStore(sha1 string) string {
+	return ""
+}
+
 func installCA(caPath string) error {
 	cleanPath, err := filepath.Abs(caPath)
 	if err != nil {

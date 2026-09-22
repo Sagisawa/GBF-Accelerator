@@ -7,6 +7,11 @@ func isCAInstalled(sha1 string, _ string) bool {
 	return true
 }
 
+// detectCAStore cannot distinguish HKCU/HKLM on this platform.
+func detectCAStore(sha1 string) string {
+	return ""
+}
+
 func installCA(caPath string) error {
 	return nil
 }

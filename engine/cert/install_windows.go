@@ -40,6 +40,39 @@ func isCAInstalled(sha1 string, _ string) bool {
 	return cmdMachine.Run() == nil
 }
 
+// detectCAStore reports which Root store hive contains the given SHA-1
+// thumbprint: "HKCU" (current user) or "HKLM" (local machine). Returns ""
+// when the thumbprint is not found in either store.
+func detectCAStore(sha1 string) string {
+	cleanSHA1 := strings.ToUpper(strings.TrimSpace(sha1))
+	if cleanSHA1 == "" {
+		return ""
+	}
+
+	// 1. Registry fast path: HKCU first, then HKLM
+	for _, hive := range []string{"HKCU", "HKLM"} {
+		regPath := fmt.Sprintf(`%s\Software\Microsoft\SystemCertificates\Root\Certificates\%s`, hive, cleanSHA1)
+		cmd := exec.Command("reg", "query", regPath)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if err := cmd.Run(); err == nil {
+			return hive
+		}
+	}
+
+	// 2. certutil fallback: user store then machine store
+	cmdUser := exec.Command("certutil", "-user", "-verifystore", "Root", cleanSHA1)
+	cmdUser.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if cmdUser.Run() == nil {
+		return "HKCU"
+	}
+	cmdMachine := exec.Command("certutil", "-verifystore", "Root", cleanSHA1)
+	cmdMachine.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if cmdMachine.Run() == nil {
+		return "HKLM"
+	}
+	return ""
+}
+
 func installCA(caPath string) error {
 	cmd := exec.Command("certutil", "-addstore", "-user", "Root", caPath)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}

@@ -55,6 +55,17 @@ func (m *Manager) IsInstalled() bool {
 	return isCAInstalled(sha1, caPath)
 }
 
+// GetInstallStore returns which Windows Root store hive currently contains
+// the CA ("HKCU" or "HKLM"). It returns "" when the CA is not detected or
+// when the platform cannot distinguish the store (e.g. macOS/Linux).
+func (m *Manager) GetInstallStore() string {
+	sha1 := m.GetFingerprintSHA1()
+	if sha1 == "" {
+		return ""
+	}
+	return detectCAStore(sha1)
+}
+
 func (m *Manager) Install(certsDir string) error {
 	if certsDir == "" {
 		if m.certsDir != "" {

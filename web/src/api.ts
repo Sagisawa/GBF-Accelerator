@@ -194,8 +194,11 @@ export async function fetchCertStatus(): Promise<any> {
 
 export async function installCert(): Promise<any> {
   const res = await fetch(`${BASE}/api/cert/install`, { method: 'POST' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
 }
 
 export async function uninstallCert(): Promise<any> {

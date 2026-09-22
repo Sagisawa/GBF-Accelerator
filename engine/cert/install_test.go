@@ -49,3 +49,31 @@ func TestCertFingerprint(t *testing.T) {
 		t.Errorf("expected error installing non-existent cert")
 	}
 }
+
+func TestGetInstallStore(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr, err := NewManager(tempDir)
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+
+	// A freshly generated CA in a temp dir must not be present in any system
+	// Root store, so the store diagnostic must be empty.
+	if store := mgr.GetInstallStore(); store != "" {
+		t.Errorf("expected empty store for non-installed CA, got %q", store)
+	}
+}
+
+func TestDetectCAStoreInvalidInput(t *testing.T) {
+	if got := detectCAStore(""); got != "" {
+		t.Errorf("expected empty store for empty sha1, got %q", got)
+	}
+	if got := detectCAStore("   "); got != "" {
+		t.Errorf("expected empty store for blank sha1, got %q", got)
+	}
+	// A well-formed thumbprint that cannot exist in any real Root store
+	// (avoid all-zeros: certutil treats it as a wildcard and enumerates).
+	if got := detectCAStore("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); got != "" {
+		t.Errorf("expected empty store for absent thumbprint, got %q", got)
+	}
+}
