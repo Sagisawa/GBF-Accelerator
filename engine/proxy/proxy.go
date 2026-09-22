@@ -1237,9 +1237,10 @@ func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, tar
 	}
 
 	// Rule 2: Static Asset vs Dynamic Game API
-	isStatic := (req.Method == http.MethodGet || req.Method == http.MethodHead) && isStaticTarget(targetHost, req.URL.Path)
+	pathLower := strings.ToLower(req.URL.Path)
+	isStatic := (req.Method == http.MethodGet || req.Method == http.MethodHead) && isStaticTargetLower(targetHost, pathLower)
 	if isStatic {
-		return s.handleStaticAsset(w, req, targetHost)
+		return s.handleStaticAssetLower(w, req, targetHost, pathLower)
 	}
 
 	return s.handleDynamicAPI(w, req, targetHost)
@@ -1317,14 +1318,18 @@ func (s *ProxyServer) sendNotModifiedResponse(w io.Writer, item *cache.CacheItem
 }
 
 func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHost string) bool {
-	cleanPath := strings.Split(req.URL.Path, "?")[0]
+	return s.handleStaticAssetLower(w, req, targetHost, strings.ToLower(req.URL.Path))
+}
+
+func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, targetHost, pathLower string) bool {
+	cleanPath, _, _ := strings.Cut(req.URL.Path, "?")
 
 	// Security: Reject path traversal sequences immediately
 	// Extract the path portion from raw req.RequestURI before unescaping
 	// (so that query parameters like ?t=12:34:56 do not falsely trigger colon checks,
 	// and encoded %3F in path is not confused with query delimiter).
-	rawURIPath := strings.Split(req.RequestURI, "?")[0]
-	rawURIPath = strings.Split(rawURIPath, "#")[0]
+	rawURIPath, _, _ := strings.Cut(req.RequestURI, "?")
+	rawURIPath, _, _ = strings.Cut(rawURIPath, "#")
 
 	if idx := strings.Index(rawURIPath, "://"); idx != -1 {
 		afterScheme := rawURIPath[idx+3:]
@@ -1368,8 +1373,10 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	unescapedLower := strings.ToLower(unescapedURI)
 	unescapedPathLower := strings.ToLower(unescapedPath)
 	reqURILower := strings.ToLower(req.RequestURI)
-	pathLower := strings.ToLower(req.URL.Path)
-	cleanLower := strings.ToLower(cleanPath)
+	cleanLower := pathLower
+	if cleanPath != req.URL.Path {
+		cleanLower = strings.ToLower(cleanPath)
+	}
 	if strings.Contains(req.RequestURI, "..") ||
 		strings.Contains(req.URL.Path, "..") ||
 		strings.Contains(unescapedURI, "..") ||
@@ -1417,7 +1424,10 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 			return !req.Close
 		}
 
-		s.sendAssetResponse(w, 200, item, isHead, req.URL.Path, req.Close)
+		// Cached asset (RAM or SSD): serialize straight from the CacheItem fields,
+		// skipping the per-hit http.Header construction of sendAssetResponse. The
+		// post-fetch response below intentionally keeps using sendAssetResponse.
+		s.sendCachedAssetResponseFast(w, item, isHead, req.URL.Path, req.Close)
 		return !req.Close
 	}
 
@@ -1776,6 +1786,17 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 		buf.WriteString("Connection: keep-alive\r\n\r\n")
 	}
 
+	// Emit the serialized head plus payload through the single shared write strategy.
+	writeResponseBody(w, buf, statusCode, body, isHead)
+}
+
+// writeResponseBody emits the already-serialized response head held by buf together
+// with body. It preserves the exact write strategy shared by every response path:
+// HEAD / 204 / 304 / 1xx suppress the payload, empty payloads and payloads that fit
+// into 64 KiB are written together with the head in one write, larger payloads use
+// writev-style scattering. Keeping this in a single helper prevents the cached-asset
+// fast path from drifting away from writeHTTPResponse.
+func writeResponseBody(w io.Writer, buf *bytes.Buffer, statusCode int, body []byte, isHead bool) {
 	if isHead || statusCode == http.StatusNoContent || statusCode == http.StatusNotModified || (statusCode >= 100 && statusCode < 200) {
 		_, _ = w.Write(buf.Bytes())
 	} else if len(body) == 0 {
@@ -1809,6 +1830,76 @@ func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.Cac
 	hdr.Set("Cache-Control", s.getCacheControlHeader(urlPath))
 
 	writeHTTPResponse(w, status, hdr, item.Data, isHead, reqClose)
+}
+
+// sendCachedAssetResponseFast serializes a cached-asset 200 response straight from the
+// immutable cache.CacheItem fields, avoiding the per-request http.Header map that
+// sendAssetResponse builds (map allocation + map iteration + per-key hop-by-hop and
+// fingerprint filtering) on every RAM/disk cache hit.
+//
+// The emitted header block carries exactly the same header lines as sendAssetResponse:
+// Content-Type / ETag / Last-Modified / Content-Encoding (each only when non-empty),
+// Access-Control-Allow-Origin and Cache-Control, plus the generated Date, Content-Length
+// and Connection lines. Names, values and counts are unchanged; only the line ORDER is
+// fixed here, whereas the legacy http.Header map iteration was randomly ordered. HEAD,
+// Content-Length and Connection semantics stay identical because the payload is emitted
+// through the same writeResponseBody strategy used by writeHTTPResponse.
+func (s *ProxyServer) sendCachedAssetResponseFast(w io.Writer, item *cache.CacheItem, isHead bool, urlPath string, reqClose bool) {
+	if item == nil {
+		return
+	}
+
+	buf := responseBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= 128*1024 {
+			responseBufferPool.Put(buf)
+		}
+	}()
+
+	buf.WriteString("HTTP/1.1 200 OK\r\nDate: ")
+	var dateBuf [32]byte
+	buf.Write(time.Now().UTC().AppendFormat(dateBuf[:0], http.TimeFormat))
+	buf.WriteString("\r\n")
+
+	if item.ContentType != "" {
+		buf.WriteString("Content-Type: ")
+		buf.WriteString(item.ContentType)
+		buf.WriteString("\r\n")
+	}
+	if item.ETag != "" {
+		buf.WriteString("ETag: ")
+		buf.WriteString(item.ETag)
+		buf.WriteString("\r\n")
+	}
+	if item.LastModified != "" {
+		buf.WriteString("Last-Modified: ")
+		buf.WriteString(item.LastModified)
+		buf.WriteString("\r\n")
+	}
+	if item.ContentEncoding != "" {
+		buf.WriteString("Content-Encoding: ")
+		buf.WriteString(item.ContentEncoding)
+		buf.WriteString("\r\n")
+	}
+	// Access-Control-Allow-Origin and Cache-Control are always emitted, mirroring
+	// hdr.Set which writes the line even for an empty value.
+	buf.WriteString("Access-Control-Allow-Origin: *\r\n")
+	buf.WriteString("Cache-Control: ")
+	buf.WriteString(s.getCacheControlHeader(urlPath))
+	buf.WriteString("\r\n")
+
+	var numBuf [32]byte
+	buf.WriteString("Content-Length: ")
+	buf.Write(strconv.AppendInt(numBuf[:0], int64(len(item.Data)), 10))
+	buf.WriteString("\r\n")
+	if reqClose {
+		buf.WriteString("Connection: close\r\n\r\n")
+	} else {
+		buf.WriteString("Connection: keep-alive\r\n\r\n")
+	}
+
+	writeResponseBody(w, buf, http.StatusOK, item.Data, isHead)
 }
 
 func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, body []byte, isHead bool, reqClose bool) {
@@ -1993,10 +2084,14 @@ func isPrivateOrLocalHost(host string) bool {
 }
 
 func isStaticTarget(host, path string) bool {
+	return isStaticTargetLower(host, strings.ToLower(path))
+}
+
+func isStaticTargetLower(host, pathLower string) bool {
 	if hp, _, err := net.SplitHostPort(host); err == nil {
 		host = hp
 	}
-	p := strings.ToLower(path)
+	p := pathLower
 
 	// Dynamic prefixes are strictly non-static
 	dynamicPrefixes := []string{
@@ -2029,7 +2124,7 @@ func isStaticTarget(host, path string) bool {
 		".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm",
 		".wasm", ".woff", ".woff2", ".ttf", ".otf", ".svg", ".ico",
 	}
-	clean := strings.Split(p, "?")[0]
+	clean, _, _ := strings.Cut(p, "?")
 	for _, ext := range staticExts {
 		if strings.HasSuffix(clean, ext) {
 			return true

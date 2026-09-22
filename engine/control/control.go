@@ -819,6 +819,15 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if val, ok := patch["clean_zombies"].(bool); ok {
 		candidate.CleanZombies = val
 	}
+	if val, ok := patch["window_width"].(float64); ok && val >= 400 {
+		candidate.WindowWidth = int(val)
+	}
+	if val, ok := patch["window_height"].(float64); ok && val >= 400 {
+		candidate.WindowHeight = int(val)
+	}
+	if val, ok := patch["window_maximized"].(bool); ok {
+		candidate.WindowMaximized = val
+	}
 
 	proxyNeedsReload := c.proxySrv != nil &&
 		(candidate.AllowLAN != oldCandidate.AllowLAN || candidate.ListenPort != oldCandidate.ListenPort)

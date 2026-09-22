@@ -193,14 +193,36 @@ func prepareAppURL(url string) string {
 	return appURL
 }
 
+// buildAppWindowArgs builds the Chromium App-mode command-line arguments.
+// Maximized and explicit window size are mutually exclusive so the saved state is deterministic.
+func buildAppWindowArgs(appURL string, width, height int, maximized bool) []string {
+	args := []string{fmt.Sprintf("--app=%s", appURL)}
+	if maximized {
+		return append(args, "--start-maximized")
+	}
+	if width < 400 {
+		width = 880
+	}
+	if height < 400 {
+		height = 640
+	}
+	return append(args, fmt.Sprintf("--window-size=%d,%d", width, height))
+}
+
 // openAppWindow launches Microsoft Edge, Google Chrome, or Chromium-based browsers in standalone App mode (--app=<url>).
 // This opens a clean, borderless native window with Win32 title bar and no address bar or tabs.
 func openAppWindow(url string) error {
+	return openAppWindowWithGeometry(url, 880, 640, false)
+}
+
+// openAppWindowWithGeometry launches the standalone App window using persisted geometry.
+func openAppWindowWithGeometry(url string, width, height int, maximized bool) error {
 	appURL := prepareAppURL(url)
 
 	browserPath := findAppBrowserWindows()
 	if browserPath != "" {
-		cmd := exec.Command(browserPath, fmt.Sprintf("--app=%s", appURL), "--window-size=880,640")
+		args := buildAppWindowArgs(appURL, width, height, maximized)
+		cmd := exec.Command(browserPath, args...)
 		if err := cmd.Start(); err == nil {
 			go func() {
 				_ = cmd.Wait()
