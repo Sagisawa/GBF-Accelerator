@@ -84,12 +84,10 @@ type missingCacheShard struct {
 	items map[string]struct{}
 }
 
-func newMissingCacheShards() [missingCacheShardCount]missingCacheShard {
-	var shards [missingCacheShardCount]missingCacheShard
-	for i := range shards {
-		shards[i].items = make(map[string]struct{})
+func (m *Manager) initMissingCacheShards() {
+	for i := range m.missingShards {
+		m.missingShards[i].items = make(map[string]struct{})
 	}
-	return shards
 }
 
 func (m *Manager) missingShard(key string) *missingCacheShard {
@@ -121,15 +119,15 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 		ramMaxMB = 256
 	}
 	m := &Manager{
-		cacheBase:     cacheBase,
-		ramCache:      NewLRUCache(int64(ramMaxMB) * 1024 * 1024),
-		sf:            NewSingleFlight(),
-		missingShards: newMissingCacheShards(),
+		cacheBase:    cacheBase,
+		ramCache:     NewLRUCache(int64(ramMaxMB) * 1024 * 1024),
+		sf:           NewSingleFlight(),
 		persistQueue: make(chan *persistTask, 1024),
 		stopPersist:  make(chan struct{}),
 		persistDone:  make(chan struct{}),
 		generation:   1,
 	}
+	m.initMissingCacheShards()
 	m.ramEnabled.Store(true)
 	m.autoRepair.Store(true)
 	var wg sync.WaitGroup
