@@ -1081,6 +1081,8 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	var resp *http.Response
 	var fetchErr error
 	var reqReused bool
+	apiClient, route, trial := s.getAPIClientForRequest(req.Method)
+	var lastAttemptElapsed time.Duration
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		reqCtx := req.Context()
@@ -1127,6 +1129,9 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 
 	respBytes, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
+		if req.Method == http.MethodGet && isRetryable {
+			s.observeUpstream(route, trial, lastAttemptElapsed, readErr)
+		}
 		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
 	}
@@ -1550,9 +1555,12 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		}
 		upReq.Host = targetHost
 
-		resp, fetchErr = s.getAPIClient().Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
+		attemptStart := time.Now()
+		resp, fetchErr = apiClient.Do(s.tracedRequestWithCallback(upReq, func(reused bool) {
 			reqReused = reused
 		}))
+		lastAttemptElapsed = time.Since(attemptStart)
+
 		if fetchErr == nil {
 			break
 		}
@@ -1563,6 +1571,9 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		break
 	}
 
+	if req.Method == http.MethodGet && isRetryable {
+		s.observeUpstream(route, trial, lastAttemptElapsed, fetchErr)
+	}
 	if fetchErr != nil || resp == nil {
 		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
 		return !req.Close
