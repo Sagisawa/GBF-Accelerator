@@ -238,6 +238,21 @@ export async function cancelCacheTask(): Promise<any> {
   return res.json()
 }
 
+export async function fetchTarouIntegrationStatus(): Promise<import('./types').TarouIntegrationStatus> {
+  const res = await fetch('/api/integrations/tarou/status', { cache: 'no-store' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  return data.status
+}
+
+export async function setTarouIntegrationEnabled(enabled: boolean): Promise<import('./types').TarouIntegrationStatus> {
+  const endpoint = enabled ? '/api/integrations/tarou/enable' : '/api/integrations/tarou/disable'
+  const res = await fetch(endpoint, { method: 'POST' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  return data.status
+}
+
 export async function checkForUpdate(): Promise<UpdateInfo> {
   const res = await fetch(`${BASE}/api/update/check`)
   const data = await res.json().catch(() => ({}))
