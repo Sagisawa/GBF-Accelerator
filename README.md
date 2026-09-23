@@ -11,11 +11,18 @@
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
 
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
-> - **Windows**：下载 `GBF_Accelerator_v2.1.0_GUI.zip`，解压即用。
-> - **macOS**：下载 `GBF_Accelerator_v2.1.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Windows**：下载 `GBF_Accelerator_v2.1.1_GUI.zip`，解压即用。
+> - **macOS**：下载 `GBF_Accelerator_v2.1.1_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
+
+## v2.1.1 发布要点
+
+- **游戏重复加载体验提速**：全面优化已缓存素材（立绘、UI、音效、脚本）的本地交付链路，切页与返回已访问界面更利落，频繁切图与连续战斗时本地请求处理开销更低。
+- **RAM Cache 零额外内存分配**：重构 RAM 命中热路径，消除重复 Host 解析与临时对象构造，高并发 Benchmark 实现 `5 allocs/op → 0 allocs/op`。
+- **并发吞吐与无锁快照**：SingleFlight 引入哈希分片降低锁竞争，16 Worker 并发下微基准耗时降低约 25% (`159.2 ns/op → 120.0 ns/op`)；配置读取引入原子不可变快照实现完全无锁。
+- **全链路高并发审计基准测试**：补齐代理核心、遥测通道与 LRU 缓存并发读写的专项基准测试与静态缓存命中测试。
 
 ## v2.1.0 发布要点
 
@@ -282,7 +289,7 @@ flowchart TD
 ### 方式一：使用预构建便携版（推荐）
 
 #### Windows 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新便携包 `GBF_Accelerator_v2.1.0_GUI.zip`。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新便携包 `GBF_Accelerator_v2.1.1_GUI.zip`。
 2. 解压到任意非中文路径（例如 `D:\GBF_Accelerator\`）。
 3. **准备上游网络**：确保你的代理软件（Clash Verge / Clash / v2rayN 等）已开启并正常翻墙联网（若有日本专线也可在界面中勾选【直连模式】）。
 4. **启动程序**：双击运行 `GBF_Accelerator.exe`。
@@ -298,7 +305,7 @@ flowchart TD
    > 💡 **缓存命中技术说明**：首次游玩新副本时素材经网络首次下载并写入加速器本地磁盘缓存；**同一浏览器会话短时间内重复游玩时，现代浏览器自带的 Memory Cache（内存缓存）会直接在内部交付（开发者工具 Network 显示 from memory cache），根本不会向外部网络或本地代理发请求**。因此，只有游玩一段时间后（浏览器内部内存缓存置换淘汰）、重启浏览器、或第二天再次进入相同副本时，请求才会由加速器本地缓存（RAM 0ms / SSD 1~3ms）极速交付，控制台顶部的【本地缓存命中】数字会快速跳动增加。
 
 #### macOS 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.1.0_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.1.1_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
 2. 解压并将 `GBF_Accelerator.app` 拖入系统的【应用程序】文件夹。
    > 💡 **Gatekeeper 提示**：首次打开若提示“无法验证开发者”或“已损坏”，请按住 Control 键并鼠标右键点击应用选择【打开】；或在终端执行 `xattr -cr /Applications/GBF_Accelerator.app` 解除系统隔离。
 3. 确保 Clash / Surge 等上游代理正常运行。
@@ -553,7 +560,7 @@ go vet ./...
   # 若修改了 web/ 前端代码，需同步重新编译 React SPA
   .\build.ps1 -RebuildWeb
   ```
-  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v2.1.0_GUI.zip`。
+  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v2.1.1_GUI.zip`。
 
 - **macOS / Linux**（编译 Universal 2 双架构二进制并打包）：
   ```bash
@@ -563,7 +570,7 @@ go vet ./...
   # 若修改了 web/ 前端代码，需同步重新编译 React SPA
   ./build.sh --rebuild-web --release
   ```
-  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v2.1.0_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
+  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v2.1.1_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
 
 > ⚠️ **发布构建说明**：macOS Universal 2 正式发布包（融合 arm64 与 amd64）必须在具备 `lipo` 工具的 macOS 主机环境下打包生成。在缺乏 `lipo` 的环境（如 Windows）运行 macOS 打包将严格报错并中断，杜绝输出单架构伪装包。
 
