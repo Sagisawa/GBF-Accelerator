@@ -373,7 +373,8 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 }
 
 func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
-	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	// 1. Check RAM Cache

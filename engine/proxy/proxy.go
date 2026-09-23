@@ -1352,22 +1352,20 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 
 	thHost := targetHost
 	thHostHasColon := false
-	if hp, port, err := net.SplitHostPort(targetHost); err == nil {
-		thHost = hp
-		if _, pErr := strconv.Atoi(port); pErr != nil {
-			thHostHasColon = true
+	if strings.IndexByte(targetHost, ':') != -1 {
+		if hp, port, err := net.SplitHostPort(targetHost); err == nil {
+			thHost = hp
+			if _, pErr := strconv.Atoi(port); pErr != nil {
+				thHostHasColon = true
+			}
+			if port == "80" || port == "443" {
+				targetHost = hp
+			}
 		}
 	}
 	thHost = strings.Trim(thHost, "[]")
 	if strings.Contains(thHost, ":") && net.ParseIP(thHost) == nil {
 		thHostHasColon = true
-	}
-
-	// Normalize targetHost: strip standard ports so upstream https://targetHost connects to 443
-	if hp, port, err := net.SplitHostPort(targetHost); err == nil {
-		if port == "80" || port == "443" {
-			targetHost = hp
-		}
 	}
 
 	unescapedLower := strings.ToLower(unescapedURI)
@@ -1978,38 +1976,44 @@ func isConnectionDropError(err error) bool {
 }
 
 func NormalizeAssetNamespace(host string) (string, bool) {
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
 	}
 	h := strings.ToLower(strings.TrimRight(host, "."))
-	if isGBFAkamaiHost(h) || strings.HasPrefix(h, "game-a") {
+	if isGBFAkamaiNormalized(h) || strings.HasPrefix(h, "game-a") {
 		return "gbf", true
 	}
 	return h, false
 }
 
 func isPassthroughHost(host string) bool {
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
 	}
 	h := strings.ToLower(host)
 	return h == "ws.game.granbluefantasy.jp" || strings.HasPrefix(h, "ws.game.")
 }
 
+func isDomainOrSubdomainNormalized(host, domain string) bool {
+	return host == domain || strings.HasSuffix(host, "."+domain)
+}
+
 func isDomainOrSubdomain(host, domain string) bool {
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
 	}
 	h := strings.ToLower(strings.TrimRight(host, "."))
 	d := strings.ToLower(strings.TrimRight(domain, "."))
-	return h == d || strings.HasSuffix(h, "."+d)
+	return isDomainOrSubdomainNormalized(h, d)
 }
 
-func isGBFAkamaiHost(host string) bool {
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
-	}
-	h := strings.ToLower(strings.TrimRight(host, "."))
+func isGBFAkamaiNormalized(h string) bool {
 	if !strings.HasSuffix(h, ".akamaized.net") {
 		return false
 	}
@@ -2028,8 +2032,8 @@ func isGBFAkamaiHost(host string) bool {
 		"prd-game-a5-granbluefantasy-steam.akamaized.net":
 		return true
 	}
-	if isDomainOrSubdomain(h, "granbluefantasy.akamaized.net") ||
-		isDomainOrSubdomain(h, "gbf.akamaized.net") {
+	if isDomainOrSubdomainNormalized(h, "granbluefantasy.akamaized.net") ||
+		isDomainOrSubdomainNormalized(h, "gbf.akamaized.net") {
 		return true
 	}
 	// Strict prefix matching for future Akamai CDN shards
@@ -2037,6 +2041,16 @@ func isGBFAkamaiHost(host string) bool {
 		return true
 	}
 	return false
+}
+
+func isGBFAkamaiHost(host string) bool {
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
+	}
+	h := strings.ToLower(strings.TrimRight(host, "."))
+	return isGBFAkamaiNormalized(h)
 }
 
 func isGBFDomain(host string) bool {
