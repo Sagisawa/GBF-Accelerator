@@ -1,0 +1,11 @@
+<resources>
+    <color name="primary">#1E88E5</color>
+    <color name="primary_dark">#1565C0</color>
+    <color name="accent">#00E5FF</color>
+    <color name="background">#12161A</color>
+    <color name="surface">#1F262D</color>
+    <color name="surface_translucent">#D91C232B</color>
+    <color name="white">#FFFFFF</color>
+    <color name="icon_tint">#E0E6ED</color>
+    <color name="icon_active">#4CAF50</color>
+</resources>

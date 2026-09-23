@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/rootContainer"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background"
+    tools:context=".MainActivity">
+
+    <!-- 碧蓝幻想主 WebView -->
+    <WebView
+        android:id="@+id/webView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scrollbars="none" />
+
+    <!-- 顶部网页加载进度条 -->
+    <ProgressBar
+        android:id="@+id/progressBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:layout_gravity="top"
+        android:max="100"
+        android:progressTint="@color/accent"
+        android:visibility="gone" />
+
+    <!-- 悬浮展开按钮（当工具栏收起时显示，半透明不挡游戏） -->
+    <ImageButton
+        android:id="@+id/btnExpandMenu"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp"
+        android:background="@drawable/bg_floating_bar"
+        android:contentDescription="@string/nav_expand"
+        android:elevation="6dp"
+        android:padding="8dp"
+        android:src="@drawable/ic_menu"
+        android:visibility="gone" />
+
+    <!-- 极简半透明悬浮控制栏（支持展开/收起） -->
+    <LinearLayout
+        android:id="@+id/toolbarContainer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="16dp"
+        android:background="@drawable/bg_floating_bar"
+        android:elevation="6dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingTop="4dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="4dp">
+
+        <!-- 后退 -->
+        <ImageButton
+            android:id="@+id/btnBack"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_tool_button"
+            android:contentDescription="@string/nav_back"
+            android:padding="8dp"
+            android:src="@drawable/ic_back" />
+
+        <!-- 前进 -->
+        <ImageButton
+            android:id="@+id/btnForward"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_tool_button"
+            android:contentDescription="@string/nav_forward"
+            android:padding="8dp"
+            android:src="@drawable/ic_forward" />
+
+        <!-- 刷新 -->
+        <ImageButton
+            android:id="@+id/btnRefresh"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_tool_button"
+            android:contentDescription="@string/nav_refresh"
+            android:padding="8dp"
+            android:src="@drawable/ic_refresh" />
+
+        <!-- 主页 -->
+        <ImageButton
+            android:id="@+id/btnHome"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_tool_button"
+            android:contentDescription="@string/nav_home"
+            android:padding="8dp"
+            android:src="@drawable/ic_home" />
+
+        <!-- 屏幕常亮开关 -->
+        <ImageButton
+            android:id="@+id/btnScreenOn"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_tool_button"
+            android:contentDescription="@string/nav_screen_on"
+            android:padding="8dp"
+            android:src="@drawable/ic_screen_on" />
+
+        <!-- 横竖屏切换 -->
+        <ImageButton
+            android:id="@+id/btnRotate"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_tool_button"
+            android:contentDescription="@string/nav_rotate"
+            android:padding="8dp"
+            android:src="@drawable/ic_rotate" />
+
+        <!-- 收起按钮 -->
+        <ImageButton
+            android:id="@+id/btnCollapse"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="@drawable/bg_tool_button"
+            android:contentDescription="@string/nav_collapse"
+            android:padding="8dp"
+            android:src="@drawable/ic_menu" />
+
+    </LinearLayout>
+
+</FrameLayout>

@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">GBF Accelerator</string>
+    <string name="nav_back">返回</string>
+    <string name="nav_forward">前进</string>
+    <string name="nav_refresh">刷新</string>
+    <string name="nav_home">主页</string>
+    <string name="nav_screen_on">常亮: 开</string>
+    <string name="nav_screen_off">常亮: 关</string>
+    <string name="nav_rotate">横竖屏切换</string>
+    <string name="nav_collapse">收起</string>
+    <string name="nav_expand">展开工具栏</string>
+    <string name="exit_confirm">再按一次退出游戏</string>
+</resources>

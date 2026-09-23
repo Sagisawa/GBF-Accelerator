@@ -1,0 +1,13 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Stylized GBF Wings / Lightning bolt -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M54,18 L32,56 L50,56 L42,90 L76,46 L58,46 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,28 L38,54 L50,54 L44,78 L68,48 L56,48 Z" />
+</vector>
