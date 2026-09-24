@@ -1,4 +1,35 @@
 <resources>
-    <string name="app_name">GBF-ACC Xposed</string>
-    <string name="xposed_description">GBF-Accelerator Xposed Module for SkyLeap verification</string>
+    <string name="app_name">GBF-Accelerator</string>
+    <string name="app_subtitle">Go Core &amp; Static Cache for Android</string>
+    <string name="xposed_description">GBF-Accelerator Module for Browser Reverse Bypass</string>
+
+    <!-- Core & Proxy Status -->
+    <string name="status_daemon_title">Go Core Daemon</string>
+    <string name="status_proxy_title">GBF Proxy Status</string>
+    <string name="proxy_normal">NORMAL (Active)</string>
+    <string name="proxy_unavailable">UNAVAILABLE (Fail-Closed)</string>
+    <string name="proxy_crashed">CRASHED (Watchdog Active)</string>
+    <string name="proxy_detail_normal">127.0.0.1:8124 listening | 6 GBF rules -> Core, other -> DIRECT</string>
+    <string name="proxy_detail_unavailable">127.0.0.1:8124 offline | Fail-Closed: direct leak safely blocked</string>
+    <string name="ports_summary">Data Plane: 127.0.0.1:8124 | Control: 127.0.0.1:8125</string>
+
+    <!-- Actions -->
+    <string name="btn_start_proxy">Start Proxy</string>
+    <string name="btn_stop_proxy">Stop Proxy</string>
+    <string name="btn_launch_browser">Launch Browser</string>
+
+    <!-- Browser Section -->
+    <string name="section_browser_title">Target Browser</string>
+    <string name="browser_status_installed">Installed (%1$s)</string>
+    <string name="browser_status_not_installed">Not Installed</string>
+
+    <!-- Patch Engine Pipeline -->
+    <string name="section_patch_title">Browser Packaging Pipeline</string>
+    <string name="patch_pipeline_standby">Standby (Pre-patched APK Supported)</string>
+    <string name="patch_pipeline_info">Direct import of official browser APKs and on-device patching are architecturally scheduled for future milestones.</string>
+
+    <!-- Metrics & Logs -->
+    <string name="section_metrics_title">Live Telemetry &amp; Cache Metrics</string>
+    <string name="section_logs_title">System &amp; Core Logs</string>
+    <string name="logs_clear">Clear</string>
 </resources>

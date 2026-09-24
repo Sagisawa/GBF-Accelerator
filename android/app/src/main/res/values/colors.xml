@@ -2,6 +2,7 @@
 <resources>
     <color name="bg_main">#121212</color>
     <color name="bg_card">#1E1E1E</color>
+    <color name="bg_subcard">#262626</color>
     <color name="text_primary">#E0E0E0</color>
     <color name="text_secondary">#9E9E9E</color>
     <color name="color_accent">#3F51B5</color>
@@ -9,6 +10,8 @@
     <color name="color_error">#F44336</color>
     <color name="color_warning">#FF9800</color>
     <color name="color_stopped">#757575</color>
+    <color name="color_proxy_ok">#2E7D32</color>
+    <color name="color_proxy_off">#C62828</color>
     <color name="bg_log">#0A0A0A</color>
     <color name="text_log">#80CBC4</color>
 </resources>

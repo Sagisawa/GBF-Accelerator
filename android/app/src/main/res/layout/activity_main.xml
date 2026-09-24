@@ -15,7 +15,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="GBF-Accelerator"
+            android:text="@string/app_name"
             android:textColor="@color/text_primary"
             android:textSize="22sp"
             android:textStyle="bold" />
@@ -24,15 +24,169 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="2dp"
-            android:text="Android Local Proxy &amp; Static Cache Host"
+            android:text="@string/app_subtitle"
             android:textColor="@color/text_secondary"
             android:textSize="13sp" />
 
-        <!-- Status Card -->
+        <!-- 1. Core & Proxy Status Card -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
+            android:background="@color/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <!-- Core Daemon Status Row -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/status_daemon_title"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tv_status_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@color/color_stopped"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp"
+                    android:text="STOPPED"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- GBF Proxy Status Row -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/status_proxy_title"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="13sp" />
+
+                <TextView
+                    android:id="@+id/tv_proxy_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@color/color_proxy_off"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="4dp"
+                    android:text="@string/proxy_unavailable"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Proxy Detail / Fail-Closed Status -->
+            <TextView
+                android:id="@+id/tv_proxy_detail"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/proxy_detail_unavailable"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <!-- PID & Uptime -->
+            <TextView
+                android:id="@+id/tv_pid_uptime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="PID: -- | Uptime: 0.0s"
+                android:textColor="@color/text_primary"
+                android:textSize="13sp" />
+
+            <!-- Network Plane Ports -->
+            <TextView
+                android:id="@+id/tv_ports"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/ports_summary"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <!-- Service Toggle Button -->
+            <Button
+                android:id="@+id/btn_toggle_service"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:backgroundTint="@color/color_success"
+                android:text="@string/btn_start_proxy"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <!-- 2. Target Browser Management Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@color/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/section_browser_title"
+                android:textColor="@color/text_primary"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <!-- Browser Selection Dropdown -->
+            <Spinner
+                android:id="@+id/sp_target_browser"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@color/bg_subcard"
+                android:paddingHorizontal="10dp" />
+
+            <!-- Browser Installation Status Details -->
+            <TextView
+                android:id="@+id/tv_browser_status"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Checking package installation..."
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <!-- Launch Button -->
+            <Button
+                android:id="@+id/btn_launch_browser"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:backgroundTint="@color/color_accent"
+                android:text="@string/btn_launch_browser"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <!-- 3. Browser Packaging Pipeline (Architectural Interface Card) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
             android:background="@color/bg_card"
             android:orientation="vertical"
             android:padding="14dp">
@@ -47,75 +201,37 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Daemon Status"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="14sp" />
+                    android:text="@string/section_patch_title"
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/tv_status_badge"
+                    android:id="@+id/tv_patch_status"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:paddingHorizontal="10dp"
-                    android:paddingVertical="4dp"
-                    android:text="STOPPED"
-                    android:textColor="#FFFFFF"
-                    android:textStyle="bold"
-                    android:textSize="12sp"
-                    android:background="@color/color_stopped" />
+                    android:background="@color/bg_subcard"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="3dp"
+                    android:text="@string/patch_pipeline_standby"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp" />
             </LinearLayout>
 
             <TextView
-                android:id="@+id/tv_pid_uptime"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="PID: -- | Uptime: 0.0s"
-                android:textColor="@color/text_primary"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/tv_ports"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Data Plane: 127.0.0.1:8124 | Control: 127.0.0.1:8125"
+                android:layout_marginTop="6dp"
+                android:text="@string/patch_pipeline_info"
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp" />
         </LinearLayout>
 
-        <!-- Action Buttons -->
+        <!-- 4. Live Telemetry & Cache Metrics Card -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btn_toggle_service"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginEnd="6dp"
-                android:text="Start Proxy"
-                android:backgroundTint="@color/color_success"
-                android:textColor="#FFFFFF" />
-
-            <Button
-                android:id="@+id/btn_launch_skyleap"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="6dp"
-                android:text="Launch SkyLeap"
-                android:backgroundTint="@color/color_accent"
-                android:textColor="#FFFFFF" />
-        </LinearLayout>
-
-        <!-- Metrics Card -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
+            android:layout_marginTop="14dp"
             android:background="@color/bg_card"
             android:orientation="vertical"
             android:padding="14dp">
@@ -123,7 +239,7 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Live Telemetry &amp; Cache Metrics"
+                android:text="@string/section_metrics_title"
                 android:textColor="@color/text_primary"
                 android:textSize="14sp"
                 android:textStyle="bold" />
@@ -134,7 +250,7 @@
                 android:layout_marginVertical="8dp"
                 android:background="#2E2E2E" />
 
-            <!-- Row 1: Cache -->
+            <!-- Row 1: RAM Cache -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -186,11 +302,11 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- Log Card -->
+        <!-- 5. System & Core Logs Card -->
         <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="240dp"
-            android:layout_marginTop="12dp"
+            android:layout_height="220dp"
+            android:layout_marginTop="14dp"
             android:background="@color/bg_card"
             android:orientation="vertical"
             android:padding="12dp">
@@ -205,7 +321,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Core Logs"
+                    android:text="@string/section_logs_title"
                     android:textColor="@color/text_primary"
                     android:textSize="14sp"
                     android:textStyle="bold" />
@@ -216,7 +332,7 @@
                     android:layout_height="wrap_content"
                     android:paddingHorizontal="8dp"
                     android:paddingVertical="2dp"
-                    android:text="Clear"
+                    android:text="@string/logs_clear"
                     android:textColor="@color/color_accent"
                     android:textSize="12sp" />
             </LinearLayout>

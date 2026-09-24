@@ -61,6 +61,13 @@ object BrowserAdapterRegistry {
     }
 
     /**
+     * Finds an adapter by its unique identifier.
+     */
+    fun findAdapterById(id: String): BrowserAdapter? {
+        return adapters.firstOrNull { it.id == id }
+    }
+
+    /**
      * Returns an unmodifiable snapshot of all registered adapters.
      */
     fun getAllAdapters(): List<BrowserAdapter> = adapters.toList()

@@ -140,3 +140,46 @@ I GBF-ACC : ==================================================
    - Xposed 模块（`SkyLeapModule`）通过 AndroidX WebKit `ProxyConfig.Builder` 启用 `setReverseBypassEnabled(true)` 反向分流机制。
    - 仅将 GBF 目标流量（`prd-game-a-gbf.akamaized.net`、`gbf.game.mbga.jp`、`*.granbluefantasy.jp`）导向本地 `127.0.0.1:8124`，其余 SkyLeap 流量在 WebView 层直接走 DIRECT 直连，不进入 8124。
    - Go Core 接收到 8124 流量后，依据 Host 与 Path 对静态素材与动态 API 进行内部精准分流：静态资源走本地 RAM/Disk 缓存与 HTTP/2 多路复用，动态 API 走透明转发池（保留原始 Cookie 与 Header，写请求坚决零重试）。
+
+---
+
+## 八、Android 正式产品骨架与模块化分层 (Productization Skeleton)
+
+在正式产品化演进中，本项目由单纯的 Xposed 验证宿主升级为标准的 **GBF-Accelerator Android** 独立产品架构：
+
+```text
+com.sagisawa.gbfaccelerator/
+├── browser/                          # 通用浏览器适配层
+│   ├── BrowserAdapter.kt             # 统一适配器接口规范与生命周期回调
+│   ├── BrowserAdapterRegistry.kt     # 线程安全适配器注册表 (支持多浏览器注册与查找)
+│   ├── GbfRoutingRules.kt            # 唯一事实来源 (SSOT) GBF 6 项反向代理匹配规则
+│   ├── ProxyConfigurator.kt          # 状态机 ProxyController 注入器 (严格 Fail-Closed 保证)
+│   ├── WebViewBrowserAdapter.kt      # 基于 Android 标准 WebView 的通用抽象基类
+│   └── skyleap/
+│       └── SkyLeapAdapter.kt         # 官方 SkyLeap (com.dena.skyleap) 专用适配实现
+├── core/                             # 本地 Go Core 生命周期与进程看门狗
+│   ├── CoreControlReceiver.kt        # 跨进程广播接收器 (ACTION_START / ACTION_STOP)
+│   ├── CoreManager.kt                # 进程监控、状态机、指标轮询、崩溃自动恢复 (Watchdog)
+│   └── CoreService.kt                # 前台服务 (Foreground Service) 保持 Core 存活与常驻通知
+├── patch/                            # 浏览器打包、导入与注入预留流水线接口
+│   ├── BrowserSource.kt              # 浏览器来源建模 (已安装包 InstalledPackage / 本地 APK 文件 LocalApk)
+│   ├── PatchEngine.kt                # APK 补丁引擎契约 (进度通知、选项配置、结果模型)
+│   ├── StubPatchEngine.kt            # 当前阶段待命引擎实现 (客观报告未就绪，杜绝伪造成功)
+│   ├── PatchedBrowserInstaller.kt    # 系统 PackageInstaller 安装触发器
+│   └── BrowserLauncher.kt            # 目标浏览器安装状态探测与拉起调度器
+├── ui/                               # 原生控制台 UI
+│   └── MainActivity.kt               # 状态展示 (Core运行/停止, 8124/8125, 代理正常/不可用), 浏览器选择与拉起
+└── xposed/                           # Xposed / LSPosed 胶水层
+    └── SkyLeapModule.kt              # libxposed Modern API 102 入口，轻量委托至 BrowserAdapterRegistry
+```
+
+### 核心产品定位与未来演进
+1. **定位**: `GBF-Accelerator Android` 专注于管理本地 Go Core 守护进程与浏览器加速代理桥接，并非特定浏览器的替代品。
+2. **浏览器扩展机制**:
+   - 所有受支持的浏览器均实现 `BrowserAdapter` 接口并通过 `BrowserAdapterRegistry` 注册。
+   - 首页下拉菜单自动识别已注册的浏览器列表，动态检查安装版本与状态。
+3. **打包补丁流水线 (Packaging Pipeline) 架构预留**:
+   - 规划链路：`用户导入官方浏览器 APK (BrowserSource)` → `PatchEngine 本地重打包` → `PatchedBrowserInstaller 触发系统安装` → `BrowserLauncher 启动`。
+   - 当前阶段预留完整抽象接口与数据模型，支持现有预补丁（Pre-patched）模式，避免过度重度构建。
+4. **Fail-Closed 故障闭环保护**:
+   - 当 Go Core 关停时，8124 端口释放，WebView 代理规则依然锁定该本地端口，GBF 游戏流量自动 Fail-Closed 绝不直连官方泄漏；非 GBF 流量（如第三方 OAuth）走 DIRECT 始终畅通。
