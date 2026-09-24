@@ -45,19 +45,30 @@ func TestOpenFolder(t *testing.T) {
 
 func TestBuildAppWindowArgs(t *testing.T) {
 	appURL := "http://127.0.0.1:8125/?standalone=1"
+	userDataDir := `C:\Test\Profile`
 
-	normal := buildAppWindowArgs(appURL, 1200, 800, false)
-	if len(normal) != 2 || normal[0] != "--app="+appURL || normal[1] != "--window-size=1200,800" {
+	normal := buildAppWindowArgs(appURL, userDataDir, 1200, 800, false)
+	if len(normal) != 8 || normal[0] != "--app="+appURL || normal[1] != "--user-data-dir="+userDataDir || normal[7] != "--window-size=1200,800" {
 		t.Fatalf("unexpected normal app args: %#v", normal)
 	}
 
-	maximized := buildAppWindowArgs(appURL, 1200, 800, true)
-	if len(maximized) != 2 || maximized[0] != "--app="+appURL || maximized[1] != "--start-maximized" {
+	maximized := buildAppWindowArgs(appURL, userDataDir, 1200, 800, true)
+	if len(maximized) != 8 || maximized[0] != "--app="+appURL || maximized[1] != "--user-data-dir="+userDataDir || maximized[7] != "--start-maximized" {
 		t.Fatalf("unexpected maximized app args: %#v", maximized)
 	}
 
-	fallback := buildAppWindowArgs(appURL, 100, 200, false)
-	if len(fallback) != 2 || fallback[1] != "--window-size=880,640" {
+	fallback := buildAppWindowArgs(appURL, userDataDir, 100, 200, false)
+	if len(fallback) != 8 || fallback[7] != "--window-size=880,640" {
 		t.Fatalf("unexpected fallback app args: %#v", fallback)
+	}
+}
+
+func TestAppModeUserDataDir(t *testing.T) {
+	dir, err := appModeUserDataDir()
+	if err != nil {
+		t.Fatalf("appModeUserDataDir returned error: %v", err)
+	}
+	if dir == "" {
+		t.Fatalf("appModeUserDataDir returned empty string")
 	}
 }
