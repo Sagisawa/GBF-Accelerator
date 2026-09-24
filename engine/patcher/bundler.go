@@ -224,6 +224,10 @@ func VerifyIntegrity(res *BundleResult, expectedIsSplit bool, expectedTotalApks 
 		fname := strings.ToLower(filepath.Base(fpath))
 		if strings.HasPrefix(fname, "base") {
 			hasBaseApk = true
+		} else if _, _, isSplit, err := parseApkMetadata(fpath); err == nil && !isSplit {
+			hasBaseApk = true
+		} else if !strings.HasPrefix(fname, "config.") && !strings.HasPrefix(fname, "split_") {
+			hasBaseApk = true
 		}
 		zr, err := zip.OpenReader(fpath)
 		if err != nil {

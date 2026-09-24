@@ -162,27 +162,40 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     }
   }
 
-  // Poll patch status if job is running
+  // Poll patch status when job is active
   useEffect(() => {
     let timer: number | null = null
+    let active = true
+
     const poll = async () => {
       try {
         const status = await fetchAndroidPatchStatus()
-        setPatchStatus(status)
-        if (status.running) {
-          timer = window.setTimeout(poll, 800)
+        if (active) {
+          setPatchStatus(status)
+          if (status.running) {
+            timer = window.setTimeout(poll, 600)
+          }
         }
       } catch {
-        // quiet error during polling
+        if (active && patchStatus?.running) {
+          timer = window.setTimeout(poll, 1200)
+        }
       }
     }
 
-    // Initial check
-    poll()
+    if (patchStatus?.running) {
+      poll()
+    }
 
     return () => {
+      active = false
       if (timer) window.clearTimeout(timer)
     }
+  }, [patchStatus?.running])
+
+  // Initial patch status load on mount
+  useEffect(() => {
+    fetchAndroidPatchStatus().then(setPatchStatus).catch(() => {})
   }, [])
 
   // Auto scroll logs
@@ -285,9 +298,17 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     try {
       await startAndroidPatch(inspectedPkg.file_path, outputDir)
       showToast('处理任务已启动', 'success')
-      // Trigger status polling immediately
-      const initialStatus = await fetchAndroidPatchStatus()
-      setPatchStatus(initialStatus)
+      // Immediately set running state so active polling starts
+      setPatchStatus({
+        ok: true,
+        running: true,
+        stage: 1,
+        stage_text: 'Checking environment & toolchain...',
+        progress: 0.1,
+        logs: [`Patch requested for: ${inspectedPkg.base_input_name}`],
+        error: '',
+        done: false,
+      })
     } catch (e: any) {
       showToast(`启动失败: ${e.message}`, 'error')
     } finally {
