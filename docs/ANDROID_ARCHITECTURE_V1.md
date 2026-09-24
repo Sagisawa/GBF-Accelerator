@@ -51,7 +51,9 @@
 |   [Xposed 模块注入层 (SkyLeapModule)]                                                          |
 |   └── 基于 libxposed Modern API (API 100+) 挂钩 SkyLeap 进程                           [VERIFIED]|
 |       └── 在 WebView 初始化时调用 AndroidX WebKit ProxyController                      [VERIFIED]|
-|           └── 仅将 prd-game-a-gbf.akamaized.net 精确路由至 127.0.0.1:8124              [VERIFIED]|
+|           └── 启用 Reverse Bypass 将 GBF 流量导向 127.0.0.1:8124                       [VERIFIED]|
+|               (prd-game-a-gbf.akamaized.net, gbf.game.mbga.jp, *.granbluefantasy.jp)          |
+|               (非 GBF 流量保持 DIRECT 直连；Go Core 依据 Host/Path 精准分流静态素材与动态 API) |
 |                                                                                                |
 |   [Chromium 原生网络协议栈]                                                                    |
 |   └── 绕过 Java 层 shouldInterceptRequest 缺陷，完整保留 POST Body 与关键 Header       [VERIFIED]|
@@ -85,7 +87,8 @@
 |  组件 C: Xposed Module (流量精准分流钩子)                                              |
 |  - 唯一职责：在 SkyLeap 进程内注入网络分流规则                                         |
 |  - 涵盖能力：通过 libxposed Modern API 挂钩 WebView 创建时机，调用 ProxyController     |
-|              将 GBF 静态域名导向 127.0.0.1:8124，其余流量保持 DIRECT 直连。           |
+|              启用 Reverse Bypass 将 GBF 目标流量 (静态 CDN 与游戏主站) 导向 127.0.0.1:8124， |
+|              其余非 GBF 流量保持 DIRECT 直连；Go Core 依据 Host/Path 精准分流处理静态与动态。 |
 |  - 约束：仅进入 SkyLeap 进程，不处理本地缓存，不干预动态请求内容，Core 故障时回退直连。 |
 +---------------------------------------------------------------------------------------+
                                            │
@@ -107,7 +110,7 @@
 - **Q2: Host App 是否可以只负责启动 Core？**  
   **结论**：`[VERIFIED]` 是的。Host App 完全不需要介入 SkyLeap 的任何内存或类加载逻辑，只负责启动并监控 Go Core 进程。
 - **Q3: 两者如何通信？**  
-  **结论**：`[VERIFIED]` **完全无需任何进程间通信 (IPC / Binder)**。Module 与 Host App 在业务上 100% 解耦：Module 只知道向 `127.0.0.1:8124` 导流；Host App 只知道向 `127.0.0.1:8125` 拉取状态。若 Core 未启动，Chromium 遇到 8124 拒绝连接时会自动安全回退，绝不导致 SkyLeap 闪退。
+  **结论**：`[VERIFIED]` **完全无需任何进程间通信 (IPC / Binder)**。Module 与 Host App 在业务上 100% 解耦：Module 只负责在满足条件时将 GBF 流量通过 Reverse Bypass 导流至 `127.0.0.1:8124`；Host App 只知道向 `127.0.0.1:8125` 拉取状态。若 Core 未启动，Chromium 遇到 8124 拒绝连接时会自动安全回退，绝不导致 SkyLeap 闪退。
 - **Q4: Go Core 是否完全独立？**  
   **结论**：`[VERIFIED]` 100% 独立。Go Core 是纯 Linux ELF 原生进程，完全脱离 JVM，甚至可以通过 adb 命令行独立运行。
 - **Q5: 用户需要安装几个 APK？**  
@@ -162,10 +165,10 @@
 | **编译工具链复杂度** | **极低**：纯 Go `CGO_ENABLED=0` 交叉编译，无需 NDK `[VERIFIED]` | **极低**：无需 NDK `[VERIFIED]` | **高**：必须配置 Android NDK、Clang、JNI 头文件 `[INFERRED]` |
 | **进程与异常隔离性** | **强隔离**：崩溃不影响 JVM 宿主，支持受控自愈 `[VERIFIED]` | **强隔离** `[INFERRED]` | **零隔离**：Go Panic 或段错误直接致使 App 闪退 `[INFERRED]` |
 | **资源彻底回收能力** | **完美**：进程退出内核自动释放所有 Socket/内存 `[VERIFIED]` | **完美** `[INFERRED]` | **极差**：Go Runtime 无法从 JVM 中动态彻底卸载 `[INFERRED]` |
-| **多厂商 ROM 兼容性** | **标准行为**：ColorOS、HyperOS、OneUI 均遵循该规范 `[VERIFIED]` | **不可用** `[VERIFIED]` | **标准行为** `[INFERRED]` |
+| **多厂商 ROM 兼容性** | **标准行为**：基于 Linux/Android 权限模型推断 `[INFERRED]` (实机仅验证 Android 16，多厂商 ROM 待测 `[TODO]`) | **不可用** `[VERIFIED]` | **标准行为** `[INFERRED]` |
 
 **最终架构结论**：
-**正式确立方案 A 为 GBF-Accelerator Android 的唯一打包标准** `[VERIFIED]`。不仅完全兼容 Android 10 ~ 16 的 SELinux `W^X` 规范，且具备最佳的跨语言崩溃隔离性与最小的编译依赖。
+**当前在 Android 16 ARM64 物理真机已验证可行，正式确立方案 A 为 GBF-Accelerator Android 的首选打包标准** `[VERIFIED]`。该方案符合 Android 10 ~ 16 的 SELinux `W^X` 规范，具备良好的跨语言崩溃隔离性与最小的编译依赖；不同 Android 系统版本 (Android 10~15)、厂商定制 ROM 及覆盖安装/升级场景仍需在后续演进中补充兼容性测试 `[TODO]`。
 
 ---
 
@@ -174,14 +177,14 @@
 HTTPS MITM 本地解密是静态素材缓存命中的物理前提，针对证书链信任规划如下：
 
 ### 1. 证书信任机制与 Android 演进现状
-- **Android 7.0 (API 24+) 安全断层**：`[VERIFIED]` Android 7+ 默认将应用的网络安全配置收紧为仅信任系统预置根证书（`<certificates src="system" />`），普通用户手动从系统设置安装的“用户 CA 证书”被 WebView 彻底忽略。
-- **WebView 强校验**：`[VERIFIED]` Android WebView 在遇到未信任根证书签发的页面时，默认触发 `onReceivedSslError` 并终止连接，呈现白屏或网络错误。
+- **Android 7.0 (API 24+) 网络安全配置机制**：`[VERIFIED]` (基于官方开发规范与真机实测确认)：从 Android 7.0 (API 24) 起，系统默认的 Network Security Configuration (`networkSecurityConfig`) 机制对 `targetSdkVersion >= 24` 的应用生效，默认仅信任系统预置根证书（`<certificates src="system" />`）；普通用户手动通过系统“设置 -> 安全 -> 凭据存储”安装的用户 CA 证书（`<certificates src="user" />`）默认不被应用自身的网络请求（包括标准 Android WebView）信任。
+- **WebView 强校验**：`[VERIFIED]` Android WebView 在遇到未受信任根证书签发的 HTTPS 页面时，默认触发 `onReceivedSslError` 并终止连接，呈现白屏或网络错误。
 
 ### 2. Root 与无 Root 版本证书方案
 - **Root 版本（最佳体验）**：`[VERIFIED]`
-  通过 Magisk / KernelSU 模块（如 `MagiskTrustUserCerts`）将 Go Core 在首次启动时生成的 `certs/ca.crt` 自动挂载至 `/system/etc/security/cacerts/`。SkyLeap 无需任何修改即可无缝信任，全链路绿锁。
+  在 Android 16 真机（`b0f42695`）实测验证通过：通过 Magisk / KernelSU 模块（如 `MagiskTrustUserCerts`）或 root shell 将 Go Core 首次生成的 `ca.crt` 自动或手动挂载至系统证书目录 `/system/etc/security/cacerts/`。系统将其识别为信任根证书，SkyLeap 官方原生 APK 无需修改任何配置即可正常完成 TLS 握手与素材解密。
 - **无 Root 版本（补丁配置）**：`[TODO]`
-  在通过 LSPatch 等工具制作 SkyLeap 定制版时，向其 `res/xml/network_security_config.xml` 注入配置：
+  在免 Root 场景下，官方 SkyLeap APK 默认不信任用户 CA。计划在后续阶段探索使用 LSPatch 等重打包工具，向 SkyLeap 的 `res/xml/network_security_config.xml` (或 Manifest 引用的配置文件) 注入如下信任配置：
   ```xml
   <network-security-config>
       <base-config>
@@ -192,7 +195,7 @@ HTTPS MITM 本地解密是静态素材缓存命中的物理前提，针对证书
       </base-config>
   </network-security-config>
   ```
-  使用户通过系统“设置 -> 安装证书 -> CA 证书”安装的 ACC 根证书直接在定制版 SkyLeap 中生效。
+  使用户通过系统“设置 -> 安装证书 -> CA 证书”安装的 ACC 根证书直接在定制版 SkyLeap 中生效。该方案的打包可行性与实机兼容性待后续阶段验证。
 
 ### 3. 安全降级与防白屏熔断设计
 - **证书异常探测**：`[INFERRED]` 若用户未安装证书或证书过期，Go Core 在检测到客户端频繁在 TLS Client Hello 后断开连接（Handshake Failure）时，应记录告警。
@@ -202,30 +205,36 @@ HTTPS MITM 本地解密是静态素材缓存命中的物理前提，针对证书
 
 ## 七、VPN / Proxy / DNS 最终方案
 
-### 1. 三层流量路由行为分析
+#### 1. 三层流量路由行为分析
 ```
-[用户 VPN / TUN (例如 Clash/V2rayNG)]
+[用户 VPN / TUN (特定测试环境客户端)]
               │
               ▼
-[SkyLeap (ProxyController)] ──── 命中 GBF 规则 ────> [127.0.0.1:8124 (Go Core)]
-              │                                                │
-       未命中 GBF 规则                                   出站发起真实请求
-              │                                                │
-              ▼                                                ▼
-     [直接进入系统网络] <───────────────────────────── [经系统网络路由出站]
-              │                                                │
-              └─────────────────┬──────────────────────────────┘
-                                ▼
-                   [若开启 VPN 则经 VPN 节点加速]
-                                ▼
-                       [Akamai CDN / Cygames]
+[SkyLeap (ProxyController)] ──── 命中 GBF Reverse Bypass ────> [127.0.0.1:8124 (Go Core)]
+              │                                                            │
+      未命中 GBF 规则 (DIRECT)                                     依据 Host/Path 分流
+              │                                                            │
+              ▼                                             ┌──────────────┴──────────────┐
+     [直接进入系统网络]                                      ▼                             ▼
+              │                                       [静态素材缓存]                 [动态 API 透明转发]
+              │                                       (RAM / Disk)                 (HTTP/1.1 Keep-Alive)
+              │                                             │                              │
+              │                                             └──────────────┬───────────────┘
+              │                                                            ▼
+              └─────────────────────────────┬────────────────────── [出站发起真实请求]
+                                            ▼
+                              [经系统网络路由 (若开启 VPN 则经 VPN)]
+                                            ▼
+                                  [Akamai CDN / Cygames]
 ```
 
-1. **Loopback 与 VPN 兼容性**：`[VERIFIED]` 实测在开启标准 Android VPN 客户端时，发往 `127.0.0.1:8124` 的本地回环连接不会被拦截（主流 VPN 客户端均遵循默认排除 Loopback 的路由表规则）。
-2. **Go Core 出站路由**：`[VERIFIED]` Go Core 向公网发起的数据请求作为普通系统出站流量，自动遵循系统当前活跃网络路由（若有梯子/VPN 则自然享受代理加速，无冲突）。
+1. **Loopback 与 VPN 兼容性**：
+   - `[VERIFIED]` (当前测试设备与测试用 VPN 环境)：实测在当前 Android 16 真机搭配测试用 TUN 模式 VPN 客户端时，发往 `127.0.0.1:8124` 的本地回环连接正常通行，未被 VPN 虚拟网卡拦截（主流分流代理客户端通常默认排除 Loopback 127.0.0.1 路由）。
+   - `[INFERRED/TODO]` (其他第三方 VPN 环境)：对于不同实现架构的第三方 VPN（如强制全局接管所有接口的 Enterprise VPN、某些开启了本地回环劫持的特定客户端），是否存在 127.0.0.1 流量抢占仍属于推断，需在后续多客户端测试中独立验证 `[TODO]`。
+2. **Go Core 出站路由**：`[VERIFIED]` Go Core 向公网发起的数据请求作为普通系统出站流量，自动遵循系统当前活跃网络路由（若开启了第三方加速 VPN 则自然通过系统路由出站，无冲突）。
 3. **DNS 最终方案**：
-   - 当前 PoC 实现 `engine/proxy/dns_android.go` 采用硬编码公共安全 DNS（`8.8.8.8`, `1.1.1.1`）在 Android 平台回退 `[VERIFIED]`。
-   - **生产级最终架构**：`[TODO]` 最终版本应通过 Host App 调用 Android `ConnectivityManager.getLinkProperties(activeNetwork).getDnsServers()` 动态捕获当前 Wi-Fi/蜂窝网络的真实 DNS，并通过 Control Plane 或环境变量注入 Go Core，兼顾移动网络自适应与防劫持。
+   - 当前 PoC 实现 `engine/proxy/dns_android.go` 采用硬编码公共安全 DNS（`8.8.8.8`, `1.1.1.1`）作为纯 Go 在 Android 平台无 `/etc/resolv.conf` 时的阶段性回退已实机验证通过 `[VERIFIED]`。
+   - **生产级最终架构**：`[TODO]` 生产级最终版本计划通过 Host App 调用 Android `ConnectivityManager.getLinkProperties(activeNetwork).getDnsServers()` 动态捕获当前 Wi-Fi/蜂窝网络的真实 DNS，并通过 Control Plane 或环境变量注入 Go Core，兼顾移动网络自适应与防劫持。
 
 ---
 
@@ -235,7 +244,7 @@ HTTPS MITM 本地解密是静态素材缓存命中的物理前提，针对证书
 | :--- | :--- | :--- | :---: |
 | **用户启动 ACC** | 启动 Host App，检查运行环境 | 仅初始化 UI，不自动启动 Core，等待用户点击或根据记忆开关启动 | `[VERIFIED]` |
 | **用户点击【启动代理】** | 启动 `CoreService` (FGS) | 唤起 Foreground Service 显示常驻通知，`CoreManager` 拉起子进程，健康探测就绪后更新 UI | `[VERIFIED]` |
-| **切入后台与息屏休眠** | 系统可能对应用实施后台降频/冷冻 | 常驻前台通知提升进程优先级至 `PERCEPTIBLE`，实测 30s 息屏进程不被回收 | `[VERIFIED]` |
+| **切入后台与息屏休眠** | 系统可能对应用实施后台降频/冷冻 | 通过 Foreground Service (specialUse) 提升后台存活优先级至 `PERCEPTIBLE`；经 30s 息屏实测进程稳定存活未被回收 | `[VERIFIED]` |
 | **Go Core 异常被杀** | 子进程退出，端口释放 | `CoreManager` 捕获退出码，UI 置 `CRASHED`，自愈机制介入在 1s 后重启（限 3 次/60s，防死循环） | `[VERIFIED]` |
 | **用户点击【停止代理】** | 发送退出信号至 8125 | Go Core 优雅停机并释放端口，`CoreService` 撤销前台通知并 `stopSelf()` | `[VERIFIED]` |
 | **用户退出 SkyLeap** | 游戏客户端关闭 | 代理保持运行；由用户在通知栏或 Host App 手动决定何时停止 | `[INFERRED]` |
@@ -336,20 +345,20 @@ App 启动时执行 4 步无感自检：
 
 ### 1. `[VERIFIED]` 已真实验证项目 (Verified on Real Device)
 1. **纯 Go ARM64 静态二进制编译**：`CGO_ENABLED=0` 成功编译为无任何外部动态库依赖的原生文件；
-2. **`nativeLibraryDir` 进程拉起**：解决 Android 10+ W^X 限制，成功从 `ApplicationInfo.nativeLibraryDir` 以子进程拉起 Go Core；
+2. **`nativeLibraryDir` 进程拉起**：解决 Android 10+ W^X 限制，成功从 `ApplicationInfo.nativeLibraryDir` 以子进程拉起 Go Core (Android 16 ARM64 验证)；
 3. **8124/8125 双平面隔离绑定**：8124 代理数据面与 8125 环回控制面稳定监听；
-4. **AndroidX WebKit ProxyController 分流**：SkyLeap 内精准将 GBF 静态域名路由至 8124；
+4. **AndroidX WebKit ProxyController 分流**：SkyLeap 内基于 Reverse Bypass 将 GBF 目标流量导向 8124 (包含 `prd-game-a-gbf.akamaized.net`、`gbf.game.mbga.jp`、`*.granbluefantasy.jp`)，非 GBF 流量保持 DIRECT 直连；Go Core 依据 Host/Path 精准分流静态素材与动态 API；
 5. **POST 请求与业务透传完整性**：实测 GBF 登录、主页、战斗请求正常，未观察到 Body、Cookie 或关键 Header 丢失；
 6. **静态 CDN 缓存闭环**：Akamai 素材顺利存入 RAM 与磁盘持久化，SHA-256 采样与官方 CDN 一致；
-7. **Foreground Service 保活**：Android 16 真机 30 秒后台与息屏休眠测试，进程稳定不被查杀；
+7. **Foreground Service 后台存活优先级与验证**：Android 16 真机 30 秒后台与息屏休眠测试，提高后台存活优先级，进程稳定未被系统回收；
 8. **异常崩溃自愈**：`kill -9` 模拟崩溃后，Linux 内核瞬间释放端口，`CoreManager` 1s 内自动拉起新进程并重绑端口；
 9. **干净卸载**：所有数据严格写入应用私有沙箱，卸载即清空。
 
 ### 2. `[INFERRED]` 根据现有证据推断项目 (Highly Inferred)
 1. **LSPatch 免 Root 嵌入可行性**：基于 LSPatch 注入 `Application.attachBaseContext` 加载 `SkyLeapModule`，理论上与 Root 下 LSPosed 运行机制一致；
-2. **多 Android ROM 适配性**：HyperOS / MIUI / OneUI 等遵循标准 Android Linux 权限模型，`nativeLibraryDir` 与 `specialUse` 服务通用；
+2. **多 Android ROM 适配性**：HyperOS / MIUI / OneUI 等遵循标准 Android Linux 权限模型，`nativeLibraryDir` 与 `specialUse` 服务通用 `[INFERRED]` (多厂商 ROM 实机测试待执行 `[TODO]`)；
 3. **WebView 长期升级兼容性**：AndroidX WebKit `ProxyController` 属于官方 Jetpack 组件，受 Google 长期向后兼容保证；
-4. **VPN 兼容性**：主流基于 VpnService 实现的分流代理工具默认排除 Loopback（127.0.0.1）。
+4. **VPN 兼容性**：当前测试机与测试 VPN 兼容已证 `[VERIFIED]`，主流分流代理默认排除 Loopback 推断成立 `[INFERRED]`，其他全局/强规则 VPN 仍待验证 `[TODO]`。
 
 ### 3. `[TODO]` 尚未验证项目 (Pending Verification)
 1. **免 Root 定制版 SkyLeap 实机端到端跑通**：包括使用 LSPatch 打包 SkyLeap、重签名、修改 `networkSecurityConfig` 信任用户 CA，并在无 Root 真机上加载 GBF；
@@ -381,6 +390,6 @@ App 启动时执行 4 步无感自检：
    - 步骤 1：利用 LSPatch 工具将现有的模块 DEX 注入官方 SkyLeap APK，并生成免 Root 补丁版 APK；
    - 步骤 2：在打补丁过程中，通过配置注入 `<certificates src="user" />` 使得 SkyLeap 信任用户手动导入的 CA 证书；
    - 步骤 3：在真机上安装该定制 APK，在**未开启 LSPosed、未利用 Root 权限**的前提下启动；
-   - 步骤 4：验证该免 Root SkyLeap 能否同样将 `prd-game-a-gbf.akamaized.net` 导向 `127.0.0.1:8124` 并成功完成素材解密加载。
+   - 步骤 4：验证该免 Root SkyLeap 能否同样将 GBF 目标流量导向 `127.0.0.1:8124`，并成功完成素材解密加载与 API 交互。
 3. **验收标准**：
    - 无 Root 状态下 SkyLeap 成功加载 GBF 游戏主页，8124 收到静态素材请求且无 SSL 握手报错。

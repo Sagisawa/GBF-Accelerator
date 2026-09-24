@@ -136,3 +136,7 @@ I GBF-ACC : ==================================================
    - 本次实测的 GBF GET/POST 请求保持正常，业务请求完成，未观察到 Body、Cookie 或关键 Header 丢失。
    - 当前实现不主动修改 GBF 动态 API 业务语义，不包含自动操作、请求重放或业务数据修改逻辑；账号/服务条款风险无法由技术测试证明为零。
    - 当前 `dns_android.go` 作为阶段性 PoC 实现，Android 最终版本仍需评估系统 DNS / ConnectivityManager / DnsResolver 路径，不将当前公共 DNS fallback 视为最终定案。
+5. **ProxyController 分流机制与职责划分**：
+   - Xposed 模块（`SkyLeapModule`）通过 AndroidX WebKit `ProxyConfig.Builder` 启用 `setReverseBypassEnabled(true)` 反向分流机制。
+   - 仅将 GBF 目标流量（`prd-game-a-gbf.akamaized.net`、`gbf.game.mbga.jp`、`*.granbluefantasy.jp`）导向本地 `127.0.0.1:8124`，其余 SkyLeap 流量在 WebView 层直接走 DIRECT 直连，不进入 8124。
+   - Go Core 接收到 8124 流量后，依据 Host 与 Path 对静态素材与动态 API 进行内部精准分流：静态资源走本地 RAM/Disk 缓存与 HTTP/2 多路复用，动态 API 走透明转发池（保留原始 Cookie 与 Header，写请求坚决零重试）。
