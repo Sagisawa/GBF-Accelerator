@@ -119,17 +119,20 @@ I GBF-ACC : ==================================================
 
 在第六阶段中，本 APK 同时承担 **Android 宿主管理 App (Host App)** 与 **LSPosed 模块** 双重职责：
 1. **宿主生命周期管理**：
-   - 通过 `CoreService`（Foreground Service，带常驻前台通知）维持进程生命周期，避免被 Android 系统 LMK 杀死。
+   - 通过 `CoreService`（Foreground Service，带常驻前台通知）提高后台存活优先级，并对 Go Core 异常退出提供受控恢复。
    - 通过 `CoreManager` 以子进程方式启动、停止、监控 Go Core 进程。
    - 包含崩溃自动重启保护（1 分钟内最多尝试 3 次，防死循环）。
-   - 当应用退出或点击【停止代理】时，彻底释放 127.0.0.1:8124 与 8125 端口。
-2. **二进制打包机制**：
-   - 将纯 Go ARM64 二进制编译为 `libgbfcore.so`，放置于 `jniLibs/arm64-v8a/`。
-   - 利用 Gradle `useLegacyPackaging = true` 配置，安装时由 Android PackageManager 提取至只读且具备执行权限的 `context.applicationInfo.nativeLibraryDir`，完美遵循 Android 10+（API 29+）的 `W^X` SELinux 安全策略。
+   - 当应用退出或点击【停止代理】时，正常退出和异常终止后监听端口由系统释放；当前真机测试中未发现重启绑定冲突。
+2. **二进制打包与执行机制**：
+   - 将 Go Core 作为 APK 原生库资产随 ABI 打包（`libgbfcore.so` 放置于 `jniLibs/arm64-v8a/`），并通过 `nativeLibraryDir` 的实际路径启动独立进程；该方式已在当前 Android 16 ARM64 真机完成验证。
+   - 遵循 Android 10+（API 29+）的 `W^X` SELinux 安全策略。
 3. **数据隔离与干净卸载**：
    - 数据目录通过 `-base-dir` 定位到 `Context.getFilesDir()`。
    - 运行时配置 `config.json`、证书 `certs/ca.crt`、静态缓存 `files/cache/gbf/https` 均存放在应用私有目录，卸载时被 Android 系统完全清理，零残留。
-4. **控制台 UI**：
+4. **控制台 UI 与业务观察**：
    - 显示 Go Core 运行状态、PID、运行时长、端口状态。
    - 实时轮询 127.0.0.1:8125 显示 RAM 缓存占用、RAM/磁盘命中数、API 请求数、HTTP/2 连接复用率。
    - 提供快捷启动 SkyLeap 按钮与实时控制台日志滚动查看器。
+   - 本次实测的 GBF GET/POST 请求保持正常，业务请求完成，未观察到 Body、Cookie 或关键 Header 丢失。
+   - 当前实现不主动修改 GBF 动态 API 业务语义，不包含自动操作、请求重放或业务数据修改逻辑；账号/服务条款风险无法由技术测试证明为零。
+   - 当前 `dns_android.go` 作为阶段性 PoC 实现，Android 最终版本仍需评估系统 DNS / ConnectivityManager / DnsResolver 路径，不将当前公共 DNS fallback 视为最终定案。
