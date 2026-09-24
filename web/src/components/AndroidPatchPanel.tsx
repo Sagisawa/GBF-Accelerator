@@ -16,12 +16,17 @@ import {
   ChevronUp,
   Download,
   XCircle,
+  Zap,
+  Trash2,
 } from 'lucide-react'
 import {
   AndroidEnvStatus,
   AndroidComponentDownloadProgress,
   AndroidPackageInspection,
   AndroidPatchProgress,
+  AdbDevice,
+  AdbProbeAppResponse,
+  AdbInstallResponse,
 } from '../types'
 import {
   fetchAndroidEnv,
@@ -33,6 +38,11 @@ import {
   downloadAndroidComponents,
   fetchAndroidComponentDownloadStatus,
   cancelAndroidComponentDownload,
+  fetchAdbDevices,
+  probeDeviceApp,
+  extractDeviceApp,
+  installToDevice,
+  downloadAdbPlatformTools,
 } from '../api'
 
 interface AndroidPatchPanelProps {
@@ -57,13 +67,23 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [downloadProgress, setDownloadProgress] = useState<AndroidComponentDownloadProgress | null>(null)
 
   // Input & Inspection state
-  const [inputMode, setInputMode] = useState<'upload' | 'path'>('upload')
+  const [inputMode, setInputMode] = useState<'device' | 'upload' | 'path'>('device')
   const [manualPath, setManualPath] = useState<string>('')
   const [outputDir, setOutputDir] = useState<string>('output_patched')
   const [inspectedPkg, setInspectedPkg] = useState<AndroidPackageInspection | null>(null)
   const [isUploading, setIsUploading] = useState<boolean>(false)
   const [uploadPercent, setUploadPercent] = useState<number>(0)
   const [isInspecting, setIsInspecting] = useState<boolean>(false)
+
+  // ADB & Device state
+  const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([])
+  const [selectedDevice, setSelectedDevice] = useState<string>('')
+  const [deviceApp, setDeviceApp] = useState<AdbProbeAppResponse | null>(null)
+  const [isExtracting, setIsExtracting] = useState<boolean>(false)
+  const [isInstalling, setIsInstalling] = useState<boolean>(false)
+  const [installResult, setInstallResult] = useState<AdbInstallResponse | null>(null)
+  const [showUninstallModal, setShowUninstallModal] = useState<boolean>(false)
+  const [isDownloadingAdb, setIsDownloadingAdb] = useState<boolean>(false)
 
   // Drag-and-drop state
   const [isDragging, setIsDragging] = useState<boolean>(false)
@@ -161,6 +181,123 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       showToast(`取消失败: ${e.message}`, 'error')
     }
   }
+
+  // Refresh ADB devices
+  const refreshDevices = useCallback(async () => {
+    try {
+      const res = await fetchAdbDevices()
+      if (res.ok) {
+        setAdbDevices(res.devices || [])
+        const activeDev = res.devices?.find(d => d.state === 'device')
+        if (activeDev) {
+          if (!selectedDevice || !res.devices.some(d => d.serial === selectedDevice)) {
+            setSelectedDevice(activeDev.serial)
+          }
+        } else if (res.devices && res.devices.length > 0) {
+          if (!selectedDevice || !res.devices.some(d => d.serial === selectedDevice)) {
+            setSelectedDevice(res.devices[0].serial)
+          }
+        } else {
+          setSelectedDevice('')
+          setDeviceApp(null)
+        }
+      }
+    } catch {
+      // quiet error
+    }
+  }, [selectedDevice])
+
+  // Probe app on selected device
+  useEffect(() => {
+    if (!selectedDevice) {
+      setDeviceApp(null)
+      return
+    }
+    const dev = adbDevices.find(d => d.serial === selectedDevice)
+    if (dev && dev.state === 'device') {
+      probeDeviceApp(selectedDevice, 'com.dena.skyleap')
+        .then(setDeviceApp)
+        .catch(() => setDeviceApp(null))
+    } else {
+      setDeviceApp(null)
+    }
+  }, [selectedDevice, adbDevices])
+
+  // Auto poll devices every 3s
+  useEffect(() => {
+    refreshDevices()
+    const interval = window.setInterval(refreshDevices, 3000)
+    return () => window.clearInterval(interval)
+  }, [refreshDevices])
+
+  const handleExtractFromDevice = async () => {
+    if (!selectedDevice) return
+    setIsExtracting(true)
+    showToast('正在从手机提取 SkyLeap 安装包与分包组件...', 'info')
+    try {
+      const result = await extractDeviceApp(selectedDevice, 'com.dena.skyleap')
+      setInspectedPkg(result)
+      showToast(`提取成功！SkyLeap 版本 ${result.version_name} (${result.total_apks} 个分包已就绪)`, 'success')
+    } catch (e: any) {
+      showToast(`从手机提取失败: ${e.message}`, 'error')
+    } finally {
+      setIsExtracting(false)
+    }
+  }
+
+  const handleInstallToDevice = async (forceUninstall: boolean = false) => {
+    if (!selectedDevice) {
+      showToast('未选择目标设备', 'error')
+      return
+    }
+    setIsInstalling(true)
+    setInstallResult(null)
+    setShowUninstallModal(false)
+
+    try {
+      if (forceUninstall) {
+        showToast('正在通过 ADB 卸载原版并重新安装补丁版...', 'info')
+      } else {
+        showToast('正在推送安装到手机...', 'info')
+      }
+
+      const res = await installToDevice(selectedDevice, 'com.dena.skyleap', forceUninstall)
+      setInstallResult(res)
+
+      if (res.signature_mismatch) {
+        setShowUninstallModal(true)
+        showToast('检测到官方签名冲突，需先卸载手机上的旧版后再安装', 'info')
+      } else if (res.ok) {
+        showToast('🎉 安装成功！加速补丁版已部署至手机', 'success')
+      } else {
+        showToast(`安装失败: ${res.error || '未知错误'}`, 'error')
+      }
+    } catch (e: any) {
+      showToast(`安装失败: ${e.message}`, 'error')
+    } finally {
+      setIsInstalling(false)
+    }
+  }
+
+  const handleDownloadAdb = async () => {
+    setIsDownloadingAdb(true)
+    showToast('正在下载轻量 ADB 平台工具...', 'info')
+    try {
+      const res = await downloadAdbPlatformTools()
+      if (res.ok) {
+        showToast('ADB 工具下载并解压成功', 'success')
+        await checkEnv()
+        await refreshDevices()
+      } else {
+        showToast(`下载 ADB 失败: ${res.message || '未知错误'}`, 'error')
+      }
+    } catch (e: any) {
+      showToast(`下载 ADB 失败: ${e.message}`, 'error')
+    } finally {
+      setIsDownloadingAdb(false)
+    }
+  }
+
 
   // Poll patch status when job is active
   useEffect(() => {
@@ -546,7 +683,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           </span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* Java Runtime */}
           <div className="p-3 rounded-lg border border-slate-200 bg-slate-50/60 flex flex-col justify-between gap-1.5">
             <div className="flex items-center justify-between">
@@ -581,9 +718,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             </div>
             <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.lspatch?.path || ''}>
               {envStatus?.lspatch?.verified
-                ? `v1.2 (Build 487) · SHA-256 校验通过`
+                ? `v1.2 (Build 487) · 校验通过`
                 : isCorrupted
-                ? 'SHA-256 不匹配 (已损坏)'
+                ? 'SHA-256 不匹配 (损坏)'
                 : '未下载 (首次使用需启用)'}
             </div>
             {envStatus?.lspatch?.verified && (
@@ -607,13 +744,46 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               {envStatus?.module?.verified
                 ? '独立 Xposed Module 就绪'
                 : isCorrupted
-                ? '哈希或元数据不匹配 (已损坏)'
+                ? '哈希不匹配 (已损坏)'
                 : '未下载 (首次使用需启用)'}
             </div>
             {envStatus?.module?.verified && (
               <span className="text-[11px] text-slate-500 truncate" title={envStatus.module.path}>
                 {envStatus.module.path.split(/[\\/]/).pop()}
               </span>
+            )}
+          </div>
+
+          {/* ADB Debug Bridge */}
+          <div className="p-3 rounded-lg border border-slate-200 bg-slate-50/60 flex flex-col justify-between gap-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-600">ADB 手机调试通信</span>
+              {envStatus?.adb?.found ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-amber-500" />
+              )}
+            </div>
+            <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.adb?.path || ''}>
+              {envStatus?.adb?.found
+                ? envStatus.adb.version || '已检测到 ADB'
+                : '未找到 ADB'}
+            </div>
+            {envStatus?.adb?.found ? (
+              <span className="text-[11px] text-emerald-700">
+                {adbDevices.filter(d => d.state === 'device').length > 0
+                  ? `已连接 ${adbDevices.filter(d => d.state === 'device').length} 台设备`
+                  : '未连接手机 (插上即用)'}
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={handleDownloadAdb}
+                disabled={isDownloadingAdb}
+                className="text-[11px] text-indigo-700 hover:text-indigo-900 underline font-medium text-left cursor-pointer"
+              >
+                {isDownloadingAdb ? '正在下载平台工具...' : '一键下载轻量 ADB (约 2.8MB)'}
+              </button>
             )}
           </div>
         </div>
@@ -629,6 +799,21 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             </h2>
           </div>
           <div className="flex items-center gap-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setInputMode('device')}
+              className={`px-2.5 py-1 rounded-lg font-medium transition-all flex items-center gap-1 ${
+                inputMode === 'device'
+                  ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              <span>从手机提取</span>
+              {adbDevices.filter(d => d.state === 'device').length > 0 && (
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              )}
+            </button>
             <button
               type="button"
               onClick={() => setInputMode('upload')}
@@ -653,6 +838,123 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             </button>
           </div>
         </div>
+
+        {/* Device Extract Mode */}
+        {inputMode === 'device' && (
+          <div className="border border-slate-200 bg-slate-50/60 rounded-xl p-4 sm:p-5 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200/80">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
+                  <Smartphone className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-xs font-semibold text-slate-500">已连接手机设备</div>
+                  {adbDevices.length === 0 ? (
+                    <div className="text-sm font-bold text-slate-700">未检测到 USB 调试设备</div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={selectedDevice}
+                        onChange={(e) => setSelectedDevice(e.target.value)}
+                        className="text-sm font-bold text-slate-900 bg-white border border-slate-300 rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      >
+                        {adbDevices.map((d) => (
+                          <option key={d.serial} value={d.serial}>
+                            {d.model} ({d.serial}) {d.state !== 'device' ? `[${d.state}]` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800">
+                        在线就绪
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={refreshDevices}
+                className="px-2.5 py-1 text-xs text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg bg-white flex items-center gap-1.5 self-start sm:self-center cursor-pointer shadow-2xs hover:bg-slate-50"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>刷新设备</span>
+              </button>
+            </div>
+
+            {adbDevices.length === 0 ? (
+              <div className="py-4 text-center space-y-2">
+                <p className="text-xs text-slate-600 max-w-md mx-auto">
+                  请使用 USB 数据线将 Android 手机连接到电脑，并确保手机已开启【开发者选项 → USB 调试】。
+                </p>
+                <div className="text-[11px] text-slate-400">
+                  若手机弹出“是否允许 USB 调试”提示，请勾选“始终允许”并点击确认。
+                </div>
+                {!envStatus?.adb?.found && (
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={handleDownloadAdb}
+                      disabled={isDownloadingAdb}
+                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>{isDownloadingAdb ? '正在下载平台工具...' : '一键下载轻量 ADB 工具 (约 2.8 MB)'}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {deviceApp?.installed ? (
+                  <div className="bg-white border border-emerald-200/90 rounded-lg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900 text-sm">SkyLeap 浏览器</span>
+                        <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">
+                          v{deviceApp.version_name || '已安装'}
+                        </span>
+                        <span className="text-[11px] text-emerald-700 font-medium">
+                          ({deviceApp.total_apks} 个分包组件)
+                        </span>
+                      </div>
+                      <div className="text-xs text-slate-500 font-mono">
+                        包名: {deviceApp.package_name}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleExtractFromDevice}
+                      disabled={isExtracting}
+                      className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer self-start sm:self-center disabled:opacity-50"
+                    >
+                      {isExtracting ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>正在从手机提取...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-3.5 h-3.5 fill-current" />
+                          <span>从手机一键提取并载入</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="font-semibold">未在所选手机中检测到官方 SkyLeap 浏览器</div>
+                      <div className="text-amber-800 text-[11px]">
+                        请先在手机上安装官方 SkyLeap，或切换到上方【拖拽上传】标签页直接导入本地下载好的安装包。
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Upload Mode Dropzone */}
         {inputMode === 'upload' && (
@@ -942,6 +1244,86 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   </ul>
                 )}
               </div>
+
+              {/* One-Click Install to Phone */}
+              {adbDevices.filter(d => d.state === 'device').length > 0 && (
+                <div className="pt-3 border-t border-emerald-200/60 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <div className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                        <Smartphone className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>检测到已连接手机：{adbDevices.find(d => d.serial === selectedDevice)?.model || selectedDevice}</span>
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        无需手动传包与安装 SAI，可通过 ADB 直接一键推送到手机完成部署。
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleInstallToDevice(false)}
+                      disabled={isInstalling}
+                      className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer self-start sm:self-center disabled:opacity-50"
+                    >
+                      {isInstalling ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>正在安装至手机...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Zap className="w-3.5 h-3.5 fill-current" />
+                          <span>一键安装到手机</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {/* Signature Conflict Modal/Prompt */}
+                  {showUninstallModal && (
+                    <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-xs text-amber-950 space-y-2">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <div className="font-bold text-amber-900">
+                            检测到官方原版签名冲突 (INSTALL_FAILED_UPDATE_INCOMPATIBLE)
+                          </div>
+                          <div className="text-[11px] text-amber-800 leading-relaxed">
+                            手机上的 SkyLeap 是官方开发者签名，而注入补丁后的应用使用的是调试签名。Android 安全机制要求覆盖安装时签名必须一致。
+                          </div>
+                          <div className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 p-2 rounded">
+                            ⚠️ 重要提示：需先卸载手机上的旧版 SkyLeap。请务必确认您的 GBF 游戏账号已绑定 Mobage/邮箱/推特，以免游客数据丢失！
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowUninstallModal(false)}
+                          className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-medium cursor-pointer"
+                        >
+                          取消
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleInstallToDevice(true)}
+                          disabled={isInstalling}
+                          className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>确认先卸载旧版，再自动安装补丁版</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {installResult?.ok && (
+                    <div className="bg-emerald-100/70 border border-emerald-300 rounded-lg p-2.5 text-xs text-emerald-900 flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span className="font-medium">🎉 安装成功！应用已成功部署至手机，可在手机桌面上直接打开 SkyLeap 开始游戏。</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

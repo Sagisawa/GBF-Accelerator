@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gbf-proxy/desktop"
 	"gbf-proxy/patcher"
@@ -114,6 +116,13 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 		moduleErrStr = moduleErr.Error()
 	}
 
+	// 5. Probe ADB
+	adbFound, adbPath, adbVer, adbErr := patcher.CheckAdb(toolsDir, exeDir)
+	var adbErrStr string
+	if adbErr != nil {
+		adbErrStr = adbErr.Error()
+	}
+
 	ready := javaFound && componentsVerified
 
 	c.componentDlMu.Lock()
@@ -148,6 +157,12 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 			"path":    javaPath,
 			"version": javaVer,
 			"error":   javaErrStr,
+		},
+		"adb": map[string]interface{}{
+			"found":   adbFound,
+			"path":    adbPath,
+			"version": adbVer,
+			"error":   adbErrStr,
 		},
 		"lspatch": map[string]interface{}{
 			"found":           lspatchFound,
@@ -573,4 +588,291 @@ func (c *ControlServer) handleAndroidComponentsDownloadCancel(w http.ResponseWri
 		"message": "已发送取消信号",
 	})
 }
+
+func (c *ControlServer) handleAndroidAdbDevices(w http.ResponseWriter, req *http.Request) {
+	toolsDir := patcher.GetAndroidToolsDir()
+	exeDir := c.getExeDir()
+	adbPath, err := patcher.FindAdb(toolsDir, exeDir)
+	if err != nil {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":        true,
+			"adb_found": false,
+			"error":     err.Error(),
+			"devices":   []patcher.AdbDevice{},
+		})
+		return
+	}
+
+	devices, err := patcher.ListAdbDevices(adbPath)
+	if err != nil {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":        true,
+			"adb_found": true,
+			"adb_path":  adbPath,
+			"error":     err.Error(),
+			"devices":   []patcher.AdbDevice{},
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":        true,
+		"adb_found": true,
+		"adb_path":  adbPath,
+		"devices":   devices,
+	})
+}
+
+func (c *ControlServer) handleAndroidAdbProbeApp(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Serial      string `json:"serial"`
+		PackageName string `json:"package_name"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+
+	serial := strings.TrimSpace(body.Serial)
+	pkgName := strings.TrimSpace(body.PackageName)
+	if pkgName == "" {
+		pkgName = "com.dena.skyleap"
+	}
+
+	toolsDir := patcher.GetAndroidToolsDir()
+	exeDir := c.getExeDir()
+	adbPath, err := patcher.FindAdb(toolsDir, exeDir)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "ADB 未找到: " + err.Error()})
+		return
+	}
+
+	appInfo, err := patcher.GetDeviceApp(adbPath, serial, pkgName)
+	if err != nil {
+		if errors.Is(err, patcher.ErrAppNotInstalled) {
+			c.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":           true,
+				"installed":    false,
+				"package_name": pkgName,
+			})
+			return
+		}
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("探测应用失败: %v", err),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":           true,
+		"installed":    true,
+		"package_name": appInfo.PackageName,
+		"version_name": appInfo.VersionName,
+		"is_split":     appInfo.IsSplit,
+		"total_apks":   appInfo.TotalApks,
+		"remote_paths": appInfo.RemotePaths,
+	})
+}
+
+func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Serial      string `json:"serial"`
+		PackageName string `json:"package_name"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid JSON body"})
+		return
+	}
+
+	serial := strings.TrimSpace(body.Serial)
+	pkgName := strings.TrimSpace(body.PackageName)
+	if pkgName == "" {
+		pkgName = "com.dena.skyleap"
+	}
+
+	toolsDir := patcher.GetAndroidToolsDir()
+	exeDir := c.getExeDir()
+	adbPath, err := patcher.FindAdb(toolsDir, exeDir)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "ADB 未找到: " + err.Error()})
+		return
+	}
+
+	appInfo, err := patcher.GetDeviceApp(adbPath, serial, pkgName)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("无法在设备上找到应用 %s: %v", pkgName, err),
+		})
+		return
+	}
+
+	extractDir, err := os.MkdirTemp("", "gbf_extracted_*")
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("创建提取临时目录失败: %v", err),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	localPaths, err := patcher.PullDeviceApp(ctx, adbPath, serial, appInfo, extractDir, nil)
+	if err != nil {
+		_ = os.RemoveAll(extractDir)
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("从设备提取文件失败: %v", err),
+		})
+		return
+	}
+
+	inspectWorkDir, err := os.MkdirTemp("", "gbf_inspect_*")
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("创建临时检查目录失败: %v", err),
+		})
+		return
+	}
+	defer os.RemoveAll(inspectWorkDir)
+
+	targetInspectPath := extractDir
+	if len(localPaths) == 1 {
+		targetInspectPath = localPaths[0]
+	}
+
+	pkg, err := patcher.InspectInput(targetInspectPath, inspectWorkDir)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("提取的应用包解析失败: %v", err),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":                  true,
+		"file_path":           targetInspectPath,
+		"base_input_name":     fmt.Sprintf("%s (从设备提取)", pkgName),
+		"package_name":        pkg.PackageName,
+		"version_name":        pkg.VersionName,
+		"is_split":            pkg.IsSplit,
+		"total_apks":          pkg.TotalApks,
+		"is_official_skyleap": (pkg.PackageName == "com.dena.skyleap"),
+	})
+}
+
+func (c *ControlServer) handleAndroidAdbInstall(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Serial         string `json:"serial"`
+		PackageName    string `json:"package_name"`
+		ForceUninstall bool   `json:"force_uninstall"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid JSON body"})
+		return
+	}
+
+	serial := strings.TrimSpace(body.Serial)
+	pkgName := strings.TrimSpace(body.PackageName)
+	if pkgName == "" {
+		pkgName = "com.dena.skyleap"
+	}
+
+	toolsDir := patcher.GetAndroidToolsDir()
+	exeDir := c.getExeDir()
+	adbPath, err := patcher.FindAdb(toolsDir, exeDir)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "ADB 未找到: " + err.Error()})
+		return
+	}
+
+	c.androidPatchMu.Lock()
+	result := c.androidPatchStatus.Result
+	c.androidPatchMu.Unlock()
+
+	if result == nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "当前没有可供安装的修补产物，请先完成补丁制作",
+		})
+		return
+	}
+
+	var apkPaths []string
+	if result.IsSplit {
+		entries, err := os.ReadDir(result.SplitDir)
+		if err != nil {
+			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": fmt.Sprintf("读取产物分包目录失败: %v", err)})
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(strings.ToLower(e.Name()), ".apk") {
+				apkPaths = append(apkPaths, filepath.Join(result.SplitDir, e.Name()))
+			}
+		}
+	} else if result.SingleApk != "" {
+		apkPaths = []string{result.SingleApk}
+	}
+
+	if len(apkPaths) == 0 {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "未在产物目录中找到有效的 .apk 安装包"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	if body.ForceUninstall {
+		_ = patcher.UninstallFromDevice(ctx, adbPath, serial, pkgName)
+	}
+
+	installOut, err := patcher.InstallToDevice(ctx, adbPath, serial, result.IsSplit, apkPaths)
+	if err != nil {
+		if errors.Is(err, patcher.ErrSignatureMismatch) {
+			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+				"ok":                 false,
+				"signature_mismatch": true,
+				"error":              "应用签名不兼容（官方原版签名与加速补丁签名不同）。Android 安全机制要求先卸载旧版应用方可安装",
+				"details":            installOut,
+			})
+			return
+		}
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":      false,
+			"error":   fmt.Sprintf("安装到设备失败: %v", err),
+			"details": installOut,
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "安装成功！应用已部署至设备",
+		"output":  installOut,
+	})
+}
+
+func (c *ControlServer) handleAndroidAdbDownloadTools(w http.ResponseWriter, req *http.Request) {
+	toolsDir := patcher.GetAndroidToolsDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	adbPath, err := patcher.DownloadPlatformTools(ctx, toolsDir, "", nil)
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("下载平台工具失败: %v", err),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       true,
+		"message":  "ADB 平台工具下载并解压成功",
+		"adb_path": adbPath,
+	})
+}
+
 

@@ -580,6 +580,31 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleAndroidComponentsDownloadCancel(w, req)
 			return
 		}
+	case "/api/android/adb/devices":
+		if req.Method == http.MethodGet {
+			c.handleAndroidAdbDevices(w, req)
+			return
+		}
+	case "/api/android/adb/probe-app":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbProbeApp(w, req)
+			return
+		}
+	case "/api/android/adb/extract":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbExtract(w, req)
+			return
+		}
+	case "/api/android/adb/install":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbInstall(w, req)
+			return
+		}
+	case "/api/android/adb/download-tools":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbDownloadTools(w, req)
+			return
+		}
 	case "/api/proxy/start":
 		if req.Method == http.MethodPost {
 			if c.proxySrv == nil {

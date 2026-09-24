@@ -10,6 +10,9 @@ import {
   AndroidComponentDownloadProgress,
   AndroidPackageInspection,
   AndroidPatchProgress,
+  AdbDevicesResponse,
+  AdbProbeAppResponse,
+  AdbInstallResponse,
 } from './types'
 
 const BASE = ''
@@ -476,6 +479,73 @@ export async function cancelAndroidComponentDownload(): Promise<{ ok: boolean; m
   }
   return data
 }
+
+export async function fetchAdbDevices(): Promise<AdbDevicesResponse> {
+  const res = await fetch(`${BASE}/api/android/adb/devices`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function probeDeviceApp(serial: string, packageName = 'com.dena.skyleap'): Promise<AdbProbeAppResponse> {
+  const res = await fetch(`${BASE}/api/android/adb/probe-app`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial, package_name: packageName }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function extractDeviceApp(serial: string, packageName = 'com.dena.skyleap'): Promise<AndroidPackageInspection> {
+  const res = await fetch(`${BASE}/api/android/adb/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial, package_name: packageName }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function installToDevice(
+  serial: string,
+  packageName = 'com.dena.skyleap',
+  forceUninstall = false
+): Promise<AdbInstallResponse> {
+  const res = await fetch(`${BASE}/api/android/adb/install`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial, package_name: packageName, force_uninstall: forceUninstall }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 409 && data.signature_mismatch) {
+    return data
+  }
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function downloadAdbPlatformTools(): Promise<{ ok: boolean; message?: string; adb_path?: string }> {
+  const res = await fetch(`${BASE}/api/android/adb/download-tools`, {
+    method: 'POST',
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
 
 
 

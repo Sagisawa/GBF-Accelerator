@@ -14,6 +14,7 @@ import (
 
 	"gbf-proxy/cache"
 	"gbf-proxy/config"
+	"gbf-proxy/patcher"
 	"gbf-proxy/telemetry"
 )
 
@@ -374,4 +375,42 @@ func TestControlAndroidComponentsDownload_Endpoints(t *testing.T) {
 		t.Fatalf("expected 200 OK for cancel, got %d", wCancelActive.Code)
 	}
 }
+
+func TestControlAndroidAdbEndpoints(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// 1. GET /api/android/adb/devices
+	reqDevs := httptest.NewRequest(http.MethodGet, "/api/android/adb/devices", nil)
+	reqDevs.Host = "127.0.0.1:8125"
+	wDevs := httptest.NewRecorder()
+	ctrl.handleRoute(wDevs, reqDevs)
+
+	if wDevs.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for adb devices, got %d: %s", wDevs.Code, wDevs.Body.String())
+	}
+
+	var resDevs struct {
+		OK       bool                `json:"ok"`
+		AdbFound bool                `json:"adb_found"`
+		Devices  []patcher.AdbDevice `json:"devices"`
+	}
+	if err := json.Unmarshal(wDevs.Body.Bytes(), &resDevs); err != nil {
+		t.Fatalf("failed to decode devices response: %v", err)
+	}
+	if !resDevs.OK {
+		t.Errorf("expected ok=true, got false")
+	}
+
+	// 2. POST /api/android/adb/install with no patch result
+	reqInstall := httptest.NewRequest(http.MethodPost, "/api/android/adb/install", bytes.NewBuffer([]byte(`{"serial":"fake123"}`)))
+	reqInstall.Host = "127.0.0.1:8125"
+	wInstall := httptest.NewRecorder()
+	ctrl.handleRoute(wInstall, reqInstall)
+
+	if wInstall.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request when no patch result, got %d: %s", wInstall.Code, wInstall.Body.String())
+	}
+}
+
 

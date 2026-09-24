@@ -198,6 +198,12 @@ export interface AndroidEnvStatus {
     verified: boolean;
     error: string;
   };
+  adb?: {
+    found: boolean;
+    path: string;
+    version: string;
+    error: string;
+  };
 }
 
 export interface AndroidPackageInspection {
@@ -232,5 +238,39 @@ export interface AndroidPatchProgress {
   error: string;
   done: boolean;
   result?: AndroidPatchResult | null;
+}
+
+export interface AdbDevice {
+  serial: string;
+  state: string;
+  model: string;
+  product: string;
+}
+
+export interface AdbDevicesResponse {
+  ok: boolean;
+  adb_found: boolean;
+  adb_path?: string;
+  devices: AdbDevice[];
+  error?: string;
+}
+
+export interface AdbProbeAppResponse {
+  ok: boolean;
+  installed: boolean;
+  package_name: string;
+  version_name?: string;
+  is_split?: boolean;
+  total_apks?: number;
+  remote_paths?: string[];
+  error?: string;
+}
+
+export interface AdbInstallResponse {
+  ok: boolean;
+  message?: string;
+  signature_mismatch?: boolean;
+  details?: string;
+  error?: string;
 }
 
