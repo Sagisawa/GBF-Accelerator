@@ -40,8 +40,7 @@ android {
 }
 
 dependencies {
-    compileOnly(files("libs/libxposed-annotations.jar"))
-    compileOnly("io.github.libxposed:api:101.0.1")
+    compileOnly("io.github.libxposed:api:102.0.0")
     implementation("androidx.annotation:annotation:1.8.0")
     implementation("androidx.webkit:webkit:1.12.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
