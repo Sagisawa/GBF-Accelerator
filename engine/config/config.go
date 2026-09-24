@@ -506,6 +506,18 @@ func GetBaseDir() string {
 	// Released portable builds keep writable data beside the executable.
 	// macOS .app bundles are the exception: bundle contents may be read-only,
 	// so writable data is stored in the user's Application Support directory.
+	// Android is also an exception: the executable lives in read-only nativeLibraryDir (/data/app/.../lib/arm64),
+	// so writable data must live in the app data directory ($HOME or $GBF_DATA_DIR).
+	if runtime.GOOS == "android" {
+		if dataDir := os.Getenv("GBF_DATA_DIR"); dataDir != "" {
+			_ = os.MkdirAll(dataDir, 0755)
+			return dataDir
+		}
+		if home := os.Getenv("HOME"); home != "" {
+			_ = os.MkdirAll(home, 0755)
+			return home
+		}
+	}
 	if exe, err := os.Executable(); err == nil {
 		exeDir := filepath.Dir(exe)
 		if runtime.GOOS == "darwin" {

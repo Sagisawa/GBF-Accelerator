@@ -31,6 +31,12 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {
@@ -38,4 +44,22 @@ dependencies {
     compileOnly("io.github.libxposed:api:101.0.1")
     implementation("androidx.annotation:annotation:1.8.0")
     implementation("androidx.webkit:webkit:1.12.0")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.core:core-ktx:1.13.1")
+}
+
+val buildGoCore = tasks.register<Exec>("buildGoCore") {
+    val engineDir = rootProject.projectDir.parentFile.resolve("engine")
+    workingDir = engineDir
+    environment("GOOS", "android")
+    environment("GOARCH", "arm64")
+    environment("CGO_ENABLED", "0")
+    commandLine("go", "build", "-trimpath", "-ldflags=-s -w", "-o", file("src/main/jniLibs/arm64-v8a/libgbfcore.so").absolutePath, ".")
+}
+
+tasks.named("preBuild") {
+    val soFile = file("src/main/jniLibs/arm64-v8a/libgbfcore.so")
+    if (!soFile.exists()) {
+        dependsOn(buildGoCore)
+    }
 }

@@ -2,11 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:allowBackup="false"
         android:hasCode="true"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:theme="@style/Theme.GBFAccelerator"
+        android:usesCleartextTraffic="true"
         tools:targetApi="35">
 
         <!-- Xposed / LSPosed Modern Module Metadata -->
@@ -22,6 +29,37 @@
         <meta-data
             android:name="xposedscope"
             android:resource="@array/xposed_scope" />
+
+        <activity
+            android:name="com.sagisawa.gbfaccelerator.ui.MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name="com.sagisawa.gbfaccelerator.core.CoreService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local proxy daemon lifecycle management for static resource caching" />
+        </service>
+
+        <receiver
+            android:name="com.sagisawa.gbfaccelerator.core.CoreControlReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.sagisawa.gbfaccelerator.ACTION_START" />
+                <action android:name="com.sagisawa.gbfaccelerator.ACTION_STOP" />
+            </intent-filter>
+        </receiver>
 
     </application>
 
