@@ -1,0 +1,7 @@
+name=GBF-ACC SkyLeap Module
+author=Sagisawa
+version=1.0.0
+versionCode=1
+description=GBF-Accelerator Xposed Module for SkyLeap verification
+minApiVersion=100
+targetApiVersion=102

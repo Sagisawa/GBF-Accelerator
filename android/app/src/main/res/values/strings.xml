@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">GBF-ACC Xposed</string>
+    <string name="xposed_description">GBF-Accelerator Xposed Module for SkyLeap verification</string>
+</resources>

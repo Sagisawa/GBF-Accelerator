@@ -1,0 +1,2 @@
+-keep class io.github.libxposed.** { *; }
+-keep class com.sagisawa.gbfaccelerator.xposed.** { *; }
