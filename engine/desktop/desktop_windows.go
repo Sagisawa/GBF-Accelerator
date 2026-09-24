@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -32,25 +33,41 @@ type browseInfo struct {
 }
 
 var (
-	shell32               = syscall.NewLazyDLL("shell32.dll")
-	shBrowseForFolderW    = shell32.NewProc("SHBrowseForFolderW")
-	shGetPathFromIDListW  = shell32.NewProc("SHGetPathFromIDListW")
-	coTaskMemFree         = syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree")
+	shell32              = syscall.NewLazyDLL("shell32.dll")
+	shBrowseForFolderW   = shell32.NewProc("SHBrowseForFolderW")
+	shGetPathFromIDListW = shell32.NewProc("SHGetPathFromIDListW")
+	coTaskMemFree        = syscall.NewLazyDLL("ole32.dll").NewProc("CoTaskMemFree")
 
-	user32               = syscall.NewLazyDLL("user32.dll")
-	getForegroundWindow  = user32.NewProc("GetForegroundWindow")
-	getWindowThreadPID   = user32.NewProc("GetWindowThreadProcessId")
-	kernel32             = syscall.NewLazyDLL("kernel32.dll")
-	getCurrentThreadID   = kernel32.NewProc("GetCurrentThreadId")
-	attachThreadInput    = user32.NewProc("AttachThreadInput")
-	setForegroundWindow  = user32.NewProc("SetForegroundWindow")
-	showWindow           = user32.NewProc("ShowWindow")
-	bringWindowToTop     = user32.NewProc("BringWindowToTop")
-	enumWindows          = user32.NewProc("EnumWindows")
-	getClassNameW        = user32.NewProc("GetClassNameW")
+	user32                       = syscall.NewLazyDLL("user32.dll")
+	getForegroundWindow          = user32.NewProc("GetForegroundWindow")
+	getWindowThreadPID           = user32.NewProc("GetWindowThreadProcessId")
+	kernel32                     = syscall.NewLazyDLL("kernel32.dll")
+	getCurrentThreadID           = kernel32.NewProc("GetCurrentThreadId")
+	attachThreadInput            = user32.NewProc("AttachThreadInput")
+	setForegroundWindow          = user32.NewProc("SetForegroundWindow")
+	showWindow                   = user32.NewProc("ShowWindow")
+	bringWindowToTop             = user32.NewProc("BringWindowToTop")
+	enumWindows                  = user32.NewProc("EnumWindows")
+	getClassNameW                = user32.NewProc("GetClassNameW")
+	setWindowPos                 = user32.NewProc("SetWindowPos")
+	getWindowRect                = user32.NewProc("GetWindowRect")
+	isWindowVisible              = user32.NewProc("IsWindowVisible")
+	getDpiForWindow              = user32.NewProc("GetDpiForWindow")
+	setThreadDpiAwarenessContext = user32.NewProc("SetThreadDpiAwarenessContext")
 )
 
-const swShowNormal = 1
+const (
+	swShowNormal                         = 1
+	swMaximize                           = 3
+	swRestore                            = 9
+	swpNoZOrder                          = 0x0004
+	swpNoActivate                        = 0x0010
+	dpiAwarenessContextPerMonitorAwareV2 = ^uintptr(3) // -4 in two's complement
+)
+
+type rect struct {
+	left, top, right, bottom int32
+}
 
 func enumExplorerWindows() map[uintptr]struct{} {
 	windows := make(map[uintptr]struct{})
@@ -193,10 +210,31 @@ func prepareAppURL(url string) string {
 	return appURL
 }
 
+// appModeUserDataDir returns a dedicated, stable user data directory for standalone App mode.
+// This isolates the console from the user's daily Edge/Chrome browsing session, preventing
+// ProcessSingleton from discarding window sizing command-line switches, and allows Chromium
+// to naturally persist window placement in its profile.
+func appModeUserDataDir() (string, error) {
+	localAppData := os.Getenv("LocalAppData")
+	if localAppData == "" {
+		localAppData = os.TempDir()
+	}
+	dir := filepath.Join(localAppData, "GBF-Accelerator", "AppProfile")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 // buildAppWindowArgs builds the Chromium App-mode command-line arguments.
 // Maximized and explicit window size are mutually exclusive so the saved state is deterministic.
-func buildAppWindowArgs(appURL string, width, height int, maximized bool) []string {
-	args := []string{fmt.Sprintf("--app=%s", appURL)}
+func buildAppWindowArgs(appURL, userDataDir string, width, height int, maximized bool) []string {
+	args := []string{
+		fmt.Sprintf("--app=%s", appURL),
+		fmt.Sprintf("--user-data-dir=%s", userDataDir),
+		"--no-first-run",
+		"--disable-background-mode",
+	}
 	if maximized {
 		return append(args, "--start-maximized")
 	}
@@ -207,6 +245,199 @@ func buildAppWindowArgs(appURL string, width, height int, maximized bool) []stri
 		height = 640
 	}
 	return append(args, fmt.Sprintf("--window-size=%d,%d", width, height))
+}
+
+// findProcessTreePIDs returns all process IDs belonging to the process tree rooted at rootPID.
+// Chromium uses a multi-process architecture where the main browser window might be created
+// by a child process of the launcher.
+func findProcessTreePIDs(rootPID uint32) map[uint32]struct{} {
+	tree := map[uint32]struct{}{rootPID: {}}
+	if rootPID == 0 {
+		return tree
+	}
+	snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return tree
+	}
+	defer syscall.CloseHandle(snapshot)
+
+	var entry syscall.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	if err := syscall.Process32First(snapshot, &entry); err != nil {
+		return tree
+	}
+	for {
+		if _, ok := tree[entry.ParentProcessID]; ok {
+			tree[entry.ProcessID] = struct{}{}
+		}
+		if err := syscall.Process32Next(snapshot, &entry); err != nil {
+			break
+		}
+	}
+	return tree
+}
+
+// findAppWindowInTree locates the primary Chrome_WidgetWin_1 window belonging to any PID in the process tree.
+func findAppWindowInTree(tree map[uint32]struct{}) uintptr {
+	if len(tree) == 0 {
+		return 0
+	}
+
+	var best uintptr
+	var bestArea int64
+
+	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		var windowPID uint32
+		getWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&windowPID)))
+		if _, ok := tree[windowPID]; !ok {
+			return 1
+		}
+
+		visible, _, _ := isWindowVisible.Call(hwnd)
+		if visible == 0 {
+			return 1
+		}
+
+		classBuf := make([]uint16, 64)
+		ret, _, _ := getClassNameW.Call(
+			hwnd,
+			uintptr(unsafe.Pointer(&classBuf[0])),
+			uintptr(len(classBuf)),
+		)
+		if ret == 0 || syscall.UTF16ToString(classBuf[:ret]) != "Chrome_WidgetWin_1" {
+			return 1
+		}
+
+		var r rect
+		if v, _, _ := getWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); v == 0 {
+			return 1
+		}
+		w := int64(r.right - r.left)
+		h := int64(r.bottom - r.top)
+		// Filter out auxiliary / IME / small indicator windows (e.g. 50x50)
+		if w <= 200 || h <= 200 {
+			return 1
+		}
+
+		area := w * h
+		if area > bestArea {
+			best = hwnd
+			bestArea = area
+		}
+		return 1
+	})
+	_, _, _ = enumWindows.Call(cb, 0)
+	return best
+}
+
+// applyWindowGeometry applies the persisted size or maximized state to the window HWND
+// using the effective Per-Monitor V2 DPI scaling.
+func applyWindowGeometry(hwnd uintptr, width, height int, maximized bool) bool {
+	if hwnd == 0 {
+		return false
+	}
+
+	if maximized {
+		showWindow.Call(hwnd, swMaximize)
+		return true
+	}
+
+	if width < 400 {
+		width = 880
+	}
+	if height < 400 {
+		height = 640
+	}
+
+	var r rect
+	ret, _, _ := getWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	if ret == 0 {
+		return false
+	}
+
+	// Chromium outerWidth/outerHeight are CSS pixels. Convert to physical pixels via effective DPI.
+	dpi := uint32(96)
+	if getDpiForWindow.Find() == nil {
+		if v, _, _ := getDpiForWindow.Call(hwnd); v >= 48 && v <= 768 {
+			dpi = uint32(v)
+		}
+	}
+	expectedW := int32((width*int(dpi) + 48) / 96)
+	expectedH := int32((height*int(dpi) + 48) / 96)
+
+	showWindow.Call(hwnd, swRestore)
+	_, _, _ = setWindowPos.Call(
+		hwnd,
+		0,
+		uintptr(r.left),
+		uintptr(r.top),
+		uintptr(expectedW),
+		uintptr(expectedH),
+		uintptr(swpNoZOrder|swpNoActivate),
+	)
+
+	// Short verification loop: verify HWND bounds via GetWindowRect
+	for i := 0; i < 8; i++ {
+		time.Sleep(50 * time.Millisecond)
+		var cur rect
+		if v, _, _ := getWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&cur))); v == 0 {
+			break
+		}
+		curW := cur.right - cur.left
+		curH := cur.bottom - cur.top
+		if absInt32(curW-expectedW) <= 4 && absInt32(curH-expectedH) <= 4 {
+			return true
+		}
+		// Re-apply if Chromium layout reset the bounds
+		_, _, _ = setWindowPos.Call(
+			hwnd,
+			0,
+			uintptr(cur.left),
+			uintptr(cur.top),
+			uintptr(expectedW),
+			uintptr(expectedH),
+			uintptr(swpNoZOrder|swpNoActivate),
+		)
+	}
+	return true
+}
+
+func restoreAppWindowGeometry(pid uint32, width, height int, maximized bool) {
+	if pid == 0 {
+		return
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	if setThreadDpiAwarenessContext.Find() == nil {
+		oldCtx, _, _ := setThreadDpiAwarenessContext.Call(dpiAwarenessContextPerMonitorAwareV2)
+		if oldCtx != 0 {
+			defer setThreadDpiAwarenessContext.Call(oldCtx)
+		}
+	}
+
+	deadline := time.Now().Add(6 * time.Second)
+	for {
+		tree := findProcessTreePIDs(pid)
+		hwnd := findAppWindowInTree(tree)
+		if hwnd != 0 {
+			if applyWindowGeometry(hwnd, width, height, maximized) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func absInt32(v int32) int32 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // openAppWindow launches Microsoft Edge, Google Chrome, or Chromium-based browsers in standalone App mode (--app=<url>).
@@ -221,12 +452,18 @@ func openAppWindowWithGeometry(url string, width, height int, maximized bool) er
 
 	browserPath := findAppBrowserWindows()
 	if browserPath != "" {
-		args := buildAppWindowArgs(appURL, width, height, maximized)
+		userDataDir, err := appModeUserDataDir()
+		if err != nil {
+			return fmt.Errorf("failed to create standalone browser profile: %w", err)
+		}
+		args := buildAppWindowArgs(appURL, userDataDir, width, height, maximized)
 		cmd := exec.Command(browserPath, args...)
 		if err := cmd.Start(); err == nil {
+			pid := uint32(cmd.Process.Pid)
 			go func() {
 				_ = cmd.Wait()
 			}()
+			go restoreAppWindowGeometry(pid, width, height, maximized)
 			return nil
 		}
 	}

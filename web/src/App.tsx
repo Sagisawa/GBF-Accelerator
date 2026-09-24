@@ -13,6 +13,7 @@ import {
   fetchLogs,
   toggleProxy,
   applyConfig,
+  applyConfigKeepAlive,
   openCacheFolder,
   browseDirectory,
   detectACGPower,
@@ -382,12 +383,14 @@ export const App: React.FC = () => {
     if (!isStandalone) return
 
     let timer: ReturnType<typeof setTimeout> | null = null
+    let baselineTimer: ReturnType<typeof setTimeout> | null = null
+    let isStabilized = false
+    let persistedKey: string | null = null
+    let unloadDispatched = false
 
-    const saveGeometry = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-
-      const w = window.outerWidth || window.innerWidth
-      const h = window.outerHeight || window.innerHeight
+    const readGeometry = () => {
+      const w = Math.round(window.outerWidth || window.innerWidth)
+      const h = Math.round(window.outerHeight || window.innerHeight)
 
       const isMaximized = Boolean(
         window.screen &&
@@ -397,25 +400,70 @@ export const App: React.FC = () => {
 
       const patch: Record<string, any> = { window_maximized: isMaximized }
       if (!isMaximized && w >= 400 && h >= 400) {
-        patch.window_width = Math.round(w)
-        patch.window_height = Math.round(h)
+        patch.window_width = w
+        patch.window_height = h
       }
 
-      applyConfig(patch).catch(() => {})
+      return {
+        patch,
+        key: `${w}x${h}:${isMaximized ? 'max' : 'normal'}`,
+        valid: isMaximized || (w >= 400 && h >= 400),
+      }
     }
 
-    const handleResize = () => {
+    const initial = readGeometry()
+    const baselineKey = initial.key
+
+    const saveGeometry = (useKeepAlive = false) => {
+      const current = readGeometry()
+      if (!current.valid || current.key === persistedKey) return
+
+      if (useKeepAlive) {
+        if (unloadDispatched) return
+        unloadDispatched = true
+        persistedKey = current.key
+        applyConfigKeepAlive(current.patch)
+      } else {
+        persistedKey = current.key
+        applyConfig(current.patch).catch(() => {})
+      }
+    }
+
+    const scheduleSave = () => {
+      if (!isStabilized) return
       if (timer) clearTimeout(timer)
-      timer = setTimeout(saveGeometry, 800)
+      timer = setTimeout(() => {
+        saveGeometry(false)
+      }, 400)
     }
 
-    window.addEventListener('resize', handleResize)
-    window.addEventListener('beforeunload', saveGeometry)
+    // 1.5s stabilization window:
+    // Once elapsed, re-sample current geometry to establish baseline.
+    // If the user already adjusted during this window, save it.
+    baselineTimer = setTimeout(() => {
+      isStabilized = true
+      const current = readGeometry()
+      if (current.valid && current.key !== baselineKey) {
+        saveGeometry(false)
+      } else {
+        persistedKey = current.key
+      }
+    }, 1500)
+
+    const handleUnload = () => {
+      saveGeometry(true)
+    }
+
+    window.addEventListener('resize', scheduleSave)
+    window.addEventListener('pagehide', handleUnload)
+    window.addEventListener('beforeunload', handleUnload)
 
     return () => {
       if (timer) clearTimeout(timer)
-      window.removeEventListener('resize', handleResize)
-      window.removeEventListener('beforeunload', saveGeometry)
+      if (baselineTimer) clearTimeout(baselineTimer)
+      window.removeEventListener('resize', scheduleSave)
+      window.removeEventListener('pagehide', handleUnload)
+      window.removeEventListener('beforeunload', handleUnload)
     }
   }, [isStandalone])
 

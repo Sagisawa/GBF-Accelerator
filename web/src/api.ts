@@ -45,6 +45,20 @@ export async function applyConfig(patch: Record<string, any>): Promise<ApplyConf
   return data
 }
 
+export function applyConfigKeepAlive(patch: Record<string, any>): void {
+  if (typeof fetch === 'undefined') return
+  try {
+    fetch(`${BASE}/api/config/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+      keepalive: true,
+    }).catch(() => {})
+  } catch {
+    // Ignore unload transmission errors
+  }
+}
+
 export async function toggleProxy(start: boolean): Promise<RuntimeStatus> {
   const endpoint = start ? '/api/proxy/start' : '/api/proxy/stop'
   const res = await fetch(`${BASE}${endpoint}`, { method: 'POST' })
