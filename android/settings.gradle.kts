@@ -19,5 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "GBF-Accelerator-Xposed"
+rootProject.name = "GBF-Accelerator-Android"
 include(":app")
+include(":xposed")

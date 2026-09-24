@@ -75,6 +75,9 @@ func (p *Patcher) Run() (*BundleResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := ValidateModuleApk(moduleApk); err != nil {
+		return nil, err
+	}
 	fmt.Printf("      - SkyLeapModule: %s\n", moduleApk)
 
 	// 3. Inspect Input package

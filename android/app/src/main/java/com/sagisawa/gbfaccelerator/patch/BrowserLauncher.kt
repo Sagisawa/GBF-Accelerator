@@ -3,7 +3,15 @@ package com.sagisawa.gbfaccelerator.patch
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import com.sagisawa.gbfaccelerator.browser.BrowserAdapter
+
+/**
+ * Descriptor of a target browser to be managed and launched by the Host application.
+ */
+data class BrowserTarget(
+    val id: String = "skyleap",
+    val name: String = "SkyLeap",
+    val targetPackages: Set<String> = setOf("com.dena.skyleap")
+)
 
 /**
  * Result of launching a target browser.
@@ -36,19 +44,19 @@ data class BrowserAppInfo(
 interface BrowserLauncher {
 
     /**
-     * Queries package information for the primary package handled by this adapter.
+     * Queries package information for the primary package handled by this browser target.
      */
-    fun getAppInfo(context: Context, adapter: BrowserAdapter): BrowserAppInfo
+    fun getAppInfo(context: Context, target: BrowserTarget): BrowserAppInfo
 
     /**
-     * Checks if at least one target package associated with the adapter is installed.
+     * Checks if at least one target package associated with the browser target is installed.
      */
-    fun isInstalled(context: Context, adapter: BrowserAdapter): Boolean
+    fun isInstalled(context: Context, target: BrowserTarget): Boolean
 
     /**
-     * Launches the primary application associated with the given adapter.
+     * Launches the primary application associated with the given browser target.
      */
-    fun launch(context: Context, adapter: BrowserAdapter): LaunchResult
+    fun launch(context: Context, target: BrowserTarget): LaunchResult
 }
 
 /**
@@ -56,9 +64,9 @@ interface BrowserLauncher {
  */
 class DefaultBrowserLauncher : BrowserLauncher {
 
-    override fun getAppInfo(context: Context, adapter: BrowserAdapter): BrowserAppInfo {
+    override fun getAppInfo(context: Context, target: BrowserTarget): BrowserAppInfo {
         val pm = context.packageManager
-        for (pkg in adapter.targetPackages) {
+        for (pkg in target.targetPackages) {
             try {
                 val pInfo = pm.getPackageInfo(pkg, 0)
                 val appLabel = pm.getApplicationLabel(pInfo.applicationInfo ?: continue).toString()
@@ -83,17 +91,17 @@ class DefaultBrowserLauncher : BrowserLauncher {
             }
         }
 
-        val primaryPkg = adapter.targetPackages.firstOrNull() ?: "unknown"
+        val primaryPkg = target.targetPackages.firstOrNull() ?: "unknown"
         return BrowserAppInfo(packageName = primaryPkg, isInstalled = false)
     }
 
-    override fun isInstalled(context: Context, adapter: BrowserAdapter): Boolean {
-        return getAppInfo(context, adapter).isInstalled
+    override fun isInstalled(context: Context, target: BrowserTarget): Boolean {
+        return getAppInfo(context, target).isInstalled
     }
 
-    override fun launch(context: Context, adapter: BrowserAdapter): LaunchResult {
+    override fun launch(context: Context, target: BrowserTarget): LaunchResult {
         val pm = context.packageManager
-        for (pkg in adapter.targetPackages) {
+        for (pkg in target.targetPackages) {
             val launchIntent = pm.getLaunchIntentForPackage(pkg)
             if (launchIntent != null) {
                 return try {
@@ -106,7 +114,7 @@ class DefaultBrowserLauncher : BrowserLauncher {
             }
         }
 
-        val primaryPkg = adapter.targetPackages.firstOrNull() ?: "unknown"
+        val primaryPkg = target.targetPackages.firstOrNull() ?: "unknown"
         return LaunchResult.NotInstalled(primaryPkg)
     }
 }

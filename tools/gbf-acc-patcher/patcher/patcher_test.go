@@ -2,6 +2,7 @@ package patcher
 
 import (
 	"archive/zip"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -251,5 +252,160 @@ func TestInspectInput_UnsupportedExtension(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported file format") {
 		t.Errorf("expected 'unsupported file format' message, got %v", err)
+	}
+}
+
+func TestFindModuleApk_Priority(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// 1. When no files exist
+	_, err := FindModuleApk("", tempDir)
+	if err == nil {
+		t.Errorf("expected error when no candidates exist")
+	}
+
+	// 2. Fallback candidate in exeDir
+	debugApk := filepath.Join(tempDir, "xposed-debug.apk")
+	if err := os.WriteFile(debugApk, []byte("fake debug"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	found, err := FindModuleApk("", tempDir)
+	if err != nil {
+		t.Fatalf("expected to find xposed-debug.apk: %v", err)
+	}
+	if !strings.HasSuffix(found, "xposed-debug.apk") {
+		t.Errorf("expected xposed-debug.apk, got %s", found)
+	}
+
+	// 3. Higher priority release APK in exeDir
+	releaseApk := filepath.Join(tempDir, "xposed-release.apk")
+	if err := os.WriteFile(releaseApk, []byte("fake release"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	found, err = FindModuleApk("", tempDir)
+	if err != nil {
+		t.Fatalf("expected to find xposed-release.apk: %v", err)
+	}
+	if !strings.HasSuffix(found, "xposed-release.apk") {
+		t.Errorf("expected xposed-release.apk, got %s", found)
+	}
+
+	// 4. Override path has highest priority
+	overrideApk := filepath.Join(tempDir, "custom-module.apk")
+	if err := os.WriteFile(overrideApk, []byte("fake override"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	found, err = FindModuleApk(overrideApk, tempDir)
+	if err != nil {
+		t.Fatalf("expected override path to succeed: %v", err)
+	}
+	if !strings.HasSuffix(found, "custom-module.apk") {
+		t.Errorf("expected custom-module.apk, got %s", found)
+	}
+}
+
+func TestValidateModuleApk_RealXposedRelease(t *testing.T) {
+	repoRoot := filepath.Join("..", "..", "..")
+	modulePath := filepath.Join(repoRoot, "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk")
+	if _, err := os.Stat(modulePath); err != nil {
+		t.Skipf("skipping test, xposed-release.apk not found at %s", modulePath)
+	}
+
+	if err := ValidateModuleApk(modulePath); err != nil {
+		t.Fatalf("ValidateModuleApk failed on real xposed-release.apk: %v", err)
+	}
+}
+
+func TestValidateModuleApk_RejectsHostApp(t *testing.T) {
+	repoRoot := filepath.Join("..", "..", "..")
+	hostApkPath := filepath.Join(repoRoot, "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+	if _, err := os.Stat(hostApkPath); err != nil {
+		t.Skipf("skipping test, app-debug.apk not found at %s", hostApkPath)
+	}
+
+	err := ValidateModuleApk(hostApkPath)
+	if err == nil {
+		t.Fatalf("expected ValidateModuleApk to reject host app APK, but succeeded")
+	}
+
+	if !strings.Contains(err.Error(), "detected Host App APK (com.sagisawa.gbfaccelerator)") {
+		t.Errorf("expected error mentioning detected Host App APK, got: %v", err)
+	}
+}
+
+func TestValidateModuleApk_MissingXposedMetadata(t *testing.T) {
+	repoRoot := filepath.Join("..", "..", "..")
+	realModule := filepath.Join(repoRoot, "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk")
+	if _, err := os.Stat(realModule); err != nil {
+		t.Skipf("skipping test, xposed-release.apk not found at %s", realModule)
+	}
+
+	// Read AndroidManifest.xml from real module
+	zr, err := zip.OpenReader(realModule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+
+	var manifestData []byte
+	for _, f := range zr.File {
+		if f.Name == "AndroidManifest.xml" {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			manifestData = data
+			break
+		}
+	}
+
+	if manifestData == nil {
+		t.Fatal("AndroidManifest.xml not found in real module")
+	}
+
+	// Create a zip with the valid manifest but NO META-INF/xposed
+	tempDir := t.TempDir()
+	badApkPath := filepath.Join(tempDir, "bad-module.apk")
+	f, err := os.Create(badApkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("AndroidManifest.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(manifestData); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	err = ValidateModuleApk(badApkPath)
+	if err == nil {
+		t.Fatalf("expected ValidateModuleApk to fail on missing Xposed metadata, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "missing Xposed metadata") {
+		t.Errorf("expected error mentioning missing Xposed metadata, got: %v", err)
+	}
+}
+
+func TestValidateModuleApk_InvalidZip(t *testing.T) {
+	tempDir := t.TempDir()
+	corruptPath := filepath.Join(tempDir, "corrupt.apk")
+	if err := os.WriteFile(corruptPath, []byte("not a zip file"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ValidateModuleApk(corruptPath)
+	if err == nil {
+		t.Errorf("expected error for corrupt zip, got nil")
 	}
 }

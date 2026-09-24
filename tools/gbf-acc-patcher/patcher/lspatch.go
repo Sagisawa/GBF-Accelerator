@@ -1,8 +1,10 @@
 package patcher
 
 import (
+	"archive/zip"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -123,15 +125,18 @@ func FindLSPatchJar(overridePath string, exeDir string) (string, error) {
 	return "", fmt.Errorf("lspatch.jar not found. Please place lspatch.jar in tool directory or specify --lspatch <path>")
 }
 
-// FindModuleApk discovers the built SkyLeapModule APK from override, local directories, or project repository.
+// FindModuleApk discovers the built SkyLeap Xposed Module APK from override, local directories, or project repository.
 func FindModuleApk(overridePath string, exeDir string) (string, error) {
 	candidates := []string{
 		overridePath,
-		filepath.Join(exeDir, "app-debug.apk"),
+		filepath.Join(exeDir, "xposed-release.apk"),
+		filepath.Join(exeDir, "xposed-debug.apk"),
 		filepath.Join(exeDir, "SkyLeapModule.apk"),
 		filepath.Join(exeDir, "module.apk"),
-		filepath.Join(exeDir, "..", "..", "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk"),
-		filepath.Join("android", "app", "build", "outputs", "apk", "debug", "app-debug.apk"),
+		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
+		filepath.Join("android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+		filepath.Join("android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
 	}
 
 	for _, c := range candidates {
@@ -144,7 +149,75 @@ func FindModuleApk(overridePath string, exeDir string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("SkyLeapModule APK not found. Please build the Android module via `./gradlew assembleDebug` or specify --module <path>")
+	return "", fmt.Errorf("Xposed Module APK not found. Please build the Xposed module via `./gradlew :xposed:assembleRelease` or specify --module <path>")
+}
+
+// ValidateModuleApk verifies that the specified APK is a valid standalone Xposed module
+// for GBF-Accelerator (package com.sagisawa.gbfaccelerator.xposed), contains Xposed metadata,
+// and strictly rejects the Host App (com.sagisawa.gbfaccelerator).
+func ValidateModuleApk(apkPath string) error {
+	fi, err := os.Stat(apkPath)
+	if err != nil {
+		return fmt.Errorf("module APK not accessible: %w", err)
+	}
+	if fi.IsDir() {
+		return fmt.Errorf("module APK path is a directory: %s", apkPath)
+	}
+
+	zr, err := zip.OpenReader(apkPath)
+	if err != nil {
+		return fmt.Errorf("module APK is not a valid zip archive: %w", err)
+	}
+	defer zr.Close()
+
+	var manifestFile *zip.File
+	hasXposedMeta := false
+
+	for _, f := range zr.File {
+		if f.Name == "AndroidManifest.xml" {
+			manifestFile = f
+		}
+		if f.Name == "META-INF/xposed/java_init.list" || f.Name == "META-INF/xposed/module.prop" {
+			hasXposedMeta = true
+		}
+	}
+
+	if manifestFile == nil {
+		return fmt.Errorf("invalid module APK: AndroidManifest.xml not found")
+	}
+
+	rc, err := manifestFile.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open AndroidManifest.xml in module APK: %w", err)
+	}
+	defer rc.Close()
+
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return fmt.Errorf("failed to read AndroidManifest.xml from module APK: %w", err)
+	}
+
+	info, err := ParseManifest(data)
+	if err != nil {
+		return fmt.Errorf("failed to parse AndroidManifest.xml in module APK: %w", err)
+	}
+
+	const hostAppPkg = "com.sagisawa.gbfaccelerator"
+	const expectedModulePkg = "com.sagisawa.gbfaccelerator.xposed"
+
+	if info.PackageName == hostAppPkg {
+		return fmt.Errorf("invalid module APK: detected Host App APK (%s); please provide the standalone Xposed module APK (%s)", hostAppPkg, expectedModulePkg)
+	}
+
+	if info.PackageName != expectedModulePkg {
+		return fmt.Errorf("invalid module APK: unexpected package %q (expected %s)", info.PackageName, expectedModulePkg)
+	}
+
+	if !hasXposedMeta {
+		return fmt.Errorf("invalid module APK: missing Xposed metadata (META-INF/xposed/java_init.list or module.prop)")
+	}
+
+	return nil
 }
 
 // ExecuteLSPatch invokes LSPatch Portable to patch the provided APK(s) with the given module.

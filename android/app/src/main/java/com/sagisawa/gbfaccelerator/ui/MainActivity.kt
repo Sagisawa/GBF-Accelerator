@@ -15,15 +15,14 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import com.sagisawa.gbfaccelerator.browser.BrowserAdapter
-import com.sagisawa.gbfaccelerator.browser.BrowserAdapterRegistry
+import com.sagisawa.gbfaccelerator.R
 import com.sagisawa.gbfaccelerator.cert.CaCertManager
 import com.sagisawa.gbfaccelerator.core.CoreManager
 import com.sagisawa.gbfaccelerator.core.CoreService
 import com.sagisawa.gbfaccelerator.patch.BrowserLauncher
+import com.sagisawa.gbfaccelerator.patch.BrowserTarget
 import com.sagisawa.gbfaccelerator.patch.DefaultBrowserLauncher
 import com.sagisawa.gbfaccelerator.patch.LaunchResult
-import com.sagisawa.gbfaccelerator.xposed.R
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
@@ -61,8 +60,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvClearLogs: TextView
 
     private val browserLauncher: BrowserLauncher = DefaultBrowserLauncher()
-    private var availableAdapters: List<BrowserAdapter> = emptyList()
-    private var selectedAdapter: BrowserAdapter? = null
+    private val availableTargets: List<BrowserTarget> = listOf(
+        BrowserTarget(id = "skyleap", name = "SkyLeap", targetPackages = setOf("com.dena.skyleap"))
+    )
+    private var selectedTarget: BrowserTarget? = availableTargets.firstOrNull()
 
     private val stateListener: (CoreManager.State) -> Unit = { state ->
         runOnUiThread { updateStateUi(state) }
@@ -116,8 +117,8 @@ class MainActivity : AppCompatActivity() {
             "start" -> CoreService.start(this)
             "stop" -> CoreService.stop(this)
             "launch_browser" -> {
-                selectedAdapter?.let { adapter ->
-                    launchTargetBrowser(adapter)
+                selectedTarget?.let { target ->
+                    launchTargetBrowser(target)
                 }
             }
         }
@@ -182,41 +183,40 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupBrowserSelector() {
-        availableAdapters = BrowserAdapterRegistry.getAllAdapters()
-        val adapterLabels = availableAdapters.map { adapter ->
-            "${adapter.name} (${adapter.id})"
+        val targetLabels = availableTargets.map { target ->
+            "${target.name} (${target.id})"
         }
 
         val spinnerAdapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_dropdown_item,
-            adapterLabels
+            targetLabels
         )
         spTargetBrowser.adapter = spinnerAdapter
 
         spTargetBrowser.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (position in availableAdapters.indices) {
-                    selectedAdapter = availableAdapters[position]
+                if (position in availableTargets.indices) {
+                    selectedTarget = availableTargets[position]
                     updateBrowserUi()
                 }
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) {
-                selectedAdapter = null
+                selectedTarget = null
                 updateBrowserUi()
             }
         }
 
-        if (availableAdapters.isNotEmpty()) {
-            selectedAdapter = availableAdapters.first()
+        if (availableTargets.isNotEmpty()) {
+            selectedTarget = availableTargets.first()
             spTargetBrowser.setSelection(0)
             updateBrowserUi()
         }
 
         btnLaunchBrowser.setOnClickListener {
-            selectedAdapter?.let { adapter ->
-                launchTargetBrowser(adapter)
+            selectedTarget?.let { target ->
+                launchTargetBrowser(target)
             }
         }
     }
@@ -251,8 +251,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateBrowserUi() {
-        val adapter = selectedAdapter ?: return
-        val appInfo = browserLauncher.getAppInfo(this, adapter)
+        val target = selectedTarget ?: return
+        val appInfo = browserLauncher.getAppInfo(this, target)
 
         if (appInfo.isInstalled) {
             val vName = appInfo.versionName ?: "detected"
@@ -263,7 +263,7 @@ class MainActivity : AppCompatActivity() {
                 getString(R.string.browser_status_installed, vName)
             )
             btnLaunchBrowser.isEnabled = true
-            btnLaunchBrowser.text = String.format(Locale.US, "启动 %s", adapter.name)
+            btnLaunchBrowser.text = String.format(Locale.US, "启动 %s", target.name)
         } else {
             tvBrowserStatus.text = String.format(
                 Locale.US,
@@ -272,7 +272,7 @@ class MainActivity : AppCompatActivity() {
                 getString(R.string.browser_status_not_installed)
             )
             btnLaunchBrowser.isEnabled = false
-            btnLaunchBrowser.text = String.format(Locale.US, "未安装 %s", adapter.name)
+            btnLaunchBrowser.text = String.format(Locale.US, "未安装 %s", target.name)
         }
     }
 
@@ -305,15 +305,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun launchTargetBrowser(adapter: BrowserAdapter) {
-        when (val result = browserLauncher.launch(this, adapter)) {
+    private fun launchTargetBrowser(target: BrowserTarget) {
+        when (val result = browserLauncher.launch(this, target)) {
             is LaunchResult.Success -> {
                 // Browser launched successfully
             }
             is LaunchResult.NotInstalled -> {
                 Toast.makeText(
                     this,
-                    String.format(Locale.US, "%s (%s) 未安装", adapter.name, result.packageName),
+                    String.format(Locale.US, "%s (%s) 未安装", target.name, result.packageName),
                     Toast.LENGTH_SHORT
                 ).show()
             }
