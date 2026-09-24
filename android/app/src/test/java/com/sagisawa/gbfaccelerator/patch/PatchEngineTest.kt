@@ -2,6 +2,7 @@ package com.sagisawa.gbfaccelerator.patch
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -46,9 +47,7 @@ class PatchEngineTest {
     fun testPatchOptions_defaults() {
         val options = PatchOptions()
         assertTrue(options.embedModule)
-        assertFalse(options.forceCleartext)
-        assertEquals(0, options.signatureBypassLevel)
-        assertEquals(null, options.customKeystorePath)
+        assertNull(options.customKeystorePath)
     }
 
     @Test

@@ -3,9 +3,17 @@ package com.sagisawa.gbfaccelerator.browser
 import android.util.Log
 
 /**
- * Base adapter for Android browsers that rely on standard Android WebView for rendering and networking.
+ * Base adapter strictly for Android browsers that rely on the standard Android WebView (android.webkit.WebView)
+ * for rendering and networking.
+ *
+ * IMPORTANT ARCHITECTURAL CONSTRAINT:
+ * This class is NOT suitable for standalone Chromium-based browsers (such as official Google Chrome, Kiwi, Brave),
+ * as those browsers do not use the Android system WebView, but rather bundle their own custom Chromium Content Shell
+ * and Cronet native network stack. Any future support for standalone Chromium browsers must implement BrowserAdapter
+ * directly according to their specific network architecture.
+ *
  * Encapsulates:
- * - WebViewClient / loadUrl lifecycle hook installation
+ * - WebViewClient / loadUrl lifecycle hook installation via reflection
  * - Single-instance ProxyController reverse-bypass configuration
  * - Process and package identification logic
  */

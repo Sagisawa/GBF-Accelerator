@@ -12,12 +12,15 @@ data class PatchProgress(
 )
 
 /**
- * Configuration parameters for the APK patch pipeline.
+ * Configuration parameters for the browser packaging pipeline.
+ * Adheres strictly to the least-privilege principle, avoiding unnecessary cleartext forcing
+ * or intrusive signature bypasses.
+ *
+ * @property embedModule Whether to embed the accelerator module APK directly into the target package.
+ * @property customKeystorePath Optional path to a custom signing keystore (uses default release/debug key if null).
  */
 data class PatchOptions(
     val embedModule: Boolean = true,
-    val forceCleartext: Boolean = false,
-    val signatureBypassLevel: Int = 0,
     val customKeystorePath: String? = null
 )
 

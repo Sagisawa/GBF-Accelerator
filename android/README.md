@@ -154,7 +154,7 @@ com.sagisawa.gbfaccelerator/
 │   ├── BrowserAdapterRegistry.kt     # 线程安全适配器注册表 (支持多浏览器注册与查找)
 │   ├── GbfRoutingRules.kt            # 唯一事实来源 (SSOT) GBF 6 项反向代理匹配规则
 │   ├── ProxyConfigurator.kt          # 状态机 ProxyController 注入器 (严格 Fail-Closed 保证)
-│   ├── WebViewBrowserAdapter.kt      # 基于 Android 标准 WebView 的通用抽象基类
+│   ├── WebViewBrowserAdapter.kt      # 基于 Android 标准系统 WebView 的通用抽象基类 (独立 Chromium 需单独实现)
 │   └── skyleap/
 │       └── SkyLeapAdapter.kt         # 官方 SkyLeap (com.dena.skyleap) 专用适配实现
 ├── core/                             # 本地 Go Core 生命周期与进程看门狗
@@ -176,7 +176,9 @@ com.sagisawa.gbfaccelerator/
 ### 核心产品定位与未来演进
 1. **定位**: `GBF-Accelerator Android` 专注于管理本地 Go Core 守护进程与浏览器加速代理桥接，并非特定浏览器的替代品。
 2. **浏览器扩展机制**:
-   - 所有受支持的浏览器均实现 `BrowserAdapter` 接口并通过 `BrowserAdapterRegistry` 注册。
+   - `WebViewBrowserAdapter` 仅适用于实际基于 Android 系统 WebView (`android.webkit.WebView`) 的浏览器（如 SkyLeap）。
+   - 独立 Chromium 架构浏览器（如 Chrome、Kiwi 等）因自建 Cronet 原生网络栈，不使用系统 WebView，不可直接继承复用 `WebViewBrowserAdapter`，后续应根据其实际网络栈单独实现专属 `BrowserAdapter`。
+   - 所有受支持的浏览器均实现 `BrowserAdapter` 统一接口并通过 `BrowserAdapterRegistry` 注册。
    - 首页下拉菜单自动识别已注册的浏览器列表，动态检查安装版本与状态。
 3. **打包补丁流水线 (Packaging Pipeline) 架构预留**:
    - 规划链路：`用户导入官方浏览器 APK (BrowserSource)` → `PatchEngine 本地重打包` → `PatchedBrowserInstaller 触发系统安装` → `BrowserLauncher 启动`。
