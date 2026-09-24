@@ -1,0 +1,162 @@
+package patcher
+
+import (
+	"archive/zip"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+type BundleResult struct {
+	IsSplit      bool
+	SingleApk    string
+	SplitDir     string
+	ApksArchive  string
+	TotalApks    int
+	TotalBytes   int64
+	PackageFiles []string
+}
+
+// BundleOutput organizes the patched APKs produced by LSPatch into the final user output directory.
+func BundleOutput(isSplit bool, originalBaseName string, rawApks []string, targetOutputDir string) (*BundleResult, error) {
+	if err := os.MkdirAll(targetOutputDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create target output directory: %w", err)
+	}
+
+	cleanBaseName := strings.TrimSuffix(originalBaseName, filepath.Ext(originalBaseName))
+	if cleanBaseName == "" {
+		cleanBaseName = "skyleap"
+	}
+
+	result := &BundleResult{
+		IsSplit:      isSplit,
+		TotalApks:    len(rawApks),
+		PackageFiles: make([]string, 0, len(rawApks)),
+	}
+
+	if !isSplit {
+		// Single APK output
+		if len(rawApks) == 0 {
+			return nil, fmt.Errorf("no patched APK available to bundle")
+		}
+		destName := cleanBaseName + "-patched.apk"
+		destPath := filepath.Join(targetOutputDir, destName)
+
+		if err := copyFile(rawApks[0], destPath); err != nil {
+			return nil, fmt.Errorf("failed to copy patched APK to output: %w", err)
+		}
+
+		fi, err := os.Stat(destPath)
+		if err != nil || fi.Size() == 0 {
+			return nil, fmt.Errorf("output APK %s is missing or empty", destPath)
+		}
+
+		result.SingleApk = destPath
+		result.TotalBytes = fi.Size()
+		result.PackageFiles = append(result.PackageFiles, destPath)
+		return result, nil
+	}
+
+	// Split APK output:
+	// 1. Copy splits to targetOutputDir/splits/
+	splitDir := filepath.Join(targetOutputDir, cleanBaseName+"-splits")
+	if err := os.MkdirAll(splitDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create split output directory: %w", err)
+	}
+
+	var copiedSplits []string
+	var totalBytes int64
+
+	for _, raw := range rawApks {
+		fname := filepath.Base(raw)
+		// Clean up name if it has -lspatched
+		destFile := filepath.Join(splitDir, fname)
+		if err := copyFile(raw, destFile); err != nil {
+			return nil, fmt.Errorf("failed to copy split APK %s: %w", fname, err)
+		}
+		fi, err := os.Stat(destFile)
+		if err != nil || fi.Size() == 0 {
+			return nil, fmt.Errorf("copied split APK %s is missing or empty", destFile)
+		}
+		totalBytes += fi.Size()
+		copiedSplits = append(copiedSplits, destFile)
+	}
+
+	result.SplitDir = splitDir
+	result.TotalBytes = totalBytes
+	result.PackageFiles = copiedSplits
+
+	// 2. Build an aggregated .apks ZIP archive containing all splits
+	apksPath := filepath.Join(targetOutputDir, cleanBaseName+"-patched.apks")
+	if err := createApksArchive(copiedSplits, apksPath); err != nil {
+		return nil, fmt.Errorf("failed to generate .apks bundle archive: %w", err)
+	}
+	result.ApksArchive = apksPath
+
+	return result, nil
+}
+
+func copyFile(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
+func createApksArchive(apkFiles []string, destZipPath string) error {
+	outZip, err := os.Create(destZipPath)
+	if err != nil {
+		return err
+	}
+	defer outZip.Close()
+
+	zw := zip.NewWriter(outZip)
+	defer zw.Close()
+
+	for _, apkPath := range apkFiles {
+		fi, err := os.Stat(apkPath)
+		if err != nil {
+			return err
+		}
+
+		header, err := zip.FileInfoHeader(fi)
+		if err != nil {
+			return err
+		}
+		header.Name = filepath.Base(apkPath)
+		// APK files inside APKS should be stored (no extra compression)
+		header.Method = zip.Store
+
+		w, err := zw.CreateHeader(header)
+		if err != nil {
+			return err
+		}
+
+		f, err := os.Open(apkPath)
+		if err != nil {
+			return err
+		}
+
+		_, err = io.Copy(w, f)
+		f.Close()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
