@@ -157,20 +157,47 @@ function Build-Windows {
         $ZipPath = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_GUI.zip"
         if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
 
+        $StagingDir = Join-Path $ReleaseDir "staging_windows"
+        if (Test-Path $StagingDir) { Remove-Item $StagingDir -Recurse -Force }
+        New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
+
+        # Copy executable
+        Copy-Item -Path $ExePath -Destination (Join-Path $StagingDir "GBF_Accelerator.exe") -Force
+
+        # Copy auxiliary helper scripts and documentation
         $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.bat", "start_proxy.bat", "LICENSE", "使用说明.txt")
-        $FilesToZip = @($ExePath)
         foreach ($Aux in $AuxFiles) {
             $AuxPath = Join-Path $RootDir $Aux
             if (-not (Test-Path $AuxPath)) {
                 $AuxPath = Join-Path (Join-Path $EngineDir "res") $Aux
             }
             if (Test-Path $AuxPath) {
-                $FilesToZip += $AuxPath
+                Copy-Item -Path $AuxPath -Destination (Join-Path $StagingDir $Aux) -Force
             }
         }
-        Get-ChildItem -Path $RootDir -Filter "*.txt" | ForEach-Object { $FilesToZip += $_.FullName }
+        Get-ChildItem -Path $RootDir -Filter "*.txt" | ForEach-Object {
+            Copy-Item -Path $_.FullName -Destination (Join-Path $StagingDir $_.Name) -Force
+        }
 
-        Compress-Archive -Path $FilesToZip -DestinationPath $ZipPath -Force
+        # Stage companion Android tools (LSPatch, Xposed Module, Licenses)
+        $ToolsAndroidDest = Join-Path $StagingDir "tools\android"
+        New-Item -ItemType Directory -Path $ToolsAndroidDest -Force | Out-Null
+
+        $LSPatchSrc = Join-Path $RootDir "build\lspatch\lspatch.jar"
+        if (Test-Path $LSPatchSrc) {
+            Copy-Item -Path $LSPatchSrc -Destination (Join-Path $ToolsAndroidDest "lspatch.jar") -Force
+        }
+        $ModuleSrc = Join-Path $RootDir "android\xposed\build\outputs\apk\release\xposed-release.apk"
+        if (Test-Path $ModuleSrc) {
+            Copy-Item -Path $ModuleSrc -Destination (Join-Path $ToolsAndroidDest "xposed-release.apk") -Force
+        }
+        $LicensesSrc = Join-Path $RootDir "tools\gbf-acc-patcher\THIRD_PARTY_LICENSES.md"
+        if (Test-Path $LicensesSrc) {
+            Copy-Item -Path $LicensesSrc -Destination (Join-Path $ToolsAndroidDest "THIRD_PARTY_LICENSES.md") -Force
+        }
+
+        Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force
+        Remove-Item $StagingDir -Recurse -Force
         $ZipSizeMb = (Get-Item $ZipPath).Length / 1MB
         Write-Host ("[***] RELEASE READY: {0} ({1:F2} MB)" -f $ZipPath, $ZipSizeMb) -ForegroundColor Cyan
     }

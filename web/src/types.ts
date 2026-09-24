@@ -141,3 +141,63 @@ export interface UpstreamRuntimeStatus {
   cooldown_seconds: number;
 }
 
+export interface AndroidEnvStatus {
+  ok: boolean;
+  ready: boolean;
+  java: {
+    found: boolean;
+    path: string;
+    version: string;
+    error: string;
+  };
+  lspatch: {
+    found: boolean;
+    path: string;
+    version: string;
+    sha256: string;
+    expected_sha256: string;
+    verified: boolean;
+    error: string;
+  };
+  module: {
+    found: boolean;
+    path: string;
+    verified: boolean;
+    error: string;
+  };
+}
+
+export interface AndroidPackageInspection {
+  ok: boolean;
+  file_path: string;
+  base_input_name: string;
+  package_name: string;
+  version_name: string;
+  is_split: boolean;
+  total_apks: number;
+  is_official_skyleap: boolean;
+  error?: string;
+}
+
+export interface AndroidPatchResult {
+  is_split: boolean;
+  single_apk: string;
+  split_dir: string;
+  apks_archive: string;
+  output_dir: string;
+  total_apks: number;
+  total_bytes: number;
+}
+
+export interface AndroidPatchProgress {
+  ok: boolean;
+  running: boolean;
+  stage: number;
+  stage_text: string;
+  progress: number;
+  logs: string[];
+  error: string;
+  done: boolean;
+  result?: AndroidPatchResult | null;
+}
+

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"gbf-acc-patcher/patcher"
+	"gbf-proxy/patcher"
 )
 
 func main() {

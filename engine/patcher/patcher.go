@@ -4,7 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+type PatchListener interface {
+	OnStage(stage int, text string, progress float64)
+	OnLog(line string)
+}
 
 type PatchOptions struct {
 	InputPath       string
@@ -14,11 +20,29 @@ type PatchOptions struct {
 	ModuleOverride  string
 	Verbose         bool
 	KeepTemp        bool
+	Listener        PatchListener
 }
 
 type Patcher struct {
 	opts   PatchOptions
 	exeDir string
+}
+
+func (p *Patcher) stage(stage int, text string, progress float64) {
+	msg := fmt.Sprintf("[%d/5] %s", stage, text)
+	fmt.Println(msg)
+	if p.opts.Listener != nil {
+		p.opts.Listener.OnStage(stage, text, progress)
+		p.opts.Listener.OnLog(msg)
+	}
+}
+
+func (p *Patcher) logf(format string, a ...interface{}) {
+	line := fmt.Sprintf(format, a...)
+	fmt.Print(line)
+	if p.opts.Listener != nil {
+		p.opts.Listener.OnLog(strings.TrimRight(line, "\r\n"))
+	}
 }
 
 func NewPatcher(opts PatchOptions) (*Patcher, error) {
@@ -53,17 +77,17 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		if !p.opts.KeepTemp {
 			os.RemoveAll(workDir)
 		} else {
-			fmt.Printf("[*] Preserving workspace at: %s\n", workDir)
+			p.logf("[*] Preserving workspace at: %s\n", workDir)
 		}
 	}()
 
 	// 2. Discover required toolchain
-	fmt.Println("[1/5] Checking environment & toolchain...")
+	p.stage(1, "Checking environment & toolchain...", 0.20)
 	javaPath, javaVer, err := FindJavaRuntime(p.opts.JavaOverride)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("      - Java Runtime: %s (%s)\n", javaPath, javaVer)
+	p.logf("      - Java Runtime: %s (%s)\n", javaPath, javaVer)
 
 	lspatchJar, err := FindLSPatchJar(p.opts.LSPatchOverride, p.exeDir)
 	if err != nil {
@@ -72,7 +96,7 @@ func (p *Patcher) Run() (*BundleResult, error) {
 	if err := ValidateLSPatchJar(lspatchJar); err != nil {
 		return nil, err
 	}
-	fmt.Printf("      - LSPatch Jar: %s (%s, SHA-256 verified)\n", lspatchJar, CanonicalLSPatchVersion)
+	p.logf("      - LSPatch Jar: %s (%s, SHA-256 verified)\n", lspatchJar, CanonicalLSPatchVersion)
 
 	moduleApk, err := FindModuleApk(p.opts.ModuleOverride, p.exeDir)
 	if err != nil {
@@ -81,10 +105,10 @@ func (p *Patcher) Run() (*BundleResult, error) {
 	if err := ValidateModuleApk(moduleApk); err != nil {
 		return nil, err
 	}
-	fmt.Printf("      - SkyLeapModule: %s\n", moduleApk)
+	p.logf("      - SkyLeapModule: %s\n", moduleApk)
 
 	// 3. Inspect Input package
-	fmt.Println("[2/5] Inspecting input package...")
+	p.stage(2, "Inspecting input package...", 0.40)
 	pkgInfo, err := InspectInput(p.opts.InputPath, workDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect input: %w", err)
@@ -99,22 +123,22 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		verLabel = "unknown"
 	}
 
-	fmt.Printf("      - Package: %s\n", pkgLabel)
-	fmt.Printf("      - Version: %s\n", verLabel)
+	p.logf("      - Package: %s\n", pkgLabel)
+	p.logf("      - Version: %s\n", verLabel)
 	if pkgInfo.IsSplit {
-		fmt.Printf("      - Structure: Split APK (%d files: base + %d splits)\n", pkgInfo.TotalApks, len(pkgInfo.SplitApkPaths))
+		p.logf("      - Structure: Split APK (%d files: base + %d splits)\n", pkgInfo.TotalApks, len(pkgInfo.SplitApkPaths))
 	} else {
-		fmt.Printf("      - Structure: Single Standalone APK\n")
+		p.logf("      - Structure: Single Standalone APK\n")
 	}
 
 	if pkgLabel != "com.dena.skyleap" {
-		fmt.Printf("      [!] Warning: Detected package %q differs from official SkyLeap (com.dena.skyleap).\n", pkgLabel)
+		p.logf("      [!] Warning: Detected package %q differs from official SkyLeap (com.dena.skyleap).\n", pkgLabel)
 	} else {
-		fmt.Printf("      [+] Validated official SkyLeap target.\n")
+		p.logf("      [+] Validated official SkyLeap target.\n")
 	}
 
 	// 4. Run LSPatch Portable
-	fmt.Println("[3/5] Executing LSPatch Portable injection...")
+	p.stage(3, "Executing LSPatch Portable injection...", 0.60)
 	lspatchOutDir := filepath.Join(workDir, "lspatch_raw_out")
 	if err := os.MkdirAll(lspatchOutDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create lspatch output dir: %w", err)
@@ -125,27 +149,30 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		LSPatchJarPath: lspatchJar,
 		ModuleApkPath:  moduleApk,
 		Verbose:        p.opts.Verbose,
+		LogFn: func(line string) {
+			p.logf("      %s\n", line)
+		},
 	}
 
 	rawOutputs, err := ExecuteLSPatch(cfg, pkgInfo.BaseApkPath, pkgInfo.SplitApkPaths, lspatchOutDir)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("      [+] Injected SkyLeapModule into %d package file(s).\n", len(rawOutputs))
+	p.logf("      [+] Injected SkyLeapModule into %d package file(s).\n", len(rawOutputs))
 
 	// 5. Organize and verify output
-	fmt.Println("[4/5] Packaging final output...")
+	p.stage(4, "Packaging final output...", 0.80)
 	baseInputName := filepath.Base(p.opts.InputPath)
 	result, err := BundleOutput(pkgInfo.IsSplit, baseInputName, rawOutputs, p.opts.OutputDir)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Println("[5/5] Performing post-patch integrity audit...")
+	p.stage(5, "Performing post-patch integrity audit...", 1.00)
 	if err := VerifyIntegrity(result, pkgInfo.IsSplit, pkgInfo.TotalApks); err != nil {
 		return nil, fmt.Errorf("output integrity verification failed: %w", err)
 	}
-	fmt.Println("      [+] All package artifacts verified successfully.")
+	p.logf("      [+] All package artifacts verified successfully.\n")
 
 	printSummary(result)
 

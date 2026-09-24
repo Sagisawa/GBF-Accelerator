@@ -125,6 +125,18 @@ EOF
         chmod +x "${STAGING_DIR}/install_ca.sh"
     fi
 
+    # Stage companion Android tools (LSPatch, Xposed Module, Licenses)
+    mkdir -p "${STAGING_DIR}/tools/android"
+    if [[ -f "${ROOT_DIR}/build/lspatch/lspatch.jar" ]]; then
+        cp "${ROOT_DIR}/build/lspatch/lspatch.jar" "${STAGING_DIR}/tools/android/"
+    fi
+    if [[ -f "${ROOT_DIR}/android/xposed/build/outputs/apk/release/xposed-release.apk" ]]; then
+        cp "${ROOT_DIR}/android/xposed/build/outputs/apk/release/xposed-release.apk" "${STAGING_DIR}/tools/android/"
+    fi
+    if [[ -f "${ROOT_DIR}/tools/gbf-acc-patcher/THIRD_PARTY_LICENSES.md" ]]; then
+        cp "${ROOT_DIR}/tools/gbf-acc-patcher/THIRD_PARTY_LICENSES.md" "${STAGING_DIR}/tools/android/"
+    fi
+
     (cd "${STAGING_DIR}" && zip -r -y "${ZIP_PATH}" .)
     rm -rf "${STAGING_DIR}"
     echo "[***] MAC RELEASE READY: ${ZIP_PATH}"

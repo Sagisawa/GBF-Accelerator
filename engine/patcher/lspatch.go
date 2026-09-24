@@ -25,6 +25,7 @@ type LSPatchConfig struct {
 	LSPatchJarPath string
 	ModuleApkPath  string
 	Verbose        bool
+	LogFn          func(string)
 }
 
 // FindJavaRuntime discovers a Java binary with major version >= 21.
@@ -158,9 +159,12 @@ func FindLSPatchJar(overridePath string, exeDir string) (string, error) {
 	}
 
 	candidates := []string{
+		filepath.Join(exeDir, "tools", "android", "lspatch.jar"),
+		filepath.Join(exeDir, "tools", "lspatch.jar"),
 		filepath.Join(exeDir, "lspatch.jar"),
 		filepath.Join(exeDir, "lib", "lspatch.jar"),
 		filepath.Join(exeDir, "..", "..", "build", "lspatch", "lspatch.jar"),
+		filepath.Join(exeDir, "..", "build", "lspatch", "lspatch.jar"),
 		filepath.Join("build", "lspatch", "lspatch.jar"),
 	}
 
@@ -179,10 +183,9 @@ func FindLSPatchJar(overridePath string, exeDir string) (string, error) {
 
 // FindModuleApk discovers the built SkyLeap Xposed Module APK following the formal hierarchy:
 // 1. User explicit override (--module)
-// 2. Production release module in tool directory (xposed-release.apk, SkyLeapModule.apk, module.apk)
-// 3. Dedicated release subdirectories (modules/xposed-release.apk)
-// 4. Source tree release artifact (android/xposed/build/outputs/apk/release/xposed-release.apk)
-// 5. Development environment debug fallback (xposed-debug.apk)
+// 2. Production release module in tool directory or companion subdirectories (tools/android/xposed-release.apk, etc.)
+// 3. Source tree release artifact (android/xposed/build/outputs/apk/release/xposed-release.apk)
+// 4. Development environment debug fallback (xposed-debug.apk)
 func FindModuleApk(overridePath string, exeDir string) (string, error) {
 	if overridePath != "" {
 		if fi, err := os.Stat(overridePath); err != nil || fi.IsDir() {
@@ -192,8 +195,10 @@ func FindModuleApk(overridePath string, exeDir string) (string, error) {
 		return abs, nil
 	}
 
-	// 1. Production release module in tool directory or aliases
+	// 1. Production release module in companion subdirectories or tool directory
 	productionCandidates := []string{
+		filepath.Join(exeDir, "tools", "android", "xposed-release.apk"),
+		filepath.Join(exeDir, "tools", "android", "SkyLeapModule.apk"),
 		filepath.Join(exeDir, "xposed-release.apk"),
 		filepath.Join(exeDir, "SkyLeapModule.apk"),
 		filepath.Join(exeDir, "module.apk"),
@@ -210,6 +215,7 @@ func FindModuleApk(overridePath string, exeDir string) (string, error) {
 	// 2. Source tree release artifact
 	devReleaseCandidates := []string{
 		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+		filepath.Join(exeDir, "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
 		filepath.Join("android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
 	}
 
@@ -222,9 +228,11 @@ func FindModuleApk(overridePath string, exeDir string) (string, error) {
 
 	// 3. Development debug fallback (only when release build is absent)
 	devDebugCandidates := []string{
+		filepath.Join(exeDir, "tools", "android", "xposed-debug.apk"),
 		filepath.Join(exeDir, "xposed-debug.apk"),
 		filepath.Join(exeDir, "modules", "xposed-debug.apk"),
 		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
+		filepath.Join(exeDir, "..", "android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
 		filepath.Join("android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
 	}
 
@@ -331,8 +339,15 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 	cmd := exec.Command(cfg.JavaBinaryPath, args...)
 
 	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
+	if cfg.LogFn != nil {
+		lw := &lspatchLineWriter{logFn: cfg.LogFn}
+		cmd.Stdout = io.MultiWriter(&outBuf, lw)
+		cmd.Stderr = io.MultiWriter(&outBuf, lw)
+		defer lw.Flush()
+	} else {
+		cmd.Stdout = &outBuf
+		cmd.Stderr = &outBuf
+	}
 
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("LSPatch execution failed (exit code %v):\n%s", err, outBuf.String())
@@ -356,4 +371,34 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 	}
 
 	return outputApks, nil
+}
+
+type lspatchLineWriter struct {
+	buf   bytes.Buffer
+	logFn func(string)
+}
+
+func (w *lspatchLineWriter) Write(p []byte) (n int, err error) {
+	for _, b := range p {
+		if b == '\n' {
+			line := strings.TrimRight(w.buf.String(), "\r")
+			w.buf.Reset()
+			if w.logFn != nil && line != "" {
+				w.logFn(line)
+			}
+		} else {
+			w.buf.WriteByte(b)
+		}
+	}
+	return len(p), nil
+}
+
+func (w *lspatchLineWriter) Flush() {
+	if w.buf.Len() > 0 {
+		line := strings.TrimRight(w.buf.String(), "\r")
+		w.buf.Reset()
+		if w.logFn != nil && line != "" {
+			w.logFn(line)
+		}
+	}
 }

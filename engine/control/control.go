@@ -78,6 +78,10 @@ type ControlServer struct {
 	sseMu      sync.RWMutex
 	sseClients []chan []byte
 
+	// Android Patch state
+	androidPatchMu     sync.Mutex
+	androidPatchStatus AndroidPatchStatus
+
 	// Side-effect hooks for system proxy and startup registration (mockable in tests)
 	enablePACProxyFn   func(string) error
 	disablePACProxyFn  func(bool) error
@@ -522,6 +526,36 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	case "/api/events":
 		if req.Method == http.MethodGet {
 			c.handleSSE(w, req)
+			return
+		}
+	case "/api/android/env":
+		if req.Method == http.MethodGet {
+			c.handleAndroidEnv(w, req)
+			return
+		}
+	case "/api/android/inspect":
+		if req.Method == http.MethodPost {
+			c.handleAndroidInspect(w, req)
+			return
+		}
+	case "/api/android/upload":
+		if req.Method == http.MethodPost {
+			c.handleAndroidUpload(w, req)
+			return
+		}
+	case "/api/android/patch":
+		if req.Method == http.MethodPost {
+			c.handleAndroidPatch(w, req)
+			return
+		}
+	case "/api/android/patch/status":
+		if req.Method == http.MethodGet {
+			c.handleAndroidPatchStatus(w, req)
+			return
+		}
+	case "/api/android/patch/open-output":
+		if req.Method == http.MethodPost {
+			c.handleAndroidPatchOpenOutput(w, req)
 			return
 		}
 	case "/api/proxy/start":

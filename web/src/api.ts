@@ -1,4 +1,15 @@
-import { RuntimeStatus, TelemetrySummary, CacheStats, PrefetchStatus, LogItem, UpdateInfo, UpdateDownloadStatus } from './types'
+import {
+  RuntimeStatus,
+  TelemetrySummary,
+  CacheStats,
+  PrefetchStatus,
+  LogItem,
+  UpdateInfo,
+  UpdateDownloadStatus,
+  AndroidEnvStatus,
+  AndroidPackageInspection,
+  AndroidPatchProgress,
+} from './types'
 
 const BASE = ''
 
@@ -334,4 +345,102 @@ export async function quitApp(): Promise<{ ok: boolean; message?: string }> {
   }
   return res.json()
 }
+
+export async function fetchAndroidEnv(): Promise<AndroidEnvStatus> {
+  const res = await fetch(`${BASE}/api/android/env`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function inspectAndroidPackage(filePath: string): Promise<AndroidPackageInspection> {
+  const res = await fetch(`${BASE}/api/android/inspect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_path: filePath }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function uploadAndroidPackage(
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<AndroidPackageInspection> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE}/api/android/upload`)
+
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100)
+          onProgress(percent)
+        }
+      }
+    }
+
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText || '{}')
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data)
+        } else {
+          reject(new Error(data.error || data.message || `HTTP ${xhr.status}`))
+        }
+      } catch (err: any) {
+        reject(new Error(`Failed to parse response: ${err.message}`))
+      }
+    }
+
+    xhr.onerror = () => {
+      reject(new Error('Network error during file upload'))
+    }
+
+    const formData = new FormData()
+    formData.append('file', file)
+    xhr.send(formData)
+  })
+}
+
+export async function startAndroidPatch(filePath: string, outputDir?: string): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/android/patch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_path: filePath, output_dir: outputDir || '' }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function fetchAndroidPatchStatus(): Promise<AndroidPatchProgress> {
+  const res = await fetch(`${BASE}/api/android/patch/status`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function openPatchOutputFolder(path?: string): Promise<{ ok: boolean; path?: string }> {
+  const res = await fetch(`${BASE}/api/android/patch/open-output`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: path || '' }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
 
