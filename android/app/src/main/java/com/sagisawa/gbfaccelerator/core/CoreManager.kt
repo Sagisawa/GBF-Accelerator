@@ -286,7 +286,7 @@ object CoreManager {
 
             // 1. Try graceful shutdown via HTTP signal
             runCatching {
-                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/control/quit")
+                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/app/quit")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 500
                 conn.readTimeout = 500

@@ -1,6 +1,5 @@
 <resources>
     <string-array name="xposed_scope">
         <item>com.dena.skyleap</item>
-        <item>com.dena.skyleap2</item>
     </string-array>
 </resources>

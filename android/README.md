@@ -76,8 +76,8 @@ adb install -r D:\gbf_proxy\android-Acclerator\android\app\build\outputs\apk\deb
 2. 进入 **「模块」** 选项卡。
 3. 找到并点击刚刚安装的 **`GBF-ACC Xposed`**。
 4. 打开顶部 **「启用模块」** 开关。
-5. 在模块的推荐作用域列表中，系统会自动勾选 **`SkyLeap` (`com.dena.skyleap` 与 `com.dena.skyleap2`)**；如未自动勾选，请手动勾选您所使用的 SkyLeap 版本。
-6. 无需重启手机（LSPosed 支持动态生效），但若 SkyLeap 正在后台运行，请先在手机后台强行停止 SkyLeap（或者执行 `adb shell am force-stop com.dena.skyleap` / `adb shell am force-stop com.dena.skyleap2`）。
+5. 在模块的推荐作用域列表中，系统会自动勾选 **`SkyLeap` (`com.dena.skyleap`)**；如未自动勾选，请手动勾选官方 SkyLeap。
+6. 无需重启手机（LSPosed 支持动态生效），但若 SkyLeap 正在后台运行，请先在手机后台强行停止 SkyLeap（或者执行 `adb shell am force-stop com.dena.skyleap`）。
 
 ---
 
