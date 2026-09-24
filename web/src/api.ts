@@ -546,6 +546,22 @@ export async function downloadAdbPlatformTools(): Promise<{ ok: boolean; message
   return data
 }
 
+export async function installHostAppToDevice(
+  serial: string
+): Promise<{ ok: boolean; message?: string; output?: string; error?: string }> {
+  const res = await fetch(`${BASE}/api/android/adb/install-host-app`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+
 
 
 

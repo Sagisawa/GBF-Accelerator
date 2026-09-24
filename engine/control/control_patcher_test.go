@@ -465,5 +465,29 @@ func TestControlAndroidPatchStatusSerialization(t *testing.T) {
 	}
 }
 
+func TestControlAndroidAdbInstallHostApp(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// 1. Invalid JSON body
+	reqBad := httptest.NewRequest(http.MethodPost, "/api/android/adb/install-host-app", bytes.NewBufferString("not-json"))
+	reqBad.Host = "127.0.0.1:8125"
+	wBad := httptest.NewRecorder()
+	ctrl.handleRoute(wBad, reqBad)
+	if wBad.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for bad json, got %d", wBad.Code)
+	}
+
+	// 2. Empty serial
+	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/android/adb/install-host-app", bytes.NewBufferString(`{"serial":""}`))
+	reqEmpty.Host = "127.0.0.1:8125"
+	wEmpty := httptest.NewRecorder()
+	ctrl.handleRoute(wEmpty, reqEmpty)
+	if wEmpty.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 Bad Request for empty serial, got %d", wEmpty.Code)
+	}
+}
+
+
 
 

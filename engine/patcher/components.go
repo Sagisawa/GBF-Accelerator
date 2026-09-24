@@ -441,3 +441,80 @@ func DownloadComponentsWithSpecs(
 
 	return nil
 }
+
+// HostAppReleaseName returns the canonical release file name for the Android host app asset.
+func HostAppReleaseName() string {
+	return fmt.Sprintf("GBF_Accelerator_v%s_Android.apk", config.AppVersion)
+}
+
+// FindOrFetchHostApp locates the GBF-Accelerator Android Host App APK locally,
+// or on-demand downloads it from the official GitHub Release asset if not present locally.
+// Note: This is strictly called on-demand when the user explicitly triggers installation.
+func FindOrFetchHostApp(ctx context.Context, toolsDir string, exeDir string) (string, error) {
+	candidates := []string{
+		filepath.Join(toolsDir, HostAppReleaseName()),
+		filepath.Join(toolsDir, "GBF_Accelerator_Android.apk"),
+		filepath.Join(toolsDir, "app-release.apk"),
+		filepath.Join(exeDir, "release", HostAppReleaseName()),
+		filepath.Join(exeDir, "release", "app-release.apk"),
+		filepath.Join(exeDir, "..", "release", HostAppReleaseName()),
+		filepath.Join(exeDir, "..", "android", "app", "build", "outputs", "apk", "release", "app-release.apk"),
+		filepath.Join(exeDir, "..", "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk"),
+	}
+
+	for _, cand := range candidates {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
+			return cand, nil
+		}
+	}
+
+	// Not found locally -> On-demand download from project Release assets
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create tools directory: %w", err)
+	}
+
+	targetPath := filepath.Join(toolsDir, HostAppReleaseName())
+	tempPath := targetPath + ".downloading"
+	_ = os.Remove(tempPath)
+
+	tag := "v" + config.AppVersion
+	downloadURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", GitHubRepo, tag, HostAppReleaseName())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build download request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 180 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download Android app (%s): %w", downloadURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download Android app: HTTP %d from %s", resp.StatusCode, downloadURL)
+	}
+
+	outF, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer func() {
+		_ = outF.Close()
+		_ = os.Remove(tempPath)
+	}()
+
+	if _, err := io.Copy(outF, resp.Body); err != nil {
+		return "", fmt.Errorf("download interrupted: %w", err)
+	}
+	_ = outF.Close()
+
+	_ = os.Remove(targetPath)
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		return "", fmt.Errorf("failed to save Android app to target path: %w", err)
+	}
+
+	return targetPath, nil
+}
+

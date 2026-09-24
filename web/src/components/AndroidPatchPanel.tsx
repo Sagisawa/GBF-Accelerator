@@ -43,6 +43,7 @@ import {
   extractDeviceApp,
   installToDevice,
   downloadAdbPlatformTools,
+  installHostAppToDevice,
 } from '../api'
 
 interface AndroidPatchPanelProps {
@@ -79,8 +80,10 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([])
   const [selectedDevice, setSelectedDevice] = useState<string>('')
   const [deviceApp, setDeviceApp] = useState<AdbProbeAppResponse | null>(null)
+  const [hostAppInfo, setHostAppInfo] = useState<AdbProbeAppResponse | null>(null)
   const [isExtracting, setIsExtracting] = useState<boolean>(false)
   const [isInstalling, setIsInstalling] = useState<boolean>(false)
+  const [isInstallingHostApp, setIsInstallingHostApp] = useState<boolean>(false)
   const [installResult, setInstallResult] = useState<AdbInstallResponse | null>(null)
   const [showUninstallModal, setShowUninstallModal] = useState<boolean>(false)
   const [isDownloadingAdb, setIsDownloadingAdb] = useState<boolean>(false)
@@ -211,6 +214,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   useEffect(() => {
     if (!selectedDevice) {
       setDeviceApp(null)
+      setHostAppInfo(null)
       return
     }
     const dev = adbDevices.find(d => d.serial === selectedDevice)
@@ -218,8 +222,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       probeDeviceApp(selectedDevice, 'com.dena.skyleap')
         .then(setDeviceApp)
         .catch(() => setDeviceApp(null))
+      probeDeviceApp(selectedDevice, 'com.sagisawa.gbfaccelerator')
+        .then(setHostAppInfo)
+        .catch(() => setHostAppInfo(null))
     } else {
       setDeviceApp(null)
+      setHostAppInfo(null)
     }
   }, [selectedDevice, adbDevices])
 
@@ -276,6 +284,29 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       showToast(`安装失败: ${e.message}`, 'error')
     } finally {
       setIsInstalling(false)
+    }
+  }
+
+  const handleInstallHostApp = async () => {
+    if (!selectedDevice) {
+      showToast('未选择目标设备', 'error')
+      return
+    }
+    setIsInstallingHostApp(true)
+    showToast('正在准备并安装 Android 端 GBF-Accelerator 到手机...', 'info')
+    try {
+      const res = await installHostAppToDevice(selectedDevice)
+      if (res.ok) {
+        showToast(res.message || '🎉 Android 端 GBF-Accelerator 已安装成功！可在手机桌面打开并开启服务', 'success')
+        const updated = await probeDeviceApp(selectedDevice, 'com.sagisawa.gbfaccelerator').catch(() => null)
+        if (updated) setHostAppInfo(updated)
+      } else {
+        showToast(`安装失败: ${res.error || '未知错误'}`, 'error')
+      }
+    } catch (e: any) {
+      showToast(`安装失败: ${e.message}`, 'error')
+    } finally {
+      setIsInstallingHostApp(false)
     }
   }
 
@@ -961,6 +992,47 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     </div>
                   </div>
                 )}
+
+                {/* Host App Status Card */}
+                <div className="bg-white border border-slate-200/90 rounded-lg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-900 text-sm">Android 端 GBF-Accelerator</span>
+                      {hostAppInfo?.installed ? (
+                        <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">
+                          v{hostAppInfo.version_name || '已安装'}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">
+                          手机尚未安装
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {hostAppInfo?.installed
+                        ? '移动端独立加速核心已就绪，可在手机桌面上直接打开并开启服务。'
+                        : '移动端独立加速核心。安装后手机可脱离电脑随时随地享受静态缓存与加速。'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleInstallHostApp}
+                    disabled={isInstallingHostApp}
+                    className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer self-start sm:self-center disabled:opacity-50 shrink-0"
+                  >
+                    {isInstallingHostApp ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>正在安装到手机...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-3.5 h-3.5" />
+                        <span>一键安装 Android 端 GBF-Accelerator 到手机</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -1338,6 +1410,46 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                       <span className="font-medium">🎉 安装成功！应用已成功部署至手机，可在手机桌面上直接打开 SkyLeap 开始游戏。</span>
                     </div>
                   )}
+
+                  {/* Host App One-Click Install */}
+                  <div className="pt-2.5 border-t border-emerald-200/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="space-y-0.5">
+                      <div className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                        <Cpu className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>Android 端 GBF-Accelerator (移动端加速核心)：</span>
+                        {hostAppInfo?.installed ? (
+                          <span className="text-[11px] font-mono px-1.5 py-0.2 rounded bg-emerald-100 text-emerald-800 font-semibold">
+                            已安装 (v{hostAppInfo.version_name || '1.0.0'})
+                          </span>
+                        ) : (
+                          <span className="text-[11px] px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 font-semibold">
+                            手机尚未安装
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        打好补丁的 SkyLeap 需配合手机端 GBF-Accelerator 运行，方可脱离电脑独立享受静态缓存与加速。
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleInstallHostApp}
+                      disabled={isInstallingHostApp}
+                      className="px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer self-start sm:self-center disabled:opacity-50 shrink-0"
+                    >
+                      {isInstallingHostApp ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>正在安装到手机...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-3.5 h-3.5" />
+                          <span>一键安装 Android 端 GBF-Accelerator 到手机</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

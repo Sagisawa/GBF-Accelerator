@@ -600,6 +600,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleAndroidAdbInstall(w, req)
 			return
 		}
+	case "/api/android/adb/install-host-app":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbInstallHostApp(w, req)
+			return
+		}
 	case "/api/android/adb/download-tools":
 		if req.Method == http.MethodPost {
 			c.handleAndroidAdbDownloadTools(w, req)

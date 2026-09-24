@@ -875,4 +875,57 @@ func (c *ControlServer) handleAndroidAdbDownloadTools(w http.ResponseWriter, req
 	})
 }
 
+func (c *ControlServer) handleAndroidAdbInstallHostApp(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Serial string `json:"serial"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid JSON body"})
+		return
+	}
+
+	serial := strings.TrimSpace(body.Serial)
+	if serial == "" {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "未指定设备序列号"})
+		return
+	}
+
+	toolsDir := patcher.GetAndroidToolsDir()
+	exeDir := c.getExeDir()
+	adbPath, err := patcher.FindAdb(toolsDir, exeDir)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "ADB 未找到: " + err.Error()})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	hostApkPath, err := patcher.FindOrFetchHostApp(ctx, toolsDir, exeDir)
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("获取 Android 端 GBF-Accelerator 安装包失败: %v", err),
+		})
+		return
+	}
+
+	installOut, err := patcher.InstallToDevice(ctx, adbPath, serial, false, []string{hostApkPath})
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":      false,
+			"error":   fmt.Sprintf("安装 Android 端 GBF-Accelerator 到设备失败: %v", err),
+			"details": installOut,
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "Android 端 GBF-Accelerator 已成功安装至手机！可在手机桌面打开并开启加速服务。",
+		"output":  installOut,
+	})
+}
+
+
 
