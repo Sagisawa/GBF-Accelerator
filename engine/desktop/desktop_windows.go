@@ -54,6 +54,8 @@ var (
 	isWindowVisible              = user32.NewProc("IsWindowVisible")
 	getDpiForWindow              = user32.NewProc("GetDpiForWindow")
 	setThreadDpiAwarenessContext = user32.NewProc("SetThreadDpiAwarenessContext")
+	monitorFromWindow            = user32.NewProc("MonitorFromWindow")
+	getMonitorInfoW              = user32.NewProc("GetMonitorInfoW")
 )
 
 const (
@@ -63,10 +65,18 @@ const (
 	swpNoZOrder                          = 0x0004
 	swpNoActivate                        = 0x0010
 	dpiAwarenessContextPerMonitorAwareV2 = ^uintptr(3) // -4 in two's complement
+	monitorDefaultToNearest              = 2
 )
 
 type rect struct {
 	left, top, right, bottom int32
+}
+
+type monitorInfo struct {
+	cbSize    uint32
+	rcMonitor rect
+	rcWork    rect
+	dwFlags   uint32
 }
 
 func enumExplorerWindows() map[uintptr]struct{} {
@@ -373,16 +383,43 @@ func applyWindowGeometry(hwnd uintptr, width, height int, maximized bool) bool {
 	expectedW := int32((width*int(dpi) + 48) / 96)
 	expectedH := int32((height*int(dpi) + 48) / 96)
 
+	// Calculate centered coordinates within the active monitor's working area (excluding taskbar).
+	targetX := r.left
+	targetY := r.top
+	if monitorFromWindow.Find() == nil && getMonitorInfoW.Find() == nil {
+		hMon, _, _ := monitorFromWindow.Call(hwnd, monitorDefaultToNearest)
+		if hMon != 0 {
+			var mi monitorInfo
+			mi.cbSize = uint32(unsafe.Sizeof(mi))
+			if ret, _, _ := getMonitorInfoW.Call(hMon, uintptr(unsafe.Pointer(&mi))); ret != 0 {
+				workW := mi.rcWork.right - mi.rcWork.left
+				workH := mi.rcWork.bottom - mi.rcWork.top
+				if workW > expectedW {
+					targetX = mi.rcWork.left + (workW-expectedW)/2
+				} else {
+					targetX = mi.rcWork.left
+				}
+				if workH > expectedH {
+					targetY = mi.rcWork.top + (workH-expectedH)/2
+				} else {
+					targetY = mi.rcWork.top
+				}
+			}
+		}
+	}
+
 	showWindow.Call(hwnd, swRestore)
 	_, _, _ = setWindowPos.Call(
 		hwnd,
 		0,
-		uintptr(r.left),
-		uintptr(r.top),
+		uintptr(targetX),
+		uintptr(targetY),
 		uintptr(expectedW),
 		uintptr(expectedH),
-		uintptr(swpNoZOrder|swpNoActivate),
+		uintptr(swpNoZOrder),
 	)
+	bringWindowToTop.Call(hwnd)
+	setForegroundWindow.Call(hwnd)
 
 	// Short verification loop: verify HWND bounds via GetWindowRect
 	for i := 0; i < 8; i++ {
@@ -400,11 +437,11 @@ func applyWindowGeometry(hwnd uintptr, width, height int, maximized bool) bool {
 		_, _, _ = setWindowPos.Call(
 			hwnd,
 			0,
-			uintptr(cur.left),
-			uintptr(cur.top),
+			uintptr(targetX),
+			uintptr(targetY),
 			uintptr(expectedW),
 			uintptr(expectedH),
-			uintptr(swpNoZOrder|swpNoActivate),
+			uintptr(swpNoZOrder),
 		)
 	}
 	return true
