@@ -18,26 +18,60 @@ class GbfRoutingRulesTest {
             "gbf.game.mbga.jp"
         )
         assertEquals("Canonical bypass rules must match exactly", expectedRules, GbfRoutingRules.GBF_BYPASS_RULES)
+        assertEquals("Must contain exactly 6 canonical rules", 6, GbfRoutingRules.GBF_BYPASS_RULES.size)
     }
 
     @Test
-    fun testGbfDomainsEnterProxy() {
-        val gbfDomains = listOf(
-            "game.granbluefantasy.jp",
-            "granbluefantasy.jp",
-            "gbf.game.mbga.jp",
-            "prd-game-a.gbf.akamaized.net",
-            "prd-game-a1-gbf.granbluefantasy.akamaized.net",
-            "prd-game-a-gbf.granbluefantasy-steam.akamaized.net",
-            "assets.granbluefantasy.jp",
-            "img.granbluefantasy.jp",
-            "sub.gbf.akamaized.net"
+    fun testExplicitCanonicalRulesCoverage() {
+        // 1. *.granbluefantasy.jp
+        assertTrue("game.granbluefantasy.jp must enter proxy", GbfRoutingRules.shouldProxy("game.granbluefantasy.jp"))
+        assertTrue("assets.granbluefantasy.jp must enter proxy", GbfRoutingRules.shouldProxy("assets.granbluefantasy.jp"))
+        assertTrue("img.granbluefantasy.jp must enter proxy", GbfRoutingRules.shouldProxy("https://img.granbluefantasy.jp/rest/path"))
+
+        // 2. granbluefantasy.jp
+        assertTrue("granbluefantasy.jp must enter proxy", GbfRoutingRules.shouldProxy("granbluefantasy.jp"))
+        assertTrue("https://granbluefantasy.jp/ must enter proxy", GbfRoutingRules.shouldProxy("https://granbluefantasy.jp/"))
+
+        // 3. *.granbluefantasy.akamaized.net
+        assertTrue("*.granbluefantasy.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a1-gbf.granbluefantasy.akamaized.net"))
+
+        // 4. *.granbluefantasy-steam.akamaized.net
+        assertTrue("*.granbluefantasy-steam.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a-gbf.granbluefantasy-steam.akamaized.net"))
+
+        // 5. *.gbf.akamaized.net
+        assertTrue("*.gbf.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a.gbf.akamaized.net"))
+        assertTrue("sub.gbf.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("sub.gbf.akamaized.net"))
+
+        // 6. gbf.game.mbga.jp
+        assertTrue("gbf.game.mbga.jp must enter proxy", GbfRoutingRules.shouldProxy("gbf.game.mbga.jp"))
+        assertTrue("https://gbf.game.mbga.jp/ must enter proxy", GbfRoutingRules.shouldProxy("https://gbf.game.mbga.jp/"))
+    }
+
+    @Test
+    fun testExplicitExcludedMobageDomainsDirect() {
+        // Explicit non-proxy verification for sensitive Mobage / payment / authentication / legacy shard domains
+        val excludedMobageDomains = listOf(
+            "connect.mobage.jp",
+            "sp.mbga.jp",
+            "gbf.game-a.mbga.jp",
+            "gbf.game-a1.mbga.jp",
+            "gbf.game-a2.mbga.jp",
+            "gbf.game-a.sp.mbga.jp",
+            "gbf.game-a1.sp.mbga.jp",
+            "mobage.jp",
+            "mbga.jp",
+            "www.mbga.jp",
+            "login.mobage.jp"
         )
 
-        for (domain in gbfDomains) {
-            assertTrue(
-                "Domain $domain should enter proxy (shouldProxy == true)",
+        for (domain in excludedMobageDomains) {
+            assertFalse(
+                "Mobage domain $domain must NOT enter proxy (must remain DIRECT)",
                 GbfRoutingRules.shouldProxy(domain)
+            )
+            assertFalse(
+                "URL with domain $domain must NOT enter proxy",
+                GbfRoutingRules.shouldProxy("https://$domain/index.html")
             )
         }
     }
@@ -45,12 +79,6 @@ class GbfRoutingRulesTest {
     @Test
     fun testNonGbfDomainsRemainDirect() {
         val nonGbfDomains = listOf(
-            "connect.mobage.jp",
-            "sp.mbga.jp",
-            "mobage.jp",
-            "mbga.jp",
-            "www.mbga.jp",
-            "login.mobage.jp",
             "www.google.com",
             "play.google.com",
             "api.twitter.com",
@@ -65,19 +93,6 @@ class GbfRoutingRulesTest {
                 GbfRoutingRules.shouldProxy(domain)
             )
         }
-    }
-
-    @Test
-    fun testConnectMobageJpStrictlyNotProxied() {
-        // Critical security contract: connect.mobage.jp authentication and payment flows must strictly bypass the proxy
-        assertFalse(
-            "connect.mobage.jp must NOT enter the proxy",
-            GbfRoutingRules.shouldProxy("connect.mobage.jp")
-        )
-        assertFalse(
-            "https://connect.mobage.jp/login must NOT enter the proxy",
-            GbfRoutingRules.shouldProxy("https://connect.mobage.jp/login")
-        )
     }
 
     @Test
