@@ -192,7 +192,7 @@ const ReleaseNotesViewer: React.FC<{ content: string }> = ({ content }) => {
 export const UpdateModal: React.FC<UpdateModalProps> = ({
   isOpen,
   onClose,
-  currentVersion = '2.1.0',
+  currentVersion = '2.1.1',
   onUpdateSuccess,
 }) => {
   const [checking, setChecking] = useState(false)

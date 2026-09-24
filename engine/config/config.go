@@ -9,11 +9,12 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 
-const AppVersion = "2.1.0"
+const AppVersion = "2.1.1"
 
 type Config struct {
 	ListenHost           string  `json:"listen_host"`
@@ -49,12 +50,16 @@ type Config struct {
 	AssetMaxKeepalive    int     `json:"asset_max_keepalive"`
 	AssetKeepaliveExpiry float64 `json:"asset_keepalive_expiry"`
 	EnableAPITelemetry   bool    `json:"enable_api_telemetry"`
+	WindowWidth          int     `json:"window_width"`
+	WindowHeight         int     `json:"window_height"`
+	WindowMaximized      bool    `json:"window_maximized"`
 }
 
 type Manager struct {
 	commitMu sync.Mutex
 	mu       sync.RWMutex
 	cfg      Config
+	snapshot atomic.Pointer[Config]
 	path     string
 	onSave   []func(*Config)
 }
@@ -94,6 +99,9 @@ func DefaultConfig() Config {
 		AssetMaxKeepalive:    16,
 		AssetKeepaliveExpiry: 60.0,
 		EnableAPITelemetry:   true,
+		WindowWidth:          880,
+		WindowHeight:         640,
+		WindowMaximized:      false,
 	}
 }
 
@@ -105,7 +113,15 @@ func NewManager(cfgPath string) *Manager {
 	if cfgPath != "" {
 		_ = m.Load(cfgPath)
 	}
+	m.publishSnapshot()
 	return m
+}
+
+func (m *Manager) publishSnapshot() {
+	m.mu.RLock()
+	cfg := m.cfg
+	m.mu.RUnlock()
+	m.snapshot.Store(&cfg)
 }
 
 func normalizeRAMCacheMaxMB(v int) int {
@@ -263,16 +279,30 @@ func (m *Manager) Load(cfgPath string) error {
 	if _, ok := present["enable_api_telemetry"]; ok {
 		m.cfg.EnableAPITelemetry = loaded.EnableAPITelemetry
 	}
+	if _, ok := present["window_width"]; ok && loaded.WindowWidth >= 400 {
+		m.cfg.WindowWidth = loaded.WindowWidth
+	}
+	if _, ok := present["window_height"]; ok && loaded.WindowHeight >= 400 {
+		m.cfg.WindowHeight = loaded.WindowHeight
+	}
+	if _, ok := present["window_maximized"]; ok {
+		m.cfg.WindowMaximized = loaded.WindowMaximized
+	}
 	if loaded.APIKeepaliveExpiry > 0 {
 		m.cfg.APIKeepaliveExpiry = loaded.APIKeepaliveExpiry
 	}
 	if loaded.AssetKeepaliveExpiry > 0 {
 		m.cfg.AssetKeepaliveExpiry = loaded.AssetKeepaliveExpiry
 	}
+	cfg := m.cfg
+	m.snapshot.Store(&cfg)
 	return nil
 }
 
 func (m *Manager) Get() Config {
+	if cfg := m.snapshot.Load(); cfg != nil {
+		return *cfg
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.cfg
@@ -296,11 +326,15 @@ func (m *Manager) Commit(candidate Config) error {
 	m.mu.Lock()
 	oldCfg := m.cfg
 	m.cfg = candidate
+	snapshot := m.cfg
+	m.snapshot.Store(&snapshot)
 	m.mu.Unlock()
 
 	if err := m.Save(); err != nil {
 		m.mu.Lock()
 		m.cfg = oldCfg
+		rollbackSnapshot := m.cfg
+		m.snapshot.Store(&rollbackSnapshot)
 		m.mu.Unlock()
 		m.commitMu.Unlock()
 		return fmt.Errorf("failed to save config: %w", err)
@@ -340,6 +374,7 @@ func (m *Manager) UpdateWithError(fn func(c *Config)) (Config, error) {
 	m.cfg.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(m.cfg.UpstreamFailoverConsecutiveFailures)
 	m.cfg.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(m.cfg.UpstreamFailoverCooldownSeconds)
 	updated := m.cfg
+	m.snapshot.Store(&updated)
 	callbacks := make([]func(*Config), len(m.onSave))
 	copy(callbacks, m.onSave)
 	m.mu.Unlock()
@@ -347,6 +382,8 @@ func (m *Manager) UpdateWithError(fn func(c *Config)) (Config, error) {
 	if err := m.Save(); err != nil {
 		m.mu.Lock()
 		m.cfg = oldCfg
+		rollbackSnapshot := m.cfg
+		m.snapshot.Store(&rollbackSnapshot)
 		m.mu.Unlock()
 		m.commitMu.Unlock()
 		return oldCfg, fmt.Errorf("failed to save config: %w", err)

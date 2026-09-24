@@ -12,6 +12,10 @@ import (
 
 // openAppWindow launches Chrome, Edge, or Brave in standalone App mode (--app=<url>) on macOS.
 func openAppWindow(url string) error {
+	return openAppWindowWithGeometry(url, 880, 640, false)
+}
+
+func openAppWindowWithGeometry(url string, width, height int, maximized bool) error {
 	appURL := url
 	if !strings.Contains(appURL, "standalone=1") {
 		if strings.Contains(appURL, "?") {

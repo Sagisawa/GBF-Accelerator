@@ -178,7 +178,10 @@ func (pe *PrefetchEngine) MaybeEnqueueDiscovery(host, path string, data []byte) 
 }
 
 func getPrefetchPriority(urlPath string) int {
-	p := strings.ToLower(urlPath)
+	return getPrefetchPriorityLower(strings.ToLower(urlPath))
+}
+
+func getPrefetchPriorityLower(p string) int {
 	if strings.HasSuffix(p, ".js") || strings.HasSuffix(p, ".json") {
 		return 1
 	}
@@ -332,7 +335,9 @@ func (pe *PrefetchEngine) discoveryWorker() {
 				pe.inflight[key] = struct{}{}
 				pe.inflightMu.Unlock()
 
-				prio := getPrefetchPriority(p)
+				// Asset references are matched by lowercase extensions/prefixes, so p is
+				// already normalized enough for priority checks; avoid another ToLower allocation.
+				prio := getPrefetchPriorityLower(p)
 				if !pe.enqueueTask(prefetchItem{prio: prio, host: h, path: p}) {
 					// Queue full, drop and release inflight key
 					pe.removeInflight(key)

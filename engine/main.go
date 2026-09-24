@@ -62,7 +62,8 @@ func (a *appController) OpenBrowser(url string) error {
 }
 
 func (a *appController) OpenAppWindow(url string) error {
-	return desktop.OpenAppWindow(url)
+	cfg := a.cfgMgr.Get()
+	return desktop.OpenAppWindowWithGeometry(url, cfg.WindowWidth, cfg.WindowHeight, cfg.WindowMaximized)
 }
 
 func (a *appController) OpenFolder(path string) error {

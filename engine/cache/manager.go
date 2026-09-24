@@ -20,6 +20,14 @@ import (
 	"time"
 )
 
+type cacheMetadata struct {
+	LastModified    string `json:"LastModified"`
+	ETag            string `json:"ETag"`
+	ContentEncoding string `json:"ce"`
+	ContentType     string `json:"ct"`
+	Version         int    `json:"v"`
+}
+
 type persistTask struct {
 	ns         string
 	cleanKey   string
@@ -34,8 +42,7 @@ type Manager struct {
 	cacheBase    string
 	ramCache     *LRUCache
 	sf           *SingleFlight
-	missingCache map[string]struct{}
-	missingMu    sync.RWMutex
+	missingShards [missingCacheShardCount]missingCacheShard
 	persistQueue chan *persistTask
 	stopPersist  chan struct{}
 	persistDone  chan struct{}
@@ -67,7 +74,43 @@ var mimeFallbacks = map[string]string{
 	".wasm":  "application/wasm",
 }
 
-const defaultPersistWorkers = 4
+const (
+	defaultPersistWorkers  = 4
+	missingCacheShardCount = 16
+)
+
+type missingCacheShard struct {
+	mu    sync.RWMutex
+	items map[string]struct{}
+}
+
+func (m *Manager) initMissingCacheShards() {
+	for i := range m.missingShards {
+		m.missingShards[i].items = make(map[string]struct{})
+	}
+}
+
+func (m *Manager) missingShard(key string) *missingCacheShard {
+	return &m.missingShards[int(fnv32(key)&(missingCacheShardCount-1))]
+}
+
+func (m *Manager) isMissing(key string) bool {
+	shard := m.missingShard(key)
+	shard.mu.RLock()
+	_, ok := shard.items[key]
+	shard.mu.RUnlock()
+	return ok
+}
+
+func (m *Manager) clearMissing() {
+	for i := range m.missingShards {
+		shard := &m.missingShards[i]
+		shard.mu.Lock()
+		shard.items = make(map[string]struct{})
+		shard.mu.Unlock()
+	}
+}
+
 
 var tmpFileSeq atomic.Int64
 
@@ -79,12 +122,12 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 		cacheBase:    cacheBase,
 		ramCache:     NewLRUCache(int64(ramMaxMB) * 1024 * 1024),
 		sf:           NewSingleFlight(),
-		missingCache: make(map[string]struct{}),
 		persistQueue: make(chan *persistTask, 1024),
 		stopPersist:  make(chan struct{}),
 		persistDone:  make(chan struct{}),
 		generation:   1,
 	}
+	m.initMissingCacheShards()
 	m.ramEnabled.Store(true)
 	m.autoRepair.Store(true)
 	var wg sync.WaitGroup
@@ -138,9 +181,7 @@ func (m *Manager) SetCacheBase(base string) {
 	m.mu.Unlock()
 
 	m.ramCache.Clear()
-	m.missingMu.Lock()
-	m.missingCache = make(map[string]struct{})
-	m.missingMu.Unlock()
+	m.clearMissing()
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {
@@ -260,10 +301,7 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 	if m.ramEnabled.Load() && m.ramCache.Contains(ramKey) {
 		return true
 	}
-	m.missingMu.RLock()
-	_, missing := m.missingCache[ramKey]
-	m.missingMu.RUnlock()
-	if missing {
+	if m.isMissing(ramKey) {
 		return false
 	}
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
@@ -335,7 +373,8 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 }
 
 func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
-	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	// 1. Check RAM Cache
@@ -346,10 +385,7 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	}
 
 	// Negative cache check
-	m.missingMu.RLock()
-	_, missing := m.missingCache[ramKey]
-	m.missingMu.RUnlock()
-	if missing {
+	if m.isMissing(ramKey) {
 		return nil, ""
 	}
 
@@ -408,23 +444,12 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	lastMod := ""
 
 	if metaBytes, err := os.ReadFile(extPath); err == nil {
-		var meta map[string]interface{}
-		if err := json.Unmarshal(metaBytes, &meta); err == nil {
-			// Defensive metadata version guard: must be valid map with v == 1
-			if v, ok := meta["v"].(float64); ok && int(v) == 1 {
-				if ct, ok := meta["ct"].(string); ok {
-					contentType = ct
-				}
-				if ce, ok := meta["ce"].(string); ok {
-					contentEncoding = ce
-				}
-				if et, ok := meta["ETag"].(string); ok {
-					etag = et
-				}
-				if lm, ok := meta["LastModified"].(string); ok {
-					lastMod = lm
-				}
-			}
+		var meta cacheMetadata
+		if err := json.Unmarshal(metaBytes, &meta); err == nil && meta.Version == 1 {
+			contentType = meta.ContentType
+			contentEncoding = meta.ContentEncoding
+			etag = meta.ETag
+			lastMod = meta.LastModified
 		}
 	}
 
@@ -538,8 +563,11 @@ func (m *Manager) GetFallback(urlPath string) (*CacheItem, string) {
 
 func getHeader(h map[string]string, key string) string {
 	kLower := strings.ToLower(key)
+	if v, ok := h[kLower]; ok {
+		return v
+	}
 	for k, v := range h {
-		if strings.ToLower(k) == kLower {
+		if strings.EqualFold(k, kLower) {
 			return v
 		}
 	}
@@ -585,9 +613,10 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 		m.ramCache.Set(ramKey, item)
 	}
 
-	m.missingMu.Lock()
-	delete(m.missingCache, ramKey)
-	m.missingMu.Unlock()
+	shard := m.missingShard(ramKey)
+	shard.mu.Lock()
+	delete(shard.items, ramKey)
+	shard.mu.Unlock()
 
 	return item, cleanKey, filePath, generation, true
 }
@@ -708,12 +737,13 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 }
 
 func (m *Manager) markMissing(ramKey string) {
-	m.missingMu.Lock()
-	m.missingCache[ramKey] = struct{}{}
-	if len(m.missingCache) > 4096 {
-		m.missingCache = make(map[string]struct{})
+	shard := m.missingShard(ramKey)
+	shard.mu.Lock()
+	shard.items[ramKey] = struct{}{}
+	if len(shard.items) > 256 {
+		shard.items = make(map[string]struct{})
 	}
-	m.missingMu.Unlock()
+	shard.mu.Unlock()
 }
 
 func (m *Manager) ClearRAM() {
@@ -743,9 +773,7 @@ func (m *Manager) ClearAll() (int, int64) {
 		return nil
 	})
 
-	m.missingMu.Lock()
-	m.missingCache = make(map[string]struct{})
-	m.missingMu.Unlock()
+	m.clearMissing()
 
 	return deletedFiles, freedBytes
 }
