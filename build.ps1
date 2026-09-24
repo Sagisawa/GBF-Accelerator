@@ -179,21 +179,18 @@ function Build-Windows {
             Copy-Item -Path $_.FullName -Destination (Join-Path $StagingDir $_.Name) -Force
         }
 
-        # Stage companion Android tools (LSPatch, Xposed Module, Licenses)
-        $ToolsAndroidDest = Join-Path $StagingDir "tools\android"
-        New-Item -ItemType Directory -Path $ToolsAndroidDest -Force | Out-Null
-
+        # Stage Android companion components as standalone release assets (on-demand download)
         $LSPatchSrc = Join-Path $RootDir "build\lspatch\lspatch.jar"
         if (Test-Path $LSPatchSrc) {
-            Copy-Item -Path $LSPatchSrc -Destination (Join-Path $ToolsAndroidDest "lspatch.jar") -Force
+            Copy-Item -Path $LSPatchSrc -Destination (Join-Path $ReleaseDir "lspatch.jar") -Force
         }
         $ModuleSrc = Join-Path $RootDir "android\xposed\build\outputs\apk\release\xposed-release.apk"
         if (Test-Path $ModuleSrc) {
-            Copy-Item -Path $ModuleSrc -Destination (Join-Path $ToolsAndroidDest "xposed-release.apk") -Force
+            Copy-Item -Path $ModuleSrc -Destination (Join-Path $ReleaseDir "xposed-release.apk") -Force
         }
         $LicensesSrc = Join-Path $RootDir "tools\gbf-acc-patcher\THIRD_PARTY_LICENSES.md"
         if (Test-Path $LicensesSrc) {
-            Copy-Item -Path $LicensesSrc -Destination (Join-Path $ToolsAndroidDest "THIRD_PARTY_LICENSES.md") -Force
+            Copy-Item -Path $LicensesSrc -Destination (Join-Path $ReleaseDir "THIRD_PARTY_LICENSES.md") -Force
         }
 
         Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force

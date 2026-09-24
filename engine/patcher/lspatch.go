@@ -158,7 +158,9 @@ func FindLSPatchJar(overridePath string, exeDir string) (string, error) {
 		return abs, nil
 	}
 
+	toolsDir := GetAndroidToolsDir()
 	candidates := []string{
+		filepath.Join(toolsDir, "lspatch.jar"),
 		filepath.Join(exeDir, "tools", "android", "lspatch.jar"),
 		filepath.Join(exeDir, "tools", "lspatch.jar"),
 		filepath.Join(exeDir, "lspatch.jar"),
@@ -195,8 +197,12 @@ func FindModuleApk(overridePath string, exeDir string) (string, error) {
 		return abs, nil
 	}
 
+	toolsDir := GetAndroidToolsDir()
+
 	// 1. Production release module in companion subdirectories or tool directory
 	productionCandidates := []string{
+		filepath.Join(toolsDir, "xposed-release.apk"),
+		filepath.Join(toolsDir, "SkyLeapModule.apk"),
 		filepath.Join(exeDir, "tools", "android", "xposed-release.apk"),
 		filepath.Join(exeDir, "tools", "android", "SkyLeapModule.apk"),
 		filepath.Join(exeDir, "xposed-release.apk"),

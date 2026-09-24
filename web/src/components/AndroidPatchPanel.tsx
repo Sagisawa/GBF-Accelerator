@@ -14,9 +14,12 @@ import {
   Cpu,
   ChevronDown,
   ChevronUp,
+  Download,
+  XCircle,
 } from 'lucide-react'
 import {
   AndroidEnvStatus,
+  AndroidComponentDownloadProgress,
   AndroidPackageInspection,
   AndroidPatchProgress,
 } from '../types'
@@ -27,16 +30,31 @@ import {
   startAndroidPatch,
   fetchAndroidPatchStatus,
   openPatchOutputFolder,
+  downloadAndroidComponents,
+  fetchAndroidComponentDownloadStatus,
+  cancelAndroidComponentDownload,
 } from '../api'
 
 interface AndroidPatchPanelProps {
   showToast: (msg: string, type: 'success' | 'error' | 'info') => void
 }
 
+const formatBytes = (bytes?: number) => {
+  if (!bytes || bytes <= 0) return '0 B'
+  const k = 1024
+  const sizes = ['B', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
+}
+
 export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast }) => {
   // Environment state
   const [envStatus, setEnvStatus] = useState<AndroidEnvStatus | null>(null)
   const [loadingEnv, setLoadingEnv] = useState<boolean>(false)
+
+  // Component Download state
+  const [isStartingDownload, setIsStartingDownload] = useState<boolean>(false)
+  const [downloadProgress, setDownloadProgress] = useState<AndroidComponentDownloadProgress | null>(null)
 
   // Input & Inspection state
   const [inputMode, setInputMode] = useState<'upload' | 'path'>('upload')
@@ -63,6 +81,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     try {
       const data = await fetchAndroidEnv()
       setEnvStatus(data)
+      if (data.download?.active) {
+        setDownloadProgress(data.download)
+      }
     } catch (e: any) {
       showToast(`检测环境失败: ${e.message}`, 'error')
     } finally {
@@ -73,6 +94,73 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   useEffect(() => {
     checkEnv()
   }, [checkEnv])
+
+  // Poll component download progress if active
+  useEffect(() => {
+    let timer: number | null = null
+    const isDlActive = Boolean(downloadProgress?.active || envStatus?.download?.active)
+    if (!isDlActive) return
+
+    const pollDl = async () => {
+      try {
+        const res = await fetchAndroidComponentDownloadStatus()
+        setDownloadProgress(res.progress)
+        if (res.active) {
+          timer = window.setTimeout(pollDl, 500)
+        } else {
+          // Completed or stopped
+          if (res.progress.done) {
+            showToast('Android Patch 组件下载完成并通过 SHA-256 校验', 'success')
+            checkEnv()
+          } else if (res.progress.stage === 'error') {
+            showToast(`组件下载失败: ${res.progress.error || '未知错误'}`, 'error')
+            checkEnv()
+          }
+        }
+      } catch {
+        // quiet error
+      }
+    }
+
+    pollDl()
+
+    return () => {
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [downloadProgress?.active, envStatus?.download?.active, checkEnv, showToast])
+
+  const handleStartDownload = async (force: boolean = false) => {
+    setIsStartingDownload(true)
+    try {
+      const res = await downloadAndroidComponents(force)
+      if (res.already_installed) {
+        showToast('组件已全部安装并通过校验', 'info')
+        await checkEnv()
+      } else {
+        showToast('开始下载 Android Patch 组件...', 'info')
+        setDownloadProgress({
+          active: true,
+          percent: 0,
+          stage: 'downloading',
+        })
+      }
+    } catch (e: any) {
+      showToast(`启动下载失败: ${e.message}`, 'error')
+    } finally {
+      setIsStartingDownload(false)
+    }
+  }
+
+  const handleCancelDownload = async () => {
+    try {
+      await cancelAndroidComponentDownload()
+      showToast('已取消下载', 'info')
+      setDownloadProgress(null)
+      await checkEnv()
+    } catch (e: any) {
+      showToast(`取消失败: ${e.message}`, 'error')
+    }
+  }
 
   // Poll patch status if job is running
   useEffect(() => {
@@ -183,6 +271,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       return
     }
 
+    if (!envStatus?.components_verified) {
+      showToast('Android Patch 组件尚未就绪或已损坏，请先下载并启用组件', 'error')
+      return
+    }
+
     if (patchStatus?.running) {
       showToast('已有处理任务在运行中，请等待完成', 'info')
       return
@@ -213,6 +306,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
   const isReady = Boolean(envStatus?.ready)
   const isRunning = Boolean(patchStatus?.running)
+  const isCorrupted = Boolean(envStatus?.components_corrupted)
+  const isComponentsVerified = Boolean(envStatus?.components_verified)
+  const isDownloadActive = Boolean(downloadProgress?.active || envStatus?.download?.active)
   const progressPercent = Math.round((patchStatus?.progress ?? 0) * 100)
 
   return (
@@ -253,7 +349,163 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         </div>
       </div>
 
-      {/* 2. Environment Probe Card */}
+      {/* 2. On-Demand Components Management Card */}
+      {(!isComponentsVerified || isDownloadActive) && (
+        <div
+          className={`rounded-xl border shadow-2xs p-4 sm:p-5 transition-all ${
+            isCorrupted
+              ? 'bg-rose-50/70 border-rose-200'
+              : isDownloadActive
+              ? 'bg-indigo-50/60 border-indigo-200'
+              : 'bg-sky-50/70 border-sky-200'
+          }`}
+        >
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-200/60 mb-3.5">
+            <div className="flex items-center gap-2.5">
+              {isCorrupted ? (
+                <div className="w-8 h-8 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+              ) : isDownloadActive ? (
+                <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                </div>
+              ) : (
+                <div className="w-8 h-8 rounded-lg bg-sky-100 text-sky-700 flex items-center justify-center shrink-0">
+                  <Download className="w-4 h-4" />
+                </div>
+              )}
+              <div>
+                <h2 className="text-sm sm:text-base font-bold text-slate-800">
+                  {isCorrupted
+                    ? 'Android Patch 组件校验失败或已损坏'
+                    : isDownloadActive
+                    ? '正在安全下载并校验 Android Patch 组件...'
+                    : '首次使用需下载 Android Patch 组件 (~13 MB)'}
+                </h2>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  {isCorrupted
+                    ? '本地部分组件哈希与官方固定版本不匹配。为防篡改和保障安全性，需重新下载。'
+                    : isDownloadActive
+                    ? `${
+                        downloadProgress?.current_file
+                          ? `正在下载 ${downloadProgress.current_file} (${downloadProgress.file_index || 1}/${
+                              downloadProgress.total_files || 3
+                            })`
+                          : '正在建立连接...'
+                      }`
+                    : 'GBF-Accelerator 遵循最小体积原则，默认不附带 Android 相关文件。点击下方按钮即可一键获取：'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+              {isDownloadActive ? (
+                <button
+                  type="button"
+                  onClick={handleCancelDownload}
+                  className="px-3.5 py-1.5 rounded-lg bg-rose-100 hover:bg-rose-200 text-rose-700 text-xs font-semibold border border-rose-300 transition-colors flex items-center gap-1.5 cursor-pointer"
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>取消下载</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleStartDownload(isCorrupted)}
+                  disabled={isStartingDownload}
+                  className={`px-4 py-2 rounded-xl text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 select-none ${
+                    isCorrupted
+                      ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
+                      : 'bg-sky-600 hover:bg-sky-700 active:bg-sky-800'
+                  }`}
+                >
+                  <Download className="w-4 h-4" />
+                  <span>{isCorrupted ? '重新下载并校验组件' : '下载并启用 (~13 MB)'}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Download Progress Bar if Active */}
+          {isDownloadActive && (
+            <div className="space-y-2 mb-3 bg-white/70 p-3 rounded-lg border border-indigo-100">
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-semibold text-slate-700">
+                  {downloadProgress?.stage === 'verifying' ? '正在执行 SHA-256 完整性校验...' : '文件传输中...'}
+                </span>
+                <span className="font-mono font-bold text-indigo-700">
+                  {Math.round(downloadProgress?.percent || 0)}%
+                </span>
+              </div>
+              <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden">
+                <div
+                  className="bg-indigo-600 h-2 rounded-full transition-all duration-200"
+                  style={{ width: `${Math.round(downloadProgress?.percent || 0)}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono">
+                <span>
+                  {formatBytes(downloadProgress?.downloaded_bytes)} / {formatBytes(downloadProgress?.total_bytes)}
+                </span>
+                {downloadProgress?.speed_bytes_sec && downloadProgress.speed_bytes_sec > 0 ? (
+                  <span>{formatBytes(downloadProgress.speed_bytes_sec)}/s</span>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          {/* Component items summary */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1 text-xs">
+            <div className="p-2.5 rounded-lg bg-white/80 border border-slate-200/80 flex flex-col justify-between gap-1">
+              <div className="font-semibold text-slate-800 flex items-center justify-between">
+                <span>LSPatch Portable 核心</span>
+                <span className="text-[11px] text-slate-500 font-mono">~12.1 MB</span>
+              </div>
+              <div className="text-[11px] text-slate-500">v0.6 (391) · 字节级哈希防篡改</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-white/80 border border-slate-200/80 flex flex-col justify-between gap-1">
+              <div className="font-semibold text-slate-800 flex items-center justify-between">
+                <span>SkyLeapModule 模块</span>
+                <span className="text-[11px] text-slate-500 font-mono">~1.0 MB</span>
+              </div>
+              <div className="text-[11px] text-slate-500">独立 Xposed Module · 专用代理控制器</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-white/80 border border-slate-200/80 flex flex-col justify-between gap-1">
+              <div className="font-semibold text-slate-800 flex items-center justify-between">
+                <span>开源许可协议</span>
+                <span className="text-[11px] text-slate-500 font-mono">&lt; 2 KB</span>
+              </div>
+              <div className="text-[11px] text-slate-500">第三方依赖合规声明与许可证</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Verified Compact Banner if components are completely ready */}
+      {isComponentsVerified && !isDownloadActive && (
+        <div className="bg-emerald-50/70 border border-emerald-200/90 rounded-xl px-4 py-2.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2 text-emerald-950">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span className="font-medium">
+              Android Patch 组件全部就绪 · 已通过 SHA-256 防篡改校验
+            </span>
+            <span className="font-mono text-[11px] text-emerald-700 hidden md:inline">
+              ({envStatus?.tools_dir})
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleStartDownload(true)}
+            disabled={isStartingDownload}
+            className="text-xs text-emerald-800 hover:text-emerald-950 underline font-medium cursor-pointer self-end sm:self-center"
+          >
+            重新校验/下载
+          </button>
+        </div>
+      )}
+
+      {/* 3. Environment Probe Card */}
       <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-5">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3.5">
           <div className="flex items-center gap-2">
@@ -264,12 +516,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           </div>
           <span
             className={`text-xs font-bold px-2.5 py-0.5 rounded-full border ${
-              isReady
+              isReady && isComponentsVerified
                 ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                 : 'bg-amber-50 text-amber-800 border-amber-200'
             }`}
           >
-            {isReady ? '依赖齐备 · 可正常工作' : '环境未齐备 · 请查看提示'}
+            {isReady && isComponentsVerified ? '依赖齐备 · 可正常工作' : '环境未齐备 · 请查看提示'}
           </span>
         </div>
 
@@ -300,6 +552,8 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               <span className="text-xs font-semibold text-slate-600">LSPatch 核心</span>
               {envStatus?.lspatch?.verified ? (
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              ) : isCorrupted ? (
+                <AlertCircle className="w-4 h-4 text-rose-500" />
               ) : (
                 <AlertCircle className="w-4 h-4 text-amber-500" />
               )}
@@ -307,9 +561,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.lspatch?.path || ''}>
               {envStatus?.lspatch?.verified
                 ? `v0.6 (391) · SHA-256 校验通过`
-                : envStatus?.lspatch?.found
-                ? 'SHA-256 不匹配'
-                : '未找到 lspatch.jar'}
+                : isCorrupted
+                ? 'SHA-256 不匹配 (已损坏)'
+                : '未下载 (首次使用需启用)'}
             </div>
             {envStatus?.lspatch?.verified && (
               <span className="text-[11px] text-emerald-700">固定版本，已防篡改校验</span>
@@ -322,16 +576,18 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               <span className="text-xs font-semibold text-slate-600">SkyLeapModule 注入包</span>
               {envStatus?.module?.verified ? (
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              ) : (
+              ) : isCorrupted ? (
                 <AlertCircle className="w-4 h-4 text-rose-500" />
+              ) : (
+                <AlertCircle className="w-4 h-4 text-amber-500" />
               )}
             </div>
             <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.module?.path || ''}>
               {envStatus?.module?.verified
                 ? '独立 Xposed Module 就绪'
-                : envStatus?.module?.found
-                ? '包名或元数据校验未通过'
-                : '未找到 module.apk'}
+                : isCorrupted
+                ? '哈希或元数据不匹配 (已损坏)'
+                : '未下载 (首次使用需启用)'}
             </div>
             {envStatus?.module?.verified && (
               <span className="text-[11px] text-slate-500 truncate" title={envStatus.module.path}>
@@ -508,10 +764,15 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             />
           </div>
 
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2">
+            {!isComponentsVerified && (
+              <span className="text-[11px] text-amber-700 font-medium">
+                {isCorrupted ? '组件损坏，需重新下载' : '需先下载并启用组件'}
+              </span>
+            )}
             <button
               type="button"
-              disabled={!isReady || !inspectedPkg || isRunning || isPatchStarting}
+              disabled={!isReady || !isComponentsVerified || !inspectedPkg || isRunning || isPatchStarting}
               onClick={handleStartPatch}
               className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
             >

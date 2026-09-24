@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gbf-proxy/cache"
@@ -286,3 +287,91 @@ func TestControlAndroidUploadAndInspect(t *testing.T) {
 		}
 	}
 }
+
+func TestControlAndroidPatch_MissingComponentsRejected(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// Create dummy test file
+	tempDir := t.TempDir()
+	dummyFile := filepath.Join(tempDir, "test.apk")
+	_ = os.WriteFile(dummyFile, []byte("fake"), 0644)
+
+	reqBody, _ := json.Marshal(map[string]string{
+		"file_path": dummyFile,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(reqBody))
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	// Since components are not installed in the test environment, patch execution MUST be rejected
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request when components are missing, got %d: %s", w.Code, w.Body.String())
+	}
+	var res map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &res)
+	if res["ok"] != false {
+		t.Errorf("expected ok=false")
+	}
+	errStr, _ := res["error"].(string)
+	if !strings.Contains(errStr, "Android Patch 组件尚未就绪") {
+		t.Errorf("expected error message mentioning missing components, got: %s", errStr)
+	}
+}
+
+func TestControlAndroidComponentsDownload_Endpoints(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// 1. Initial status when idle
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/android/components/download-status", nil)
+	reqStatus.Host = "127.0.0.1:8125"
+	wStatus := httptest.NewRecorder()
+	ctrl.handleRoute(wStatus, reqStatus)
+
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for download-status, got %d", wStatus.Code)
+	}
+	var statusRes map[string]interface{}
+	_ = json.Unmarshal(wStatus.Body.Bytes(), &statusRes)
+	if statusRes["active"] != false {
+		t.Errorf("expected active=false initially")
+	}
+
+	// 2. Cancel when idle
+	reqCancelIdle := httptest.NewRequest(http.MethodPost, "/api/android/components/download-cancel", nil)
+	reqCancelIdle.Host = "127.0.0.1:8125"
+	wCancelIdle := httptest.NewRecorder()
+	ctrl.handleRoute(wCancelIdle, reqCancelIdle)
+
+	if wCancelIdle.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for cancel when idle, got %d", wCancelIdle.Code)
+	}
+
+	// 3. Concurrency conflict test (simulate active download)
+	ctrl.componentDlMu.Lock()
+	ctrl.componentDlActive = true
+	ctrl.componentDlCancelFn = func() {}
+	ctrl.componentDlMu.Unlock()
+
+	reqStart := httptest.NewRequest(http.MethodPost, "/api/android/components/download", bytes.NewBuffer([]byte("{}")))
+	reqStart.Host = "127.0.0.1:8125"
+	wStart := httptest.NewRecorder()
+	ctrl.handleRoute(wStart, reqStart)
+
+	if wStart.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict during active download, got %d: %s", wStart.Code, wStart.Body.String())
+	}
+
+	// 4. Cancel active download
+	reqCancelActive := httptest.NewRequest(http.MethodPost, "/api/android/components/download-cancel", nil)
+	reqCancelActive.Host = "127.0.0.1:8125"
+	wCancelActive := httptest.NewRecorder()
+	ctrl.handleRoute(wCancelActive, reqCancelActive)
+
+	if wCancelActive.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for cancel, got %d", wCancelActive.Code)
+	}
+}
+

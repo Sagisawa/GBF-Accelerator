@@ -141,9 +141,42 @@ export interface UpstreamRuntimeStatus {
   cooldown_seconds: number;
 }
 
+export interface AndroidComponentItem {
+  id: string;
+  file_name: string;
+  path?: string;
+  installed: boolean;
+  verified: boolean;
+  size: number;
+  expected_sha256: string;
+  actual_sha256?: string;
+  error?: string;
+}
+
+export interface AndroidComponentDownloadProgress {
+  active: boolean;
+  current_file?: string;
+  file_index?: number;
+  total_files?: number;
+  downloaded_bytes?: number;
+  total_bytes?: number;
+  percent: number;
+  speed_bytes_sec?: number;
+  stage: string;
+  error?: string;
+  done?: boolean;
+}
+
 export interface AndroidEnvStatus {
   ok: boolean;
   ready: boolean;
+  components_installed: boolean;
+  components_verified: boolean;
+  components_corrupted: boolean;
+  components_error?: string;
+  tools_dir: string;
+  components?: AndroidComponentItem[];
+  download?: AndroidComponentDownloadProgress;
   java: {
     found: boolean;
     path: string;

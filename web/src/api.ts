@@ -7,6 +7,7 @@ import {
   UpdateInfo,
   UpdateDownloadStatus,
   AndroidEnvStatus,
+  AndroidComponentDownloadProgress,
   AndroidPackageInspection,
   AndroidPatchProgress,
 } from './types'
@@ -442,5 +443,39 @@ export async function openPatchOutputFolder(path?: string): Promise<{ ok: boolea
   }
   return data
 }
+
+export async function downloadAndroidComponents(force?: boolean, customUrls?: Record<string, string>): Promise<{ ok: boolean; message?: string; already_installed?: boolean }> {
+  const res = await fetch(`${BASE}/api/android/components/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force: !!force, custom_urls: customUrls }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function fetchAndroidComponentDownloadStatus(): Promise<{ ok: boolean; active: boolean; progress: AndroidComponentDownloadProgress }> {
+  const res = await fetch(`${BASE}/api/android/components/download-status`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function cancelAndroidComponentDownload(): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/android/components/download-cancel`, {
+    method: 'POST',
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
 
 

@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -57,8 +58,13 @@ func (c *ControlServer) getExeDir() string {
 
 func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Request) {
 	exeDir := c.getExeDir()
+	toolsDir := patcher.GetAndroidToolsDir()
 
-	// 1. Probe Java runtime
+	// 1. Probe Android Components
+	componentsInstalled, componentsVerified, componentStatuses, componentsErr := patcher.CheckComponents(toolsDir, exeDir)
+	componentsCorrupted := (componentsInstalled && !componentsVerified)
+
+	// 2. Probe Java runtime
 	javaFound := false
 	javaPath, javaVer, javaErr := patcher.FindJavaRuntime("")
 	var javaErrStr string
@@ -68,7 +74,7 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 		javaErrStr = javaErr.Error()
 	}
 
-	// 2. Probe LSPatch Jar
+	// 3. Probe LSPatch Jar
 	lspatchFound := false
 	lspatchVerified := false
 	lspatchPath, lspatchErr := patcher.FindLSPatchJar("", exeDir)
@@ -92,7 +98,7 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 		lspatchErrStr = lspatchErr.Error()
 	}
 
-	// 3. Probe SkyLeapModule APK
+	// 4. Probe SkyLeapModule APK
 	moduleFound := false
 	moduleVerified := false
 	modulePath, moduleErr := patcher.FindModuleApk("", exeDir)
@@ -108,11 +114,35 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 		moduleErrStr = moduleErr.Error()
 	}
 
-	ready := javaFound && lspatchVerified && moduleVerified
+	ready := javaFound && componentsVerified
+
+	c.componentDlMu.Lock()
+	dlActive := c.componentDlActive
+	dlProg := c.componentDlProgress
+	c.componentDlMu.Unlock()
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":    true,
-		"ready": ready,
+		"ok":                   true,
+		"ready":                ready,
+		"components_installed": componentsInstalled,
+		"components_verified":  componentsVerified,
+		"components_corrupted": componentsCorrupted,
+		"components_error":     componentsErr,
+		"tools_dir":            toolsDir,
+		"components":           componentStatuses,
+		"download": map[string]interface{}{
+			"active":           dlActive,
+			"current_file":     dlProg.CurrentFile,
+			"file_index":       dlProg.FileIndex,
+			"total_files":      dlProg.TotalFiles,
+			"downloaded_bytes": dlProg.DownloadedBytes,
+			"total_bytes":      dlProg.TotalBytes,
+			"percent":          dlProg.Percent,
+			"speed_bytes_sec":  dlProg.SpeedBytesSec,
+			"stage":            dlProg.Stage,
+			"error":            dlProg.Error,
+			"done":             dlProg.Done,
+		},
 		"java": map[string]interface{}{
 			"found":   javaFound,
 			"path":    javaPath,
@@ -283,6 +313,28 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
+	c.androidPatchMu.Lock()
+	if c.androidPatchStatus.Running {
+		c.androidPatchMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "已有正在进行的 Patch 任务，请等待完成",
+		})
+		return
+	}
+	c.androidPatchMu.Unlock()
+
+	toolsDir := patcher.GetAndroidToolsDir()
+	exeDir := c.getExeDir()
+	_, allVerified, _, errStr := patcher.CheckComponents(toolsDir, exeDir)
+	if !allVerified {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "Android Patch 组件尚未就绪或已损坏，请先在面板中下载并启用组件: " + errStr,
+		})
+		return
+	}
+
 	outputDir := strings.TrimSpace(body.OutputDir)
 	if outputDir == "" {
 		outputDir = filepath.Join(".", "output_patched")
@@ -297,7 +349,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		c.androidPatchMu.Unlock()
 		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 			"ok":    false,
-			"error": "A patch job is already in progress. Please wait for it to complete.",
+			"error": "已有正在进行的 Patch 任务，请等待完成",
 		})
 		return
 	}
@@ -414,3 +466,111 @@ func (c *ControlServer) handleAndroidPatchOpenOutput(w http.ResponseWriter, req 
 		"path": targetDir,
 	})
 }
+
+func (c *ControlServer) handleAndroidComponentsDownload(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Force      bool              `json:"force"`
+		CustomURLs map[string]string `json:"custom_urls,omitempty"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+
+	toolsDir := patcher.GetAndroidToolsDir()
+	exeDir := c.getExeDir()
+
+	c.componentDlMu.Lock()
+	if c.componentDlActive {
+		c.componentDlMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "组件下载任务正在进行中",
+		})
+		return
+	}
+
+	if !body.Force {
+		_, allVerified, _, _ := patcher.CheckComponents(toolsDir, exeDir)
+		if allVerified {
+			c.componentDlMu.Unlock()
+			c.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":                true,
+				"already_installed": true,
+				"message":           "组件已全部安装并通过 SHA-256 校验",
+			})
+			return
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.componentDlActive = true
+	c.componentDlCancelFn = cancel
+	c.componentDlProgress = patcher.DownloadProgress{
+		Active:  true,
+		Stage:   "downloading",
+		Percent: 0,
+	}
+	c.componentDlMu.Unlock()
+
+	go func(ctx context.Context, toolsDir string, customURLs map[string]string) {
+		err := patcher.DownloadComponents(ctx, toolsDir, customURLs, func(p patcher.DownloadProgress) {
+			c.componentDlMu.Lock()
+			c.componentDlProgress = p
+			c.componentDlMu.Unlock()
+		})
+
+		c.componentDlMu.Lock()
+		defer c.componentDlMu.Unlock()
+		c.componentDlActive = false
+		c.componentDlCancelFn = nil
+		if err != nil {
+			c.componentDlProgress.Active = false
+			c.componentDlProgress.Done = false
+			c.componentDlProgress.Stage = "error"
+			c.componentDlProgress.Error = err.Error()
+		} else {
+			c.componentDlProgress.Active = false
+			c.componentDlProgress.Done = true
+			c.componentDlProgress.Stage = "done"
+			c.componentDlProgress.Percent = 100
+			c.componentDlProgress.Error = ""
+		}
+	}(ctx, toolsDir, body.CustomURLs)
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "组件下载已启动",
+	})
+}
+
+func (c *ControlServer) handleAndroidComponentsDownloadStatus(w http.ResponseWriter, req *http.Request) {
+	c.componentDlMu.Lock()
+	defer c.componentDlMu.Unlock()
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       true,
+		"active":   c.componentDlActive,
+		"progress": c.componentDlProgress,
+	})
+}
+
+func (c *ControlServer) handleAndroidComponentsDownloadCancel(w http.ResponseWriter, req *http.Request) {
+	c.componentDlMu.Lock()
+	defer c.componentDlMu.Unlock()
+
+	if !c.componentDlActive || c.componentDlCancelFn == nil {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"message": "没有正在进行的下载任务",
+		})
+		return
+	}
+
+	c.componentDlCancelFn()
+	c.componentDlProgress.Stage = "cancelling"
+	c.componentDlProgress.Error = "下载已被用户取消"
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "已发送取消信号",
+	})
+}
+

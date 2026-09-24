@@ -23,6 +23,7 @@ import (
 	"gbf-proxy/config"
 	"gbf-proxy/desktop"
 	"gbf-proxy/firewall"
+	"gbf-proxy/patcher"
 	"gbf-proxy/proxy"
 	"gbf-proxy/res"
 	"gbf-proxy/startup"
@@ -81,6 +82,12 @@ type ControlServer struct {
 	// Android Patch state
 	androidPatchMu     sync.Mutex
 	androidPatchStatus AndroidPatchStatus
+
+	// Android Component Download state
+	componentDlMu       sync.Mutex
+	componentDlActive   bool
+	componentDlProgress patcher.DownloadProgress
+	componentDlCancelFn context.CancelFunc
 
 	// Side-effect hooks for system proxy and startup registration (mockable in tests)
 	enablePACProxyFn   func(string) error
@@ -556,6 +563,21 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	case "/api/android/patch/open-output":
 		if req.Method == http.MethodPost {
 			c.handleAndroidPatchOpenOutput(w, req)
+			return
+		}
+	case "/api/android/components/download":
+		if req.Method == http.MethodPost {
+			c.handleAndroidComponentsDownload(w, req)
+			return
+		}
+	case "/api/android/components/download-status":
+		if req.Method == http.MethodGet {
+			c.handleAndroidComponentsDownloadStatus(w, req)
+			return
+		}
+	case "/api/android/components/download-cancel":
+		if req.Method == http.MethodPost {
+			c.handleAndroidComponentsDownloadCancel(w, req)
 			return
 		}
 	case "/api/proxy/start":
