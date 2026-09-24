@@ -10,13 +10,13 @@ import (
 )
 
 type BundleResult struct {
-	IsSplit      bool
-	SingleApk    string
-	SplitDir     string
-	ApksArchive  string
-	TotalApks    int
-	TotalBytes   int64
-	PackageFiles []string
+	IsSplit      bool     `json:"is_split"`
+	SingleApk    string   `json:"single_apk"`
+	SplitDir     string   `json:"split_dir"`
+	ApksArchive  string   `json:"apks_archive"`
+	TotalApks    int      `json:"total_apks"`
+	TotalBytes   int64    `json:"total_bytes"`
+	PackageFiles []string `json:"package_files"`
 }
 
 // BundleOutput organizes the patched APKs produced by LSPatch into the final user output directory.

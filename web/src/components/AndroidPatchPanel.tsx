@@ -469,6 +469,16 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const isDownloadActive = Boolean(downloadProgress?.active || envStatus?.download?.active)
   const progressPercent = Math.round((patchStatus?.progress ?? 0) * 100)
 
+  const patchResult = patchStatus?.result
+  const isResultSplit = Boolean(patchResult?.is_split ?? patchResult?.IsSplit)
+  const resultTotalBytes = Number(patchResult?.total_bytes ?? patchResult?.TotalBytes ?? 0)
+  const resultSingleApk = patchResult?.single_apk ?? patchResult?.SingleApk ?? ''
+  const resultSplitDir = patchResult?.split_dir ?? patchResult?.SplitDir ?? ''
+  const resultApksArchive = patchResult?.apks_archive ?? patchResult?.ApksArchive ?? ''
+  const resultTotalApks = Number(patchResult?.total_apks ?? patchResult?.TotalApks ?? 0)
+  const resultTotalMb = (resultTotalBytes / (1024 * 1024)).toFixed(2)
+  const resultGeneratedFile = isResultSplit ? (resultApksArchive || resultSplitDir) : resultSingleApk
+
   return (
     <div className="w-full flex flex-col gap-4 sm:gap-5">
       {/* 1. Header Banner & Architecture Notice */}
@@ -1200,7 +1210,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           </div>
 
           {/* Result Output Card if Done */}
-          {patchStatus?.done && !patchStatus.error && patchStatus.result && (
+          {patchStatus?.done && !patchStatus.error && patchResult && (
             <div className="mb-4 p-4 rounded-xl bg-emerald-50/80 border border-emerald-200 text-xs text-emerald-950 space-y-2">
               <div className="flex items-center gap-2 font-bold text-emerald-900 text-sm">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
@@ -1209,25 +1219,28 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-700 pt-1">
                 <div>
                   <span className="font-semibold text-slate-900">输出类型：</span>
-                  <span>{patchStatus.result.is_split ? 'Split APK 套件' : '单 APK 安装包'}</span>
+                  <span>{isResultSplit ? `Split APK 套件${resultTotalApks > 0 ? ` (${resultTotalApks} 个分包)` : ''}` : '单 APK 安装包'}</span>
                 </div>
                 <div>
                   <span className="font-semibold text-slate-900">总大小：</span>
-                  <span>{(patchStatus.result.total_bytes / (1024 * 1024)).toFixed(2)} MB</span>
+                  <span>{resultTotalMb} MB</span>
                 </div>
                 <div className="sm:col-span-2 truncate">
                   <span className="font-semibold text-slate-900">生成文件：</span>
-                  <span className="font-mono text-slate-800">
-                    {patchStatus.result.is_split ? patchStatus.result.apks_archive : patchStatus.result.single_apk}
+                  <span className="font-mono text-slate-800" title={resultGeneratedFile}>
+                    {resultGeneratedFile}
                   </span>
                 </div>
               </div>
               <div className="pt-2 border-t border-emerald-200/60 text-slate-600 space-y-1">
                 <div className="font-bold text-slate-800">在手机上的安装建议：</div>
-                {patchStatus.result.is_split ? (
+                {isResultSplit ? (
                   <ul className="list-disc pl-4 space-y-0.5">
                     <li>
-                      <span className="font-mono font-semibold">ADB:</span> adb install-multiple {patchStatus.result.split_dir}\*.apk
+                      <span className="font-mono font-semibold">一键安装:</span> 若手机已连接电脑并开启 USB 调试，直接点击下方「一键安装到手机」即可全自动推入 5 个分包安装。
+                    </li>
+                    <li>
+                      <span className="font-mono font-semibold">ADB:</span> adb install-multiple {resultSplitDir}\*.apk
                     </li>
                     <li>
                       <span className="font-semibold">手机直接安装:</span> 将生成的 .apks 传至手机，使用 SAI (Split APKs Installer) 或 Shizuku 安装。
@@ -1236,7 +1249,10 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 ) : (
                   <ul className="list-disc pl-4 space-y-0.5">
                     <li>
-                      <span className="font-mono font-semibold">ADB:</span> adb install -r {patchStatus.result.single_apk}
+                      <span className="font-mono font-semibold">一键安装:</span> 直接点击下方「一键安装到手机」自动推入安装。
+                    </li>
+                    <li>
+                      <span className="font-mono font-semibold">ADB:</span> adb install -r {resultSingleApk}
                     </li>
                     <li>
                       <span className="font-semibold">手机直接安装:</span> 将生成的 APK 发送至手机并点击安装。

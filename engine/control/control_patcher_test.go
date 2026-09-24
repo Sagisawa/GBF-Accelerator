@@ -413,4 +413,57 @@ func TestControlAndroidAdbEndpoints(t *testing.T) {
 	}
 }
 
+func TestControlAndroidPatchStatusSerialization(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	ctrl.androidPatchMu.Lock()
+	ctrl.androidPatchStatus.Done = true
+	ctrl.androidPatchStatus.Running = false
+	ctrl.androidPatchStatus.Result = &patcher.BundleResult{
+		IsSplit:      true,
+		SingleApk:    "",
+		SplitDir:     "C:\\path\\to\\splits",
+		ApksArchive:  "C:\\path\\to\\skyleap-patched.apks",
+		TotalApks:    5,
+		TotalBytes:   1024 * 1024 * 110,
+		PackageFiles: []string{"base.apk", "split_config.arm64_v8a.apk"},
+	}
+	ctrl.androidPatchMu.Unlock()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/android/patch/status", nil)
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &rawMap); err != nil {
+		t.Fatalf("failed to parse json response: %v", err)
+	}
+
+	resObj, ok := rawMap["result"].(map[string]interface{})
+	if !ok || resObj == nil {
+		t.Fatalf("expected result object in json response, got: %v", rawMap["result"])
+	}
+
+	// Verify exact snake_case fields expected by frontend
+	if isSplit, ok := resObj["is_split"].(bool); !ok || !isSplit {
+		t.Errorf("expected is_split=true in json response, got: %v", resObj["is_split"])
+	}
+	if totalBytes, ok := resObj["total_bytes"].(float64); !ok || totalBytes <= 0 {
+		t.Errorf("expected numeric total_bytes > 0, got: %v", resObj["total_bytes"])
+	}
+	if totalApks, ok := resObj["total_apks"].(float64); !ok || totalApks != 5 {
+		t.Errorf("expected total_apks=5, got: %v", resObj["total_apks"])
+	}
+	if apksArchive, ok := resObj["apks_archive"].(string); !ok || !strings.Contains(apksArchive, "skyleap-patched.apks") {
+		t.Errorf("expected apks_archive to contain 'skyleap-patched.apks', got: %v", resObj["apks_archive"])
+	}
+}
+
+
 

@@ -219,13 +219,22 @@ export interface AndroidPackageInspection {
 }
 
 export interface AndroidPatchResult {
-  is_split: boolean;
-  single_apk: string;
-  split_dir: string;
-  apks_archive: string;
-  output_dir: string;
-  total_apks: number;
-  total_bytes: number;
+  is_split?: boolean;
+  single_apk?: string;
+  split_dir?: string;
+  apks_archive?: string;
+  output_dir?: string;
+  total_apks?: number;
+  total_bytes?: number;
+  package_files?: string[];
+  IsSplit?: boolean;
+  SingleApk?: string;
+  SplitDir?: string;
+  ApksArchive?: string;
+  OutputDir?: string;
+  TotalApks?: number;
+  TotalBytes?: number;
+  PackageFiles?: string[];
 }
 
 export interface AndroidPatchProgress {
