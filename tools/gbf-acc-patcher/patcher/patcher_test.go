@@ -409,3 +409,188 @@ func TestValidateModuleApk_InvalidZip(t *testing.T) {
 		t.Errorf("expected error for corrupt zip, got nil")
 	}
 }
+
+func TestValidateLSPatchJar_Canonical(t *testing.T) {
+	repoRoot := filepath.Join("..", "..", "..")
+	jarPath := filepath.Join(repoRoot, "build", "lspatch", "lspatch.jar")
+	if _, err := os.Stat(jarPath); err != nil {
+		t.Skipf("skipping test, lspatch.jar not found at %s", jarPath)
+	}
+
+	if err := ValidateLSPatchJar(jarPath); err != nil {
+		t.Fatalf("ValidateLSPatchJar failed on canonical build/lspatch/lspatch.jar: %v", err)
+	}
+}
+
+func TestValidateLSPatchJar_ChecksumMismatch(t *testing.T) {
+	tempDir := t.TempDir()
+	fakeJar := filepath.Join(tempDir, "tampered-lspatch.jar")
+	if err := os.WriteFile(fakeJar, []byte("tampered lspatch binary data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ValidateLSPatchJar(fakeJar)
+	if err == nil {
+		t.Fatalf("expected ValidateLSPatchJar to reject tampered binary, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "SHA-256 checksum mismatch") {
+		t.Errorf("expected checksum mismatch error, got: %v", err)
+	}
+}
+
+func TestValidateLSPatchJar_EmptyAndMissing(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// Missing
+	missingJar := filepath.Join(tempDir, "missing.jar")
+	if err := ValidateLSPatchJar(missingJar); err == nil {
+		t.Errorf("expected error for missing jar")
+	}
+
+	// Empty
+	emptyJar := filepath.Join(tempDir, "empty.jar")
+	if err := os.WriteFile(emptyJar, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateLSPatchJar(emptyJar); err == nil {
+		t.Errorf("expected error for empty jar")
+	}
+}
+
+func TestFindLSPatchJar_OverridePriority(t *testing.T) {
+	tempDir := t.TempDir()
+	customJar := filepath.Join(tempDir, "custom.jar")
+	if err := os.WriteFile(customJar, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	found, err := FindLSPatchJar(customJar, tempDir)
+	if err != nil {
+		t.Fatalf("FindLSPatchJar failed with override: %v", err)
+	}
+	if !strings.HasSuffix(found, "custom.jar") {
+		t.Errorf("expected custom.jar, got %s", found)
+	}
+}
+
+func TestVerifyIntegrity_SingleApk(t *testing.T) {
+	tempDir := t.TempDir()
+	apkPath := filepath.Join(tempDir, "valid-patched.apk")
+
+	// Create a valid zip file as single apk
+	f, err := os.Create(apkPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, _ := zw.Create("AndroidManifest.xml")
+	w.Write([]byte("dummy manifest"))
+	zw.Close()
+	f.Close()
+
+	fi, _ := os.Stat(apkPath)
+	validResult := &BundleResult{
+		IsSplit:      false,
+		SingleApk:    apkPath,
+		TotalApks:    1,
+		TotalBytes:   fi.Size(),
+		PackageFiles: []string{apkPath},
+	}
+
+	// 1. Valid case
+	if err := VerifyIntegrity(validResult, false, 1); err != nil {
+		t.Errorf("expected valid single APK to pass integrity: %v", err)
+	}
+
+	// 2. Mode mismatch
+	if err := VerifyIntegrity(validResult, true, 1); err == nil {
+		t.Errorf("expected error for split mode mismatch")
+	}
+
+	// 3. Corrupt zip
+	corruptApk := filepath.Join(tempDir, "corrupt.apk")
+	os.WriteFile(corruptApk, []byte("corrupt"), 0644)
+	corruptResult := &BundleResult{
+		IsSplit:      false,
+		SingleApk:    corruptApk,
+		TotalApks:    1,
+		TotalBytes:   7,
+		PackageFiles: []string{corruptApk},
+	}
+	if err := VerifyIntegrity(corruptResult, false, 1); err == nil {
+		t.Errorf("expected error for corrupt zip APK")
+	}
+}
+
+func TestVerifyIntegrity_SplitApk(t *testing.T) {
+	tempDir := t.TempDir()
+	splitDir := filepath.Join(tempDir, "splits")
+	os.MkdirAll(splitDir, 0755)
+
+	baseApk := filepath.Join(splitDir, "base-lspatched.apk")
+	configApk := filepath.Join(splitDir, "split_config-lspatched.apk")
+
+	for _, p := range []string{baseApk, configApk} {
+		f, _ := os.Create(p)
+		zw := zip.NewWriter(f)
+		w, _ := zw.Create("classes.dex")
+		w.Write([]byte("dex"))
+		zw.Close()
+		f.Close()
+	}
+
+	apksArchive := filepath.Join(tempDir, "bundle.apks")
+	createApksArchive([]string{baseApk, configApk}, apksArchive)
+
+	validSplitResult := &BundleResult{
+		IsSplit:      true,
+		SplitDir:     splitDir,
+		ApksArchive:  apksArchive,
+		TotalApks:    2,
+		TotalBytes:   1000,
+		PackageFiles: []string{baseApk, configApk},
+	}
+
+	// 1. Valid split
+	if err := VerifyIntegrity(validSplitResult, true, 2); err != nil {
+		t.Errorf("expected valid split to pass integrity: %v", err)
+	}
+
+	// 2. Count mismatch
+	if err := VerifyIntegrity(validSplitResult, true, 3); err == nil {
+		t.Errorf("expected error for split count mismatch")
+	}
+
+	// 3. Missing base APK
+	noBaseResult := &BundleResult{
+		IsSplit:      true,
+		SplitDir:     splitDir,
+		ApksArchive:  apksArchive,
+		TotalApks:    1,
+		TotalBytes:   500,
+		PackageFiles: []string{configApk},
+	}
+	if err := VerifyIntegrity(noBaseResult, true, 1); err == nil {
+		t.Errorf("expected error when base APK is missing")
+	}
+}
+
+func TestInputRemainsUnmodified(t *testing.T) {
+	tempDir := t.TempDir()
+	originalFile := filepath.Join(tempDir, "input.apk")
+	originalBytes := []byte("original unmodifiable apk data")
+	if err := os.WriteFile(originalFile, originalBytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run InspectInput (will fail AXML parsing, which is fine, but it must not mutate original)
+	InspectInput(originalFile, tempDir)
+
+	afterBytes, err := os.ReadFile(originalFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterBytes) != string(originalBytes) {
+		t.Errorf("input file was modified during processing!")
+	}
+}

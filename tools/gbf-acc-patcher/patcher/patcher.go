@@ -69,7 +69,10 @@ func (p *Patcher) Run() (*BundleResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("      - LSPatch Jar: %s\n", lspatchJar)
+	if err := ValidateLSPatchJar(lspatchJar); err != nil {
+		return nil, err
+	}
+	fmt.Printf("      - LSPatch Jar: %s (%s, SHA-256 verified)\n", lspatchJar, CanonicalLSPatchVersion)
 
 	moduleApk, err := FindModuleApk(p.opts.ModuleOverride, p.exeDir)
 	if err != nil {
@@ -131,14 +134,19 @@ func (p *Patcher) Run() (*BundleResult, error) {
 	fmt.Printf("      [+] Injected SkyLeapModule into %d package file(s).\n", len(rawOutputs))
 
 	// 5. Organize and verify output
-	fmt.Println("[4/5] Packaging & verifying final output...")
+	fmt.Println("[4/5] Packaging final output...")
 	baseInputName := filepath.Base(p.opts.InputPath)
 	result, err := BundleOutput(pkgInfo.IsSplit, baseInputName, rawOutputs, p.opts.OutputDir)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Println("[5/5] Success! Patching completed.")
+	fmt.Println("[5/5] Performing post-patch integrity audit...")
+	if err := VerifyIntegrity(result, pkgInfo.IsSplit, pkgInfo.TotalApks); err != nil {
+		return nil, fmt.Errorf("output integrity verification failed: %w", err)
+	}
+	fmt.Println("      [+] All package artifacts verified successfully.")
+
 	printSummary(result)
 
 	return result, nil
@@ -149,6 +157,9 @@ func printBanner() {
 	fmt.Println("       GBF-Accelerator PC Patch Tool v0.1 (CLI)")
 	fmt.Println("=================================================================")
 	fmt.Println("[*] Notice: This tool DOES NOT bundle or distribute official SkyLeap APKs.")
+	fmt.Println("    Users must obtain their own authentic official SkyLeap package.")
+	fmt.Println("[*] Local Processing: All operations run 100% locally on your machine.")
+	fmt.Println("    No packages, analytics, or user data are ever uploaded or transmitted.")
 	fmt.Println("[*] Signature Warning: Patched packages are re-signed with a local key.")
 	fmt.Println("    Android strictly forbids overwriting apps signed with different keys.")
 	fmt.Println("    You MUST uninstall the official version first before installing.")

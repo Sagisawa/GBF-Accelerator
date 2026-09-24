@@ -3,6 +3,8 @@ package patcher
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -102,10 +104,60 @@ func checkJavaVersion(javaPath string) (int, string, error) {
 	return major, strings.TrimSpace(matches[0]), nil
 }
 
+const (
+	// CanonicalLSPatchVersion is the pinned version of LSPatch verified on Android 16 / OnePlus 13.
+	CanonicalLSPatchVersion = "v1.2 (Build 487)"
+	// CanonicalLSPatchSource is the authoritative upstream source for the pinned build.
+	CanonicalLSPatchSource = "https://github.com/JingMatrix/LSPatch"
+	// CanonicalLSPatchSHA256 is the cryptographic SHA-256 checksum of the verified lspatch.jar.
+	CanonicalLSPatchSHA256 = "d238fdc414d121b7fa454d8b4ccf420df3a8c97d563761861ff92bd9c5da2165"
+)
+
+// ValidateLSPatchJar verifies that the target lspatch.jar exists, is a regular file,
+// and strictly matches the pinned SHA-256 checksum of JingMatrix/LSPatch v1.2 (Build 487).
+func ValidateLSPatchJar(jarPath string) error {
+	fi, err := os.Stat(jarPath)
+	if err != nil {
+		return fmt.Errorf("lspatch.jar not accessible: %w", err)
+	}
+	if fi.IsDir() || fi.Size() == 0 {
+		return fmt.Errorf("lspatch.jar is a directory or empty: %s", jarPath)
+	}
+
+	f, err := os.Open(jarPath)
+	if err != nil {
+		return fmt.Errorf("failed to open lspatch.jar for hashing: %w", err)
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("failed to compute lspatch.jar checksum: %w", err)
+	}
+
+	actualSHA256 := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(actualSHA256, CanonicalLSPatchSHA256) {
+		return fmt.Errorf("LSPatch binary validation failed: SHA-256 checksum mismatch for %s\n"+
+			"  Expected: %s (%s, %s)\n"+
+			"  Actual:   %s\n"+
+			"Security policy: Execution halted to prevent using unverified or tampered LSPatch binaries.",
+			jarPath, CanonicalLSPatchSHA256, CanonicalLSPatchVersion, CanonicalLSPatchSource, actualSHA256)
+	}
+
+	return nil
+}
+
 // FindLSPatchJar discovers lspatch.jar from override, local directories, or project repository.
 func FindLSPatchJar(overridePath string, exeDir string) (string, error) {
+	if overridePath != "" {
+		if fi, err := os.Stat(overridePath); err != nil || fi.IsDir() {
+			return "", fmt.Errorf("specified lspatch.jar not found or inaccessible: %s", overridePath)
+		}
+		abs, _ := filepath.Abs(overridePath)
+		return abs, nil
+	}
+
 	candidates := []string{
-		overridePath,
 		filepath.Join(exeDir, "lspatch.jar"),
 		filepath.Join(exeDir, "lib", "lspatch.jar"),
 		filepath.Join(exeDir, "..", "..", "build", "lspatch", "lspatch.jar"),
@@ -122,34 +174,71 @@ func FindLSPatchJar(overridePath string, exeDir string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("lspatch.jar not found. Please place lspatch.jar in tool directory or specify --lspatch <path>")
+	return "", fmt.Errorf("lspatch.jar not found. Please place lspatch.jar (%s) in the tool directory or specify --lspatch <path>", CanonicalLSPatchVersion)
 }
 
-// FindModuleApk discovers the built SkyLeap Xposed Module APK from override, local directories, or project repository.
+// FindModuleApk discovers the built SkyLeap Xposed Module APK following the formal hierarchy:
+// 1. User explicit override (--module)
+// 2. Production release module in tool directory (xposed-release.apk, SkyLeapModule.apk, module.apk)
+// 3. Dedicated release subdirectories (modules/xposed-release.apk)
+// 4. Source tree release artifact (android/xposed/build/outputs/apk/release/xposed-release.apk)
+// 5. Development environment debug fallback (xposed-debug.apk)
 func FindModuleApk(overridePath string, exeDir string) (string, error) {
-	candidates := []string{
-		overridePath,
-		filepath.Join(exeDir, "xposed-release.apk"),
-		filepath.Join(exeDir, "xposed-debug.apk"),
-		filepath.Join(exeDir, "SkyLeapModule.apk"),
-		filepath.Join(exeDir, "module.apk"),
-		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
-		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
-		filepath.Join("android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
-		filepath.Join("android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
+	if overridePath != "" {
+		if fi, err := os.Stat(overridePath); err != nil || fi.IsDir() {
+			return "", fmt.Errorf("specified module APK not found or inaccessible: %s", overridePath)
+		}
+		abs, _ := filepath.Abs(overridePath)
+		return abs, nil
 	}
 
-	for _, c := range candidates {
-		if c == "" {
-			continue
-		}
+	// 1. Production release module in tool directory or aliases
+	productionCandidates := []string{
+		filepath.Join(exeDir, "xposed-release.apk"),
+		filepath.Join(exeDir, "SkyLeapModule.apk"),
+		filepath.Join(exeDir, "module.apk"),
+		filepath.Join(exeDir, "modules", "xposed-release.apk"),
+	}
+
+	for _, c := range productionCandidates {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
 			abs, _ := filepath.Abs(c)
 			return abs, nil
 		}
 	}
 
-	return "", fmt.Errorf("Xposed Module APK not found. Please build the Xposed module via `./gradlew :xposed:assembleRelease` or specify --module <path>")
+	// 2. Source tree release artifact
+	devReleaseCandidates := []string{
+		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+		filepath.Join("android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+	}
+
+	for _, c := range devReleaseCandidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			abs, _ := filepath.Abs(c)
+			return abs, nil
+		}
+	}
+
+	// 3. Development debug fallback (only when release build is absent)
+	devDebugCandidates := []string{
+		filepath.Join(exeDir, "xposed-debug.apk"),
+		filepath.Join(exeDir, "modules", "xposed-debug.apk"),
+		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
+		filepath.Join("android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
+	}
+
+	for _, c := range devDebugCandidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			abs, _ := filepath.Abs(c)
+			return abs, nil
+		}
+	}
+
+	return "", fmt.Errorf("SkyLeap Xposed Module APK not found. Looked for:\n" +
+		"  - " + filepath.Join(exeDir, "xposed-release.apk") + " (production release artifact)\n" +
+		"  - android/xposed/build/outputs/apk/release/xposed-release.apk (source tree release)\n" +
+		"Please build the release module via `./gradlew :xposed:assembleRelease` or specify --module <path>")
 }
 
 // ValidateModuleApk verifies that the specified APK is a valid standalone Xposed module

@@ -160,3 +160,99 @@ func createApksArchive(apkFiles []string, destZipPath string) error {
 
 	return nil
 }
+
+// VerifyIntegrity conducts a rigorous post-packaging validation of the generated output artifacts.
+// It ensures that:
+// 1. All output files exist, are regular non-empty files.
+// 2. Base APK is present and non-empty.
+// 3. For Split APKs, split count matches the inspected input count.
+// 4. Output APKs / APKS archives are valid zip files.
+// 5. Total output bytes > 0.
+func VerifyIntegrity(res *BundleResult, expectedIsSplit bool, expectedTotalApks int) error {
+	if res == nil {
+		return fmt.Errorf("integrity audit failed: result is nil")
+	}
+
+	if res.IsSplit != expectedIsSplit {
+		return fmt.Errorf("integrity audit failed: split mode mismatch (expected isSplit=%v, got %v)", expectedIsSplit, res.IsSplit)
+	}
+
+	if res.TotalBytes <= 0 {
+		return fmt.Errorf("integrity audit failed: output artifact total size is 0 bytes")
+	}
+
+	if !expectedIsSplit {
+		// Single APK verification
+		if res.SingleApk == "" {
+			return fmt.Errorf("integrity audit failed: single APK path is empty")
+		}
+		fi, err := os.Stat(res.SingleApk)
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			return fmt.Errorf("integrity audit failed: output APK %s is missing or empty", res.SingleApk)
+		}
+		zr, err := zip.OpenReader(res.SingleApk)
+		if err != nil {
+			return fmt.Errorf("integrity audit failed: output APK %s is not a valid zip archive: %w", res.SingleApk, err)
+		}
+		zr.Close()
+		return nil
+	}
+
+	// Split APK verification
+	if res.TotalApks != expectedTotalApks {
+		return fmt.Errorf("integrity audit failed: split count mismatch (expected %d APKs, got %d)", expectedTotalApks, res.TotalApks)
+	}
+
+	if res.SplitDir == "" {
+		return fmt.Errorf("integrity audit failed: split output directory path is empty")
+	}
+	dirFi, err := os.Stat(res.SplitDir)
+	if err != nil || !dirFi.IsDir() {
+		return fmt.Errorf("integrity audit failed: split directory %s does not exist", res.SplitDir)
+	}
+
+	if len(res.PackageFiles) != expectedTotalApks {
+		return fmt.Errorf("integrity audit failed: package files count %d does not match expected %d", len(res.PackageFiles), expectedTotalApks)
+	}
+
+	hasBaseApk := false
+	for _, fpath := range res.PackageFiles {
+		fi, err := os.Stat(fpath)
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			return fmt.Errorf("integrity audit failed: split file %s is missing or empty", fpath)
+		}
+		fname := strings.ToLower(filepath.Base(fpath))
+		if strings.HasPrefix(fname, "base") {
+			hasBaseApk = true
+		}
+		zr, err := zip.OpenReader(fpath)
+		if err != nil {
+			return fmt.Errorf("integrity audit failed: split file %s is corrupt: %w", fpath, err)
+		}
+		zr.Close()
+	}
+
+	if !hasBaseApk {
+		return fmt.Errorf("integrity audit failed: base APK was not found among output split files")
+	}
+
+	if res.ApksArchive == "" {
+		return fmt.Errorf("integrity audit failed: .apks archive path is empty")
+	}
+	apksFi, err := os.Stat(res.ApksArchive)
+	if err != nil || apksFi.IsDir() || apksFi.Size() == 0 {
+		return fmt.Errorf("integrity audit failed: .apks archive %s is missing or empty", res.ApksArchive)
+	}
+
+	zr, err := zip.OpenReader(res.ApksArchive)
+	if err != nil {
+		return fmt.Errorf("integrity audit failed: .apks archive %s is not a valid zip archive: %w", res.ApksArchive, err)
+	}
+	defer zr.Close()
+
+	if len(zr.File) != expectedTotalApks {
+		return fmt.Errorf("integrity audit failed: .apks archive contains %d entries, expected %d", len(zr.File), expectedTotalApks)
+	}
+
+	return nil
+}
