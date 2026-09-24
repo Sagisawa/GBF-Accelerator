@@ -17,6 +17,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.sagisawa.gbfaccelerator.browser.BrowserAdapter
 import com.sagisawa.gbfaccelerator.browser.BrowserAdapterRegistry
+import com.sagisawa.gbfaccelerator.cert.CaCertManager
 import com.sagisawa.gbfaccelerator.core.CoreManager
 import com.sagisawa.gbfaccelerator.core.CoreService
 import com.sagisawa.gbfaccelerator.patch.BrowserLauncher
@@ -27,6 +28,7 @@ import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
+    // 1. Status Section
     private lateinit var tvStatusBadge: TextView
     private lateinit var tvProxyBadge: TextView
     private lateinit var tvProxyDetail: TextView
@@ -34,15 +36,26 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPorts: TextView
     private lateinit var btnToggleService: Button
 
+    // 2. Browser Management Section
     private lateinit var spTargetBrowser: Spinner
     private lateinit var tvBrowserStatus: TextView
     private lateinit var btnLaunchBrowser: Button
 
+    // 3. CA Certificate Section
+    private lateinit var tvCertStatusBadge: TextView
+    private lateinit var tvCertFingerprint: TextView
+    private lateinit var tvCertTrust: TextView
+    private lateinit var btnInstallCert: Button
+    private lateinit var btnExportCert: Button
+    private lateinit var btnSecuritySettings: Button
+
+    // 4. Metrics Section
     private lateinit var tvMetricRamCache: TextView
     private lateinit var tvMetricHits: TextView
     private lateinit var tvMetricRequests: TextView
     private lateinit var tvMetricReuse: TextView
 
+    // 5. Logs Section
     private lateinit var svLogs: ScrollView
     private lateinit var tvLogContent: TextView
     private lateinit var tvClearLogs: TextView
@@ -78,6 +91,7 @@ class MainActivity : AppCompatActivity() {
         CoreManager.addLogListener(logListener)
 
         renderLogs()
+        updateCertUi()
         handleIntentAction(intent)
 
         if (intent?.getStringExtra("action") == null) {
@@ -88,6 +102,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateBrowserUi()
+        updateCertUi()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -122,19 +137,28 @@ class MainActivity : AppCompatActivity() {
         tvBrowserStatus = findViewById(R.id.tv_browser_status)
         btnLaunchBrowser = findViewById(R.id.btn_launch_browser)
 
-        // 3. Metrics Section
+        // 3. CA Certificate Section
+        tvCertStatusBadge = findViewById(R.id.tv_cert_status_badge)
+        tvCertFingerprint = findViewById(R.id.tv_cert_fingerprint)
+        tvCertTrust = findViewById(R.id.tv_cert_trust)
+        btnInstallCert = findViewById(R.id.btn_install_cert)
+        btnExportCert = findViewById(R.id.btn_export_cert)
+        btnSecuritySettings = findViewById(R.id.btn_security_settings)
+
+        // 4. Metrics Section
         tvMetricRamCache = findViewById(R.id.tv_metric_ram_cache)
         tvMetricHits = findViewById(R.id.tv_metric_hits)
         tvMetricRequests = findViewById(R.id.tv_metric_requests)
         tvMetricReuse = findViewById(R.id.tv_metric_reuse)
 
-        // 4. Logs Section
+        // 5. Logs Section
         svLogs = findViewById(R.id.sv_logs)
         tvLogContent = findViewById(R.id.tv_log_content)
         tvClearLogs = findViewById(R.id.tv_clear_logs)
 
         setupServiceToggle()
         setupBrowserSelector()
+        setupCertActions()
 
         tvClearLogs.setOnClickListener {
             tvLogContent.text = ""
@@ -197,6 +221,35 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun setupCertActions() {
+        btnInstallCert.setOnClickListener {
+            val intent = CaCertManager.createInstallIntent(this)
+            if (intent != null) {
+                try {
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "启动证书安装器失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(this, "证书尚未生成，请先启动 Go Core", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        btnExportCert.setOnClickListener {
+            val (success, msg) = CaCertManager.exportCaCertToDownloads(this)
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            updateCertUi()
+        }
+
+        btnSecuritySettings.setOnClickListener {
+            try {
+                startActivity(CaCertManager.createSecuritySettingsIntent())
+            } catch (e: Exception) {
+                Toast.makeText(this, "无法打开系统安全设置: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun updateBrowserUi() {
         val adapter = selectedAdapter ?: return
         val appInfo = browserLauncher.getAppInfo(this, adapter)
@@ -210,7 +263,7 @@ class MainActivity : AppCompatActivity() {
                 getString(R.string.browser_status_installed, vName)
             )
             btnLaunchBrowser.isEnabled = true
-            btnLaunchBrowser.text = String.format(Locale.US, "Launch %s", adapter.name)
+            btnLaunchBrowser.text = String.format(Locale.US, "启动 %s", adapter.name)
         } else {
             tvBrowserStatus.text = String.format(
                 Locale.US,
@@ -219,7 +272,36 @@ class MainActivity : AppCompatActivity() {
                 getString(R.string.browser_status_not_installed)
             )
             btnLaunchBrowser.isEnabled = false
-            btnLaunchBrowser.text = String.format(Locale.US, "%s Not Installed", adapter.name)
+            btnLaunchBrowser.text = String.format(Locale.US, "未安装 %s", adapter.name)
+        }
+    }
+
+    private fun updateCertUi() {
+        val certInfo = CaCertManager.getCertInfo(this)
+        if (certInfo.exists) {
+            tvCertStatusBadge.text = getString(R.string.cert_status_ready)
+            tvCertStatusBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.color_success))
+            tvCertFingerprint.text = String.format(Locale.US, "SHA-256: %s", certInfo.sha256Fingerprint)
+
+            if (certInfo.isTrustedInSystem) {
+                tvCertTrust.text = getString(R.string.cert_trust_trusted)
+                tvCertTrust.setTextColor(ContextCompat.getColor(this, R.color.color_success))
+            } else {
+                tvCertTrust.text = getString(R.string.cert_trust_untrusted)
+                tvCertTrust.setTextColor(ContextCompat.getColor(this, R.color.color_warning))
+            }
+
+            btnInstallCert.isEnabled = true
+            btnExportCert.isEnabled = true
+        } else {
+            tvCertStatusBadge.text = getString(R.string.cert_status_not_ready)
+            tvCertStatusBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.color_stopped))
+            tvCertFingerprint.text = "SHA-256: -- (启动核心后就绪)"
+            tvCertTrust.text = getString(R.string.cert_trust_untrusted)
+            tvCertTrust.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+
+            btnInstallCert.isEnabled = false
+            btnExportCert.isEnabled = false
         }
     }
 
@@ -231,14 +313,14 @@ class MainActivity : AppCompatActivity() {
             is LaunchResult.NotInstalled -> {
                 Toast.makeText(
                     this,
-                    String.format(Locale.US, "%s (%s) is not installed", adapter.name, result.packageName),
+                    String.format(Locale.US, "%s (%s) 未安装", adapter.name, result.packageName),
                     Toast.LENGTH_SHORT
                 ).show()
             }
             is LaunchResult.Failure -> {
                 Toast.makeText(
                     this,
-                    String.format(Locale.US, "Failed to launch: %s", result.reason),
+                    String.format(Locale.US, "启动失败: %s", result.reason),
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -259,9 +341,9 @@ class MainActivity : AppCompatActivity() {
 
         val (colorRes, btnText, btnColorRes) = when (state) {
             CoreManager.State.RUNNING -> Triple(R.color.color_success, getString(R.string.btn_stop_proxy), R.color.color_error)
-            CoreManager.State.STARTING -> Triple(R.color.color_warning, "Starting...", R.color.color_warning)
-            CoreManager.State.STOPPING -> Triple(R.color.color_warning, "Stopping...", R.color.color_warning)
-            CoreManager.State.CRASHED -> Triple(R.color.color_error, "Restart Proxy", R.color.color_success)
+            CoreManager.State.STARTING -> Triple(R.color.color_warning, "启动中...", R.color.color_warning)
+            CoreManager.State.STOPPING -> Triple(R.color.color_warning, "停止中...", R.color.color_warning)
+            CoreManager.State.CRASHED -> Triple(R.color.color_error, "重启代理核心", R.color.color_success)
             CoreManager.State.STOPPED -> Triple(R.color.color_stopped, getString(R.string.btn_start_proxy), R.color.color_success)
         }
 
@@ -290,18 +372,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (state == CoreManager.State.STOPPED) {
-            tvPidUptime.text = "PID: -- | Uptime: 0.0s"
+            tvPidUptime.text = "PID: -- | 运行时间: 0.0s"
         }
+
+        // Whenever Core reaches RUNNING or changes state, refresh cert status in case ca.crt was generated
+        updateCertUi()
     }
 
     private fun updateMetricsUi(m: CoreManager.CoreMetrics) {
         if (m.isRunning) {
-            tvPidUptime.text = String.format(Locale.US, "PID: %d | Uptime: %.1fs", m.pid, m.uptimeSeconds)
+            tvPidUptime.text = String.format(Locale.US, "PID: %d | 运行时间: %.1fs", m.pid, m.uptimeSeconds)
         }
-        tvMetricRamCache.text = String.format(Locale.US, "RAM: %d items (%.2f MB)", m.ramItems, m.ramMb)
-        tvMetricHits.text = String.format(Locale.US, "Hits: RAM %d / Disk %d", m.ramHits, m.diskHits)
-        tvMetricRequests.text = String.format(Locale.US, "Assets: %d | APIs: %d (Act: %d)", m.totalAssets, m.totalApis, m.activeApiCount)
-        tvMetricReuse.text = String.format(Locale.US, "H2 Reuse: %d (%.1f%%)", m.reusedConnections, m.reuseRatePercent)
+        tvMetricRamCache.text = String.format(Locale.US, "RAM: %d 条目 (%.2f MB)", m.ramItems, m.ramMb)
+        tvMetricHits.text = String.format(Locale.US, "命中: RAM %d / 磁盘 %d", m.ramHits, m.diskHits)
+        tvMetricRequests.text = String.format(Locale.US, "静态: %d | API: %d (活跃: %d)", m.totalAssets, m.totalApis, m.activeApiCount)
+        tvMetricReuse.text = String.format(Locale.US, "H2 复用: %d (%.1f%%)", m.reusedConnections, m.reuseRatePercent)
     }
 
     private fun renderLogs() {

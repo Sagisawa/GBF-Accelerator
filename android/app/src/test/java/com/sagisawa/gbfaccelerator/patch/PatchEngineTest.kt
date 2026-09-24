@@ -40,7 +40,7 @@ class PatchEngineTest {
         assertTrue(finalResult is PatchResult.Failure)
         val failure = finalResult as PatchResult.Failure
         assertEquals("ENGINE_NOT_IMPLEMENTED", failure.errorCode)
-        assertTrue(failure.message.contains("scheduled for future releases"))
+        assertTrue(failure.message.contains("当前需要使用外部工具提前完成浏览器 Patch"))
     }
 
     @Test

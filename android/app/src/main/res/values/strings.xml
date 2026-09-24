@@ -1,35 +1,48 @@
 <resources>
     <string name="app_name">GBF-Accelerator</string>
-    <string name="app_subtitle">Go Core &amp; Static Cache for Android</string>
-    <string name="xposed_description">GBF-Accelerator Module for Browser Reverse Bypass</string>
+    <string name="app_subtitle">Go Core 本地静态缓存与透明代理</string>
+    <string name="xposed_description">GBF-Accelerator 浏览器分流与逆向 Bypass Xposed 模块</string>
 
     <!-- Core & Proxy Status -->
-    <string name="status_daemon_title">Go Core Daemon</string>
-    <string name="status_proxy_title">GBF Proxy Status</string>
-    <string name="proxy_normal">NORMAL (Active)</string>
+    <string name="status_daemon_title">Go Core 守护进程</string>
+    <string name="status_proxy_title">GBF 代理状态</string>
+    <string name="proxy_normal">NORMAL (活跃中)</string>
     <string name="proxy_unavailable">UNAVAILABLE (Fail-Closed)</string>
-    <string name="proxy_crashed">CRASHED (Watchdog Active)</string>
-    <string name="proxy_detail_normal">127.0.0.1:8124 listening | 6 GBF rules -> Core, other -> DIRECT</string>
-    <string name="proxy_detail_unavailable">127.0.0.1:8124 offline | Fail-Closed: direct leak safely blocked</string>
-    <string name="ports_summary">Data Plane: 127.0.0.1:8124 | Control: 127.0.0.1:8125</string>
+    <string name="proxy_crashed">CRASHED (异常重试中)</string>
+    <string name="proxy_detail_normal">127.0.0.1:8124 正常监听 | 6 条 GBF 规则代理，其余 DIRECT</string>
+    <string name="proxy_detail_unavailable">127.0.0.1:8124 离线 | Fail-Closed 机制生效，GBF 流量安全拦截防止直连泄漏</string>
+    <string name="ports_summary">数据面: 127.0.0.1:8124 | 控制面: 127.0.0.1:8125</string>
 
     <!-- Actions -->
-    <string name="btn_start_proxy">Start Proxy</string>
-    <string name="btn_stop_proxy">Stop Proxy</string>
-    <string name="btn_launch_browser">Launch Browser</string>
+    <string name="btn_start_proxy">启动代理核心</string>
+    <string name="btn_stop_proxy">停止代理核心</string>
+    <string name="btn_launch_browser">启动浏览器</string>
 
     <!-- Browser Section -->
-    <string name="section_browser_title">Target Browser</string>
-    <string name="browser_status_installed">Installed (%1$s)</string>
-    <string name="browser_status_not_installed">Not Installed</string>
+    <string name="section_browser_title">目标浏览器管理</string>
+    <string name="browser_status_installed">已安装 (%1$s)</string>
+    <string name="browser_status_not_installed">未检测到安装</string>
+    <string name="browser_patched_hint">提示：请确保已安装的是通过外部 LSPatch 处理后的浏览器版本。未处理的原版无法自动走加速核心。</string>
 
-    <!-- Patch Engine Pipeline -->
-    <string name="section_patch_title">Browser Packaging Pipeline</string>
-    <string name="patch_pipeline_standby">Standby (Pre-patched APK Supported)</string>
-    <string name="patch_pipeline_info">Direct import of official browser APKs and on-device patching are architecturally scheduled for future milestones.</string>
+    <!-- Patch Engine Pipeline (Future Ext) -->
+    <string name="section_patch_title">浏览器 Patch 状态与指引</string>
+    <string name="patch_pipeline_standby">外部 Patch 模式 (待扩展)</string>
+    <string name="patch_pipeline_notice">当前需要使用外部工具提前完成浏览器 Patch，本 App 暂不在手机内执行 APK Patch。</string>
+    <string name="patch_pipeline_steps">后续将配套开发 GBF-Accelerator PC Patch Tool（基于成熟 LSPatch CLI）。\n当前简易操作流程：\n1. 在 PC 端使用 LSPatch (Portable 模式) 将本加速器 Xposed 模块嵌入官方 SkyLeap APK 并完成签名；\n2. 卸载手机上的原版 SkyLeap 后安装该处理版；\n3. 在本 App 启动 Go Core 后，点击上方【启动浏览器】即可配合加速核心使用。</string>
+
+    <!-- CA Certificate Section -->
+    <string name="section_cert_title">HTTPS 根证书管理</string>
+    <string name="cert_status_ready">已就绪</string>
+    <string name="cert_status_not_ready">待生成 (启动核心后自动创建)</string>
+    <string name="cert_trust_trusted">已在系统受信任凭据中检测到</string>
+    <string name="cert_trust_untrusted">尚未在系统凭据中检测到 (需安装)</string>
+    <string name="cert_install_btn">安装证书 (系统对话框)</string>
+    <string name="cert_export_btn">导出 ca.crt</string>
+    <string name="cert_settings_btn">系统安全设置</string>
+    <string name="cert_instructions">说明：游戏静态素材 (Akamai CDN) 本地缓存与 HTTPS 代理需要信任此根证书。\nAndroid 11+ 若系统阻止直接安装，请点击【导出 ca.crt】，再前往【系统安全设置】 -> 【凭据存储 / 加密与凭据】 -> 【从存储设备安装证书】 -> 【CA 证书】中选择导出的文件。</string>
 
     <!-- Metrics & Logs -->
-    <string name="section_metrics_title">Live Telemetry &amp; Cache Metrics</string>
-    <string name="section_logs_title">System &amp; Core Logs</string>
-    <string name="logs_clear">Clear</string>
+    <string name="section_metrics_title">运行指标与缓存监控</string>
+    <string name="section_logs_title">核心运行日志</string>
+    <string name="logs_clear">清空</string>
 </resources>

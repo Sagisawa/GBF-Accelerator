@@ -110,7 +110,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="PID: -- | Uptime: 0.0s"
+                android:text="PID: -- | 运行时间: 0.0s"
                 android:textColor="@color/text_primary"
                 android:textSize="13sp" />
 
@@ -167,9 +167,19 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Checking package installation..."
+                android:text="检测浏览器安装状态..."
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp" />
+
+            <!-- Browser Patched Notice -->
+            <TextView
+                android:id="@+id/tv_browser_patched_hint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="@string/browser_patched_hint"
+                android:textColor="@color/color_warning"
+                android:textSize="11sp" />
 
             <!-- Launch Button -->
             <Button
@@ -182,7 +192,7 @@
                 android:textColor="#FFFFFF" />
         </LinearLayout>
 
-        <!-- 3. Browser Packaging Pipeline (Architectural Interface Card) -->
+        <!-- 3. Browser Packaging Pipeline (Architectural Interface / Guidance Card) -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -218,16 +228,140 @@
                     android:textSize="10sp" />
             </LinearLayout>
 
+            <!-- Clear Notice: No in-app fake patching -->
+            <TextView
+                android:id="@+id/tv_patch_notice"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@color/bg_subcard"
+                android:padding="8dp"
+                android:text="@string/patch_pipeline_notice"
+                android:textColor="@color/color_warning"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <!-- Steps -->
+            <TextView
+                android:id="@+id/tv_patch_steps"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:lineSpacingExtra="3dp"
+                android:text="@string/patch_pipeline_steps"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <!-- 4. CA Certificate Management & Trust Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@color/bg_card"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/section_cert_title"
+                    android:textColor="@color/text_primary"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tv_cert_status_badge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@color/color_stopped"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="3dp"
+                    android:text="@string/cert_status_not_ready"
+                    android:textColor="#FFFFFF"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Certificate SHA-256 Fingerprint -->
+            <TextView
+                android:id="@+id/tv_cert_fingerprint"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:fontFamily="monospace"
+                android:text="SHA-256: --"
+                android:textColor="@color/text_primary"
+                android:textSize="11sp" />
+
+            <!-- System Trust Detection Status -->
+            <TextView
+                android:id="@+id/tv_cert_trust"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="@string/cert_trust_untrusted"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
+
+            <!-- Action Buttons: Install, Export, Settings -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_install_cert"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:backgroundTint="@color/color_accent"
+                    android:text="@string/cert_install_btn"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btn_export_cert"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="@color/bg_subcard"
+                    android:text="@string/cert_export_btn"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_security_settings"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:backgroundTint="@color/bg_subcard"
+                android:text="@string/cert_settings_btn"
+                android:textColor="@color/text_primary"
+                android:textSize="12sp" />
+
+            <!-- Detailed instructions -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="@string/patch_pipeline_info"
+                android:layout_marginTop="8dp"
+                android:lineSpacingExtra="2dp"
+                android:text="@string/cert_instructions"
                 android:textColor="@color/text_secondary"
-                android:textSize="12sp" />
+                android:textSize="11sp" />
         </LinearLayout>
 
-        <!-- 4. Live Telemetry & Cache Metrics Card -->
+        <!-- 5. Live Telemetry & Cache Metrics Card -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -302,7 +436,7 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 5. System & Core Logs Card -->
+        <!-- 6. System & Core Logs Card -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="220dp"

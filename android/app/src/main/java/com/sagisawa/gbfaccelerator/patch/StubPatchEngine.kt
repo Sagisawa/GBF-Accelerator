@@ -25,7 +25,7 @@ class StubPatchEngine : PatchEngine {
         completion(
             PatchResult.Failure(
                 errorCode = "ENGINE_NOT_IMPLEMENTED",
-                message = "On-device APK patching engine is scheduled for future releases. Please utilize pre-patched browser packages or external patching tools."
+                message = "当前需要使用外部工具提前完成浏览器 Patch，本 App 暂不在手机内执行 APK Patch。"
             )
         )
     }
