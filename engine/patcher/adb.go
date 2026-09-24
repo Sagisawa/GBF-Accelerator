@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"gbf-proxy/config"
 )
 
 var (
@@ -327,8 +329,14 @@ func UninstallFromDevice(ctx context.Context, adbPath, serial, packageName strin
 	return nil
 }
 
-// PlatformToolsDownloadURL returns Google's official platform-tools zip URL for the current OS.
+// PlatformToolsDownloadURL returns our project GitHub Release asset URL for the current OS.
 func PlatformToolsDownloadURL() string {
+	tag := "v" + config.AppVersion
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/platform-tools-%s.zip", GitHubRepo, tag, runtime.GOOS)
+}
+
+// PlatformToolsGoogleFallbackURL returns Google's official mirror URL as secondary fallback.
+func PlatformToolsGoogleFallbackURL() string {
 	switch runtime.GOOS {
 	case "darwin":
 		return "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
@@ -339,37 +347,52 @@ func PlatformToolsDownloadURL() string {
 	}
 }
 
-// DownloadPlatformTools downloads Google's official platform-tools archive and extracts adb into toolsDir/platform-tools.
+// DownloadPlatformTools downloads the platform-tools archive and extracts adb into toolsDir/platform-tools.
+// It prioritizes our project's GitHub Release asset and automatically falls back to Google's official mirror.
 func DownloadPlatformTools(
 	ctx context.Context,
 	toolsDir string,
 	customURL string,
 	progressFn func(curBytes, totalBytes int64, percent float64),
 ) (string, error) {
-	dlURL := customURL
-	if dlURL == "" {
-		dlURL = PlatformToolsDownloadURL()
+	var candidateURLs []string
+	if customURL != "" {
+		candidateURLs = []string{customURL}
+	} else {
+		candidateURLs = []string{PlatformToolsDownloadURL(), PlatformToolsGoogleFallbackURL()}
 	}
 
 	if err := os.MkdirAll(toolsDir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create tools dir: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
-	if err != nil {
-		return "", err
+	var resp *http.Response
+	var lastErr error
+	client := &http.Client{Timeout: 0}
+
+	for _, dlURL := range candidateURLs {
+		req, err := http.NewRequestWithContext(ctx, "GET", dlURL, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		r, err := client.Do(req)
+		if err == nil && r.StatusCode == http.StatusOK {
+			resp = r
+			break
+		}
+		if r != nil {
+			_ = r.Body.Close()
+			lastErr = fmt.Errorf("HTTP %d from %s", r.StatusCode, dlURL)
+		} else {
+			lastErr = err
+		}
 	}
 
-	client := &http.Client{Timeout: 0}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("failed to download platform-tools: %w", err)
+	if resp == nil {
+		return "", fmt.Errorf("failed to download platform-tools from available sources: %w", lastErr)
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download returned HTTP %d", resp.StatusCode)
-	}
 
 	tmpZip := filepath.Join(toolsDir, "platform-tools.tmp.zip")
 	defer os.Remove(tmpZip)

@@ -193,6 +193,31 @@ function Build-Windows {
             Copy-Item -Path $LicensesSrc -Destination (Join-Path $ReleaseDir "THIRD_PARTY_LICENSES.md") -Force
         }
 
+        # Stage lightweight platform-tools archive as release asset
+        $AdbExe = (Get-Command adb.exe -ErrorAction SilentlyContinue).Source
+        if (-not $AdbExe -and (Test-Path "C:\platform-tools\adb.exe")) {
+            $AdbExe = "C:\platform-tools\adb.exe"
+        }
+        if ($AdbExe) {
+            $AdbDir = Split-Path $AdbExe
+            $PtZip = Join-Path $ReleaseDir "platform-tools-windows.zip"
+            if (Test-Path $PtZip) { Remove-Item $PtZip -Force }
+            $PtStageParent = Join-Path $ReleaseDir "staging_platform_tools"
+            $PtStage = Join-Path $PtStageParent "platform-tools"
+            if (Test-Path $PtStageParent) { Remove-Item $PtStageParent -Recurse -Force }
+            New-Item -ItemType Directory -Path $PtStage -Force | Out-Null
+            Copy-Item (Join-Path $AdbDir "adb.exe") $PtStage -Force
+            if (Test-Path (Join-Path $AdbDir "AdbWinApi.dll")) {
+                Copy-Item (Join-Path $AdbDir "AdbWinApi.dll") $PtStage -Force
+            }
+            if (Test-Path (Join-Path $AdbDir "AdbWinUsbApi.dll")) {
+                Copy-Item (Join-Path $AdbDir "AdbWinUsbApi.dll") $PtStage -Force
+            }
+            Compress-Archive -Path $PtStage -DestinationPath $PtZip -Force
+            Remove-Item $PtStageParent -Recurse -Force
+            Write-Host ("[+] Platform-tools release asset generated: {0} ({1:F2} MB)" -f $PtZip, ((Get-Item $PtZip).Length / 1MB)) -ForegroundColor Green
+        }
+
         Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force
         Remove-Item $StagingDir -Recurse -Force
         $ZipSizeMb = (Get-Item $ZipPath).Length / 1MB

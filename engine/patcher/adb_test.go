@@ -46,7 +46,12 @@ func TestFindAdbPath(t *testing.T) {
 
 func TestPlatformToolsDownloadURL(t *testing.T) {
 	url := PlatformToolsDownloadURL()
-	if !strings.HasPrefix(url, "https://dl.google.com/android/repository/platform-tools-latest-") {
-		t.Errorf("unexpected URL: %s", url)
+	if !strings.HasPrefix(url, "https://github.com/Sagisawa/GBF-Accelerator/releases/download/") {
+		t.Errorf("unexpected primary URL: %s", url)
+	}
+
+	fallback := PlatformToolsGoogleFallbackURL()
+	if !strings.HasPrefix(fallback, "https://dl.google.com/android/repository/platform-tools-latest-") {
+		t.Errorf("unexpected fallback URL: %s", fallback)
 	}
 }
