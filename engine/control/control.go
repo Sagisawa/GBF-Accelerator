@@ -730,6 +730,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
+		"pid":                      os.Getpid(),
 		"version":                  config.AppVersion,
 		"engine":                   "go",
 		"proxy_running":            proxyRunning,
