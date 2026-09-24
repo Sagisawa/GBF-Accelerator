@@ -48,17 +48,17 @@ func TestBuildAppWindowArgs(t *testing.T) {
 	userDataDir := `C:\Test\Profile`
 
 	normal := buildAppWindowArgs(appURL, userDataDir, 1200, 800, false)
-	if len(normal) != 5 || normal[0] != "--app="+appURL || normal[1] != "--user-data-dir="+userDataDir || normal[4] != "--window-size=1200,800" {
+	if len(normal) != 8 || normal[0] != "--app="+appURL || normal[1] != "--user-data-dir="+userDataDir || normal[7] != "--window-size=1200,800" {
 		t.Fatalf("unexpected normal app args: %#v", normal)
 	}
 
 	maximized := buildAppWindowArgs(appURL, userDataDir, 1200, 800, true)
-	if len(maximized) != 5 || maximized[0] != "--app="+appURL || maximized[1] != "--user-data-dir="+userDataDir || maximized[4] != "--start-maximized" {
+	if len(maximized) != 8 || maximized[0] != "--app="+appURL || maximized[1] != "--user-data-dir="+userDataDir || maximized[7] != "--start-maximized" {
 		t.Fatalf("unexpected maximized app args: %#v", maximized)
 	}
 
 	fallback := buildAppWindowArgs(appURL, userDataDir, 100, 200, false)
-	if len(fallback) != 5 || fallback[4] != "--window-size=880,640" {
+	if len(fallback) != 8 || fallback[7] != "--window-size=880,640" {
 		t.Fatalf("unexpected fallback app args: %#v", fallback)
 	}
 }

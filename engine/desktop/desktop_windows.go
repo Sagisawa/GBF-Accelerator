@@ -223,6 +223,11 @@ func appModeUserDataDir() (string, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", err
 	}
+	// Touch Chromium's "First Run" sentinel file to permanently suppress first-run wizards.
+	sentinel := filepath.Join(dir, "First Run")
+	if _, err := os.Stat(sentinel); errors.Is(err, os.ErrNotExist) {
+		_ = os.WriteFile(sentinel, []byte{}, 0644)
+	}
 	return dir, nil
 }
 
@@ -233,7 +238,10 @@ func buildAppWindowArgs(appURL, userDataDir string, width, height int, maximized
 		fmt.Sprintf("--app=%s", appURL),
 		fmt.Sprintf("--user-data-dir=%s", userDataDir),
 		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-sync",
 		"--disable-background-mode",
+		"--disable-features=msFirstRunExperience,msEdgeWelcomeExperience,msSignInPrompt",
 	}
 	if maximized {
 		return append(args, "--start-maximized")
