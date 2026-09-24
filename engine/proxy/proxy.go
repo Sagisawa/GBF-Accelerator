@@ -1934,7 +1934,13 @@ func isGBFAkamaiHost(host string) bool {
 		"prd-game-a2-granbluefantasy-steam.akamaized.net",
 		"prd-game-a3-granbluefantasy-steam.akamaized.net",
 		"prd-game-a4-granbluefantasy-steam.akamaized.net",
-		"prd-game-a5-granbluefantasy-steam.akamaized.net":
+		"prd-game-a5-granbluefantasy-steam.akamaized.net",
+		"prd-game-a-gbf.akamaized.net",
+		"prd-game-a1-gbf.akamaized.net",
+		"prd-game-a2-gbf.akamaized.net",
+		"prd-game-a3-gbf.akamaized.net",
+		"prd-game-a4-gbf.akamaized.net",
+		"prd-game-a5-gbf.akamaized.net":
 		return true
 	}
 	if isDomainOrSubdomain(h, "granbluefantasy.akamaized.net") ||
@@ -1942,7 +1948,7 @@ func isGBFAkamaiHost(host string) bool {
 		return true
 	}
 	// Strict prefix matching for future Akamai CDN shards
-	if strings.HasPrefix(h, "prd-game-a") && strings.HasSuffix(h, "-granbluefantasy.akamaized.net") {
+	if strings.HasPrefix(h, "prd-game-a") && (strings.HasSuffix(h, "-granbluefantasy.akamaized.net") || strings.HasSuffix(h, "-gbf.akamaized.net")) {
 		return true
 	}
 	return false

@@ -172,6 +172,24 @@ func TestProxyRoutingRules(t *testing.T) {
 	if !isGBFAkamaiHost("prd-game-a1-granbluefantasy-steam.akamaized.net") {
 		t.Error("steam Akamai host must be recognized as GBF Akamai host")
 	}
+	if !isGBFAkamaiHost("prd-game-a-gbf.akamaized.net") {
+		t.Error("Android SkyLeap Akamai host prd-game-a-gbf.akamaized.net must be recognized as GBF Akamai host")
+	}
+	if !isGBFAkamaiHost("prd-game-a-gbf.akamaized.net:443") {
+		t.Error("Android SkyLeap Akamai host with port 443 must be recognized as GBF Akamai host")
+	}
+	if !isGBFAkamaiHost("prd-game-a1-gbf.akamaized.net") {
+		t.Error("Android SkyLeap Akamai shard prd-game-a1-gbf.akamaized.net must be recognized as GBF Akamai host")
+	}
+	if ns, isGBF := NormalizeAssetNamespace("prd-game-a-gbf.akamaized.net:443"); !isGBF || ns != "gbf" {
+		t.Errorf("NormalizeAssetNamespace for Android CDN expected ('gbf', true), got (%q, %v)", ns, isGBF)
+	}
+	if !isGBFDomain("prd-game-a-gbf.akamaized.net") {
+		t.Error("prd-game-a-gbf.akamaized.net must be recognized as GBF domain")
+	}
+	if !isStaticTarget("prd-game-a-gbf.akamaized.net", "/assets_en/img/sp/ui/icon.png") {
+		t.Error("asset on prd-game-a-gbf.akamaized.net must be recognized as static target")
+	}
 	if isGBFAkamaiHost("unrelated-tenant.akamaized.net") {
 		t.Error("unrelated Akamai tenants must NOT be recognized as GBF Akamai host")
 	}
@@ -762,4 +780,57 @@ func TestDynamicAPI_ClientContextCancellation(t *testing.T) {
 		t.Fatal("timed out waiting for upstream handler to observe context cancellation")
 	}
 }
+
+func TestAndroidSkyLeapCDN_Matching(t *testing.T) {
+	testHosts := []string{
+		"prd-game-a-gbf.akamaized.net",
+		"prd-game-a-gbf.akamaized.net:443",
+		"prd-game-a1-gbf.akamaized.net",
+		"prd-game-a2-gbf.akamaized.net",
+		"prd-game-a3-gbf.akamaized.net",
+		"prd-game-a4-gbf.akamaized.net",
+		"prd-game-a5-gbf.akamaized.net",
+	}
+
+	for _, host := range testHosts {
+		if !isGBFAkamaiHost(host) {
+			t.Errorf("host %q must be recognized by isGBFAkamaiHost", host)
+		}
+		if !isGBFDomain(host) {
+			t.Errorf("host %q must be recognized by isGBFDomain", host)
+		}
+		ns, isGBF := NormalizeAssetNamespace(host)
+		if !isGBF || ns != "gbf" {
+			t.Errorf("host %q expected NormalizeAssetNamespace ('gbf', true), got (%q, %v)", host, ns, isGBF)
+		}
+	}
+
+	staticPaths := []string{
+		"/assets_en/img/sp/ui/icon.png",
+		"/assets_en/css/common.css",
+		"/assets_en/js/bundle.js",
+		"/sound/se/se_100.ogg",
+		"/assets/font/font.woff2",
+	}
+
+	for _, path := range staticPaths {
+		if !isStaticTarget("prd-game-a-gbf.akamaized.net", path) {
+			t.Errorf("static path %q on prd-game-a-gbf.akamaized.net must be recognized as static target", path)
+		}
+	}
+
+	dynamicPaths := []string{
+		"/rest/user/status",
+		"/quest/index",
+		"/party/deck",
+		"/ob/r",
+	}
+
+	for _, path := range dynamicPaths {
+		if isStaticTarget("prd-game-a-gbf.akamaized.net", path) {
+			t.Errorf("dynamic path %q on prd-game-a-gbf.akamaized.net must NOT be recognized as static target", path)
+		}
+	}
+}
+
 
