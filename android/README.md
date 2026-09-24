@@ -76,8 +76,8 @@ adb install -r D:\gbf_proxy\android-Acclerator\android\app\build\outputs\apk\deb
 2. 进入 **「模块」** 选项卡。
 3. 找到并点击刚刚安装的 **`GBF-ACC Xposed`**。
 4. 打开顶部 **「启用模块」** 开关。
-5. 在模块的推荐作用域列表中，系统会自动勾选 **`SkyLeap` (`com.dena.skyleap`)**；如未自动勾选，请手动搜索并勾选。
-6. 无需重启手机（LSPosed 支持动态生效），但若 SkyLeap 正在后台运行，请先在手机后台强行停止 SkyLeap（或者执行 `adb shell am force-stop com.dena.skyleap`）。
+5. 在模块的推荐作用域列表中，系统会自动勾选 **`SkyLeap` (`com.dena.skyleap` 与 `com.dena.skyleap2`)**；如未自动勾选，请手动勾选您所使用的 SkyLeap 版本。
+6. 无需重启手机（LSPosed 支持动态生效），但若 SkyLeap 正在后台运行，请先在手机后台强行停止 SkyLeap（或者执行 `adb shell am force-stop com.dena.skyleap` / `adb shell am force-stop com.dena.skyleap2`）。
 
 ---
 
@@ -97,16 +97,16 @@ adb logcat -c ; adb logcat -s GBF-ACC
 I GBF-ACC : ==================================================
 I GBF-ACC : [GBF-ACC] Xposed Module initialized successfully!
 I GBF-ACC : [GBF-ACC] Framework name : LSPosed
-I GBF-ACC : [GBF-ACC] Framework ver  : 1.9.x (...)
-I GBF-ACC : [GBF-ACC] API Version    : 102
+I GBF-ACC : [GBF-ACC] Framework ver  : 1.9.2 (7280)
+I GBF-ACC : [GBF-ACC] API Version    : 100
 I GBF-ACC : [GBF-ACC] Process name   : com.dena.skyleap
 I GBF-ACC : ==================================================
-I GBF-ACC : [GBF-ACC] Target package loaded: com.dena.skyleap in process: com.dena.skyleap (isFirstPackage=true)
 I GBF-ACC : ==================================================
-I GBF-ACC : [GBF-ACC] SkyLeap package ready / loaded!
+I GBF-ACC : [GBF-ACC] SkyLeap package loaded!
 I GBF-ACC : [GBF-ACC] Target Package : com.dena.skyleap
 I GBF-ACC : [GBF-ACC] Current Process: com.dena.skyleap
 I GBF-ACC : [GBF-ACC] ClassLoader    : dalvik.system.PathClassLoader[...]
+I GBF-ACC : [GBF-ACC] First Package  : true
 I GBF-ACC : [GBF-ACC] Injection verification: SUCCESS (LSPosed -> GBF-ACC -> SkyLeap)
 I GBF-ACC : ==================================================
 ```
