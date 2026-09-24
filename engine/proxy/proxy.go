@@ -1472,11 +1472,14 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 				return fb, nil
 			}
 			if err != nil {
+				s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: %v", cleanPath, err))
 				return nil, err
 			}
 			if resp == nil {
+				s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: upstream returned nil response", cleanPath))
 				return nil, errors.New("upstream returned nil response")
 			}
+			s.stats.Log("WARN", fmt.Sprintf("[FETCH-STATUS] %s: %d", cleanPath, resp.StatusCode))
 			return nil, fmt.Errorf("upstream returned %d", resp.StatusCode)
 		}
 		defer resp.Body.Close()
