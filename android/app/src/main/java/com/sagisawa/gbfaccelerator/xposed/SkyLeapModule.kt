@@ -122,9 +122,7 @@ class SkyLeapModule : XposedModule() {
                 builder.addBypassRule("*.granbluefantasy.akamaized.net")
                 builder.addBypassRule("*.granbluefantasy-steam.akamaized.net")
                 builder.addBypassRule("*.gbf.akamaized.net")
-                builder.addBypassRule("*.mbga.jp")
                 builder.addBypassRule("gbf.game.mbga.jp")
-                builder.addBypassRule("*.mobage.jp")
                 builder.setReverseBypassEnabled(true)
                 Log.i(TAG, "[GBF-ACC][Proxy] Reverse Bypass configured: GBF domains -> 127.0.0.1:8124, rest DIRECT")
             } else {
