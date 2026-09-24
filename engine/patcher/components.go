@@ -28,7 +28,6 @@ type ComponentSpec struct {
 	Size        int64  `json:"size"`
 	SHA256      string `json:"sha256"`
 	URL         string `json:"url"`
-	FallbackURL string `json:"fallback_url,omitempty"`
 	Description string `json:"description"`
 }
 
@@ -80,8 +79,7 @@ func GetDefaultComponentSpecs() []ComponentSpec {
 			Size:        12106851,
 			SHA256:      CanonicalLSPatchSHA256,
 			URL:         baseReleaseURL + "lspatch.jar",
-			FallbackURL: "https://github.com/JingMatrix/LSPatch/releases/download/v0.6/lspatch.jar",
-			Description: "LSPatch Portable 核心 (v0.6 391)",
+			Description: "LSPatch Portable 核心 (" + CanonicalLSPatchVersion + ")",
 		},
 		{
 			ID:          "module",
@@ -97,7 +95,6 @@ func GetDefaultComponentSpecs() []ComponentSpec {
 			Size:        1800,
 			SHA256:      CanonicalLicensesSHA256,
 			URL:         baseReleaseURL + "THIRD_PARTY_LICENSES.md",
-			FallbackURL: "https://raw.githubusercontent.com/Sagisawa/GBF-Accelerator/feat/android-client/tools/gbf-acc-patcher/THIRD_PARTY_LICENSES.md",
 			Description: "第三方开源许可协议",
 		},
 	}
@@ -310,22 +307,8 @@ func DownloadComponentsWithSpecs(
 
 			resp, err := client.Do(req)
 			if err != nil {
-				// Try fallback URL if available
-				if spec.FallbackURL != "" && downloadURL != spec.FallbackURL {
-					reqFb, errFb := http.NewRequestWithContext(ctx, http.MethodGet, spec.FallbackURL, nil)
-					if errFb == nil {
-						reqFb.Header.Set("User-Agent", "GBF-Accelerator/"+config.AppVersion)
-						respFb, errDoFb := client.Do(reqFb)
-						if errDoFb == nil {
-							resp = respFb
-							err = nil
-						}
-					}
-				}
-				if err != nil {
-					cleanupTemp()
-					return fmt.Errorf("failed to download %s: %w", spec.FileName, err)
-				}
+				cleanupTemp()
+				return fmt.Errorf("failed to download %s: %w", spec.FileName, err)
 			}
 			defer resp.Body.Close()
 
@@ -409,6 +392,7 @@ func DownloadComponentsWithSpecs(
 			actualSHA := hex.EncodeToString(hasher.Sum(nil))
 			if !strings.EqualFold(actualSHA, spec.SHA256) {
 				cleanupTemp()
+				_ = os.Remove(targetPath)
 				return fmt.Errorf("checksum validation failed for %s: expected %s, got %s", spec.FileName, spec.SHA256, actualSHA)
 			}
 

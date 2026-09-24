@@ -462,7 +462,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 <span>LSPatch Portable 核心</span>
                 <span className="text-[11px] text-slate-500 font-mono">~12.1 MB</span>
               </div>
-              <div className="text-[11px] text-slate-500">v0.6 (391) · 字节级哈希防篡改</div>
+              <div className="text-[11px] text-slate-500">v1.2 (Build 487) · 字节级哈希防篡改</div>
             </div>
             <div className="p-2.5 rounded-lg bg-white/80 border border-slate-200/80 flex flex-col justify-between gap-1">
               <div className="font-semibold text-slate-800 flex items-center justify-between">
@@ -560,7 +560,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             </div>
             <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.lspatch?.path || ''}>
               {envStatus?.lspatch?.verified
-                ? `v0.6 (391) · SHA-256 校验通过`
+                ? `v1.2 (Build 487) · SHA-256 校验通过`
                 : isCorrupted
                 ? 'SHA-256 不匹配 (已损坏)'
                 : '未下载 (首次使用需启用)'}
