@@ -666,7 +666,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              将 Go 原生加速核心直接内嵌至浏览器安装包，安装即用。免 Root、零悬浮球干扰。优先推荐 DeNA SkyLeap，亦支持任意系统 WebView 浏览器或双开分身。
+              将 Go 原生加速核心直接内嵌至浏览器安装包，免 Root、安装即用。优先推荐 DeNA SkyLeap，亦支持任意系统 WebView 浏览器或双开分身。
             </p>
           </div>
 
