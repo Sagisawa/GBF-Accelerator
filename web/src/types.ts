@@ -1,5 +1,6 @@
 export interface RuntimeStatus {
   version: string;
+  platform?: string;
   proxy_running: boolean;
   listen_host: string;
   listen_port: number;
@@ -139,5 +140,174 @@ export interface UpstreamRuntimeStatus {
   threshold_ms: number;
   consecutive_failures: number;
   cooldown_seconds: number;
+}
+
+export interface AndroidComponentItem {
+  id: string;
+  file_name: string;
+  path?: string;
+  installed: boolean;
+  verified: boolean;
+  size: number;
+  expected_sha256: string;
+  actual_sha256?: string;
+  error?: string;
+}
+
+export interface AndroidComponentDownloadProgress {
+  active: boolean;
+  current_file?: string;
+  file_index?: number;
+  total_files?: number;
+  downloaded_bytes?: number;
+  total_bytes?: number;
+  percent: number;
+  speed_bytes_sec?: number;
+  stage: string;
+  error?: string;
+  done?: boolean;
+}
+
+export interface AndroidEnvStatus {
+  ok: boolean;
+  ready: boolean;
+  full_env_ready?: boolean;
+  tools_disk_bytes?: number;
+  backup_dir?: string;
+  components_installed: boolean;
+  components_verified: boolean;
+  components_corrupted: boolean;
+  components_error?: string;
+  tools_dir: string;
+  components?: AndroidComponentItem[];
+  download?: AndroidComponentDownloadProgress;
+  java: {
+    found: boolean;
+    path: string;
+    version: string;
+    error: string;
+  };
+  lspatch: {
+    found: boolean;
+    path: string;
+    version: string;
+    sha256: string;
+    expected_sha256: string;
+    verified: boolean;
+    error: string;
+  };
+  module: {
+    found: boolean;
+    path: string;
+    verified: boolean;
+    error: string;
+  };
+  adb?: {
+    found: boolean;
+    path: string;
+    version: string;
+    error: string;
+  };
+}
+
+export interface AndroidPackageInspection {
+  ok: boolean;
+  file_path: string;
+  base_input_name: string;
+  package_name: string;
+  version_name: string;
+  is_split: boolean;
+  total_apks: number;
+  is_official_skyleap: boolean;
+  is_system_webview?: boolean;
+  engine_desc?: string;
+  unsupported_reason?: string;
+  suggested_clone_package?: string;
+  error?: string;
+}
+
+export interface AndroidPatchResult {
+  is_split?: boolean;
+  single_apk?: string;
+  split_dir?: string;
+  apks_archive?: string;
+  output_dir?: string;
+  total_apks?: number;
+  total_bytes?: number;
+  package_files?: string[];
+  backup_path?: string;
+  backup_dir?: string;
+  IsSplit?: boolean;
+  SingleApk?: string;
+  SplitDir?: string;
+  ApksArchive?: string;
+  OutputDir?: string;
+  TotalApks?: number;
+  TotalBytes?: number;
+  PackageFiles?: string[];
+  BackupPath?: string;
+  BackupDir?: string;
+}
+
+export interface AndroidPatchProgress {
+  ok: boolean;
+  running: boolean;
+  stage: number;
+  stage_text: string;
+  progress: number;
+  logs: string[];
+  error: string;
+  done: boolean;
+  backup_dir?: string;
+  result?: AndroidPatchResult | null;
+}
+
+export interface AdbDevice {
+  serial: string;
+  state: string;
+  model: string;
+  product: string;
+}
+
+export interface AdbDevicesResponse {
+  ok: boolean;
+  adb_found: boolean;
+  adb_path?: string;
+  devices: AdbDevice[];
+  error?: string;
+}
+
+export interface AdbProbeAppResponse {
+  ok: boolean;
+  installed: boolean;
+  package_name: string;
+  version_name?: string;
+  is_split?: boolean;
+  total_apks?: number;
+  remote_paths?: string[];
+  error?: string;
+}
+
+export interface AdbInstallResponse {
+  ok: boolean;
+  message?: string;
+  signature_mismatch?: boolean;
+  details?: string;
+  error?: string;
+}
+
+export interface DeviceBrowserItem {
+  package_name: string;
+  label: string;
+  is_installed: boolean;
+  is_skyleap: boolean;
+  is_system_webview?: boolean;
+  engine_desc?: string;
+}
+
+export interface AdbListBrowsersResponse {
+  ok: boolean;
+  browsers: DeviceBrowserItem[];
+  error?: string;
 }
 

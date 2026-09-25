@@ -1,0 +1,4 @@
+<resources>
+    <string name="xposed_module_name">GBF-Accelerator Module</string>
+    <string name="xposed_description">GBF-Accelerator 浏览器分流与逆向 Bypass Xposed 模块</string>
+</resources>

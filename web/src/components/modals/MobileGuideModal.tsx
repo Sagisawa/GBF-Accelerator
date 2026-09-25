@@ -307,6 +307,12 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
                 <div className="font-bold text-slate-800">【常见问题】</div>
                 <div className="space-y-2 text-slate-600 text-[11.5px]">
                   <div>
+                    <strong className="text-slate-700">• Android 免 Wi-Fi / 免电脑独立使用（强烈推荐）：</strong><br />
+                    <span className="text-slate-600 leading-relaxed block mt-0.5">
+                      Android 用户推荐使用顶部导航栏的【Android 浏览器 Patch】工具，为标准系统 WebView 浏览器（优先推荐 SkyLeap）一键注入全内置加速核心。安装后无需连接局域网 Wi-Fi 或电脑，随时随地享受全速加速与静态缓存。
+                    </span>
+                  </div>
+                  <div>
                     <strong className="text-slate-700">• 游玩网址与客户端说明：</strong><br />
                     建议使用手机浏览器（Safari / Chrome）直接访问：<br />
                     <a href="https://game.granbluefantasy.jp" target="_blank" rel="noreferrer" className="text-sky-600 underline">https://game.granbluefantasy.jp</a><br />

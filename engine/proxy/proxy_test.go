@@ -172,6 +172,24 @@ func TestProxyRoutingRules(t *testing.T) {
 	if !isGBFAkamaiHost("prd-game-a1-granbluefantasy-steam.akamaized.net") {
 		t.Error("steam Akamai host must be recognized as GBF Akamai host")
 	}
+	if !isGBFAkamaiHost("prd-game-a-gbf.akamaized.net") {
+		t.Error("Android SkyLeap Akamai host prd-game-a-gbf.akamaized.net must be recognized as GBF Akamai host")
+	}
+	if !isGBFAkamaiHost("prd-game-a-gbf.akamaized.net:443") {
+		t.Error("Android SkyLeap Akamai host with port 443 must be recognized as GBF Akamai host")
+	}
+	if !isGBFAkamaiHost("prd-game-a1-gbf.akamaized.net") {
+		t.Error("Android SkyLeap Akamai shard prd-game-a1-gbf.akamaized.net must be recognized as GBF Akamai host")
+	}
+	if ns, isGBF := NormalizeAssetNamespace("prd-game-a-gbf.akamaized.net:443"); !isGBF || ns != "gbf" {
+		t.Errorf("NormalizeAssetNamespace for Android CDN expected ('gbf', true), got (%q, %v)", ns, isGBF)
+	}
+	if !isGBFDomain("prd-game-a-gbf.akamaized.net") {
+		t.Error("prd-game-a-gbf.akamaized.net must be recognized as GBF domain")
+	}
+	if !isStaticTarget("prd-game-a-gbf.akamaized.net", "/assets_en/img/sp/ui/icon.png") {
+		t.Error("asset on prd-game-a-gbf.akamaized.net must be recognized as static target")
+	}
 	if isGBFAkamaiHost("unrelated-tenant.akamaized.net") {
 		t.Error("unrelated Akamai tenants must NOT be recognized as GBF Akamai host")
 	}
@@ -762,4 +780,114 @@ func TestDynamicAPI_ClientContextCancellation(t *testing.T) {
 		t.Fatal("timed out waiting for upstream handler to observe context cancellation")
 	}
 }
+
+func TestAndroidSkyLeapCDN_Matching(t *testing.T) {
+	testHosts := []string{
+		"prd-game-a-gbf.akamaized.net",
+		"prd-game-a-gbf.akamaized.net:443",
+		"prd-game-a1-gbf.akamaized.net",
+		"prd-game-a2-gbf.akamaized.net",
+		"prd-game-a3-gbf.akamaized.net",
+		"prd-game-a4-gbf.akamaized.net",
+		"prd-game-a5-gbf.akamaized.net",
+	}
+
+	for _, host := range testHosts {
+		if !isGBFAkamaiHost(host) {
+			t.Errorf("host %q must be recognized by isGBFAkamaiHost", host)
+		}
+		if !isGBFDomain(host) {
+			t.Errorf("host %q must be recognized by isGBFDomain", host)
+		}
+		ns, isGBF := NormalizeAssetNamespace(host)
+		if !isGBF || ns != "gbf" {
+			t.Errorf("host %q expected NormalizeAssetNamespace ('gbf', true), got (%q, %v)", host, ns, isGBF)
+		}
+	}
+
+	staticPaths := []string{
+		"/assets_en/img/sp/ui/icon.png",
+		"/assets_en/css/common.css",
+		"/assets_en/js/bundle.js",
+		"/sound/se/se_100.ogg",
+		"/assets/font/font.woff2",
+	}
+
+	for _, path := range staticPaths {
+		if !isStaticTarget("prd-game-a-gbf.akamaized.net", path) {
+			t.Errorf("static path %q on prd-game-a-gbf.akamaized.net must be recognized as static target", path)
+		}
+	}
+
+	dynamicPaths := []string{
+		"/rest/user/status",
+		"/quest/index",
+		"/party/deck",
+		"/ob/r",
+	}
+
+	for _, path := range dynamicPaths {
+		if isStaticTarget("prd-game-a-gbf.akamaized.net", path) {
+			t.Errorf("dynamic path %q on prd-game-a-gbf.akamaized.net must NOT be recognized as static target", path)
+		}
+	}
+}
+
+func TestProxyRedirectTransparency(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tmpDir, "config.json"))
+	cfgMgr.Update(func(c *config.Config) {
+		c.DirectMode = true
+		c.VerifyUpstreamTLS = false
+		c.CacheDir = tmpDir
+	})
+
+	certMgr, err := cert.NewManager(filepath.Join(tmpDir, "certs"))
+	if err != nil {
+		t.Fatalf("failed to init cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tmpDir, 16)
+	stats := telemetry.NewStats()
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	activeCfg := cfgMgr.Get()
+	srv.updateClients(&activeCfg)
+
+	// Upstream TLS server that returns 302 Found redirect
+	redirectCount := 0
+	targetHit := false
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			redirectCount++
+			http.Redirect(w, r, "/target", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/target" {
+			targetHit = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("target page"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+
+	req, _ := http.NewRequest(http.MethodGet, "https://"+u.Host+"/redirect", nil)
+	var buf bytes.Buffer
+	srv.handleDynamicAPI(&buf, req, u.Host)
+
+	// Verify that the proxy returned 302 Found directly to the client
+	respStr := buf.String()
+	if !strings.Contains(respStr, "302 Found") && !strings.Contains(respStr, "HTTP/1.1 302") {
+		t.Errorf("expected proxy to return 302 Found directly, got: %s", respStr)
+	}
+	if !strings.Contains(respStr, "Location: /target") && !strings.Contains(respStr, "Location: "+ts.URL+"/target") {
+		t.Errorf("expected proxy to preserve Location header in 302 response, got: %s", respStr)
+	}
+	if targetHit {
+		t.Error("apiClient must NOT auto-follow redirect to /target; it must be returned as-is to the client")
+	}
+}
+
 

@@ -95,6 +95,7 @@ func main() {
 	upstreamProxy := flag.String("upstream-proxy", "", "Upstream proxy URL (e.g. http://127.0.0.1:8080)")
 	configPath := flag.String("config", "config.json", "Path to config.json")
 	cacheDir := flag.String("cache-dir", "", "Path to ACGPower cache root directory")
+	baseDirFlag := flag.String("base-dir", "", "Base directory for writable data (config, certs, logs)")
 	allowLAN := flag.Bool("allow-lan", false, "Allow connections from LAN devices")
 	directMode := flag.Bool("direct-mode", false, "Force direct connection mode")
 	verifyUpstreamTLS := flag.Bool("verify-upstream-tls", false, "Verify upstream TLS certificates")
@@ -102,6 +103,8 @@ func main() {
 	headless := flag.Bool("headless", false, "Alias for -nogui")
 	openBrowser := flag.Bool("open-browser", false, "Automatically open Web console in browser on startup")
 	minimized := flag.Bool("minimized", false, "Start minimized in system tray without opening window")
+	enableRAMCache := flag.Bool("enable-ram-cache", false, "Enable in-memory RAM LRU cache")
+	enablePrefetch := flag.Bool("enable-prefetch", false, "Enable background static asset prefetching")
 
 	flag.Parse()
 
@@ -121,6 +124,13 @@ func main() {
 	}
 
 	baseDir := config.GetBaseDir()
+	if *baseDirFlag != "" {
+		if abs, err := filepath.Abs(*baseDirFlag); err == nil {
+			baseDir = abs
+		} else {
+			baseDir = *baseDirFlag
+		}
+	}
 	actualCfgPath := *configPath
 	if *configPath == "config.json" && baseDir != "." {
 		actualCfgPath = filepath.Join(baseDir, "config.json")
@@ -153,6 +163,12 @@ func main() {
 		}
 		if flagWasSet("verify-upstream-tls") {
 			c.VerifyUpstreamTLS = *verifyUpstreamTLS
+		}
+		if flagWasSet("enable-ram-cache") {
+			c.EnableRAMCache = *enableRAMCache
+		}
+		if flagWasSet("enable-prefetch") {
+			c.EnablePrefetch = *enablePrefetch
 		}
 	})
 

@@ -1,0 +1,508 @@
+package com.sagisawa.gbfaccelerator.core
+
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.File
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.URL
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+
+object CoreManager {
+
+    private const val TAG = "GBF-ACC-Manager"
+    const val PROXY_PORT = 8124
+    const val CONTROL_PORT = 8125
+
+    enum class State {
+        STOPPED,
+        STARTING,
+        RUNNING,
+        CRASHED,
+        STOPPING
+    }
+
+    data class CoreMetrics(
+        val isRunning: Boolean = false,
+        val pid: Int = -1,
+        val uptimeSeconds: Double = 0.0,
+        val ramItems: Int = 0,
+        val ramMb: Double = 0.0,
+        val ramHits: Long = 0,
+        val diskHits: Long = 0,
+        val totalAssets: Long = 0,
+        val totalApis: Long = 0,
+        val reusedConnections: Long = 0,
+        val reuseRatePercent: Double = 0.0,
+        val activeApiCount: Int = 0,
+        val lastError: String = ""
+    )
+
+    private val executor = Executors.newCachedThreadPool()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    @Volatile
+    var currentState: State = State.STOPPED
+        private set
+
+    @Volatile
+    var currentMetrics: CoreMetrics = CoreMetrics()
+        private set
+
+    private var coreProcess: Process? = null
+    private val isStoppingIntentionally = AtomicBoolean(false)
+    private val recentRestarts = AtomicInteger(0)
+    private var lastRestartTimestamp = 0L
+
+    private val logBuffer = CopyOnWriteArrayList<String>()
+    private const val MAX_LOG_LINES = 100
+
+    private val stateListeners = CopyOnWriteArrayList<(State) -> Unit>()
+    private val metricsListeners = CopyOnWriteArrayList<(CoreMetrics) -> Unit>()
+    private val logListeners = CopyOnWriteArrayList<(String) -> Unit>()
+
+    fun addStateListener(listener: (State) -> Unit) {
+        stateListeners.add(listener)
+        mainHandler.post { listener(currentState) }
+    }
+
+    fun removeStateListener(listener: (State) -> Unit) {
+        stateListeners.remove(listener)
+    }
+
+    fun addMetricsListener(listener: (CoreMetrics) -> Unit) {
+        metricsListeners.add(listener)
+        mainHandler.post { listener(currentMetrics) }
+    }
+
+    fun removeMetricsListener(listener: (CoreMetrics) -> Unit) {
+        metricsListeners.remove(listener)
+    }
+
+    fun addLogListener(listener: (String) -> Unit) {
+        logListeners.add(listener)
+    }
+
+    fun removeLogListener(listener: (String) -> Unit) {
+        logListeners.remove(listener)
+    }
+
+    fun getLogs(): List<String> = logBuffer.toList()
+
+    private fun appendLog(line: String) {
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) return
+
+        Log.i(TAG, "[Core] $trimmed")
+        if (logBuffer.size >= MAX_LOG_LINES) {
+            logBuffer.removeAt(0)
+        }
+        logBuffer.add(trimmed)
+        mainHandler.post {
+            for (listener in logListeners) {
+                listener(trimmed)
+            }
+        }
+    }
+
+    private fun setState(state: State) {
+        currentState = state
+        Log.i(TAG, "[State] Changed to $state")
+        mainHandler.post {
+            for (listener in stateListeners) {
+                listener(state)
+            }
+        }
+    }
+
+    fun isPortReachable(port: Int, timeoutMs: Int = 200): Boolean {
+        return try {
+            Socket().use { socket ->
+                socket.connect(InetSocketAddress("127.0.0.1", port), timeoutMs)
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    @Synchronized
+    fun startCore(context: Context) {
+        if (currentState == State.RUNNING || currentState == State.STARTING) {
+            Log.w(TAG, "Core is already running or starting")
+            return
+        }
+
+        setState(State.STARTING)
+        isStoppingIntentionally.set(false)
+
+        executor.execute {
+            val coreBinary = File(context.applicationInfo.nativeLibraryDir, "libgbfcore.so")
+            if (!coreBinary.exists()) {
+                val err = "libgbfcore.so not found in ${context.applicationInfo.nativeLibraryDir}"
+                Log.e(TAG, err)
+                appendLog("[-] $err")
+                setState(State.CRASHED)
+                return@execute
+            }
+
+            val baseDir = context.filesDir
+            val configPath = File(baseDir, "config.json")
+            val cacheDir = File(baseDir, "cache/gbf/https")
+            cacheDir.mkdirs()
+
+            val ramEnabled = AppPreferences.isRamCacheEnabled(context)
+            val prefetchEnabled = AppPreferences.isPrefetchEnabled(context)
+
+            // Ensure config.json reflects persisted user preferences
+            try {
+                val json = if (configPath.exists()) {
+                    JSONObject(configPath.readText())
+                } else {
+                    JSONObject().apply {
+                        put("listen_host", "127.0.0.1")
+                        put("listen_port", PROXY_PORT)
+                        put("control_port", CONTROL_PORT)
+                        put("allow_lan", false)
+                    }
+                }
+                json.put("enable_ram_cache", ramEnabled)
+                json.put("enable_prefetch", prefetchEnabled)
+                configPath.writeText(json.toString(2))
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to initialize/sync config.json: ${e.message}")
+            }
+
+            // Verify if ports 8124/8125 are already occupied by a rogue instance
+            if (isPortReachable(CONTROL_PORT)) {
+                appendLog("[*] Control port $CONTROL_PORT is already responsive, querying status...")
+                val status = queryStatusDirect()
+                if (status != null && status.isRunning) {
+                    appendLog("[+] Existing Go Core instance detected and healthy!")
+                    currentMetrics = status
+                    setState(State.RUNNING)
+                    startStatusPollingLoop()
+                    return@execute
+                }
+            }
+
+            appendLog("[+] Launching Go Core daemon: ${coreBinary.absolutePath}")
+            val cmd = listOf(
+                coreBinary.absolutePath,
+                "-nogui",
+                "-base-dir", baseDir.absolutePath,
+                "-proxy-port", PROXY_PORT.toString(),
+                "-control-port", CONTROL_PORT.toString(),
+                "-config", configPath.absolutePath,
+                "-cache-dir", cacheDir.absolutePath,
+                "-enable-ram-cache=$ramEnabled",
+                "-enable-prefetch=$prefetchEnabled"
+            )
+
+            try {
+                val pb = ProcessBuilder(cmd)
+                pb.directory(baseDir)
+                pb.environment()["HOME"] = baseDir.absolutePath
+                pb.redirectErrorStream(true)
+
+                val proc = pb.start()
+                coreProcess = proc
+
+                // Drain output
+                executor.execute {
+                    runCatching {
+                        BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
+                            var line: String?
+                            while (reader.readLine().also { line = it } != null) {
+                                line?.let { appendLog(it) }
+                            }
+                        }
+                    }
+                }
+
+                // Process exit monitor
+                executor.execute {
+                    val exitCode = runCatching { proc.waitFor() }.getOrDefault(-1)
+                    coreProcess = null
+                    appendLog("[*] Go Core process exited with code $exitCode")
+
+                    if (!isStoppingIntentionally.get()) {
+                        Log.w(TAG, "Go Core crashed unexpectedly (exit $exitCode)")
+                        setState(State.CRASHED)
+                        handleUnexpectedExit(context)
+                    } else {
+                        setState(State.STOPPED)
+                    }
+                }
+
+                // Wait for Core to start listening on 8125 / 8124
+                var ready = false
+                val startWait = System.currentTimeMillis()
+                while (System.currentTimeMillis() - startWait < 5000) {
+                    if (isPortReachable(PROXY_PORT, 200) && isPortReachable(CONTROL_PORT, 200)) {
+                        val status = queryStatusDirect()
+                        if (status != null) {
+                            currentMetrics = status
+                        }
+                        ready = true
+                        break
+                    }
+                    Thread.sleep(150)
+                }
+
+                if (ready) {
+                    appendLog("[+] Go Core successfully listening on 127.0.0.1:$PROXY_PORT / $CONTROL_PORT")
+                    setState(State.RUNNING)
+                    startStatusPollingLoop()
+                } else {
+                    val err = "Go Core did not become ready within 5s"
+                    appendLog("[-] $err")
+                    stopCore()
+                    setState(State.CRASHED)
+                }
+            } catch (e: Throwable) {
+                val err = "Failed to spawn Go Core: ${e.message}"
+                Log.e(TAG, err, e)
+                appendLog("[-] $err")
+                setState(State.CRASHED)
+            }
+        }
+    }
+
+    private fun handleUnexpectedExit(context: Context) {
+        val now = System.currentTimeMillis()
+        if (now - lastRestartTimestamp > 60000) {
+            recentRestarts.set(0)
+        }
+        lastRestartTimestamp = now
+
+        val restarts = recentRestarts.incrementAndGet()
+        if (restarts <= 3) {
+            appendLog("[!] Unexpected crash detected. Attempting auto-recovery ($restarts/3) in 1s...")
+            mainHandler.postDelayed({
+                startCore(context)
+            }, 1000)
+        } else {
+            appendLog("[-] Max auto-recovery restarts reached (3). Halting to prevent spin loop.")
+            setState(State.CRASHED)
+        }
+    }
+
+    @Synchronized
+    fun stopCore() {
+        if (currentState == State.STOPPED) return
+
+        setState(State.STOPPING)
+        isStoppingIntentionally.set(true)
+
+        executor.execute {
+            appendLog("[*] Stopping Go Core daemon...")
+
+            // 1. Try graceful shutdown via HTTP signal
+            runCatching {
+                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/app/quit")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 500
+                conn.readTimeout = 500
+                conn.requestMethod = "POST"
+                conn.responseCode
+                conn.disconnect()
+            }
+
+            // 2. Wait up to 1.5s for process to exit
+            val proc = coreProcess
+            if (proc != null) {
+                var exited = false
+                val start = System.currentTimeMillis()
+                while (System.currentTimeMillis() - start < 1500) {
+                    if (!proc.isAlive) {
+                        exited = true
+                        break
+                    }
+                    Thread.sleep(100)
+                }
+
+                if (!exited) {
+                    appendLog("[*] Force terminating Go Core process...")
+                    runCatching { proc.destroyForcibly() }
+                }
+            }
+
+            coreProcess = null
+            appendLog("[+] Go Core stopped. Ports 8124/8125 released.")
+            setState(State.STOPPED)
+        }
+    }
+
+    private fun startStatusPollingLoop() {
+        executor.execute {
+            while (currentState == State.RUNNING) {
+                val status = queryStatusDirect()
+                if (status != null) {
+                    currentMetrics = status
+                    mainHandler.post {
+                        for (listener in metricsListeners) {
+                            listener(status)
+                        }
+                    }
+                }
+                Thread.sleep(1500)
+            }
+        }
+    }
+
+    private fun queryStatusDirect(): CoreMetrics? {
+        return try {
+            val url = URL("http://127.0.0.1:$CONTROL_PORT/api/status")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.connectTimeout = 800
+            conn.readTimeout = 800
+            conn.requestMethod = "GET"
+
+            if (conn.responseCode == 200) {
+                val resp = conn.inputStream.bufferedReader().use { it.readText() }
+                conn.disconnect()
+
+                val json = JSONObject(resp)
+                val cacheObj = json.optJSONObject("cache")
+                val reqObj = json.optJSONObject("requests")
+                val telemObj = json.optJSONObject("telemetry")
+
+                CoreMetrics(
+                    isRunning = json.optBoolean("proxy_running", false),
+                    pid = json.optInt("pid", -1),
+                    uptimeSeconds = json.optDouble("uptime_seconds", 0.0),
+                    ramItems = cacheObj?.optInt("ram_items", 0) ?: 0,
+                    ramMb = cacheObj?.optDouble("ram_mb", 0.0) ?: 0.0,
+                    ramHits = reqObj?.optLong("ram_hits", 0L) ?: 0L,
+                    diskHits = reqObj?.optLong("disk_hits", 0L) ?: 0L,
+                    totalAssets = reqObj?.optLong("total_assets", 0L) ?: 0L,
+                    totalApis = reqObj?.optLong("total_apis", 0L) ?: 0L,
+                    reusedConnections = telemObj?.optLong("reused_connections", 0L) ?: 0L,
+                    reuseRatePercent = telemObj?.optDouble("reuse_rate_percent", 0.0) ?: 0.0,
+                    activeApiCount = json.optInt("active_api_count", 0),
+                    lastError = json.optString("last_error", "")
+                )
+            } else {
+                conn.disconnect()
+                null
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "queryStatusDirect exception: ${e.message}")
+            null
+        }
+    }
+
+    fun applyRuntimeConfig(patch: Map<String, Any>, callback: ((Boolean, String?) -> Unit)? = null) {
+        executor.execute {
+            try {
+                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/config/apply")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 1500
+                conn.readTimeout = 1500
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("Origin", "http://127.0.0.1:$CONTROL_PORT")
+
+                val json = JSONObject(patch)
+                conn.outputStream.use { os ->
+                    os.write(json.toString().toByteArray(Charsets.UTF_8))
+                }
+
+                val code = conn.responseCode
+                val body = if (code in 200..299) {
+                    conn.inputStream.bufferedReader().use { it.readText() }
+                } else {
+                    conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                }
+                conn.disconnect()
+
+                val success = code in 200..299
+                if (success) {
+                    appendLog("[+] 核心配置热更新生效: $patch")
+                } else {
+                    appendLog("[-] 核心配置热更新失败 ($code): $body")
+                }
+                mainHandler.post {
+                    callback?.invoke(success, body)
+                }
+            } catch (e: Throwable) {
+                val err = "热更新配置网络异常: ${e.message}"
+                Log.w(TAG, err, e)
+                appendLog("[-] $err")
+                mainHandler.post {
+                    callback?.invoke(false, e.message)
+                }
+            }
+        }
+    }
+
+    fun clearCache(callback: ((Boolean, Int, Long) -> Unit)? = null) {
+        executor.execute {
+            try {
+                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/cache/clear")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 10000
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Origin", "http://127.0.0.1:$CONTROL_PORT")
+
+                val code = conn.responseCode
+                if (code == 200) {
+                    val resp = conn.inputStream.bufferedReader().use { it.readText() }
+                    conn.disconnect()
+                    val json = JSONObject(resp)
+                    val deleted = json.optInt("disk_files_deleted", 0)
+                    val freed = json.optLong("disk_bytes_freed", 0L)
+                    appendLog("[+] 静态缓存清理完成: 删除 $deleted 个文件, 释放 ${String.format(java.util.Locale.US, "%.2f", freed.toDouble() / (1024 * 1024))} MB")
+                    mainHandler.post { callback?.invoke(true, deleted, freed) }
+                } else {
+                    conn.disconnect()
+                    appendLog("[-] 静态缓存清理失败 (HTTP $code)")
+                    mainHandler.post { callback?.invoke(false, 0, 0L) }
+                }
+            } catch (e: Throwable) {
+                appendLog("[-] 静态缓存清理异常: ${e.message}")
+                mainHandler.post { callback?.invoke(false, 0, 0L) }
+            }
+        }
+    }
+
+    fun slimCache(callback: ((Boolean, String) -> Unit)? = null) {
+        executor.execute {
+            try {
+                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/cache/slim?keep=8")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 5000
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Origin", "http://127.0.0.1:$CONTROL_PORT")
+
+                val code = conn.responseCode
+                if (code == 200) {
+                    conn.disconnect()
+                    appendLog("[+] 智能缓存瘦身任务已在后台启动 (保留最新 8 个版本)")
+                    mainHandler.post { callback?.invoke(true, "瘦身任务已在后台启动") }
+                } else {
+                    val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
+                    conn.disconnect()
+                    appendLog("[-] 启动缓存瘦身失败: $err")
+                    mainHandler.post { callback?.invoke(false, err) }
+                }
+            } catch (e: Throwable) {
+                appendLog("[-] 缓存瘦身网络异常: ${e.message}")
+                mainHandler.post { callback?.invoke(false, e.message ?: "网络异常") }
+            }
+        }
+    }
+}

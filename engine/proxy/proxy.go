@@ -146,8 +146,17 @@ func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
 		assetTr.Proxy, assetTr.DialContext = nil, dialFunc
 	}
 	return &upstreamClients{
-		api: &http.Client{Transport: apiTr, Timeout: 45 * time.Second},
-		asset: &http.Client{Transport: assetTr, Timeout: 45 * time.Second},
+		api: &http.Client{
+			Transport: apiTr,
+			Timeout:   45 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		asset: &http.Client{
+			Transport: assetTr,
+			Timeout:   45 * time.Second,
+		},
 		proxy: normalized,
 	}
 }
@@ -1480,11 +1489,14 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 				return fb, nil
 			}
 			if err != nil {
+				s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: %v", cleanPath, err))
 				return nil, err
 			}
 			if resp == nil {
+				s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: upstream returned nil response", cleanPath))
 				return nil, errors.New("upstream returned nil response")
 			}
+			s.stats.Log("WARN", fmt.Sprintf("[FETCH-STATUS] %s: %d", cleanPath, resp.StatusCode))
 			return nil, fmt.Errorf("upstream returned %d", resp.StatusCode)
 		}
 		defer resp.Body.Close()
@@ -2029,7 +2041,13 @@ func isGBFAkamaiNormalized(h string) bool {
 		"prd-game-a2-granbluefantasy-steam.akamaized.net",
 		"prd-game-a3-granbluefantasy-steam.akamaized.net",
 		"prd-game-a4-granbluefantasy-steam.akamaized.net",
-		"prd-game-a5-granbluefantasy-steam.akamaized.net":
+		"prd-game-a5-granbluefantasy-steam.akamaized.net",
+		"prd-game-a-gbf.akamaized.net",
+		"prd-game-a1-gbf.akamaized.net",
+		"prd-game-a2-gbf.akamaized.net",
+		"prd-game-a3-gbf.akamaized.net",
+		"prd-game-a4-gbf.akamaized.net",
+		"prd-game-a5-gbf.akamaized.net":
 		return true
 	}
 	if isDomainOrSubdomainNormalized(h, "granbluefantasy.akamaized.net") ||
@@ -2037,7 +2055,7 @@ func isGBFAkamaiNormalized(h string) bool {
 		return true
 	}
 	// Strict prefix matching for future Akamai CDN shards
-	if strings.HasPrefix(h, "prd-game-a") && strings.HasSuffix(h, "-granbluefantasy.akamaized.net") {
+	if strings.HasPrefix(h, "prd-game-a") && (strings.HasSuffix(h, "-granbluefantasy.akamaized.net") || strings.HasSuffix(h, "-gbf.akamaized.net")) {
 		return true
 	}
 	return false

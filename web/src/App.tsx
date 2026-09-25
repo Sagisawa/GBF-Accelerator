@@ -36,6 +36,7 @@ import { CaCertModal } from './components/modals/CaCertModal'
 import { UpdateModal } from './components/modals/UpdateModal'
 import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
 import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal'
+import { AndroidPatchPanel } from './components/AndroidPatchPanel'
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { isNewerVersion } from './utils/version'
@@ -47,6 +48,7 @@ import {
   Zap,
   Power,
   Network,
+  Smartphone,
 } from 'lucide-react'
 
 const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ baseSeconds, running }) => {
@@ -226,6 +228,7 @@ export const App: React.FC = () => {
   const [isQuitModalOpen, setIsQuitModalOpen] = useState<boolean>(false)
   const [quitting, setQuitting] = useState<boolean>(false)
   const [isTerminated, setIsTerminated] = useState<boolean>(false)
+  const [activeTab, setActiveTab] = useState<'core' | 'android'>('core')
 
   // First-launch Root CA install guide (restores the v1.6 behavior): when the
   // runtime status first authoritatively reports the CA as not installed, auto
@@ -1149,9 +1152,41 @@ export const App: React.FC = () => {
         </div>
       </header>
 
+      {/* Navigation Tabs */}
+      <div className="bg-white border-b border-slate-200/90 px-4 sm:px-6 shrink-0 shadow-2xs">
+        <div className="max-w-5xl mx-auto flex items-center gap-1.5 pt-1.5">
+          <button
+            type="button"
+            onClick={() => setActiveTab('core')}
+            className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
+              activeTab === 'core'
+                ? 'border-sky-600 text-sky-700 bg-sky-50/60 rounded-t-lg'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
+            }`}
+          >
+            <Zap className="w-4 h-4" />
+            <span>核心加速与控制</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('android')}
+            className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
+              activeTab === 'android'
+                ? 'border-indigo-600 text-indigo-700 bg-indigo-50/60 rounded-t-lg'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
+            }`}
+          >
+            <Smartphone className="w-4 h-4" />
+            <span>Android 浏览器 Patch</span>
+          </button>
+        </div>
+      </div>
+
       {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
       <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
+        {activeTab === 'core' ? (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
           {/* Card 1: Local Cache & Storage */}
           <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
             <div className="space-y-3.5">
@@ -1982,8 +2017,11 @@ export const App: React.FC = () => {
             </div>
           </div>
         </div>
-
-      </main>
+      </>
+    ) : (
+      <AndroidPatchPanel showToast={showToast} />
+    )}
+  </main>
 
       {/* 3. Fixed Bottom Action Dock (Footer) */}
       <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-4 sm:px-6 py-3 sm:py-3.5 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">

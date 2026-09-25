@@ -1,4 +1,20 @@
-import { RuntimeStatus, TelemetrySummary, CacheStats, PrefetchStatus, LogItem, UpdateInfo, UpdateDownloadStatus } from './types'
+import {
+  RuntimeStatus,
+  TelemetrySummary,
+  CacheStats,
+  PrefetchStatus,
+  LogItem,
+  UpdateInfo,
+  UpdateDownloadStatus,
+  AndroidEnvStatus,
+  AndroidComponentDownloadProgress,
+  AndroidPackageInspection,
+  AndroidPatchProgress,
+  AdbDevicesResponse,
+  AdbProbeAppResponse,
+  AdbInstallResponse,
+  AdbListBrowsersResponse,
+} from './types'
 
 const BASE = ''
 
@@ -334,4 +350,277 @@ export async function quitApp(): Promise<{ ok: boolean; message?: string }> {
   }
   return res.json()
 }
+
+export async function fetchAndroidEnv(): Promise<AndroidEnvStatus> {
+  const res = await fetch(`${BASE}/api/android/env`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function inspectAndroidPackage(filePath: string): Promise<AndroidPackageInspection> {
+  const res = await fetch(`${BASE}/api/android/inspect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ file_path: filePath }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function uploadAndroidPackage(
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<AndroidPackageInspection> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `${BASE}/api/android/upload`)
+
+    if (xhr.upload && onProgress) {
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 100)
+          onProgress(percent)
+        }
+      }
+    }
+
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText || '{}')
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data)
+        } else {
+          reject(new Error(data.error || data.message || `HTTP ${xhr.status}`))
+        }
+      } catch (err: any) {
+        reject(new Error(`Failed to parse response: ${err.message}`))
+      }
+    }
+
+    xhr.onerror = () => {
+      reject(new Error('Network error during file upload'))
+    }
+
+    const formData = new FormData()
+    formData.append('file', file)
+    xhr.send(formData)
+  })
+}
+
+export async function startAndroidPatch(
+  filePath: string,
+  outputDir?: string,
+  autoBackup?: boolean
+): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/android/patch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      file_path: filePath,
+      output_dir: outputDir || '',
+      auto_backup: autoBackup !== undefined ? autoBackup : true,
+    }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function fetchAndroidPatchStatus(): Promise<AndroidPatchProgress> {
+  const res = await fetch(`${BASE}/api/android/patch/status`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function openPatchOutputFolder(path?: string): Promise<{ ok: boolean; path?: string }> {
+  const res = await fetch(`${BASE}/api/android/patch/open-output`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: path || '' }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function openPatchBackupFolder(): Promise<{ ok: boolean; path?: string }> {
+  const res = await fetch(`${BASE}/api/android/patch/open-backup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function installAllAndroidEnv(customUrls?: Record<string, string>): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/android/env/install-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ custom_urls: customUrls }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function uninstallAllAndroidEnv(): Promise<{ ok: boolean; message?: string; freed_files?: number; freed_bytes?: number }> {
+  const res = await fetch(`${BASE}/api/android/env/uninstall-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function downloadAndroidComponents(force?: boolean, customUrls?: Record<string, string>): Promise<{ ok: boolean; message?: string; already_installed?: boolean }> {
+  const res = await fetch(`${BASE}/api/android/components/download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force: !!force, custom_urls: customUrls }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function fetchAndroidComponentDownloadStatus(): Promise<{ ok: boolean; active: boolean; progress: AndroidComponentDownloadProgress }> {
+  const res = await fetch(`${BASE}/api/android/components/download-status`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function cancelAndroidComponentDownload(): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/android/components/download-cancel`, {
+    method: 'POST',
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function fetchAdbDevices(): Promise<AdbDevicesResponse> {
+  const res = await fetch(`${BASE}/api/android/adb/devices`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function fetchDeviceBrowsers(serial: string): Promise<AdbListBrowsersResponse> {
+  const res = await fetch(`${BASE}/api/android/adb/list-browsers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function probeDeviceApp(serial: string, packageName = 'com.dena.skyleap'): Promise<AdbProbeAppResponse> {
+  const res = await fetch(`${BASE}/api/android/adb/probe-app`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial, package_name: packageName }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function extractDeviceApp(serial: string, packageName = 'com.dena.skyleap'): Promise<AndroidPackageInspection> {
+  const res = await fetch(`${BASE}/api/android/adb/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial, package_name: packageName }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function installToDevice(
+  serial: string,
+  packageName = 'com.dena.skyleap',
+  forceUninstall = false
+): Promise<AdbInstallResponse> {
+  const res = await fetch(`${BASE}/api/android/adb/install`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial, package_name: packageName, force_uninstall: forceUninstall }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 409 && data.signature_mismatch) {
+    return data
+  }
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function downloadAdbPlatformTools(): Promise<{ ok: boolean; message?: string; adb_path?: string }> {
+  const res = await fetch(`${BASE}/api/android/adb/download-tools`, {
+    method: 'POST',
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function installHostAppToDevice(
+  serial: string
+): Promise<{ ok: boolean; message?: string; output?: string; error?: string }> {
+  const res = await fetch(`${BASE}/api/android/adb/install-host-app`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+
+
+
 

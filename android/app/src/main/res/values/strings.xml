@@ -1,0 +1,59 @@
+<resources>
+    <string name="app_name">GBF-Accelerator</string>
+    <string name="app_subtitle">Go Core 本地静态缓存与透明代理</string>
+
+    <!-- Core & Proxy Status -->
+    <string name="status_daemon_title">Go Core 守护进程</string>
+    <string name="status_proxy_title">GBF 代理状态</string>
+    <string name="proxy_normal">NORMAL (活跃中)</string>
+    <string name="proxy_unavailable">UNAVAILABLE (Fail-Closed)</string>
+    <string name="proxy_crashed">CRASHED (异常重试中)</string>
+    <string name="proxy_detail_normal">127.0.0.1:8124 正常监听 | 6 条 GBF 规则代理，其余 DIRECT</string>
+    <string name="proxy_detail_unavailable">127.0.0.1:8124 离线 | Fail-Closed 机制生效，GBF 流量安全拦截防止直连泄漏</string>
+    <string name="ports_summary">数据面: 127.0.0.1:8124 | 控制面: 127.0.0.1:8125</string>
+
+    <!-- Actions -->
+    <string name="btn_start_proxy">启动代理核心</string>
+    <string name="btn_stop_proxy">停止代理核心</string>
+    <string name="btn_launch_browser">启动浏览器</string>
+
+    <!-- Browser Section -->
+    <string name="section_browser_title">目标浏览器管理</string>
+    <string name="browser_status_installed">已安装 (%1$s)</string>
+    <string name="browser_status_not_installed">未检测到安装</string>
+    <string name="browser_patched_hint">提示：请确保已安装的是通过外部 LSPatch 处理后的浏览器版本。未处理的原版无法自动走加速核心。</string>
+
+    <!-- Patch Engine Guidance -->
+    <string name="section_patch_title">浏览器 Patch 状态与指引</string>
+    <string name="patch_pipeline_standby">PC 内置嵌入打包</string>
+    <string name="patch_pipeline_notice">请使用 PC 端 GBF-Accelerator 内置工具完成模块嵌入与签名，无需额外寻找第三方工具。</string>
+    <string name="patch_pipeline_steps">简易操作流程：\n1. 在电脑端启动 GBF-Accelerator，打开 Web 控制台进入【Android Patch】页面；\n2. 选取官方 SkyLeap APK 文件，点击一键自动注入 Xposed 模块并完成签名打包；\n3. 将生成的新安装包传输至手机安装，点击上方【启动 SkyLeap】或直接在手机桌面点击 SkyLeap 即可无感即玩！</string>
+
+    <!-- Cache Management -->
+    <string name="section_cache_mgmt_title">静态缓存管理与维护</string>
+    <string name="btn_open_cache_dir">查看缓存目录</string>
+    <string name="btn_clear_cache">清空全部缓存</string>
+    <string name="btn_slim_cache">智能缓存瘦身</string>
+    <string name="cache_dir_dialog_title">静态缓存目录信息</string>
+    <string name="cache_dir_summary">本地路径:\n%1$s\n\n文件统计:\n共 %2$d 个素材文件 | 占用 %3$s</string>
+    <string name="cache_copy_path">复制完整路径</string>
+    <string name="cache_export_download">导出至 Download 目录</string>
+    <string name="cache_clear_dialog_title">确认清空全部静态缓存？</string>
+    <string name="cache_clear_dialog_msg">将彻底删除本地存储的所有 GBF 静态素材（图片、音频、JS等）。\n下次进入游戏将重新从 CDN 透明下载并重建缓存。</string>
+    <string name="cache_slim_dialog_title">确认执行缓存智能瘦身？</string>
+    <string name="cache_slim_dialog_msg">核心将自动分析静态素材版本链，修剪失效的历史旧版本文件并释放存储空间，保留最新版本素材。</string>
+    <string name="dialog_confirm">确认执行</string>
+    <string name="dialog_cancel">取消</string>
+
+    <!-- Performance & Cache Preferences -->
+    <string name="section_pref_title">性能与缓存偏好设置</string>
+    <string name="pref_ram_cache_title">RAM 内存缓存</string>
+    <string name="pref_ram_cache_desc">将高频热点静态素材缓存至应用内存中。移动设备内存资源有限，默认关闭以减少 RAM 占用并依靠本地磁盘缓存加速。</string>
+    <string name="pref_prefetch_title">静态素材后台预加载</string>
+    <string name="pref_prefetch_desc">在后台自动解析页面静态依赖并平滑预拉取。在移动网络或部分机型上可能带来额外开销，默认关闭以确保流畅稳定。</string>
+
+    <!-- Metrics & Logs -->
+    <string name="section_metrics_title">运行指标与缓存监控</string>
+    <string name="section_logs_title">核心运行日志</string>
+    <string name="logs_clear">清空</string>
+</resources>

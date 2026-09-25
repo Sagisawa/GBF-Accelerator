@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"gbf-proxy/config"
 	"gbf-proxy/desktop"
 	"gbf-proxy/firewall"
+	"gbf-proxy/patcher"
 	"gbf-proxy/proxy"
 	"gbf-proxy/res"
 	"gbf-proxy/startup"
@@ -77,6 +79,16 @@ type ControlServer struct {
 	// Broadcasters for SSE custom events
 	sseMu      sync.RWMutex
 	sseClients []chan []byte
+
+	// Android Patch state
+	androidPatchMu     sync.Mutex
+	androidPatchStatus AndroidPatchStatus
+
+	// Android Component Download state
+	componentDlMu       sync.Mutex
+	componentDlActive   bool
+	componentDlProgress patcher.DownloadProgress
+	componentDlCancelFn context.CancelFunc
 
 	// Side-effect hooks for system proxy and startup registration (mockable in tests)
 	enablePACProxyFn   func(string) error
@@ -524,6 +536,101 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleSSE(w, req)
 			return
 		}
+	case "/api/android/env":
+		if req.Method == http.MethodGet {
+			c.handleAndroidEnv(w, req)
+			return
+		}
+	case "/api/android/inspect":
+		if req.Method == http.MethodPost {
+			c.handleAndroidInspect(w, req)
+			return
+		}
+	case "/api/android/upload":
+		if req.Method == http.MethodPost {
+			c.handleAndroidUpload(w, req)
+			return
+		}
+	case "/api/android/patch":
+		if req.Method == http.MethodPost {
+			c.handleAndroidPatch(w, req)
+			return
+		}
+	case "/api/android/patch/status":
+		if req.Method == http.MethodGet {
+			c.handleAndroidPatchStatus(w, req)
+			return
+		}
+	case "/api/android/patch/open-output":
+		if req.Method == http.MethodPost {
+			c.handleAndroidPatchOpenOutput(w, req)
+			return
+		}
+	case "/api/android/patch/open-backup":
+		if req.Method == http.MethodPost || req.Method == http.MethodGet {
+			c.handleAndroidPatchOpenBackup(w, req)
+			return
+		}
+	case "/api/android/env/install-all":
+		if req.Method == http.MethodPost {
+			c.handleAndroidEnvInstallAll(w, req)
+			return
+		}
+	case "/api/android/env/uninstall-all":
+		if req.Method == http.MethodPost {
+			c.handleAndroidEnvUninstallAll(w, req)
+			return
+		}
+	case "/api/android/components/download":
+		if req.Method == http.MethodPost {
+			c.handleAndroidComponentsDownload(w, req)
+			return
+		}
+	case "/api/android/components/download-status":
+		if req.Method == http.MethodGet {
+			c.handleAndroidComponentsDownloadStatus(w, req)
+			return
+		}
+	case "/api/android/components/download-cancel":
+		if req.Method == http.MethodPost {
+			c.handleAndroidComponentsDownloadCancel(w, req)
+			return
+		}
+	case "/api/android/adb/devices":
+		if req.Method == http.MethodGet {
+			c.handleAndroidAdbDevices(w, req)
+			return
+		}
+	case "/api/android/adb/list-browsers":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbListBrowsers(w, req)
+			return
+		}
+	case "/api/android/adb/probe-app":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbProbeApp(w, req)
+			return
+		}
+	case "/api/android/adb/extract":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbExtract(w, req)
+			return
+		}
+	case "/api/android/adb/install":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbInstall(w, req)
+			return
+		}
+	case "/api/android/adb/install-host-app":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbInstallHostApp(w, req)
+			return
+		}
+	case "/api/android/adb/download-tools":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbDownloadTools(w, req)
+			return
+		}
 	case "/api/proxy/start":
 		if req.Method == http.MethodPost {
 			if c.proxySrv == nil {
@@ -644,8 +751,10 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
+		"pid":                      os.Getpid(),
 		"version":                  config.AppVersion,
 		"engine":                   "go",
+		"platform":                 runtime.GOOS,
 		"proxy_running":            proxyRunning,
 		"listen_host":              c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":              cfg.ListenPort,
