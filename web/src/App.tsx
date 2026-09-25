@@ -277,6 +277,15 @@ export const App: React.FC = () => {
     Boolean((window.navigator as any).standalone)
   )
 
+  // Android patch tooling is exposed only on the supported desktop hosts.
+  const showAndroidPatch = status?.platform === 'windows' || status?.platform === 'darwin'
+
+  useEffect(() => {
+    if (!showAndroidPatch && activeTab === 'android') {
+      setActiveTab('core')
+    }
+  }, [showAndroidPatch, activeTab])
+
   // Refresh data from API
   const loadState = useCallback(async () => {
     try {
@@ -1167,18 +1176,20 @@ export const App: React.FC = () => {
             <Zap className="w-4 h-4" />
             <span>核心加速与控制</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab('android')}
-            className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
-              activeTab === 'android'
-                ? 'border-indigo-600 text-indigo-700 bg-indigo-50/60 rounded-t-lg'
-                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
-            }`}
-          >
-            <Smartphone className="w-4 h-4" />
-            <span>Android 浏览器 Patch</span>
-          </button>
+          {showAndroidPatch && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('android')}
+              className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
+                activeTab === 'android'
+                  ? 'border-indigo-600 text-indigo-700 bg-indigo-50/60 rounded-t-lg'
+                  : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
+              }`}
+            >
+              <Smartphone className="w-4 h-4" />
+              <span>Android 浏览器 Patch</span>
+            </button>
+          )}
         </div>
       </div>
 

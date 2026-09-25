@@ -170,13 +170,21 @@ func GetFullEnvironmentSpecs() []ComponentSpec {
 	baseReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + AssetsTag + "/"
 	specs := GetDefaultComponentSpecs()
 
-	// Platform tools archive for current OS
+	// Platform tools archive for current OS.
+	// macOS is pinned to the exact verified v1.0.0 release asset; Windows keeps
+	// the existing loose archive check for backward compatibility.
 	ptFileName := fmt.Sprintf("platform-tools-%s.zip", runtime.GOOS)
+	ptSize := int64(5200000)
+	ptSHA256 := ""
+	if runtime.GOOS == "darwin" {
+		ptSize = 16110554
+		ptSHA256 = "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d"
+	}
 	specs = append(specs, ComponentSpec{
 		ID:          "platform-tools",
 		FileName:    ptFileName,
-		Size:        5200000,
-		SHA256:      "",
+		Size:        ptSize,
+		SHA256:      ptSHA256,
 		URL:         baseReleaseURL + ptFileName,
 		Description: "Android 平台调试工具 (ADB)",
 	})
