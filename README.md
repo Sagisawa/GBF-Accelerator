@@ -11,11 +11,18 @@
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
 
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
-> - **Windows**：下载 `GBF_Accelerator_v2.1.1_GUI.zip`，解压即用。
-> - **macOS**：下载 `GBF_Accelerator_v2.1.1_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Windows**：下载 `GBF_Accelerator_v2.2.0_GUI.zip`，解压即用。
+> - **macOS**：下载 `GBF_Accelerator_v2.2.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
+
+## v2.2.0 发布要点
+
+- **Android 客户端免 Root 补丁支持**：新增基于 Go Core 的 Android 架构，控制台内置【Android 浏览器修补】工作台，支持将加速引擎免 Root 嵌入 SkyLeap 及系统 WebView 浏览器，随浏览器启动运行，应用私有目录自动隔离。
+- **SLRU 分段缓存热点保护**：RAM Cache 引入分段 LRU（SLRU）策略，将缓存分为试用段与受保护段；前台真实请求直入受保护段，后台 Prefetch 采用独立准入策略，彻底防止大批量冷素材预载导致高频战斗资源被挤占淘汰。
+- **Prefetch 与前台统一 SingleFlight 调度**：后台预载与前台真实请求共享在途飞行任务，同一素材最多 1 次上游回源；前台加入自动提升优先级，前台取消不强杀后台连接，消除重复带宽浪费与竞态。
+- **磁盘缓存冷命中与桌面窗口优化**：削减磁盘冷命中冗余系统调用；Windows 独立控制台启动根据当前活动显示器工作区智能居中并恢复几何尺寸，屏蔽 Edge FRE 干扰弹窗。
 
 ## v2.1.1 发布要点
 

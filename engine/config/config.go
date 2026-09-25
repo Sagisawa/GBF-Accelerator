@@ -14,7 +14,7 @@ import (
 )
 
 
-const AppVersion = "2.3.0"
+const AppVersion = "2.2.0"
 
 type Config struct {
 	ListenHost           string  `json:"listen_host"`
