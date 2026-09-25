@@ -285,10 +285,11 @@ export const App: React.FC = () => {
   // Desktop hosts keep the full configuration surface unchanged.
   const isAndroidRuntime = status?.platform === 'android'
 
-  // Android patch tooling is exposed only on the supported desktop hosts.
+  // Android patch tooling is desktop-only; never expose it inside the Android console.
   const showAndroidPatch =
-    status?.platform === 'windows' ||
-    (status?.platform === 'darwin' && status?.arch === 'arm64')
+    !isAndroidRuntime &&
+    (status?.platform === 'windows' ||
+      (status?.platform === 'darwin' && status?.arch === 'arm64'))
 
   useEffect(() => {
     if (!showAndroidPatch && activeTab === 'android') {
