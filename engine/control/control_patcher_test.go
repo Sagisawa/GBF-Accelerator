@@ -203,6 +203,55 @@ func TestControlAndroidPatchStatus(t *testing.T) {
 	}
 }
 
+func TestResolveAndroidPatchOutputDir(t *testing.T) {
+	baseDir := filepath.Join(t.TempDir(), "Application Support", "GBF-Accelerator")
+
+	tests := []struct {
+		name     string
+		rawPath  string
+		platform string
+		want     string
+	}{
+		{
+			name:     "macOS relative path uses writable base dir",
+			rawPath:  "output_patched",
+			platform: "darwin",
+			want:     filepath.Join(baseDir, "output_patched"),
+		},
+		{
+			name:     "macOS empty path uses writable default",
+			rawPath:  "",
+			platform: "darwin",
+			want:     filepath.Join(baseDir, "output_patched"),
+		},
+		{
+			name:     "macOS absolute path remains unchanged",
+			rawPath:  filepath.Join(string(filepath.Separator), "tmp", "output_patched"),
+			platform: "darwin",
+			want:     filepath.Join(string(filepath.Separator), "tmp", "output_patched"),
+		},
+		{
+			name:     "Windows relative path keeps working-directory behavior",
+			rawPath:  "output_patched",
+			platform: "windows",
+			want:     "output_patched",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveAndroidPatchOutputDirFor(tt.rawPath, tt.platform, baseDir)
+			want, err := filepath.Abs(tt.want)
+			if err != nil {
+				t.Fatalf("failed to resolve expected path: %v", err)
+			}
+			if got != want {
+				t.Fatalf("expected %q, got %q", want, got)
+			}
+		})
+	}
+}
+
 func TestControlAndroidPatchOpenOutput(t *testing.T) {
 	ctrl, cleanup := setupTestControlServer(t)
 	defer cleanup()
