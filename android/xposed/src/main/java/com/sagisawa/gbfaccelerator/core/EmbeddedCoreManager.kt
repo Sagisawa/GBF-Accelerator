@@ -16,6 +16,7 @@ import java.net.URL
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
 
 /**
  * Manages the self-contained Go Core daemon (libgbfcore.so) embedded directly inside
@@ -229,49 +230,151 @@ object EmbeddedCoreManager {
         }
     }
 
-    private fun resolveCoreBinary(context: Context): File? {
+    internal fun resolveCoreBinary(context: Context): File? {
         // 1. Direct nativeLibraryDir check
         val nativeDirFile = File(context.applicationInfo.nativeLibraryDir, "libgbfcore.so")
         if (nativeDirFile.exists() && nativeDirFile.length() > 0) {
             return nativeDirFile
         }
 
-        // 2. Private storage cached copy check
-        val privateCore = File(context.filesDir, "libgbfcore.so")
-        if (privateCore.exists() && privateCore.length() > 0) {
-            return privateCore
+        // 2. ClassLoader native library lookup
+        try {
+            val cl = EmbeddedCoreManager::class.java.classLoader
+            val findLibMethod = cl?.javaClass?.getMethod("findLibrary", String::class.java)
+            val libPath = findLibMethod?.invoke(cl, "gbfcore") as? String
+            if (!libPath.isNullOrEmpty()) {
+                val f = File(libPath)
+                if (f.exists() && f.length() > 0) {
+                    return f
+                }
+            }
+        } catch (_: Throwable) {
         }
 
-        // 3. Extract from APK zip archives (sourceDir and splitSourceDirs)
+        // 3. Root mode module package check (com.sagisawa.gbfaccelerator.xposed installed standalone)
         val apkSources = mutableListOf<String>()
+        try {
+            val pm = context.packageManager
+            val moduleInfo = pm.getApplicationInfo("com.sagisawa.gbfaccelerator.xposed", 0)
+            val moduleNativeFile = File(moduleInfo.nativeLibraryDir, "libgbfcore.so")
+            if (moduleNativeFile.exists() && moduleNativeFile.length() > 0) {
+                return moduleNativeFile
+            }
+            moduleInfo.sourceDir?.let { apkSources.add(it) }
+            moduleInfo.splitSourceDirs?.let { apkSources.addAll(it) }
+        } catch (_: Throwable) {
+        }
+
+        // 4. Check cached copy in filesDir
+        val primaryTargetDir = context.filesDir
+        val privateCore = File(primaryTargetDir, "libgbfcore.so")
+        val apkFile = context.applicationInfo.sourceDir?.let { File(it) }
+        val apkModified = apkFile?.lastModified() ?: 0L
+
+        if (privateCore.exists() && privateCore.length() > 0) {
+            if (apkModified == 0L || privateCore.lastModified() >= apkModified) {
+                return privateCore
+            }
+            Log.i(TAG, "[GBF-ACC] Host APK updated (modified: $apkModified vs cache: ${privateCore.lastModified()}); re-extracting core")
+        }
+
+        // 5. Extract from APK zip archives (sourceDir, splitSourceDirs, and module sourceDir)
         context.applicationInfo.sourceDir?.let { apkSources.add(it) }
         context.applicationInfo.splitSourceDirs?.let { apkSources.addAll(it) }
 
-        for (apkPath in apkSources) {
+        for (apkPath in apkSources.distinct()) {
             val extracted = extractCoreFromApk(File(apkPath), privateCore)
-            if (extracted != null && extracted.exists()) {
+            if (extracted != null && extracted.exists() && extracted.length() > 0) {
                 return extracted
             }
+        }
+
+        // 6. Secondary fallback to codeCacheDir if filesDir failed
+        try {
+            val codeCacheCore = File(context.codeCacheDir, "libgbfcore.so")
+            if (codeCacheCore.exists() && codeCacheCore.length() > 0) {
+                return codeCacheCore
+            }
+            for (apkPath in apkSources.distinct()) {
+                val extracted = extractCoreFromApk(File(apkPath), codeCacheCore)
+                if (extracted != null && extracted.exists() && extracted.length() > 0) {
+                    return extracted
+                }
+            }
+        } catch (_: Throwable) {
         }
 
         return null
     }
 
-    private fun extractCoreFromApk(apkFile: File, targetFile: File): File? {
+    internal fun extractCoreFromApk(apkFile: File, targetFile: File): File? {
         if (!apkFile.exists()) return null
         return try {
             ZipFile(apkFile).use { zip ->
-                val entry = zip.getEntry("lib/arm64-v8a/libgbfcore.so")
+                // 1. Direct entry check
+                val directEntry = zip.getEntry("lib/arm64-v8a/libgbfcore.so")
                     ?: zip.getEntry("assets/libgbfcore.so")
                     ?: zip.entries().asSequence().firstOrNull { it.name.endsWith("libgbfcore.so") }
-                    ?: return null
 
-                zip.getInputStream(entry).use { input ->
-                    FileOutputStream(targetFile).use { output ->
-                        input.copyTo(output)
+                if (directEntry != null) {
+                    val tempFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
+                    zip.getInputStream(directEntry).use { input ->
+                        FileOutputStream(tempFile).use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (targetFile.exists()) {
+                        targetFile.delete()
+                    }
+                    if (!tempFile.renameTo(targetFile)) {
+                        tempFile.copyTo(targetFile, overwrite = true)
+                        tempFile.delete()
+                    }
+                    targetFile.setExecutable(true, false)
+                    return targetFile
+                }
+
+                // 2. Nested archive check (LSPatch embeds modules inside assets/lspatch/modules/*.apk)
+                val nestedEntries = zip.entries().asSequence().filter {
+                    !it.isDirectory && (it.name.endsWith(".apk") || it.name.endsWith(".zip"))
+                }.toList()
+
+                for (nestedEntry in nestedEntries) {
+                    var found: Boolean = false
+                    try {
+                        zip.getInputStream(nestedEntry).use { inStream ->
+                            ZipInputStream(inStream).use { nestedZip ->
+                                var ze = nestedZip.nextEntry
+                                while (ze != null) {
+                                    if (!ze.isDirectory && ze.name.endsWith("libgbfcore.so")) {
+                                        val tempFile = File(targetFile.parentFile, "${targetFile.name}.tmp")
+                                        FileOutputStream(tempFile).use { output ->
+                                            nestedZip.copyTo(output)
+                                        }
+                                        if (targetFile.exists()) {
+                                            targetFile.delete()
+                                        }
+                                        if (!tempFile.renameTo(targetFile)) {
+                                            tempFile.copyTo(targetFile, overwrite = true)
+                                            tempFile.delete()
+                                        }
+                                        targetFile.setExecutable(true, false)
+                                        Log.i(TAG, "[GBF-ACC] Extracted libgbfcore.so from nested module ${nestedEntry.name}!${ze.name}")
+                                        found = true
+                                        break
+                                    }
+                                    ze = nestedZip.nextEntry
+                                }
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        Log.d(TAG, "[GBF-ACC] Failed reading nested archive ${nestedEntry.name}: ${e.message}")
+                    }
+                    if (found) {
+                        return targetFile
                     }
                 }
-                targetFile
+                null
             }
         } catch (e: Throwable) {
             Log.w(TAG, "[GBF-ACC] Failed to extract libgbfcore.so from ${apkFile.name}: ${e.message}")

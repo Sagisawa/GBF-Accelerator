@@ -36,3 +36,5 @@ web/node_modules/
 android/.gradle/
 android/**/build/
 output/
+tools/android/
+backups/
