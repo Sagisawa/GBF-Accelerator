@@ -220,15 +220,21 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     try {
       const res = await fetchAdbDevices()
       if (res.ok) {
-        setAdbDevices(res.devices || [])
-        const activeDev = res.devices?.find(d => d.state === 'device')
+        const nextDevices = res.devices || []
+        setAdbDevices(prev => {
+          if (prev.length === nextDevices.length && prev.every((d, i) => d.serial === nextDevices[i].serial && d.state === nextDevices[i].state)) {
+            return prev
+          }
+          return nextDevices
+        })
+        const activeDev = nextDevices.find(d => d.state === 'device')
         if (activeDev) {
-          if (!selectedDevice || !res.devices.some(d => d.serial === selectedDevice)) {
+          if (!selectedDevice || !nextDevices.some(d => d.serial === selectedDevice)) {
             setSelectedDevice(activeDev.serial)
           }
-        } else if (res.devices && res.devices.length > 0) {
-          if (!selectedDevice || !res.devices.some(d => d.serial === selectedDevice)) {
-            setSelectedDevice(res.devices[0].serial)
+        } else if (nextDevices.length > 0) {
+          if (!selectedDevice || !nextDevices.some(d => d.serial === selectedDevice)) {
+            setSelectedDevice(nextDevices[0].serial)
           }
         } else {
           setSelectedDevice('')
@@ -246,31 +252,35 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       setDeviceBrowsers([])
       return
     }
-    const dev = adbDevices.find(d => d.serial === selectedDevice)
-    if (dev && dev.state === 'device') {
-      setIsLoadingBrowsers(true)
-      fetchDeviceBrowsers(selectedDevice)
-        .then((res) => {
-          if (res.ok && res.browsers && res.browsers.length > 0) {
-            setDeviceBrowsers(res.browsers)
-            // If current target is not custom and not installed, auto-select first installed browser
-            if (!isCustomExtractPackage) {
-              const installedSkyLeap = res.browsers.find(b => b.is_skyleap && b.is_installed)
-              if (installedSkyLeap) {
-                setTargetExtractPackage(installedSkyLeap.package_name)
-              } else {
-                const firstInstalled = res.browsers.find(b => b.is_installed)
-                if (firstInstalled) {
-                  setTargetExtractPackage(firstInstalled.package_name)
-                }
-              }
+    setIsLoadingBrowsers(true)
+    fetchDeviceBrowsers(selectedDevice)
+      .then((res) => {
+        if (res.ok && res.browsers && res.browsers.length > 0) {
+          setDeviceBrowsers(res.browsers)
+          // Only auto-select default browser if current target is not custom and not installed on this device
+          setTargetExtractPackage(prev => {
+            if (isCustomExtractPackage && prev) {
+              return prev
             }
-          }
-        })
-        .catch((e) => console.error('Failed to list device browsers:', e))
-        .finally(() => setIsLoadingBrowsers(false))
-    }
-  }, [selectedDevice, adbDevices])
+            const currentInstalled = res.browsers.find(b => b.package_name === prev && b.is_installed)
+            if (currentInstalled) {
+              return prev // Preserve user selection!
+            }
+            const installedSkyLeap = res.browsers.find(b => b.is_skyleap && b.is_installed)
+            if (installedSkyLeap) {
+              return installedSkyLeap.package_name
+            }
+            const firstInstalled = res.browsers.find(b => b.is_installed)
+            if (firstInstalled) {
+              return firstInstalled.package_name
+            }
+            return prev
+          })
+        }
+      })
+      .catch((e) => console.error('Failed to list device browsers:', e))
+      .finally(() => setIsLoadingBrowsers(false))
+  }, [selectedDevice, isCustomExtractPackage])
 
   // Probe app on selected device
   useEffect(() => {
