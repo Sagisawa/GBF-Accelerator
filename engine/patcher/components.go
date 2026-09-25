@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	CanonicalModuleSHA256   = "237fa8dc10dd46b4f147effc6361f0711e3258a4aacbd2960bcaff5a711b665b"
+	CanonicalModuleSHA256   = "d1246f2fee4c6f2f26cc5d38c405dc662d01e1034c6a0477549a7b938b7c6add"
 	CanonicalLicensesSHA256 = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
 	GitHubRepo              = "Sagisawa/GBF-Accelerator"
 )
@@ -84,7 +84,7 @@ func GetDefaultComponentSpecs() []ComponentSpec {
 		{
 			ID:          "module",
 			FileName:    "xposed-release.apk",
-			Size:        995099,
+			Size:        996307,
 			SHA256:      CanonicalModuleSHA256,
 			URL:         baseReleaseURL + "xposed-release.apk",
 			Description: "GBF-Accelerator Xposed Module (v0.1)",

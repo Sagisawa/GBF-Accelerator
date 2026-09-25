@@ -36,6 +36,24 @@ func FindJavaRuntime(overridePath string) (path string, version string, err erro
 		candidates = append(candidates, overridePath)
 	}
 
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		if runtime.GOOS == "windows" {
+			candidates = append(candidates,
+				filepath.Join(exeDir, "jre", "bin", "java.exe"),
+				filepath.Join(exeDir, "tools", "jre", "bin", "java.exe"),
+				filepath.Join(exeDir, "jdk", "bin", "java.exe"),
+				filepath.Join(exeDir, "tools", "jdk", "bin", "java.exe"),
+			)
+		} else {
+			candidates = append(candidates,
+				filepath.Join(exeDir, "jre", "bin", "java"),
+				filepath.Join(exeDir, "tools", "jre", "bin", "java"),
+				filepath.Join(exeDir, "jdk", "bin", "java"),
+			)
+		}
+	}
+
 	if jh := os.Getenv("JAVA_HOME"); jh != "" {
 		binName := "java"
 		if runtime.GOOS == "windows" {

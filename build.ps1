@@ -25,6 +25,8 @@ param (
     [switch]$RebuildWeb,
     [switch]$Console,
     [switch]$SkipZip,
+    [switch]$BundleTools,
+    [switch]$BundleJre,
     [ValidateSet("windows", "darwin", "all")]
     [string]$Target = "windows"
 )
@@ -226,6 +228,54 @@ function Build-Windows {
             Remove-Item $PtStageParent -Recurse -Force
             Write-Host ("[+] Platform-tools release asset generated: {0} ({1:F2} MB)" -f $PtZip, ((Get-Item $PtZip).Length / 1MB)) -ForegroundColor Green
         }
+
+        if ($BundleTools) {
+            Write-Host "[*] Bundling full Android tooling environment into release package..." -ForegroundColor Yellow
+            $ToolsAndroidDir = Join-Path $StagingDir "tools\android"
+            New-Item -ItemType Directory -Path $ToolsAndroidDir -Force | Out-Null
+            if (Test-Path $LSPatchSrc) {
+                Copy-Item -Path $LSPatchSrc -Destination (Join-Path $ToolsAndroidDir "lspatch.jar") -Force
+            }
+            if (Test-Path $ModuleSrc) {
+                Copy-Item -Path $ModuleSrc -Destination (Join-Path $ToolsAndroidDir "xposed-release.apk") -Force
+            }
+            if (Test-Path $LicensesSrc) {
+                Copy-Item -Path $LicensesSrc -Destination (Join-Path $ToolsAndroidDir "THIRD_PARTY_LICENSES.md") -Force
+            }
+            if ($AdbExe) {
+                $AdbDir = Split-Path $AdbExe
+                $PtTargetDir = Join-Path $ToolsAndroidDir "platform-tools"
+                New-Item -ItemType Directory -Path $PtTargetDir -Force | Out-Null
+                Copy-Item (Join-Path $AdbDir "adb.exe") $PtTargetDir -Force
+                if (Test-Path (Join-Path $AdbDir "AdbWinApi.dll")) {
+                    Copy-Item (Join-Path $AdbDir "AdbWinApi.dll") $PtTargetDir -Force
+                }
+                if (Test-Path (Join-Path $AdbDir "AdbWinUsbApi.dll")) {
+                    Copy-Item (Join-Path $AdbDir "AdbWinUsbApi.dll") $PtTargetDir -Force
+                }
+            }
+            $PatcherExe = Join-Path $RootDir "tools\gbf-acc-patcher\gbf-acc-patcher.exe"
+            if (Test-Path $PatcherExe) {
+                $PatcherTargetDir = Join-Path $StagingDir "tools\gbf-acc-patcher"
+                New-Item -ItemType Directory -Path $PatcherTargetDir -Force | Out-Null
+                Copy-Item $PatcherExe $PatcherTargetDir -Force
+            }
+        }
+
+        if ($BundleJre) {
+            $JbrPath = "C:\Program Files\Android\Android Studio\jbr"
+            if (Test-Path $JbrPath) {
+                Write-Host "[*] Bundling Java 21+ runtime (JBR) into release package..." -ForegroundColor Yellow
+                $JreTargetDir = Join-Path $StagingDir "jre"
+                Copy-Item -Path $JbrPath -Destination $JreTargetDir -Recurse -Force
+            }
+        }
+
+        # Keep unzipped distribution directory for immediate testing
+        $UnzippedDistDir = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_GUI"
+        if (Test-Path $UnzippedDistDir) { Remove-Item $UnzippedDistDir -Recurse -Force }
+        Copy-Item -Path $StagingDir -Destination $UnzippedDistDir -Recurse -Force
+        Write-Host ("[+] Unzipped distribution directory created: {0}" -f $UnzippedDistDir) -ForegroundColor Green
 
         Compress-Archive -Path "$StagingDir\*" -DestinationPath $ZipPath -Force
         Remove-Item $StagingDir -Recurse -Force
