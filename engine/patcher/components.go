@@ -22,6 +22,8 @@ const (
 	CanonicalModuleSHA256   = "c0007ef37c2d22839d3da801ede19c04a230bf3a92a8588ea5e1e70f86954ab2"
 	CanonicalLicensesSHA256 = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
 	GitHubRepo              = "Sagisawa/GBF-Accelerator"
+	AssetsRepo              = "Sagisawa/GBF-Accelerator-Assets"
+	AssetsTag               = "v1.0.0"
 )
 
 type ComponentSpec struct {
@@ -72,8 +74,7 @@ func GetAndroidToolsDir() string {
 
 // GetDefaultComponentSpecs returns the authoritative component metadata.
 func GetDefaultComponentSpecs() []ComponentSpec {
-	tag := "v" + config.AppVersion
-	baseReleaseURL := "https://github.com/" + GitHubRepo + "/releases/download/" + tag + "/"
+	baseReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + AssetsTag + "/"
 	return []ComponentSpec{
 		{
 			ID:          "lspatch",
@@ -105,8 +106,7 @@ func GetDefaultComponentSpecs() []ComponentSpec {
 // GetFullEnvironmentSpecs returns the full closed-loop Android environment specification
 // including LSPatch, Xposed module, licenses, platform-tools (ADB), and portable JRE.
 func GetFullEnvironmentSpecs() []ComponentSpec {
-	tag := "v" + config.AppVersion
-	baseReleaseURL := "https://github.com/" + GitHubRepo + "/releases/download/" + tag + "/"
+	baseReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + AssetsTag + "/"
 	specs := GetDefaultComponentSpecs()
 
 	// Platform tools archive for current OS

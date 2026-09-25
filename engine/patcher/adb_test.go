@@ -1,6 +1,7 @@
 package patcher
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -46,8 +47,9 @@ func TestFindAdbPath(t *testing.T) {
 
 func TestPlatformToolsDownloadURL(t *testing.T) {
 	url := PlatformToolsDownloadURL()
-	if !strings.HasPrefix(url, "https://github.com/Sagisawa/GBF-Accelerator/releases/download/") {
-		t.Errorf("unexpected primary URL: %s", url)
+	expectedPrefix := fmt.Sprintf("https://github.com/%s/releases/download/%s/", AssetsRepo, AssetsTag)
+	if !strings.HasPrefix(url, expectedPrefix) {
+		t.Errorf("unexpected primary URL: %s, expected prefix %s", url, expectedPrefix)
 	}
 
 	fallback := PlatformToolsGoogleFallbackURL()

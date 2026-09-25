@@ -14,8 +14,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"gbf-proxy/config"
 )
 
 var (
@@ -467,8 +465,7 @@ func UninstallFromDevice(ctx context.Context, adbPath, serial, packageName strin
 
 // PlatformToolsDownloadURL returns our project GitHub Release asset URL for the current OS.
 func PlatformToolsDownloadURL() string {
-	tag := "v" + config.AppVersion
-	return fmt.Sprintf("https://github.com/%s/releases/download/%s/platform-tools-%s.zip", GitHubRepo, tag, runtime.GOOS)
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/platform-tools-%s.zip", AssetsRepo, AssetsTag, runtime.GOOS)
 }
 
 // PlatformToolsGoogleFallbackURL returns Google's official mirror URL as secondary fallback.
