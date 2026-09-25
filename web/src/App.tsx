@@ -237,11 +237,13 @@ export const App: React.FC = () => {
   // re-prompt within the same launch.
   const caGuidePromptedRef = useRef(false)
   useEffect(() => {
+    if (isAndroidRuntime) return
+
     if (shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
       caGuidePromptedRef.current = true
       setCaModalAction('install')
     }
-  }, [status])
+  }, [status, isAndroidRuntime])
 
   const handleQuitApp = async () => {
     setQuitting(true)
@@ -276,6 +278,10 @@ export const App: React.FC = () => {
     window.location.search.includes('standalone') ||
     Boolean((window.navigator as any).standalone)
   )
+
+  // Platform-isolated UI: Android uses a simplified mobile console.
+  // Desktop hosts keep the full configuration surface unchanged.
+  const isAndroidRuntime = status?.platform === 'android'
 
   // Android patch tooling is exposed only on the supported desktop hosts.
   const showAndroidPatch =
@@ -1353,6 +1359,8 @@ export const App: React.FC = () => {
             </div>
           </div>
 
+          {!isAndroidRuntime && (
+            <>
           {/* Card 2: Upstream Proxy & Network Routing */}
           <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
             <div className="space-y-3.5">
@@ -1707,6 +1715,11 @@ export const App: React.FC = () => {
             </div>
           </div>
 
+            </>
+          )}
+
+          {!isAndroidRuntime && (
+            <>
           {/* Card 3: HTTPS Root CA & System Integration */}
           <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
             <div className="space-y-3.5">
@@ -1812,6 +1825,9 @@ export const App: React.FC = () => {
               </div>
             </div>
           </div>
+
+            </>
+          )}
 
           {/* Card 4: Performance Acceleration & Asset Scheduling */}
           <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
