@@ -40,6 +40,13 @@
     <string name="cert_settings_btn">系统安全设置</string>
     <string name="cert_instructions">说明：配合本工具处理后的 SkyLeap 无需手动安装证书，模块已实现对 GBF 域名的透明受信。\n若使用外部未经处理的第三方浏览器，可点击【导出 ca.crt】并在系统安全设置中手动导入。</string>
 
+    <!-- Performance & Cache Preferences -->
+    <string name="section_pref_title">性能与缓存偏好设置</string>
+    <string name="pref_ram_cache_title">RAM 内存缓存</string>
+    <string name="pref_ram_cache_desc">将高频热点静态素材缓存至应用内存中。移动设备内存资源有限，默认关闭以减少 RAM 占用并依靠本地磁盘缓存加速。</string>
+    <string name="pref_prefetch_title">静态素材后台预加载</string>
+    <string name="pref_prefetch_desc">在后台自动解析页面静态依赖并平滑预拉取。在移动网络或部分机型上可能带来额外开销，默认关闭以确保流畅稳定。</string>
+
     <!-- Metrics & Logs -->
     <string name="section_metrics_title">运行指标与缓存监控</string>
     <string name="section_logs_title">核心运行日志</string>

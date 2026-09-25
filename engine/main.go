@@ -103,6 +103,8 @@ func main() {
 	headless := flag.Bool("headless", false, "Alias for -nogui")
 	openBrowser := flag.Bool("open-browser", false, "Automatically open Web console in browser on startup")
 	minimized := flag.Bool("minimized", false, "Start minimized in system tray without opening window")
+	enableRAMCache := flag.Bool("enable-ram-cache", false, "Enable in-memory RAM LRU cache")
+	enablePrefetch := flag.Bool("enable-prefetch", false, "Enable background static asset prefetching")
 
 	flag.Parse()
 
@@ -161,6 +163,12 @@ func main() {
 		}
 		if flagWasSet("verify-upstream-tls") {
 			c.VerifyUpstreamTLS = *verifyUpstreamTLS
+		}
+		if flagWasSet("enable-ram-cache") {
+			c.EnableRAMCache = *enableRAMCache
+		}
+		if flagWasSet("enable-prefetch") {
+			c.EnablePrefetch = *enablePrefetch
 		}
 	})
 

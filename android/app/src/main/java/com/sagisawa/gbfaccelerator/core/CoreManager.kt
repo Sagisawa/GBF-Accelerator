@@ -160,6 +160,28 @@ object CoreManager {
             val cacheDir = File(baseDir, "cache/gbf/https")
             cacheDir.mkdirs()
 
+            val ramEnabled = AppPreferences.isRamCacheEnabled(context)
+            val prefetchEnabled = AppPreferences.isPrefetchEnabled(context)
+
+            // Ensure config.json reflects persisted user preferences
+            try {
+                val json = if (configPath.exists()) {
+                    JSONObject(configPath.readText())
+                } else {
+                    JSONObject().apply {
+                        put("listen_host", "127.0.0.1")
+                        put("listen_port", PROXY_PORT)
+                        put("control_port", CONTROL_PORT)
+                        put("allow_lan", false)
+                    }
+                }
+                json.put("enable_ram_cache", ramEnabled)
+                json.put("enable_prefetch", prefetchEnabled)
+                configPath.writeText(json.toString(2))
+            } catch (e: Throwable) {
+                Log.w(TAG, "Failed to initialize/sync config.json: ${e.message}")
+            }
+
             // Verify if ports 8124/8125 are already occupied by a rogue instance
             if (isPortReachable(CONTROL_PORT)) {
                 appendLog("[*] Control port $CONTROL_PORT is already responsive, querying status...")
@@ -181,7 +203,9 @@ object CoreManager {
                 "-proxy-port", PROXY_PORT.toString(),
                 "-control-port", CONTROL_PORT.toString(),
                 "-config", configPath.absolutePath,
-                "-cache-dir", cacheDir.absolutePath
+                "-cache-dir", cacheDir.absolutePath,
+                "-enable-ram-cache=$ramEnabled",
+                "-enable-prefetch=$prefetchEnabled"
             )
 
             try {
@@ -375,6 +399,51 @@ object CoreManager {
         } catch (e: Throwable) {
             Log.w(TAG, "queryStatusDirect exception: ${e.message}")
             null
+        }
+    }
+
+    fun applyRuntimeConfig(patch: Map<String, Any>, callback: ((Boolean, String?) -> Unit)? = null) {
+        executor.execute {
+            try {
+                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/config/apply")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 1500
+                conn.readTimeout = 1500
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("Origin", "http://127.0.0.1:$CONTROL_PORT")
+
+                val json = JSONObject(patch)
+                conn.outputStream.use { os ->
+                    os.write(json.toString().toByteArray(Charsets.UTF_8))
+                }
+
+                val code = conn.responseCode
+                val body = if (code in 200..299) {
+                    conn.inputStream.bufferedReader().use { it.readText() }
+                } else {
+                    conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                }
+                conn.disconnect()
+
+                val success = code in 200..299
+                if (success) {
+                    appendLog("[+] 核心配置热更新生效: $patch")
+                } else {
+                    appendLog("[-] 核心配置热更新失败 ($code): $body")
+                }
+                mainHandler.post {
+                    callback?.invoke(success, body)
+                }
+            } catch (e: Throwable) {
+                val err = "热更新配置网络异常: ${e.message}"
+                Log.w(TAG, err, e)
+                appendLog("[-] $err")
+                mainHandler.post {
+                    callback?.invoke(false, e.message)
+                }
+            }
         }
     }
 }

@@ -19,15 +19,19 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
 import com.sagisawa.gbfaccelerator.R
 import com.sagisawa.gbfaccelerator.cert.CaCertManager
+import com.sagisawa.gbfaccelerator.core.AppPreferences
 import com.sagisawa.gbfaccelerator.core.CoreManager
 import com.sagisawa.gbfaccelerator.core.CoreService
 import com.sagisawa.gbfaccelerator.patch.BrowserLauncher
 import com.sagisawa.gbfaccelerator.patch.BrowserTarget
 import com.sagisawa.gbfaccelerator.patch.DefaultBrowserLauncher
 import com.sagisawa.gbfaccelerator.patch.LaunchResult
+import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
@@ -53,13 +57,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnExportCert: Button
     private lateinit var btnSecuritySettings: Button
 
-    // 4. Metrics Section
+    // 4. Performance & Cache Preferences Section
+    private lateinit var switchRamCache: SwitchCompat
+    private lateinit var switchPrefetch: SwitchCompat
+
+    // 5. Metrics Section
     private lateinit var tvMetricRamCache: TextView
     private lateinit var tvMetricHits: TextView
     private lateinit var tvMetricRequests: TextView
     private lateinit var tvMetricReuse: TextView
 
-    // 5. Logs Section
+    // 6. Logs Section
     private lateinit var svLogs: ScrollView
     private lateinit var tvLogContent: TextView
     private lateinit var tvClearLogs: TextView
@@ -109,6 +117,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         updateBrowserUi()
         updateCertUi()
+        updatePreferencesUi()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -151,13 +160,17 @@ class MainActivity : AppCompatActivity() {
         btnExportCert = findViewById(R.id.btn_export_cert)
         btnSecuritySettings = findViewById(R.id.btn_security_settings)
 
-        // 4. Metrics Section
+        // 4. Performance & Cache Preferences Section
+        switchRamCache = findViewById(R.id.switch_ram_cache)
+        switchPrefetch = findViewById(R.id.switch_prefetch)
+
+        // 5. Metrics Section
         tvMetricRamCache = findViewById(R.id.tv_metric_ram_cache)
         tvMetricHits = findViewById(R.id.tv_metric_hits)
         tvMetricRequests = findViewById(R.id.tv_metric_requests)
         tvMetricReuse = findViewById(R.id.tv_metric_reuse)
 
-        // 5. Logs Section
+        // 6. Logs Section
         svLogs = findViewById(R.id.sv_logs)
         tvLogContent = findViewById(R.id.tv_log_content)
         tvClearLogs = findViewById(R.id.tv_clear_logs)
@@ -165,9 +178,60 @@ class MainActivity : AppCompatActivity() {
         setupServiceToggle()
         setupBrowserSelector()
         setupCertActions()
+        setupPreferences()
 
         tvClearLogs.setOnClickListener {
             tvLogContent.text = ""
+        }
+    }
+
+    private fun updatePreferencesUi() {
+        val ramPref = AppPreferences.isRamCacheEnabled(this)
+        if (switchRamCache.isChecked != ramPref) {
+            switchRamCache.isChecked = ramPref
+        }
+        val prefetchPref = AppPreferences.isPrefetchEnabled(this)
+        if (switchPrefetch.isChecked != prefetchPref) {
+            switchPrefetch.isChecked = prefetchPref
+        }
+    }
+
+    private fun setupPreferences() {
+        updatePreferencesUi()
+
+        switchRamCache.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked != AppPreferences.isRamCacheEnabled(this)) {
+                AppPreferences.setRamCacheEnabled(this, isChecked)
+                updateConfigJsonPreference("enable_ram_cache", isChecked)
+                if (CoreManager.currentState == CoreManager.State.RUNNING) {
+                    CoreManager.applyRuntimeConfig(mapOf("enable_ram_cache" to isChecked))
+                }
+            }
+        }
+
+        switchPrefetch.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked != AppPreferences.isPrefetchEnabled(this)) {
+                AppPreferences.setPrefetchEnabled(this, isChecked)
+                updateConfigJsonPreference("enable_prefetch", isChecked)
+                if (CoreManager.currentState == CoreManager.State.RUNNING) {
+                    CoreManager.applyRuntimeConfig(mapOf("enable_prefetch" to isChecked))
+                }
+            }
+        }
+    }
+
+    private fun updateConfigJsonPreference(key: String, value: Any) {
+        try {
+            val configFile = File(filesDir, "config.json")
+            val json = if (configFile.exists()) {
+                JSONObject(configFile.readText())
+            } else {
+                JSONObject()
+            }
+            json.put(key, value)
+            configFile.writeText(json.toString(2))
+        } catch (e: Throwable) {
+            Log.w("MainActivity", "Failed to update config.json with $key=$value: ${e.message}")
         }
     }
 
