@@ -32,3 +32,7 @@ Desktop.ini
 # Frontend dependencies
 web/node_modules/
 
+# Android build & patch artifacts
+android/.gradle/
+android/**/build/
+output/

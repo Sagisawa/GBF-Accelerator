@@ -18,11 +18,11 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.SwitchCompat
 import androidx.core.content.ContextCompat
 import com.sagisawa.gbfaccelerator.R
-import com.sagisawa.gbfaccelerator.cert.CaCertManager
 import com.sagisawa.gbfaccelerator.core.AppPreferences
 import com.sagisawa.gbfaccelerator.core.CoreManager
 import com.sagisawa.gbfaccelerator.core.CoreService
@@ -49,13 +49,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvBrowserStatus: TextView
     private lateinit var btnLaunchBrowser: Button
 
-    // 3. CA Certificate Section
-    private lateinit var tvCertStatusBadge: TextView
-    private lateinit var tvCertFingerprint: TextView
-    private lateinit var tvCertTrust: TextView
-    private lateinit var btnInstallCert: Button
-    private lateinit var btnExportCert: Button
-    private lateinit var btnSecuritySettings: Button
+    // 3. Cache Management & Maintenance Section
+    private lateinit var tvCacheSummaryInline: TextView
+    private lateinit var btnOpenCacheDir: Button
+    private lateinit var btnSlimCache: Button
+    private lateinit var btnClearCache: Button
 
     // 4. Performance & Cache Preferences Section
     private lateinit var switchRamCache: SwitchCompat
@@ -105,7 +103,7 @@ class MainActivity : AppCompatActivity() {
         CoreManager.addLogListener(logListener)
 
         renderLogs()
-        updateCertUi()
+        updateCacheSummary()
         handleIntentAction(intent)
 
         if (intent?.getStringExtra("action") == null) {
@@ -116,7 +114,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         updateBrowserUi()
-        updateCertUi()
+        updateCacheSummary()
         updatePreferencesUi()
     }
 
@@ -152,13 +150,11 @@ class MainActivity : AppCompatActivity() {
         tvBrowserStatus = findViewById(R.id.tv_browser_status)
         btnLaunchBrowser = findViewById(R.id.btn_launch_browser)
 
-        // 3. CA Certificate Section
-        tvCertStatusBadge = findViewById(R.id.tv_cert_status_badge)
-        tvCertFingerprint = findViewById(R.id.tv_cert_fingerprint)
-        tvCertTrust = findViewById(R.id.tv_cert_trust)
-        btnInstallCert = findViewById(R.id.btn_install_cert)
-        btnExportCert = findViewById(R.id.btn_export_cert)
-        btnSecuritySettings = findViewById(R.id.btn_security_settings)
+        // 3. Cache Management & Maintenance Section
+        tvCacheSummaryInline = findViewById(R.id.tv_cache_summary_inline)
+        btnOpenCacheDir = findViewById(R.id.btn_open_cache_dir)
+        btnSlimCache = findViewById(R.id.btn_slim_cache)
+        btnClearCache = findViewById(R.id.btn_clear_cache)
 
         // 4. Performance & Cache Preferences Section
         switchRamCache = findViewById(R.id.switch_ram_cache)
@@ -177,7 +173,7 @@ class MainActivity : AppCompatActivity() {
 
         setupServiceToggle()
         setupBrowserSelector()
-        setupCertActions()
+        setupCacheActions()
         setupPreferences()
 
         tvClearLogs.setOnClickListener {
@@ -290,33 +286,164 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupCertActions() {
-        btnInstallCert.setOnClickListener {
-            val intent = CaCertManager.createInstallIntent(this)
-            if (intent != null) {
-                try {
-                    startActivity(intent)
-                } catch (e: Exception) {
-                    Toast.makeText(this, "启动证书安装器失败: ${e.message}", Toast.LENGTH_SHORT).show()
+    private fun getGbfCacheDir(): File {
+        return File(filesDir, "cache/gbf/https")
+    }
+
+    private fun getDirStats(dir: File): Pair<Int, Long> {
+        var count = 0
+        var size = 0L
+        if (dir.exists() && dir.isDirectory) {
+            dir.walkTopDown().forEach { file ->
+                if (file.isFile) {
+                    count++
+                    size += file.length()
                 }
-            } else {
-                Toast.makeText(this, "证书尚未生成，请先启动 Go Core", Toast.LENGTH_SHORT).show()
             }
         }
+        return Pair(count, size)
+    }
 
-        btnExportCert.setOnClickListener {
-            val (success, msg) = CaCertManager.exportCaCertToDownloads(this)
-            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-            updateCertUi()
+    private fun formatSize(bytes: Long): String {
+        val mb = bytes.toDouble() / (1024 * 1024)
+        return if (mb >= 1024) {
+            String.format(Locale.US, "%.2f GB", mb / 1024.0)
+        } else {
+            String.format(Locale.US, "%.1f MB", mb)
+        }
+    }
+
+    private fun updateCacheSummary() {
+        Thread {
+            val (count, sizeBytes) = getDirStats(getGbfCacheDir())
+            val sizeStr = formatSize(sizeBytes)
+            runOnUiThread {
+                tvCacheSummaryInline.text = "本地缓存: $count 个文件 | 占用 $sizeStr"
+            }
+        }.start()
+    }
+
+    private fun setupCacheActions() {
+        btnOpenCacheDir.setOnClickListener {
+            val cacheDir = getGbfCacheDir()
+            Thread {
+                val (count, sizeBytes) = getDirStats(cacheDir)
+                val sizeStr = formatSize(sizeBytes)
+                val path = cacheDir.absolutePath
+
+                runOnUiThread {
+                    val summaryText = getString(R.string.cache_dir_summary, path, count, sizeStr)
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.cache_dir_dialog_title)
+                        .setMessage(summaryText)
+                        .setPositiveButton(R.string.cache_copy_path) { _, _ ->
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                            val clip = android.content.ClipData.newPlainText("GBF Cache Path", path)
+                            clipboard?.setPrimaryClip(clip)
+                            Toast.makeText(this, "缓存路径已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                        }
+                        .setNeutralButton(R.string.cache_export_download) { _, _ ->
+                            exportCacheToDownload(cacheDir)
+                        }
+                        .setNegativeButton("关闭", null)
+                        .show()
+                }
+            }.start()
         }
 
-        btnSecuritySettings.setOnClickListener {
+        btnSlimCache.setOnClickListener {
+            if (CoreManager.currentState != CoreManager.State.RUNNING) {
+                Toast.makeText(this, "请先启动代理核心后再执行瘦身", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            AlertDialog.Builder(this)
+                .setTitle(R.string.cache_slim_dialog_title)
+                .setMessage(R.string.cache_slim_dialog_msg)
+                .setPositiveButton(R.string.dialog_confirm) { _, _ ->
+                    CoreManager.slimCache { success, msg ->
+                        if (success) {
+                            Toast.makeText(this, "瘦身任务已在后台执行", Toast.LENGTH_SHORT).show()
+                            tvCacheSummaryInline.postDelayed({ updateCacheSummary() }, 3000)
+                        } else {
+                            Toast.makeText(this, "启动瘦身失败: $msg", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                .setNegativeButton(R.string.dialog_cancel, null)
+                .show()
+        }
+
+        btnClearCache.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle(R.string.cache_clear_dialog_title)
+                .setMessage(R.string.cache_clear_dialog_msg)
+                .setPositiveButton(R.string.dialog_confirm) { _, _ ->
+                    if (CoreManager.currentState == CoreManager.State.RUNNING) {
+                        CoreManager.clearCache { success, deleted, freed ->
+                            if (success) {
+                                val freedStr = formatSize(freed)
+                                Toast.makeText(this, "清空完成: 已删除 $deleted 个文件，释放 $freedStr", Toast.LENGTH_LONG).show()
+                            } else {
+                                Toast.makeText(this, "清空缓存失败，请检查核心日志", Toast.LENGTH_SHORT).show()
+                            }
+                            updateCacheSummary()
+                        }
+                    } else {
+                        // Offline manual deletion
+                        Thread {
+                            val cacheDir = getGbfCacheDir()
+                            var deleted = 0
+                            var freed = 0L
+                            if (cacheDir.exists()) {
+                                cacheDir.walkBottomUp().forEach { f ->
+                                    if (f.isFile) {
+                                        deleted++
+                                        freed += f.length()
+                                        f.delete()
+                                    } else if (f != cacheDir) {
+                                        f.delete()
+                                    }
+                                }
+                            }
+                            val freedStr = formatSize(freed)
+                            runOnUiThread {
+                                Toast.makeText(this, "清空完成: 已删除 $deleted 个文件，释放 $freedStr", Toast.LENGTH_LONG).show()
+                                updateCacheSummary()
+                            }
+                        }.start()
+                    }
+                }
+                .setNegativeButton(R.string.dialog_cancel, null)
+                .show()
+        }
+    }
+
+    private fun exportCacheToDownload(cacheDir: File) {
+        Thread {
             try {
-                startActivity(CaCertManager.createSecuritySettingsIntent())
-            } catch (e: Exception) {
-                Toast.makeText(this, "无法打开系统安全设置: ${e.message}", Toast.LENGTH_SHORT).show()
+                val downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                val targetDir = File(downloadDir, "GBF_Cache")
+                targetDir.mkdirs()
+
+                var copied = 0
+                if (cacheDir.exists()) {
+                    cacheDir.copyRecursively(targetDir, overwrite = true) { _, _ ->
+                        OnErrorAction.SKIP
+                    }
+                    val (count, _) = getDirStats(targetDir)
+                    copied = count
+                }
+
+                runOnUiThread {
+                    Toast.makeText(this, "成功导出 $copied 个缓存文件到: ${targetDir.absolutePath}", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    Toast.makeText(this, "导出缓存失败: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             }
-        }
+        }.start()
     }
 
     private fun updateBrowserUi() {
@@ -342,35 +469,6 @@ class MainActivity : AppCompatActivity() {
             )
             btnLaunchBrowser.isEnabled = false
             btnLaunchBrowser.text = String.format(Locale.US, "未安装 %s", target.name)
-        }
-    }
-
-    private fun updateCertUi() {
-        val certInfo = CaCertManager.getCertInfo(this)
-        if (certInfo.exists) {
-            tvCertStatusBadge.text = getString(R.string.cert_status_ready)
-            tvCertStatusBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.color_success))
-            tvCertFingerprint.text = String.format(Locale.US, "SHA-256: %s", certInfo.sha256Fingerprint)
-
-            if (certInfo.isTrustedInSystem) {
-                tvCertTrust.text = getString(R.string.cert_trust_trusted)
-                tvCertTrust.setTextColor(ContextCompat.getColor(this, R.color.color_success))
-            } else {
-                tvCertTrust.text = getString(R.string.cert_trust_untrusted)
-                tvCertTrust.setTextColor(ContextCompat.getColor(this, R.color.color_warning))
-            }
-
-            btnInstallCert.isEnabled = true
-            btnExportCert.isEnabled = true
-        } else {
-            tvCertStatusBadge.text = getString(R.string.cert_status_not_ready)
-            tvCertStatusBadge.setBackgroundColor(ContextCompat.getColor(this, R.color.color_stopped))
-            tvCertFingerprint.text = "SHA-256: -- (启动核心后就绪)"
-            tvCertTrust.text = getString(R.string.cert_trust_untrusted)
-            tvCertTrust.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
-
-            btnInstallCert.isEnabled = false
-            btnExportCert.isEnabled = false
         }
     }
 
@@ -461,8 +559,8 @@ class MainActivity : AppCompatActivity() {
             tvPidUptime.text = "PID: -- | 运行时间: 0.0s"
         }
 
-        // Whenever Core reaches RUNNING or changes state, refresh cert status in case ca.crt was generated
-        updateCertUi()
+        // Whenever Core reaches RUNNING or changes state, refresh cache summary
+        updateCacheSummary()
     }
 
     private fun updateMetricsUi(m: CoreManager.CoreMetrics) {

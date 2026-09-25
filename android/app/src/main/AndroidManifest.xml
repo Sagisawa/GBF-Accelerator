@@ -15,6 +15,8 @@
     <application
         android:allowBackup="false"
         android:hasCode="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.GBFAccelerator"
@@ -36,8 +38,12 @@
 
         <service
             android:name="com.sagisawa.gbfaccelerator.core.CoreService"
-            android:exported="false"
+            android:exported="true"
             android:foregroundServiceType="specialUse">
+            <intent-filter>
+                <action android:name="com.sagisawa.gbfaccelerator.ACTION_START" />
+                <action android:name="com.sagisawa.gbfaccelerator.ACTION_STOP" />
+            </intent-filter>
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Local proxy daemon lifecycle management for static resource caching" />
@@ -51,7 +57,6 @@
                 <action android:name="com.sagisawa.gbfaccelerator.ACTION_STOP" />
             </intent-filter>
         </receiver>
-
     </application>
 
 </manifest>

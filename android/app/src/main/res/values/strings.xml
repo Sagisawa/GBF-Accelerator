@@ -23,22 +23,27 @@
     <string name="browser_status_not_installed">未检测到安装</string>
     <string name="browser_patched_hint">提示：请确保已安装的是通过外部 LSPatch 处理后的浏览器版本。未处理的原版无法自动走加速核心。</string>
 
-    <!-- Patch Engine Pipeline (Future Ext) -->
+    <!-- Patch Engine Guidance -->
     <string name="section_patch_title">浏览器 Patch 状态与指引</string>
-    <string name="patch_pipeline_standby">外部 Patch 模式 (待扩展)</string>
-    <string name="patch_pipeline_notice">当前需要使用外部工具提前完成浏览器 Patch，本 App 暂不在手机内执行 APK Patch。</string>
-    <string name="patch_pipeline_steps">后续将配套开发 GBF-Accelerator PC Patch Tool（基于成熟 LSPatch CLI）。\n当前简易操作流程：\n1. 在 PC 端使用 LSPatch (Portable 模式) 将本加速器 Xposed 模块嵌入官方 SkyLeap APK 并完成签名；\n2. 卸载手机上的原版 SkyLeap 后安装该处理版；\n3. 在本 App 启动 Go Core 后，点击上方【启动浏览器】即可配合加速核心使用。</string>
+    <string name="patch_pipeline_standby">PC 内置嵌入打包</string>
+    <string name="patch_pipeline_notice">请使用 PC 端 GBF-Accelerator 内置工具完成模块嵌入与签名，无需额外寻找第三方工具。</string>
+    <string name="patch_pipeline_steps">简易操作流程：\n1. 在电脑端启动 GBF-Accelerator，打开 Web 控制台进入【Android Patch】页面；\n2. 选取官方 SkyLeap APK 文件，点击一键自动注入 Xposed 模块并完成签名打包；\n3. 将生成的新安装包传输至手机安装，点击上方【启动 SkyLeap】或直接在手机桌面点击 SkyLeap 即可无感即玩！</string>
 
-    <!-- CA Certificate Section -->
-    <string name="section_cert_title">HTTPS 根证书管理</string>
-    <string name="cert_status_ready">已就绪</string>
-    <string name="cert_status_not_ready">待生成 (启动核心后自动创建)</string>
-    <string name="cert_trust_trusted">已在系统受信任凭据中检测到</string>
-    <string name="cert_trust_untrusted">尚未在系统凭据中检测到 (需安装)</string>
-    <string name="cert_install_btn">安装证书 (系统对话框)</string>
-    <string name="cert_export_btn">导出 ca.crt</string>
-    <string name="cert_settings_btn">系统安全设置</string>
-    <string name="cert_instructions">说明：配合本工具处理后的 SkyLeap 无需手动安装证书，模块已实现对 GBF 域名的透明受信。\n若使用外部未经处理的第三方浏览器，可点击【导出 ca.crt】并在系统安全设置中手动导入。</string>
+    <!-- Cache Management -->
+    <string name="section_cache_mgmt_title">静态缓存管理与维护</string>
+    <string name="btn_open_cache_dir">查看缓存目录</string>
+    <string name="btn_clear_cache">清空全部缓存</string>
+    <string name="btn_slim_cache">智能缓存瘦身</string>
+    <string name="cache_dir_dialog_title">静态缓存目录信息</string>
+    <string name="cache_dir_summary">本地路径:\n%1$s\n\n文件统计:\n共 %2$d 个素材文件 | 占用 %3$s</string>
+    <string name="cache_copy_path">复制完整路径</string>
+    <string name="cache_export_download">导出至 Download 目录</string>
+    <string name="cache_clear_dialog_title">确认清空全部静态缓存？</string>
+    <string name="cache_clear_dialog_msg">将彻底删除本地存储的所有 GBF 静态素材（图片、音频、JS等）。\n下次进入游戏将重新从 CDN 透明下载并重建缓存。</string>
+    <string name="cache_slim_dialog_title">确认执行缓存智能瘦身？</string>
+    <string name="cache_slim_dialog_msg">核心将自动分析静态素材版本链，修剪失效的历史旧版本文件并释放存储空间，保留最新版本素材。</string>
+    <string name="dialog_confirm">确认执行</string>
+    <string name="dialog_cancel">取消</string>
 
     <!-- Performance & Cache Preferences -->
     <string name="section_pref_title">性能与缓存偏好设置</string>

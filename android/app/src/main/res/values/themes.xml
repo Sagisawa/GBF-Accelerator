@@ -4,5 +4,6 @@
         <item name="colorPrimary">@color/color_accent</item>
         <item name="android:windowBackground">@color/bg_main</item>
         <item name="android:textColor">@color/text_primary</item>
+        <item name="alertDialogTheme">@style/Theme.AppCompat.Dialog.Alert</item>
     </style>
 </resources>

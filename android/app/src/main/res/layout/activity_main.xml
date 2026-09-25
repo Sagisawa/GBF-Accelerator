@@ -253,7 +253,7 @@
                 android:textSize="11sp" />
         </LinearLayout>
 
-        <!-- 4. CA Certificate Management & Trust Card -->
+        <!-- 4. Cache Management & Maintenance Card -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -262,56 +262,24 @@
             android:orientation="vertical"
             android:padding="14dp">
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="@string/section_cert_title"
-                    android:textColor="@color/text_primary"
-                    android:textSize="14sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tv_cert_status_badge"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="@color/color_stopped"
-                    android:paddingHorizontal="8dp"
-                    android:paddingVertical="3dp"
-                    android:text="@string/cert_status_not_ready"
-                    android:textColor="#FFFFFF"
-                    android:textSize="10sp"
-                    android:textStyle="bold" />
-            </LinearLayout>
-
-            <!-- Certificate SHA-256 Fingerprint -->
             <TextView
-                android:id="@+id/tv_cert_fingerprint"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:fontFamily="monospace"
-                android:text="SHA-256: --"
+                android:text="@string/section_cache_mgmt_title"
                 android:textColor="@color/text_primary"
-                android:textSize="11sp" />
+                android:textSize="14sp"
+                android:textStyle="bold" />
 
-            <!-- System Trust Detection Status -->
             <TextView
-                android:id="@+id/tv_cert_trust"
+                android:id="@+id/tv_cache_summary_inline"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/cert_trust_untrusted"
+                android:layout_marginTop="6dp"
+                android:text="本地缓存: 统计中..."
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp" />
 
-            <!-- Action Buttons: Install, Export, Settings -->
+            <!-- Action Buttons: Open, Slim, Clear -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -319,46 +287,37 @@
                 android:orientation="horizontal">
 
                 <Button
-                    android:id="@+id/btn_install_cert"
+                    android:id="@+id/btn_open_cache_dir"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:backgroundTint="@color/color_accent"
-                    android:text="@string/cert_install_btn"
-                    android:textColor="#FFFFFF"
+                    android:backgroundTint="@color/bg_subcard"
+                    android:text="@string/btn_open_cache_dir"
+                    android:textColor="@color/text_primary"
                     android:textSize="12sp" />
 
                 <Button
-                    android:id="@+id/btn_export_cert"
+                    android:id="@+id/btn_slim_cache"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
+                    android:layout_marginStart="6dp"
                     android:layout_weight="1"
                     android:backgroundTint="@color/bg_subcard"
-                    android:text="@string/cert_export_btn"
+                    android:text="@string/btn_slim_cache"
                     android:textColor="@color/text_primary"
                     android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btn_clear_cache"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="@color/bg_subcard"
+                    android:text="@string/btn_clear_cache"
+                    android:textColor="@color/color_warning"
+                    android:textSize="12sp" />
             </LinearLayout>
-
-            <Button
-                android:id="@+id/btn_security_settings"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:backgroundTint="@color/bg_subcard"
-                android:text="@string/cert_settings_btn"
-                android:textColor="@color/text_primary"
-                android:textSize="12sp" />
-
-            <!-- Detailed instructions -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:lineSpacingExtra="2dp"
-                android:text="@string/cert_instructions"
-                android:textColor="@color/text_secondary"
-                android:textSize="11sp" />
         </LinearLayout>
 
         <!-- 5. Performance & Cache Preferences Card -->

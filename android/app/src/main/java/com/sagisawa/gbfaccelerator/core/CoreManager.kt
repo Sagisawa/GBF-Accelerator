@@ -446,4 +446,63 @@ object CoreManager {
             }
         }
     }
+
+    fun clearCache(callback: ((Boolean, Int, Long) -> Unit)? = null) {
+        executor.execute {
+            try {
+                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/cache/clear")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 10000
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Origin", "http://127.0.0.1:$CONTROL_PORT")
+
+                val code = conn.responseCode
+                if (code == 200) {
+                    val resp = conn.inputStream.bufferedReader().use { it.readText() }
+                    conn.disconnect()
+                    val json = JSONObject(resp)
+                    val deleted = json.optInt("disk_files_deleted", 0)
+                    val freed = json.optLong("disk_bytes_freed", 0L)
+                    appendLog("[+] 静态缓存清理完成: 删除 $deleted 个文件, 释放 ${String.format(java.util.Locale.US, "%.2f", freed.toDouble() / (1024 * 1024))} MB")
+                    mainHandler.post { callback?.invoke(true, deleted, freed) }
+                } else {
+                    conn.disconnect()
+                    appendLog("[-] 静态缓存清理失败 (HTTP $code)")
+                    mainHandler.post { callback?.invoke(false, 0, 0L) }
+                }
+            } catch (e: Throwable) {
+                appendLog("[-] 静态缓存清理异常: ${e.message}")
+                mainHandler.post { callback?.invoke(false, 0, 0L) }
+            }
+        }
+    }
+
+    fun slimCache(callback: ((Boolean, String) -> Unit)? = null) {
+        executor.execute {
+            try {
+                val url = URL("http://127.0.0.1:$CONTROL_PORT/api/cache/slim?keep=8")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 3000
+                conn.readTimeout = 5000
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Origin", "http://127.0.0.1:$CONTROL_PORT")
+
+                val code = conn.responseCode
+                if (code == 200) {
+                    conn.disconnect()
+                    appendLog("[+] 智能缓存瘦身任务已在后台启动 (保留最新 8 个版本)")
+                    mainHandler.post { callback?.invoke(true, "瘦身任务已在后台启动") }
+                } else {
+                    val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
+                    conn.disconnect()
+                    appendLog("[-] 启动缓存瘦身失败: $err")
+                    mainHandler.post { callback?.invoke(false, err) }
+                }
+            } catch (e: Throwable) {
+                appendLog("[-] 缓存瘦身网络异常: ${e.message}")
+                mainHandler.post { callback?.invoke(false, e.message ?: "网络异常") }
+            }
+        }
+    }
 }
