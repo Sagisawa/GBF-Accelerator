@@ -19,14 +19,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class ChromiumBrowserAdapter(
     override val id: String = ID,
     override val name: String = NAME,
-    override val targetPackages: Set<String> = TARGET_PACKAGES,
-    proxyConfigurator: ProxyConfigurator = ProxyConfigurator.DEFAULT
-) : WebViewBrowserAdapter(
-    id = id,
-    name = name,
-    targetPackages = targetPackages,
-    proxyConfigurator = proxyConfigurator
-) {
+    override val targetPackages: Set<String> = TARGET_PACKAGES
+) : BrowserAdapter {
 
     companion object {
         const val ID = "chromium_browser"
@@ -56,9 +50,22 @@ class ChromiumBrowserAdapter(
         targetPackages = setOf(packageName)
     )
 
+    private val coreStarted = AtomicBoolean(false)
+
+    override fun matchesPackage(packageName: String): Boolean {
+        return "*" in targetPackages || packageName in targetPackages
+    }
+
+    override fun matchesProcess(processName: String): Boolean {
+        if ("*" in targetPackages) return true
+        return targetPackages.any { pkg ->
+            processName == pkg || processName.startsWith("$pkg:")
+        }
+    }
+
     override fun onModuleLoaded(processName: String, hookRegistry: HookRegistry) {
-        super.onModuleLoaded(processName, hookRegistry)
         val classLoader = javaClass.classLoader ?: ClassLoader.getSystemClassLoader()
+        installApplicationHooks(hookRegistry, classLoader)
         installChromiumCommandLineHooks(hookRegistry, classLoader)
         installX509Hooks(hookRegistry, classLoader)
     }
@@ -72,6 +79,37 @@ class ChromiumBrowserAdapter(
     override fun onPackageReady(packageName: String) {
         if (matchesPackage(packageName)) {
             Log.i(TAG, "[$name] Chromium Package ready: $packageName")
+        }
+    }
+
+    private fun onContextAvailable(context: Context) {
+        if (coreStarted.compareAndSet(false, true)) {
+            Log.i(TAG, "[GBF-ACC] Starting Embedded Go Core for Chromium host: ${context.packageName}")
+            EmbeddedCoreManager.ensureStarted(context)
+        }
+    }
+
+    fun installApplicationHooks(hookRegistry: HookRegistry, classLoader: ClassLoader) {
+        try {
+            val appClass = Class.forName("android.app.Application", true, classLoader)
+            val contextClass = Class.forName("android.content.Context", true, classLoader)
+            val attachBaseContextMethod = appClass.getDeclaredMethod("attachBaseContext", contextClass)
+            hookRegistry.hookMethod(attachBaseContextMethod) { thisObj, args ->
+                val ctx = args.firstOrNull() as? Context ?: (thisObj as? Context)
+                ctx?.let { onContextAvailable(it) }
+                false
+            }
+        } catch (_: Throwable) {
+        }
+
+        try {
+            val appClass = Class.forName("android.app.Application", true, classLoader)
+            val onCreateMethod = appClass.getMethod("onCreate")
+            hookRegistry.hookMethod(onCreateMethod) { thisObj, _ ->
+                (thisObj as? Context)?.let { onContextAvailable(it) }
+                false
+            }
+        } catch (_: Throwable) {
         }
     }
 
