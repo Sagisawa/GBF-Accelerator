@@ -512,7 +512,7 @@ func DownloadPlatformTools(
 
 	var resp *http.Response
 	var lastErr error
-	client := &http.Client{Timeout: 0}
+	client := buildDownloadHTTPClient("")
 
 	for _, dlURL := range candidateURLs {
 		req, err := http.NewRequestWithContext(ctx, "GET", dlURL, nil)

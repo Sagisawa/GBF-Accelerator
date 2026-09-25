@@ -62,6 +62,7 @@ func (c *ControlServer) getExeDir() string {
 func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Request) {
 	exeDir := c.getExeDir()
 	toolsDir := patcher.GetAndroidToolsDir()
+	patcher.SetUpstreamProxy(c.cfgMgr.GetEffectiveUpstreamProxy())
 
 	// 1. Probe Android Components
 	componentsInstalled, componentsVerified, componentStatuses, componentsErr := patcher.CheckComponents(toolsDir, exeDir)
@@ -528,6 +529,7 @@ func (c *ControlServer) handleAndroidComponentsDownload(w http.ResponseWriter, r
 
 	toolsDir := patcher.GetAndroidToolsDir()
 	exeDir := c.getExeDir()
+	patcher.SetUpstreamProxy(c.cfgMgr.GetEffectiveUpstreamProxy())
 
 	c.componentDlMu.Lock()
 	if c.componentDlActive {
@@ -921,6 +923,7 @@ func (c *ControlServer) handleAndroidAdbInstall(w http.ResponseWriter, req *http
 
 func (c *ControlServer) handleAndroidAdbDownloadTools(w http.ResponseWriter, req *http.Request) {
 	toolsDir := patcher.GetAndroidToolsDir()
+	patcher.SetUpstreamProxy(c.cfgMgr.GetEffectiveUpstreamProxy())
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
@@ -1018,6 +1021,7 @@ func (c *ControlServer) handleAndroidEnvInstallAll(w http.ResponseWriter, req *h
 	_ = json.NewDecoder(req.Body).Decode(&body)
 
 	toolsDir := patcher.GetAndroidToolsDir()
+	patcher.SetUpstreamProxy(c.cfgMgr.GetEffectiveUpstreamProxy())
 
 	c.componentDlMu.Lock()
 	if c.componentDlActive {

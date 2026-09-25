@@ -3,16 +3,19 @@ package patcher
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"gbf-proxy/config"
@@ -25,6 +28,52 @@ const (
 	AssetsRepo              = "Sagisawa/GBF-Accelerator-Assets"
 	AssetsTag               = "v1.0.0"
 )
+
+var (
+	proxyMu              sync.RWMutex
+	defaultUpstreamProxy string
+)
+
+// SetUpstreamProxy configures the proxy URL to use for downloading companion tools and assets from GitHub.
+func SetUpstreamProxy(proxy string) {
+	proxyMu.Lock()
+	defer proxyMu.Unlock()
+	defaultUpstreamProxy = strings.TrimSpace(proxy)
+}
+
+// GetUpstreamProxy returns the currently configured proxy URL for downloads.
+func GetUpstreamProxy() string {
+	proxyMu.RLock()
+	defer proxyMu.RUnlock()
+	return defaultUpstreamProxy
+}
+
+func buildDownloadHTTPClient(proxyURL string) *http.Client {
+	transport := &http.Transport{
+		TLSClientConfig:       &tls.Config{InsecureSkipVerify: false},
+		ResponseHeaderTimeout: 60 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+	}
+
+	if proxyURL == "" {
+		proxyURL = GetUpstreamProxy()
+	}
+
+	if proxyURL != "" && proxyURL != "auto" && proxyURL != "none" && proxyURL != "direct" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		} else {
+			transport.Proxy = http.ProxyFromEnvironment
+		}
+	} else {
+		transport.Proxy = http.ProxyFromEnvironment
+	}
+
+	return &http.Client{
+		Transport: transport,
+		Timeout:   0, // Streaming download timeouts are governed by context
+	}
+}
 
 // DisableSystemTools temporarily disables fallback discovery of host system Java
 // (JAVA_HOME, Android Studio JBR, system PATH) and host system ADB (C:\platform-tools, SDK, PATH).
@@ -289,9 +338,7 @@ func DownloadComponentsWithSpecs(
 		progressFn(prog)
 	}
 
-	client := &http.Client{
-		Timeout: 0, // Managed by ctx
-	}
+	client := buildDownloadHTTPClient("")
 
 	downloadedMap := make(map[string]string)
 
