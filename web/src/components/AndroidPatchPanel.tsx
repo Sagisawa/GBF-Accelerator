@@ -11,7 +11,6 @@ import {
   RefreshCw,
   FileBox,
   ShieldCheck,
-  Cpu,
   ChevronDown,
   ChevronUp,
   Download,
@@ -20,7 +19,6 @@ import {
   Layers,
   HardDrive,
   Globe,
-  Settings2,
   Archive,
 } from 'lucide-react'
 import {
@@ -90,6 +88,8 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   // ADB & Device state
   const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([])
   const [selectedDevice, setSelectedDevice] = useState<string>('')
+  const [targetExtractPackage, setTargetExtractPackage] = useState<string>('com.dena.skyleap')
+  const [isCustomExtractPackage, setIsCustomExtractPackage] = useState<boolean>(false)
   const [deviceApp, setDeviceApp] = useState<AdbProbeAppResponse | null>(null)
   const [isExtracting, setIsExtracting] = useState<boolean>(false)
   const [isInstalling, setIsInstalling] = useState<boolean>(false)
@@ -255,14 +255,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     }
     const dev = adbDevices.find(d => d.serial === selectedDevice)
     if (dev && dev.state === 'device') {
-      const targetPkg = inspectedPkg?.package_name || 'com.dena.skyleap'
+      const targetPkg = targetExtractPackage.trim() || inspectedPkg?.package_name || 'com.dena.skyleap'
       probeDeviceApp(selectedDevice, targetPkg)
         .then(setDeviceApp)
         .catch(() => setDeviceApp(null))
     } else {
       setDeviceApp(null)
     }
-  }, [selectedDevice, adbDevices, inspectedPkg])
+  }, [selectedDevice, adbDevices, targetExtractPackage, inspectedPkg])
 
   // Auto poll devices every 3s
   useEffect(() => {
@@ -274,11 +274,13 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const handleExtractFromDevice = async () => {
     if (!selectedDevice) return
     setIsExtracting(true)
-    showToast('正在从手机提取 SkyLeap 安装包与分包组件...', 'info')
+    const pkg = targetExtractPackage.trim() || 'com.dena.skyleap'
+    const appLabel = pkg === 'com.dena.skyleap' ? 'SkyLeap' : pkg
+    showToast(`正在从手机提取 ${appLabel} 安装包与分包组件...`, 'info')
     try {
-      const result = await extractDeviceApp(selectedDevice, 'com.dena.skyleap')
+      const result = await extractDeviceApp(selectedDevice, pkg)
       setInspectedPkg(result)
-      showToast(`提取成功！SkyLeap 版本 ${result.version_name} (${result.total_apks} 个分包已就绪)`, 'success')
+      showToast(`提取成功！${appLabel} 版本 ${result.version_name || '已就绪'} (${result.total_apks} 个分包已就绪)`, 'success')
     } catch (e: any) {
       showToast(`从手机提取失败: ${e.message}`, 'error')
     } finally {
@@ -514,6 +516,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const isCorrupted = Boolean(envStatus?.components_corrupted)
   const isComponentsVerified = Boolean(envStatus?.components_verified)
   const isDownloadActive = Boolean(downloadProgress?.active || envStatus?.download?.active)
+  const isEnvironmentReady = isReady && isComponentsVerified
   const progressPercent = Math.round((patchStatus?.progress ?? 0) * 100)
 
   const patchResult = patchStatus?.result
@@ -528,34 +531,44 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
   return (
     <div className="w-full flex flex-col gap-4 sm:gap-5">
-      {/* 1. Header Banner & Target Browser Guidance */}
+      {/* 1. Unified All-in-One Header & Environment Card */}
       <div className="bg-gradient-to-r from-sky-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-5 sm:p-6 shadow-md border border-sky-800/40 relative overflow-hidden">
         <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-radial from-sky-400/10 to-transparent pointer-events-none" />
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        
+        {/* Top: Title & Badges & Quick Actions */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
           <div className="space-y-1.5 max-w-2xl">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="p-1.5 rounded-lg bg-sky-500/20 text-sky-300 border border-sky-400/30">
                 <Smartphone className="w-5 h-5" />
               </span>
               <h1 className="text-lg sm:text-xl font-bold tracking-tight">
-                Android 浏览器免 Root 全内置补丁 (All-in-One)
+                Android 浏览器免 Root 全内置补丁
               </h1>
               <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-200 border border-sky-400/30">
                 All-in-One v2.0
               </span>
+              <span
+                className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
+                  isEnvironmentReady
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30'
+                    : 'bg-amber-500/20 text-amber-200 border-amber-400/30'
+                }`}
+              >
+                {isEnvironmentReady ? '● 补丁环境齐备' : '○ 缺少环境依赖'}
+              </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              <strong>建议使用标准系统 WebView 浏览器（优先推荐 DeNA SkyLeap）</strong>，亦支持任意系统 WebView 浏览器或多开分身。
-              本工具将 Go 原生加速核心直接内嵌至浏览器安装包，安装即用。免 Root、零悬浮球干扰、无需手机后台额外常驻独立 App。
+              将 Go 原生加速核心直接内嵌至浏览器安装包，安装即用。免 Root、零悬浮球干扰。优先推荐 DeNA SkyLeap，亦支持任意系统 WebView 浏览器或双开分身。
             </p>
           </div>
 
-          <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+          <div className="flex items-center gap-2 self-end sm:self-center shrink-0 flex-wrap">
             <button
               type="button"
               onClick={handleOpenBackup}
-              className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs sm:text-sm font-semibold border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer"
-              title="浏览已备份的原版安装包"
+              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs font-semibold border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer"
+              title="浏览已备份的原版安装包目录"
             >
               <Archive className="w-3.5 h-3.5" />
               <span>原版备份</span>
@@ -564,108 +577,106 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               type="button"
               onClick={checkEnv}
               disabled={loadingEnv}
-              className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs sm:text-sm font-semibold border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs font-semibold border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              title="重新检测运行库与工具链"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingEnv ? 'animate-spin' : ''}`} />
               <span>检测依赖</span>
             </button>
+            {isEnvironmentReady ? (
+              <button
+                type="button"
+                onClick={handleUninstallAllEnv}
+                disabled={isUninstallingAll || isDownloadActive}
+                className="px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-xs font-semibold border border-rose-400/30 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                title="安全停止 ADB 并彻底清理本地下载的工具与 JRE 缓存以释放磁盘"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>一键卸载环境</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleInstallAllEnv}
+                disabled={isInstallingAll || isDownloadActive}
+                className="px-3.5 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 select-none"
+              >
+                <Zap className="w-3.5 h-3.5 fill-current" />
+                <span>一键安装全环境</span>
+              </button>
+            )}
           </div>
         </div>
-      </div>
 
-      {/* 2. Full Environment & Tools Management Card */}
-      <div className="rounded-xl border border-indigo-100 bg-gradient-to-r from-indigo-50/70 via-slate-50 to-sky-50/60 p-4 sm:p-5 shadow-2xs">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-indigo-100/80 mb-3.5">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
-              <Layers className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm sm:text-base font-bold text-slate-800">
-                  全套环境组件与运行库管理
-                </h2>
-                <span
-                  className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${
-                    envStatus?.full_env_ready
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                      : envStatus?.ready
-                      ? 'bg-sky-50 text-sky-700 border-sky-200'
-                      : 'bg-amber-50 text-amber-700 border-amber-200'
-                  }`}
-                >
-                  {envStatus?.full_env_ready ? '全套环境齐备' : envStatus?.ready ? '核心就绪 (缺ADB)' : '环境待配置'}
+        {/* Bottom Bar: Environment summary info & component pill status */}
+        <div className="pt-3.5 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-4 flex-wrap text-slate-300">
+            {envStatus?.tools_disk_bytes ? (
+              <div className="flex items-center gap-1.5">
+                <HardDrive className="w-3.5 h-3.5 text-sky-400" />
+                <span>工具链占用:</span>
+                <span className="font-mono text-white font-semibold">
+                  {formatBytes(envStatus?.tools_disk_bytes)}
                 </span>
               </div>
-              <p className="text-xs text-slate-600 mt-0.5">
-                包含 LSPatch 核心、Xposed 全内置模块、轻量 ADB 平台工具与免配置 Java 21+ 运行环境 (100% 官方源校验)。
-              </p>
-            </div>
+            ) : null}
+            {adbDevices.filter(d => d.state === 'device').length > 0 ? (
+              <div className="flex items-center gap-1.5 text-emerald-300 font-medium">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>已连接 {adbDevices.filter(d => d.state === 'device').length} 台手机设备</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 text-slate-400">
+                <Smartphone className="w-3.5 h-3.5" />
+                <span>USB 调试手机未连接 (插上即用)</span>
+              </div>
+            )}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-            <button
-              type="button"
-              onClick={handleInstallAllEnv}
-              disabled={isInstallingAll || isDownloadActive}
-              className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 select-none"
-            >
-              <Zap className="w-3.5 h-3.5 fill-current" />
-              <span>一键安装全环境</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleUninstallAllEnv}
-              disabled={isUninstallingAll || isDownloadActive}
-              className="px-3.5 py-2 rounded-xl bg-white hover:bg-rose-50 text-rose-700 hover:text-rose-800 text-xs sm:text-sm font-semibold border border-rose-200 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 select-none"
-              title="安全停止 ADB 并彻底清理本地下载的工具与 JRE 缓存"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>一键卸载全环境</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Disk Space & Backup Info */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-600 bg-white/70 p-3 rounded-lg border border-slate-200/80 mb-3">
-          <div className="flex items-center gap-2">
-            <HardDrive className="w-4 h-4 text-slate-500 shrink-0" />
-            <span>已占用工具链与运行库空间：</span>
-            <span className="font-mono font-bold text-slate-800">
-              {formatBytes(envStatus?.tools_disk_bytes)}
+          {/* Quick status pills for components */}
+          <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+            <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+              envStatus?.java?.found ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-white/5 border-white/10 text-slate-400'
+            }`}>
+              {envStatus?.java?.found ? '✓' : '✗'} Java 21+
             </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleOpenBackup}
-              className="text-xs text-indigo-700 hover:text-indigo-900 font-semibold underline flex items-center gap-1 cursor-pointer"
-            >
-              <Archive className="w-3.5 h-3.5" />
-              <span>查看本地原始 APK 备份目录 (backups/)</span>
-            </button>
+            <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+              envStatus?.lspatch?.found && envStatus.lspatch.verified ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-white/5 border-white/10 text-slate-400'
+            }`}>
+              {envStatus?.lspatch?.found && envStatus.lspatch.verified ? '✓' : '✗'} LSPatch
+            </span>
+            <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+              envStatus?.module?.found && envStatus.module.verified ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-white/5 border-white/10 text-slate-400'
+            }`}>
+              {envStatus?.module?.found && envStatus.module.verified ? '✓' : '✗'} 内置模块
+            </span>
+            <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+              envStatus?.adb?.found ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-white/5 border-white/10 text-slate-400'
+            }`}>
+              {envStatus?.adb?.found ? '✓' : '✗'} ADB
+            </span>
           </div>
         </div>
 
         {/* Download Progress Bar if Active */}
         {isDownloadActive && (
-          <div className="space-y-2 mb-3 bg-white p-3.5 rounded-lg border border-indigo-200 shadow-2xs">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-slate-700">
+          <div className="mt-3.5 pt-3.5 border-t border-white/10 space-y-2">
+            <div className="flex items-center justify-between text-xs text-sky-200">
+              <span className="font-semibold">
                 {downloadProgress?.stage === 'verifying' ? '正在执行 SHA-256 完整性校验...' : '环境组件传输中...'}
                 {downloadProgress?.current_file ? ` (${downloadProgress.current_file})` : ''}
               </span>
-              <span className="font-mono font-bold text-indigo-700">
+              <span className="font-mono font-bold text-white">
                 {Math.round(downloadProgress?.percent || 0)}%
               </span>
             </div>
-            <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden">
+            <div className="w-full bg-black/40 rounded-full h-2 overflow-hidden border border-white/10">
               <div
-                className="bg-indigo-600 h-2 rounded-full transition-all duration-200"
+                className="bg-sky-400 h-2 rounded-full transition-all duration-200"
                 style={{ width: `${Math.round(downloadProgress?.percent || 0)}%` }}
               />
             </div>
-            <div className="flex items-center justify-between text-[11px] text-slate-500 font-mono">
+            <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
               <span>
                 {formatBytes(downloadProgress?.downloaded_bytes)} / {formatBytes(downloadProgress?.total_bytes)}
               </span>
@@ -676,7 +687,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 <button
                   type="button"
                   onClick={handleCancelDownload}
-                  className="text-rose-600 hover:text-rose-800 font-semibold cursor-pointer underline"
+                  className="text-rose-400 hover:text-rose-300 font-semibold cursor-pointer underline"
                 >
                   取消
                 </button>
@@ -686,184 +697,35 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         )}
       </div>
 
-      {/* 3. Preset Mobile Acceleration Policy Notice */}
-      <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-4 sm:p-5 space-y-2.5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Settings2 className="w-4 h-4 text-sky-600" />
-            <h2 className="text-sm sm:text-base font-bold text-slate-800">
-              内嵌加速核心预设策略 (轻量无感、零侵入)
-            </h2>
+      {/* Conditional: If Environment is NOT ready, display clean onboarding card */}
+      {!isEnvironmentReady ? (
+        <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-8 sm:p-10 text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto shadow-2xs">
+            <Layers className="w-7 h-7" />
           </div>
-          <span className="text-[11px] font-semibold text-slate-500 font-mono bg-white px-2 py-0.5 rounded border border-slate-200">
-            内置守护线程: 127.0.0.1:8124 / 8125
-          </span>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 pt-1 text-xs">
-          <div className="p-2.5 rounded-lg bg-white border border-slate-200/80 flex flex-col gap-1">
-            <div className="font-bold text-slate-800 flex items-center justify-between">
-              <span>RAM 缓存</span>
-              <span className="text-emerald-700 font-mono font-semibold">0 MB (已关闭)</span>
-            </div>
-            <div className="text-[11px] text-slate-500 leading-relaxed">
-              移动端避免占用多任务 RAM，静态素材全量持久化于应用私有磁盘缓存。
-            </div>
+          <div className="space-y-1.5 max-w-lg mx-auto">
+            <h3 className="text-base sm:text-lg font-bold text-slate-800">
+              请先就绪 Android 补丁制作环境
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
+              制作全内置补丁需要依赖 LSPatch 核心、内置 Xposed 模块以及免配置的轻量 Java 21+ 运行库。
+              点击下方【一键安装全环境】，系统将全自动完成静默下载与校验，环境齐备后将自动展开制作面板。
+            </p>
           </div>
-          <div className="p-2.5 rounded-lg bg-white border border-slate-200/80 flex flex-col gap-1">
-            <div className="font-bold text-slate-800 flex items-center justify-between">
-              <span>预取调度 (Prefetch)</span>
-              <span className="text-slate-700 font-mono font-semibold">关闭 (动态避让)</span>
-            </div>
-            <div className="text-[11px] text-slate-500 leading-relaxed">
-              严格禁用后台预取，节约手机蜂窝网络流量与电量，前台战斗网络绝对优先。
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-white border border-slate-200/80 flex flex-col gap-1">
-            <div className="font-bold text-slate-800 flex items-center justify-between">
-              <span>出站网络策略</span>
-              <span className="text-sky-700 font-mono font-semibold">直连透明转发</span>
-            </div>
-            <div className="text-[11px] text-slate-500 leading-relaxed">
-              直连 Cygames 官方 API，业务语义 100% 透明穿透，零自定义 Header 污染。
-            </div>
-          </div>
-          <div className="p-2.5 rounded-lg bg-white border border-slate-200/80 flex flex-col gap-1">
-            <div className="font-bold text-slate-800 flex items-center justify-between">
-              <span>管理控制台</span>
-              <span className="text-indigo-700 font-mono font-semibold">:8125 无悬浮窗</span>
-            </div>
-            <div className="text-[11px] text-slate-500 leading-relaxed">
-              游戏画面无悬浮窗打扰；在浏览器内访问 <code>127.0.0.1:8125</code> 即可查看控制面。
-            </div>
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={handleInstallAllEnv}
+              disabled={isInstallingAll || isDownloadActive}
+              className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-sm font-bold shadow-sm transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 select-none"
+            >
+              <Zap className="w-4 h-4 fill-current" />
+              <span>{isDownloadActive ? '环境组件下载中...' : '一键安装全环境 (约 120 MB)'}</span>
+            </button>
           </div>
         </div>
-      </div>
-
-      {/* 4. Environment Probe Card */}
-      <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-5">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3.5">
-          <div className="flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-sky-600" />
-            <h2 className="text-sm sm:text-base font-bold text-slate-800">
-              运行环境与依赖就绪检查
-            </h2>
-          </div>
-          <span
-            className={`text-xs font-bold px-2.5 py-0.5 rounded-full border ${
-              isReady && isComponentsVerified
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                : 'bg-amber-50 text-amber-800 border-amber-200'
-            }`}
-          >
-            {isReady && isComponentsVerified ? '核心依赖齐备 · 可正常制作' : '环境未齐备 · 点击上方一键安装'}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {/* Java Runtime */}
-          <div className="p-3 rounded-lg border border-slate-200 bg-slate-50/60 flex flex-col justify-between gap-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-600">Java 21+ 运行环境</span>
-              {envStatus?.java?.found ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-rose-500" />
-              )}
-            </div>
-            <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.java?.path || ''}>
-              {envStatus?.java?.found ? envStatus.java.version || '已检测到 Java' : '未找到 Java 21+'}
-            </div>
-            {!envStatus?.java?.found && (
-              <span className="text-[11px] text-rose-600">
-                可点击上方「一键安装全环境」免配置自动就绪。
-              </span>
-            )}
-          </div>
-
-          {/* LSPatch Jar */}
-          <div className="p-3 rounded-lg border border-slate-200 bg-slate-50/60 flex flex-col justify-between gap-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-600">LSPatch 核心</span>
-              {envStatus?.lspatch?.verified ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              ) : isCorrupted ? (
-                <AlertCircle className="w-4 h-4 text-rose-500" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-amber-500" />
-              )}
-            </div>
-            <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.lspatch?.path || ''}>
-              {envStatus?.lspatch?.verified
-                ? `v1.2 (Build 487) · 校验通过`
-                : isCorrupted
-                ? 'SHA-256 不匹配 (损坏)'
-                : '未下载 (首次使用需下载)'}
-            </div>
-            {envStatus?.lspatch?.verified && (
-              <span className="text-[11px] text-emerald-700">固定版本，已防篡改校验</span>
-            )}
-          </div>
-
-          {/* SkyLeapModule APK */}
-          <div className="p-3 rounded-lg border border-slate-200 bg-slate-50/60 flex flex-col justify-between gap-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-600">All-in-One 全内置模块</span>
-              {envStatus?.module?.verified ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              ) : isCorrupted ? (
-                <AlertCircle className="w-4 h-4 text-rose-500" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-amber-500" />
-              )}
-            </div>
-            <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.module?.path || ''}>
-              {envStatus?.module?.verified
-                ? '内置 Go 核心与 WebView 挂钩'
-                : isCorrupted
-                ? '哈希不匹配 (已损坏)'
-                : '未下载 (首次使用需下载)'}
-            </div>
-            {envStatus?.module?.verified && (
-              <span className="text-[11px] text-slate-500 truncate" title={envStatus.module.path}>
-                {envStatus.module.path.split(/[\\/]/).pop()}
-              </span>
-            )}
-          </div>
-
-          {/* ADB Debug Bridge */}
-          <div className="p-3 rounded-lg border border-slate-200 bg-slate-50/60 flex flex-col justify-between gap-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-slate-600">ADB 手机调试通信</span>
-              {envStatus?.adb?.found ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-amber-500" />
-              )}
-            </div>
-            <div className="text-xs font-mono text-slate-800 truncate" title={envStatus?.adb?.path || ''}>
-              {envStatus?.adb?.found
-                ? envStatus.adb.version || '已检测到 ADB'
-                : '未找到 ADB'}
-            </div>
-            {envStatus?.adb?.found ? (
-              <span className="text-[11px] text-emerald-700">
-                {adbDevices.filter(d => d.state === 'device').length > 0
-                  ? `已连接 ${adbDevices.filter(d => d.state === 'device').length} 台设备`
-                  : '未连接手机 (插上即用)'}
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={handleDownloadAdb}
-                disabled={isDownloadingAdb}
-                className="text-[11px] text-indigo-700 hover:text-indigo-900 underline font-medium text-left cursor-pointer"
-              >
-                {isDownloadingAdb ? '正在下载平台工具...' : '一键下载轻量 ADB (约 2.8MB)'}
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
+      ) : (
+        <>
 
       {/* 5. Input & Package Selection */}
       <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-5">
@@ -981,11 +843,55 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               </div>
             ) : (
               <div className="space-y-3">
+                {/* Target App Selector */}
+                <div className="bg-white border border-slate-200/90 rounded-lg p-3 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
+                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                      <span>待提取的目标浏览器应用：</span>
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      默认优先推荐 SkyLeap，亦可提取或指定其它已安装浏览器
+                    </span>
+                  </div>
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <select
+                      value={isCustomExtractPackage ? '__custom__' : targetExtractPackage}
+                      onChange={(e) => {
+                        if (e.target.value === '__custom__') {
+                          setIsCustomExtractPackage(true)
+                        } else {
+                          setIsCustomExtractPackage(false)
+                          setTargetExtractPackage(e.target.value)
+                        }
+                      }}
+                      className="text-xs font-semibold text-slate-800 bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                    >
+                      <option value="com.dena.skyleap">DeNA SkyLeap (官方推荐 · com.dena.skyleap)</option>
+                      <option value="com.android.chrome">Google Chrome (com.android.chrome)</option>
+                      <option value="com.sec.android.app.sbrowser">三星浏览器 (com.sec.android.app.sbrowser)</option>
+                      <option value="com.brave.browser">Brave (com.brave.browser)</option>
+                      <option value="com.kiwibrowser.browser">Kiwi Browser (com.kiwibrowser.browser)</option>
+                      <option value="__custom__">自定义指定其它包名...</option>
+                    </select>
+                    {isCustomExtractPackage && (
+                      <input
+                        type="text"
+                        value={targetExtractPackage}
+                        onChange={(e) => setTargetExtractPackage(e.target.value.trim())}
+                        placeholder="输入手机中已安装的应用包名，如 com.example.browser"
+                        className="text-xs font-mono text-slate-800 bg-white border border-indigo-300 rounded-lg px-2.5 py-1.5 flex-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    )}
+                  </div>
+                </div>
+
                 {deviceApp?.installed ? (
                   <div className="bg-white border border-emerald-200/90 rounded-lg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900 text-sm">SkyLeap 浏览器</span>
+                        <span className="font-bold text-slate-900 text-sm">
+                          {deviceApp.package_name === 'com.dena.skyleap' ? 'SkyLeap 浏览器' : deviceApp.package_name}
+                        </span>
                         <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">
                           v{deviceApp.version_name || '已安装'}
                         </span>
@@ -1020,9 +926,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                     <div className="space-y-1">
-                      <div className="font-semibold">未在所选手机中检测到官方 SkyLeap 浏览器</div>
+                      <div className="font-semibold">
+                        未在所选手机中检测到应用 [{targetExtractPackage || 'com.dena.skyleap'}]
+                      </div>
                       <div className="text-amber-800 text-[11px]">
-                        请先在手机上安装官方 SkyLeap，或切换到上方【拖拽上传】标签页直接导入本地下载好的安装包。
+                        请确认手机上已安装该应用，或检查包名拼写；亦可切换到上方【拖拽上传】标签页直接导入本地下载好的安装包。
                       </div>
                     </div>
                   </div>
@@ -1499,6 +1407,8 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             </div>
           )}
         </div>
+      )}
+        </>
       )}
 
       {/* 7. User Notices & Security Disclaimers */}
