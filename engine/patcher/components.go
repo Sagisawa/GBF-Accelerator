@@ -198,6 +198,15 @@ func GetFullEnvironmentSpecs() []ComponentSpec {
 			URL:         baseReleaseURL + "jre-windows-x64.zip",
 			Description: "便携 Java 21+ 运行环境 (JBR / OpenJDK)",
 		})
+	} else if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+		specs = append(specs, ComponentSpec{
+			ID:          "jre",
+			FileName:    "jre-macos-arm64.zip",
+			Size:        204381527,
+			SHA256:      "3b1ac55c9f7a1e730e9c89d75fbf984456e06048836d55f05a5ce25696833e5d",
+			URL:         baseReleaseURL + "jre-macos-arm64.zip",
+			Description: "便携 Java 21+ 运行环境 (Eclipse Temurin / OpenJDK)",
+		})
 	}
 
 	return specs

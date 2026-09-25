@@ -755,6 +755,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"version":                  config.AppVersion,
 		"engine":                   "go",
 		"platform":                 runtime.GOOS,
+		"arch":                      runtime.GOARCH,
 		"proxy_running":            proxyRunning,
 		"listen_host":              c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":              cfg.ListenPort,

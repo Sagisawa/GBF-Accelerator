@@ -278,7 +278,9 @@ export const App: React.FC = () => {
   )
 
   // Android patch tooling is exposed only on the supported desktop hosts.
-  const showAndroidPatch = status?.platform === 'windows' || status?.platform === 'darwin'
+  const showAndroidPatch =
+    status?.platform === 'windows' ||
+    (status?.platform === 'darwin' && status?.arch === 'arm64')
 
   useEffect(() => {
     if (!showAndroidPatch && activeTab === 'android') {
