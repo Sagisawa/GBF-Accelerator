@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -753,6 +754,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"pid":                      os.Getpid(),
 		"version":                  config.AppVersion,
 		"engine":                   "go",
+		"platform":                 runtime.GOOS,
 		"proxy_running":            proxyRunning,
 		"listen_host":              c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":              cfg.ListenPort,

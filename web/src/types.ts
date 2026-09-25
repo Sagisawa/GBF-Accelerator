@@ -1,5 +1,6 @@
 export interface RuntimeStatus {
   version: string;
+  platform?: string;
   proxy_running: boolean;
   listen_host: string;
   listen_port: number;
