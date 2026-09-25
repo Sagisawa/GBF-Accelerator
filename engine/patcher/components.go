@@ -26,6 +26,18 @@ const (
 	AssetsTag               = "v1.0.0"
 )
 
+// DisableSystemTools temporarily disables fallback discovery of host system Java
+// (JAVA_HOME, Android Studio JBR, system PATH) and host system ADB (C:\platform-tools, SDK, PATH).
+// When true, the engine strictly requires the isolated portable tools inside tools/android and jre.
+var DisableSystemTools = true
+
+func isSystemToolsDisabled() bool {
+	if v := os.Getenv("GBF_DISABLE_SYSTEM_TOOLS"); v != "" {
+		return v == "1" || strings.EqualFold(v, "true")
+	}
+	return DisableSystemTools
+}
+
 type ComponentSpec struct {
 	ID          string `json:"id"`
 	FileName    string `json:"file_name"`
@@ -324,87 +336,91 @@ func DownloadComponentsWithSpecs(
 		}
 
 		// 1.1 Check if environment runtime is already satisfied without needing archive download
-		if spec.ID == "platform-tools" {
-			if adbFound, _, _, _ := CheckAdb(toolsDir, ""); adbFound {
-				prog.DownloadedBytes += spec.Size
-				prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
-				downloadedMap[spec.ID] = "installed"
-				if progressFn != nil {
-					progressFn(prog)
+		if !isSystemToolsDisabled() {
+			if spec.ID == "platform-tools" {
+				if adbFound, _, _, _ := CheckAdb(toolsDir, ""); adbFound {
+					prog.DownloadedBytes += spec.Size
+					prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
+					downloadedMap[spec.ID] = "installed"
+					if progressFn != nil {
+						progressFn(prog)
+					}
+					continue
 				}
-				continue
-			}
-		} else if spec.ID == "jre" {
-			if _, _, err := FindJavaRuntime(""); err == nil {
-				prog.DownloadedBytes += spec.Size
-				prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
-				downloadedMap[spec.ID] = "installed"
-				if progressFn != nil {
-					progressFn(prog)
+			} else if spec.ID == "jre" {
+				if _, _, err := FindJavaRuntime(""); err == nil {
+					prog.DownloadedBytes += spec.Size
+					prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
+					downloadedMap[spec.ID] = "installed"
+					if progressFn != nil {
+						progressFn(prog)
+					}
+					continue
 				}
-				continue
 			}
 		}
 
 		// 1.2 Check local candidate locations to avoid external network download
 		var localCandidate string
-		switch spec.ID {
-		case "module":
-			if modPath, err := FindModuleApk("", ""); err == nil && modPath != targetPath {
-				if sha, err := ComputeFileSHA256(modPath); err == nil && strings.EqualFold(sha, spec.SHA256) {
-					localCandidate = modPath
-				}
-			}
-		case "lspatch":
-			if jarPath, err := FindLSPatchJar("", ""); err == nil && jarPath != targetPath {
-				if sha, err := ComputeFileSHA256(jarPath); err == nil && strings.EqualFold(sha, spec.SHA256) {
-					localCandidate = jarPath
-				}
-			}
-		case "licenses":
-			licCandidates := []string{
-				filepath.Join(toolsDir, "..", "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
-				filepath.Join(config.GetBaseDir(), "..", "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
-				filepath.Join(config.GetBaseDir(), "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
-				filepath.Join("tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
-				filepath.Join(config.GetBaseDir(), "release", "THIRD_PARTY_LICENSES.md"),
-				filepath.Join(config.GetBaseDir(), "..", "release", "THIRD_PARTY_LICENSES.md"),
-			}
-			for _, cand := range licCandidates {
-				if cand != targetPath {
-					if sha, err := ComputeFileSHA256(cand); err == nil && strings.EqualFold(sha, spec.SHA256) {
-						localCandidate = cand
-						break
+		if !isSystemToolsDisabled() {
+			switch spec.ID {
+			case "module":
+				if modPath, err := FindModuleApk("", ""); err == nil && modPath != targetPath {
+					if sha, err := ComputeFileSHA256(modPath); err == nil && strings.EqualFold(sha, spec.SHA256) {
+						localCandidate = modPath
 					}
 				}
-			}
-		case "platform-tools":
-			ptCandidates := []string{
-				filepath.Join(config.GetBaseDir(), "release", spec.FileName),
-				filepath.Join(config.GetBaseDir(), "..", "release", spec.FileName),
-				filepath.Join(toolsDir, "..", "..", "release", spec.FileName),
-				filepath.Join("release", spec.FileName),
-			}
-			for _, cand := range ptCandidates {
-				if cand != targetPath {
-					if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
-						localCandidate = cand
-						break
+			case "lspatch":
+				if jarPath, err := FindLSPatchJar("", ""); err == nil && jarPath != targetPath {
+					if sha, err := ComputeFileSHA256(jarPath); err == nil && strings.EqualFold(sha, spec.SHA256) {
+						localCandidate = jarPath
 					}
 				}
-			}
-		case "jre":
-			jreCandidates := []string{
-				filepath.Join(config.GetBaseDir(), "release", spec.FileName),
-				filepath.Join(config.GetBaseDir(), "..", "release", spec.FileName),
-				filepath.Join(toolsDir, "..", "..", "release", spec.FileName),
-				filepath.Join("release", spec.FileName),
-			}
-			for _, cand := range jreCandidates {
-				if cand != targetPath {
-					if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
-						localCandidate = cand
-						break
+			case "licenses":
+				licCandidates := []string{
+					filepath.Join(toolsDir, "..", "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
+					filepath.Join(config.GetBaseDir(), "..", "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
+					filepath.Join(config.GetBaseDir(), "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
+					filepath.Join("tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
+					filepath.Join(config.GetBaseDir(), "release", "THIRD_PARTY_LICENSES.md"),
+					filepath.Join(config.GetBaseDir(), "..", "release", "THIRD_PARTY_LICENSES.md"),
+				}
+				for _, cand := range licCandidates {
+					if cand != targetPath {
+						if sha, err := ComputeFileSHA256(cand); err == nil && strings.EqualFold(sha, spec.SHA256) {
+							localCandidate = cand
+							break
+						}
+					}
+				}
+			case "platform-tools":
+				ptCandidates := []string{
+					filepath.Join(config.GetBaseDir(), "release", spec.FileName),
+					filepath.Join(config.GetBaseDir(), "..", "release", spec.FileName),
+					filepath.Join(toolsDir, "..", "..", "release", spec.FileName),
+					filepath.Join("release", spec.FileName),
+				}
+				for _, cand := range ptCandidates {
+					if cand != targetPath {
+						if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
+							localCandidate = cand
+							break
+						}
+					}
+				}
+			case "jre":
+				jreCandidates := []string{
+					filepath.Join(config.GetBaseDir(), "release", spec.FileName),
+					filepath.Join(config.GetBaseDir(), "..", "release", spec.FileName),
+					filepath.Join(toolsDir, "..", "..", "release", spec.FileName),
+					filepath.Join("release", spec.FileName),
+				}
+				for _, cand := range jreCandidates {
+					if cand != targetPath {
+						if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
+							localCandidate = cand
+							break
+						}
 					}
 				}
 			}

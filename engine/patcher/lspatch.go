@@ -71,24 +71,26 @@ func FindJavaRuntime(overridePath string) (path string, version string, err erro
 		)
 	}
 
-	if jh := os.Getenv("JAVA_HOME"); jh != "" {
-		binName := "java"
-		if runtime.GOOS == "windows" {
-			binName = "java.exe"
+	if !isSystemToolsDisabled() {
+		if jh := os.Getenv("JAVA_HOME"); jh != "" {
+			binName := "java"
+			if runtime.GOOS == "windows" {
+				binName = "java.exe"
+			}
+			candidates = append(candidates, filepath.Join(jh, "bin", binName))
 		}
-		candidates = append(candidates, filepath.Join(jh, "bin", binName))
-	}
 
-	if runtime.GOOS == "windows" {
-		candidates = append(candidates, `C:\Program Files\Android\Android Studio\jbr\bin\java.exe`)
-		candidates = append(candidates, `C:\Program Files\Android\Android Studio Preview\jbr\bin\java.exe`)
-	} else if runtime.GOOS == "darwin" {
-		candidates = append(candidates, "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java")
-	}
+		if runtime.GOOS == "windows" {
+			candidates = append(candidates, `C:\Program Files\Android\Android Studio\jbr\bin\java.exe`)
+			candidates = append(candidates, `C:\Program Files\Android\Android Studio Preview\jbr\bin\java.exe`)
+		} else if runtime.GOOS == "darwin" {
+			candidates = append(candidates, "/Applications/Android Studio.app/Contents/jbr/Contents/Home/bin/java")
+		}
 
-	// PATH lookup
-	if path, err := exec.LookPath("java"); err == nil {
-		candidates = append(candidates, path)
+		// PATH lookup
+		if path, err := exec.LookPath("java"); err == nil {
+			candidates = append(candidates, path)
+		}
 	}
 
 	var checkedErrors []string

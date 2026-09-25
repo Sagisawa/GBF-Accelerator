@@ -61,44 +61,55 @@ func FindAdb(toolsDir, exeDir string) (string, error) {
 	}
 
 	// 3. Look in common OS specific paths
-	switch runtime.GOOS {
-	case "windows":
-		candidates = append(candidates,
-			`C:\platform-tools\adb.exe`,
-			filepath.Join(os.Getenv("LOCALAPPDATA"), "Android", "Sdk", "platform-tools", "adb.exe"),
-			filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local", "Android", "Sdk", "platform-tools", "adb.exe"),
-		)
-	case "darwin":
-		home := os.Getenv("HOME")
-		candidates = append(candidates,
-			filepath.Join(home, "Library", "Android", "sdk", "platform-tools", "adb"),
-			"/opt/homebrew/bin/adb",
-			"/usr/local/bin/adb",
-		)
-	case "linux":
-		home := os.Getenv("HOME")
-		candidates = append(candidates,
-			filepath.Join(home, "Android", "Sdk", "platform-tools", "adb"),
-			"/usr/bin/adb",
-			"/usr/local/bin/adb",
-		)
-	}
+	if !isSystemToolsDisabled() {
+		switch runtime.GOOS {
+		case "windows":
+			candidates = append(candidates,
+				`C:\platform-tools\adb.exe`,
+				filepath.Join(os.Getenv("LOCALAPPDATA"), "Android", "Sdk", "platform-tools", "adb.exe"),
+				filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local", "Android", "Sdk", "platform-tools", "adb.exe"),
+			)
+		case "darwin":
+			home := os.Getenv("HOME")
+			candidates = append(candidates,
+				filepath.Join(home, "Library", "Android", "sdk", "platform-tools", "adb"),
+				"/opt/homebrew/bin/adb",
+				"/usr/local/bin/adb",
+			)
+		case "linux":
+			home := os.Getenv("HOME")
+			candidates = append(candidates,
+				filepath.Join(home, "Android", "Sdk", "platform-tools", "adb"),
+				"/usr/bin/adb",
+				"/usr/local/bin/adb",
+			)
+		}
 
-	for _, c := range candidates {
-		if c == "" {
-			continue
+		for _, c := range candidates {
+			if c == "" {
+				continue
+			}
+			if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+				return c, nil
+			}
 		}
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
-			return c, nil
-		}
-	}
 
-	// 4. Look in system PATH
-	if p, err := exec.LookPath(adbExe); err == nil {
-		if abs, err := filepath.Abs(p); err == nil {
-			return abs, nil
+		// 4. Look in system PATH
+		if p, err := exec.LookPath(adbExe); err == nil {
+			if abs, err := filepath.Abs(p); err == nil {
+				return abs, nil
+			}
+			return p, nil
 		}
-		return p, nil
+	} else {
+		for _, c := range candidates {
+			if c == "" {
+				continue
+			}
+			if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+				return c, nil
+			}
+		}
 	}
 
 	return "", fmt.Errorf("adb executable not found on system")

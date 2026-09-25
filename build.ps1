@@ -303,39 +303,41 @@ function Build-Windows {
     }
     Copy-Item -Path "$StagingDir\*" -Destination $UnzippedDistDir -Recurse -Force
 
-    # Ensure unzipped distribution directory has Android tools & JRE populated for immediate local testing
-    $UnzippedTools = Join-Path $UnzippedDistDir "tools\android"
-    if (-not (Test-Path $UnzippedTools)) {
-        New-Item -ItemType Directory -Path $UnzippedTools -Force | Out-Null
-    }
-    if (Test-Path $LSPatchSrc) {
-        Copy-Item -Path $LSPatchSrc -Destination (Join-Path $UnzippedTools "lspatch.jar") -Force
-    }
-    if (Test-Path $ModuleSrc) {
-        Copy-Item -Path $ModuleSrc -Destination (Join-Path $UnzippedTools "xposed-release.apk") -Force
-    }
-    if (Test-Path $LicensesSrc) {
-        Copy-Item -Path $LicensesSrc -Destination (Join-Path $UnzippedTools "THIRD_PARTY_LICENSES.md") -Force
-    }
-    if ($AdbExe) {
-        $AdbDir = Split-Path $AdbExe
-        $UnzippedPt = Join-Path $UnzippedTools "platform-tools"
-        if (-not (Test-Path $UnzippedPt)) {
-            New-Item -ItemType Directory -Path $UnzippedPt -Force | Out-Null
+    # Only pre-populate unzipped distribution directory with Android tools & JRE if -BundleTools was specified
+    if ($BundleTools) {
+        $UnzippedTools = Join-Path $UnzippedDistDir "tools\android"
+        if (-not (Test-Path $UnzippedTools)) {
+            New-Item -ItemType Directory -Path $UnzippedTools -Force | Out-Null
         }
-        Copy-Item (Join-Path $AdbDir "adb.exe") $UnzippedPt -Force
-        if (Test-Path (Join-Path $AdbDir "AdbWinApi.dll")) {
-            Copy-Item (Join-Path $AdbDir "AdbWinApi.dll") $UnzippedPt -Force
+        if (Test-Path $LSPatchSrc) {
+            Copy-Item -Path $LSPatchSrc -Destination (Join-Path $UnzippedTools "lspatch.jar") -Force
         }
-        if (Test-Path (Join-Path $AdbDir "AdbWinUsbApi.dll")) {
-            Copy-Item (Join-Path $AdbDir "AdbWinUsbApi.dll") $UnzippedPt -Force
+        if (Test-Path $ModuleSrc) {
+            Copy-Item -Path $ModuleSrc -Destination (Join-Path $UnzippedTools "xposed-release.apk") -Force
         }
-    }
-    $JbrPath = "C:\Program Files\Android\Android Studio\jbr"
-    if (Test-Path $JbrPath) {
-        $UnzippedJre = Join-Path $UnzippedDistDir "jre"
-        if (-not (Test-Path $UnzippedJre)) {
-            Copy-Item -Path $JbrPath -Destination $UnzippedJre -Recurse -Force
+        if (Test-Path $LicensesSrc) {
+            Copy-Item -Path $LicensesSrc -Destination (Join-Path $UnzippedTools "THIRD_PARTY_LICENSES.md") -Force
+        }
+        if ($AdbExe) {
+            $AdbDir = Split-Path $AdbExe
+            $UnzippedPt = Join-Path $UnzippedTools "platform-tools"
+            if (-not (Test-Path $UnzippedPt)) {
+                New-Item -ItemType Directory -Path $UnzippedPt -Force | Out-Null
+            }
+            Copy-Item (Join-Path $AdbDir "adb.exe") $UnzippedPt -Force
+            if (Test-Path (Join-Path $AdbDir "AdbWinApi.dll")) {
+                Copy-Item (Join-Path $AdbDir "AdbWinApi.dll") $UnzippedPt -Force
+            }
+            if (Test-Path (Join-Path $AdbDir "AdbWinUsbApi.dll")) {
+                Copy-Item (Join-Path $AdbDir "AdbWinUsbApi.dll") $UnzippedPt -Force
+            }
+        }
+        $JbrPath = "C:\Program Files\Android\Android Studio\jbr"
+        if (Test-Path $JbrPath) {
+            $UnzippedJre = Join-Path $UnzippedDistDir "jre"
+            if (-not (Test-Path $UnzippedJre)) {
+                Copy-Item -Path $JbrPath -Destination $UnzippedJre -Recurse -Force
+            }
         }
     }
     Write-Host ("[+] Unzipped distribution directory created: {0}" -f $UnzippedDistDir) -ForegroundColor Green
