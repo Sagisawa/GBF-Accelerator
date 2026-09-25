@@ -1177,7 +1177,7 @@ export const App: React.FC = () => {
             <span>核心加速与控制</span>
           </button>
           {showAndroidPatch && (
-          <button
+            <button
               type="button"
               onClick={() => setActiveTab('android')}
               className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
