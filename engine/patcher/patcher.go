@@ -148,7 +148,7 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		p.logf("      - Custom Launcher Label: %s\n", p.opts.AppLabel)
 	}
 	if p.opts.NewPackageName != "" {
-		p.logf("      [i] Notice: LSPatch maintains original package name to ensure component integrity. Retained package: %s\n", pkgLabel)
+		p.logf("      [+] Custom Package Name requested: %s (Original: %s)\n", p.opts.NewPackageName, pkgLabel)
 	}
 
 	// Automatic Backup of original APK before patching
