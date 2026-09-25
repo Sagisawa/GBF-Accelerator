@@ -117,6 +117,7 @@ func CheckAdb(toolsDir, exeDir string) (bool, string, string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, adbPath, "version")
+	prepareCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return false, adbPath, "", fmt.Errorf("failed to run adb version: %w", err)
@@ -132,6 +133,7 @@ func ListAdbDevices(adbPath string) ([]AdbDevice, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, adbPath, "devices", "-l")
+	prepareCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list adb devices: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -188,6 +190,7 @@ func GetDeviceApp(adbPath, serial, packageName string) (*DeviceAppInfo, error) {
 
 	// 1. pm path <package>
 	cmd := exec.CommandContext(ctx, adbPath, "-s", serial, "shell", "pm", "path", packageName)
+	prepareCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("pm path failed: %w", err)
@@ -216,6 +219,7 @@ func GetDeviceApp(adbPath, serial, packageName string) (*DeviceAppInfo, error) {
 	defer vCancel()
 
 	vCmd := exec.CommandContext(vCtx, adbPath, "-s", serial, "shell", "dumpsys", "package", packageName)
+	prepareCmd(vCmd)
 	vOut, vErr := vCmd.CombinedOutput()
 	if vErr == nil {
 		for _, vLine := range strings.Split(string(vOut), "\n") {
@@ -266,6 +270,7 @@ func PullDeviceApp(
 		}
 
 		cmd := exec.CommandContext(ctx, adbPath, "-s", serial, "pull", remotePath, localPath)
+		prepareCmd(cmd)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return nil, fmt.Errorf("failed to pull %s: %w (%s)", baseName, err, strings.TrimSpace(string(out)))
@@ -299,8 +304,10 @@ func InstallToDevice(
 		args := []string{"-s", serial, "install-multiple", "-r"}
 		args = append(args, apkPaths...)
 		cmd = exec.CommandContext(ctx, adbPath, args...)
+		prepareCmd(cmd)
 	} else {
 		cmd = exec.CommandContext(ctx, adbPath, "-s", serial, "install", "-r", apkPaths[0])
+		prepareCmd(cmd)
 	}
 
 	out, err := cmd.CombinedOutput()
@@ -321,6 +328,7 @@ func InstallToDevice(
 // UninstallFromDevice uninstalls a package from the device.
 func UninstallFromDevice(ctx context.Context, adbPath, serial, packageName string) error {
 	cmd := exec.CommandContext(ctx, adbPath, "-s", serial, "uninstall", packageName)
+	prepareCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	outStr := strings.TrimSpace(string(out))
 	if err != nil || (!strings.Contains(outStr, "Success") && !strings.Contains(outStr, "not installed")) {

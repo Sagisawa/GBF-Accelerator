@@ -273,6 +273,7 @@ function Build-Windows {
 
         # Keep unzipped distribution directory for immediate testing
         $UnzippedDistDir = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_GUI"
+        Stop-Process -Name "adb", "GBF_Accelerator" -Force -ErrorAction SilentlyContinue
         if (Test-Path $UnzippedDistDir) { Remove-Item $UnzippedDistDir -Recurse -Force }
         Copy-Item -Path $StagingDir -Destination $UnzippedDistDir -Recurse -Force
         Write-Host ("[+] Unzipped distribution directory created: {0}" -f $UnzippedDistDir) -ForegroundColor Green

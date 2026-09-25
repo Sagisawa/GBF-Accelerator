@@ -97,6 +97,7 @@ func FindJavaRuntime(overridePath string) (path string, version string, err erro
 
 func checkJavaVersion(javaPath string) (int, string, error) {
 	cmd := exec.Command(javaPath, "-version")
+	prepareCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return 0, "", fmt.Errorf("failed to run java -version: %w", err)
@@ -361,6 +362,7 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 	}
 
 	cmd := exec.Command(cfg.JavaBinaryPath, args...)
+	prepareCmd(cmd)
 
 	var outBuf bytes.Buffer
 	if cfg.LogFn != nil {

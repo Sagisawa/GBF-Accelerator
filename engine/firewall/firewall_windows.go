@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 	"unicode/utf16"
 )
 
@@ -175,6 +176,10 @@ func runPowerShell(script string) (string, error) {
 		"-ExecutionPolicy", "Bypass",
 		"-EncodedCommand", encoded,
 	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: 0x08000000, // CREATE_NO_WINDOW
+	}
 
 	// Keep stdout (the machine-readable JSON protocol) isolated from stderr.
 	// Windows PowerShell serializes native error records to stderr as CLIXML
