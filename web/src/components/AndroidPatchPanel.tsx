@@ -1524,11 +1524,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   </div>
                   <div>• <strong>系统双开 / 应用分身：</strong>现代 Android 手机（小米、华为、三星、OPPO、vivo 等）均支持在系统设置中开启「应用双开 / 应用分身」，安装补丁版后直接开启双开即可拥有两套独立数据与账号。</div>
                   <div>• <strong>修补通用浏览器：</strong>亦可直接选择修补另一款轻量基于系统 WebView 的浏览器（如 Via、X 浏览器、Lightning 等），由于包名不同，天然与官方 SkyLeap 完美共存。</div>
-                  <div>• <strong>原版数据安全：</strong>原版安装包已自动备份至 <code>backups/</code> 目录。若直接覆盖安装官方 SkyLeap，由于签名变更 Android 会提示冲突，点击下方「一键安装到手机」可智能一键先卸载再安装。</div>
+                  <div>• <strong>原版数据安全：</strong>原版安装包已自动备份至 <code>backups/</code> 目录。若直接覆盖安装官方 SkyLeap，由于签名变更 Android 会提示冲突，点击「一键安装到手机」可智能一键先卸载再安装。</div>
                 </div>
                 <ul className="list-disc pl-4 space-y-0.5 pt-1">
                   <li>
-                    <span className="font-semibold">一键安装:</span> 若手机已连接电脑并开启 USB 调试，直接点击下方「一键安装到手机」自动推入安装。
+                    <span className="font-semibold">一键安装:</span> 若手机已连接电脑并开启 USB 调试，直接点击上方主操作栏「一键安装到手机」自动推入安装。
                   </li>
                   <li>
                     <span className="font-semibold">手机直接安装:</span> {isResultSplit ? '将生成的 .apks 传至手机，使用 SAI (Split APKs Installer) 安装。' : '将生成的 APK 传至手机并点击安装。'}
@@ -1545,31 +1545,24 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="space-y-0.5">
                       <div className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-                        <Smartphone className="w-3.5 h-3.5 text-indigo-600" />
+                        <Smartphone className="w-3.5 h-3.5 text-emerald-700" />
                         <span>检测到已连接手机：{adbDevices.find(d => d.serial === selectedDevice)?.model || selectedDevice}</span>
                       </div>
                       <div className="text-[11px] text-slate-500">
-                        无需手动传包与安装 SAI，可通过 ADB 直接一键推送到手机完成部署。
+                        无需手动传包与安装 SAI，点击上方主操作栏【一键安装到手机】即可推送到手机部署。
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleInstallToDevice(false)}
-                      disabled={isInstalling}
-                      className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer self-start sm:self-center disabled:opacity-50"
-                    >
-                      {isInstalling ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          <span>正在安装至手机...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Zap className="w-3.5 h-3.5 fill-current" />
-                          <span>一键安装到手机</span>
-                        </>
-                      )}
-                    </button>
+                    {isInstalling ? (
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-800 bg-emerald-100/90 border border-emerald-300 px-3 py-1.5 rounded-lg shrink-0">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>正在推送到手机...</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-800 bg-emerald-100/80 border border-emerald-300 px-3 py-1.5 rounded-lg shrink-0">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>已连接就绪</span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Signature Conflict Modal/Prompt */}
