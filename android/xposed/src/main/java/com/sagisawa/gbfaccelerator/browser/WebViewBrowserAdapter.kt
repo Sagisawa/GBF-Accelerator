@@ -24,11 +24,14 @@ abstract class WebViewBrowserAdapter(
     override val id: String,
     override val name: String,
     override val targetPackages: Set<String>,
-    val proxyConfigurator: ProxyConfigurator = ProxyConfigurator.DEFAULT
+    val proxyConfigurator: ProxyConfigurator = ProxyConfigurator.DEFAULT,
+    val caVerifier: LocalCaVerifier = DefaultLocalCaVerifier.fromContext { currentContext }
 ) : BrowserAdapter {
 
     companion object {
         const val TAG = "GBF-ACC"
+        @Volatile
+        internal var currentContext: Context? = null
     }
 
     override fun matchesPackage(packageName: String): Boolean {
@@ -206,20 +209,7 @@ abstract class WebViewBrowserAdapter(
             null
         } ?: ""
 
-        val isOurCaCert = try {
-            val certMethod = error?.javaClass?.getMethod("getCertificate")
-            val cert = certMethod?.invoke(error)
-            val certStr = cert?.toString() ?: ""
-            val getIssuedByMethod = cert?.javaClass?.getMethod("getIssuedBy")
-            val issuedBy = getIssuedByMethod?.invoke(cert)
-            val getONameMethod = issuedBy?.javaClass?.getMethod("getOName")
-            val oName = getONameMethod?.invoke(issuedBy) as? String
-            val getCNameMethod = issuedBy?.javaClass?.getMethod("getCName")
-            val cName = getCNameMethod?.invoke(issuedBy) as? String
-            oName == "GBF Local Accelerator" || cName == "GBF Local Accelerator Root CA" || certStr.contains("GBF Local Accelerator")
-        } catch (_: Throwable) {
-            false
-        }
+        val isOurCaCert = error?.let { caVerifier.isLocalCaCertificate(it) } ?: false
 
         if (isOurCaCert) {
             Log.i(TAG, "[GBF-ACC] Auto-accepting SSL error for GBF proxy (valid local CA): $failingUrl")
@@ -263,6 +253,7 @@ abstract class WebViewBrowserAdapter(
      * Invoked whenever an Android Context is obtained to ensure the embedded Go Core is active.
      */
     open fun onContextAvailable(context: Context) {
+        currentContext = context
         EmbeddedCoreManager.ensureStarted(context)
     }
 }

@@ -156,9 +156,6 @@ func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
 		asset: &http.Client{
 			Transport: assetTr,
 			Timeout:   45 * time.Second,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
 		},
 		proxy: normalized,
 	}
