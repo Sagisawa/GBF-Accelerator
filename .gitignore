@@ -38,3 +38,4 @@ android/**/build/
 output/
 tools/android/
 backups/
+/assets/
