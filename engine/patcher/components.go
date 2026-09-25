@@ -323,6 +323,115 @@ func DownloadComponentsWithSpecs(
 			}
 		}
 
+		// 1.1 Check if environment runtime is already satisfied without needing archive download
+		if spec.ID == "platform-tools" {
+			if adbFound, _, _, _ := CheckAdb(toolsDir, ""); adbFound {
+				prog.DownloadedBytes += spec.Size
+				prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
+				downloadedMap[spec.ID] = "installed"
+				if progressFn != nil {
+					progressFn(prog)
+				}
+				continue
+			}
+		} else if spec.ID == "jre" {
+			if _, _, err := FindJavaRuntime(""); err == nil {
+				prog.DownloadedBytes += spec.Size
+				prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
+				downloadedMap[spec.ID] = "installed"
+				if progressFn != nil {
+					progressFn(prog)
+				}
+				continue
+			}
+		}
+
+		// 1.2 Check local candidate locations to avoid external network download
+		var localCandidate string
+		switch spec.ID {
+		case "module":
+			if modPath, err := FindModuleApk("", ""); err == nil && modPath != targetPath {
+				if sha, err := ComputeFileSHA256(modPath); err == nil && strings.EqualFold(sha, spec.SHA256) {
+					localCandidate = modPath
+				}
+			}
+		case "lspatch":
+			if jarPath, err := FindLSPatchJar("", ""); err == nil && jarPath != targetPath {
+				if sha, err := ComputeFileSHA256(jarPath); err == nil && strings.EqualFold(sha, spec.SHA256) {
+					localCandidate = jarPath
+				}
+			}
+		case "licenses":
+			licCandidates := []string{
+				filepath.Join(toolsDir, "..", "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
+				filepath.Join(config.GetBaseDir(), "..", "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
+				filepath.Join(config.GetBaseDir(), "..", "tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
+				filepath.Join("tools", "gbf-acc-patcher", "THIRD_PARTY_LICENSES.md"),
+				filepath.Join(config.GetBaseDir(), "release", "THIRD_PARTY_LICENSES.md"),
+				filepath.Join(config.GetBaseDir(), "..", "release", "THIRD_PARTY_LICENSES.md"),
+			}
+			for _, cand := range licCandidates {
+				if cand != targetPath {
+					if sha, err := ComputeFileSHA256(cand); err == nil && strings.EqualFold(sha, spec.SHA256) {
+						localCandidate = cand
+						break
+					}
+				}
+			}
+		case "platform-tools":
+			ptCandidates := []string{
+				filepath.Join(config.GetBaseDir(), "release", spec.FileName),
+				filepath.Join(config.GetBaseDir(), "..", "release", spec.FileName),
+				filepath.Join(toolsDir, "..", "..", "release", spec.FileName),
+				filepath.Join("release", spec.FileName),
+			}
+			for _, cand := range ptCandidates {
+				if cand != targetPath {
+					if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
+						localCandidate = cand
+						break
+					}
+				}
+			}
+		case "jre":
+			jreCandidates := []string{
+				filepath.Join(config.GetBaseDir(), "release", spec.FileName),
+				filepath.Join(config.GetBaseDir(), "..", "release", spec.FileName),
+				filepath.Join(toolsDir, "..", "..", "release", spec.FileName),
+				filepath.Join("release", spec.FileName),
+			}
+			for _, cand := range jreCandidates {
+				if cand != targetPath {
+					if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
+						localCandidate = cand
+						break
+					}
+				}
+			}
+		}
+
+		if localCandidate != "" {
+			_ = copyFile(localCandidate, targetPath)
+			if spec.ID == "platform-tools" && strings.HasSuffix(spec.FileName, ".zip") {
+				_ = unzipArchive(targetPath, toolsDir)
+			} else if spec.ID == "jre" && strings.HasSuffix(spec.FileName, ".zip") {
+				jreDir := filepath.Join(config.GetBaseDir(), "jre")
+				_ = os.MkdirAll(jreDir, 0755)
+				_ = unzipArchive(targetPath, jreDir)
+			}
+			actualSHA := spec.SHA256
+			if actualSHA == "" {
+				actualSHA, _ = ComputeFileSHA256(targetPath)
+			}
+			prog.DownloadedBytes += spec.Size
+			prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
+			downloadedMap[spec.ID] = actualSHA
+			if progressFn != nil {
+				progressFn(prog)
+			}
+			continue
+		}
+
 		// 2. Resolve URL
 		downloadURL := spec.URL
 		if customURLs != nil && customURLs[spec.ID] != "" {
@@ -355,6 +464,11 @@ func DownloadComponentsWithSpecs(
 				return fmt.Errorf("failed to download %s: %w", spec.FileName, err)
 			}
 			defer resp.Body.Close()
+
+			if resp.StatusCode == http.StatusNotFound {
+				cleanupTemp()
+				return fmt.Errorf("failed to download %s: HTTP 404 Not Found (当前版本 v%s 尚未在 GitHub Release 发布，请使用已包含工具的本地完整包)", spec.FileName, config.AppVersion)
+			}
 
 			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				cleanupTemp()
