@@ -1130,6 +1130,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                       <CheckCircle2 className="w-3 h-3 text-emerald-600" />
                       <span>官方 SkyLeap 认证</span>
                     </span>
+                  ) : inspectedPkg.engine_type === 'chromium' ? (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200 inline-flex items-center gap-1">
+                      <Globe className="w-3 h-3 text-indigo-600" />
+                      <span>独立 Chromium 内核 (Chrome / Kiwi 等)</span>
+                    </span>
                   ) : (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200 inline-flex items-center gap-1">
                       <Globe className="w-3 h-3 text-sky-600" />

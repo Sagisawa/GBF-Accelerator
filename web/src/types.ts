@@ -218,6 +218,8 @@ export interface AndroidPackageInspection {
   version_name: string;
   is_split: boolean;
   total_apks: number;
+  engine_type?: 'webview' | 'chromium' | 'unsupported';
+  engine_name?: string;
   is_official_skyleap: boolean;
   suggested_clone_package?: string;
   error?: string;
