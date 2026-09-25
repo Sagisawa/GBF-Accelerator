@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import {
   RuntimeStatus,
   CacheStats,
@@ -230,41 +230,6 @@ export const App: React.FC = () => {
   const [isTerminated, setIsTerminated] = useState<boolean>(false)
   const [activeTab, setActiveTab] = useState<'core' | 'android'>('core')
 
-  // Platform isolation: Detect if client is accessing from a mobile browser / Android environment
-  const isMobile = useMemo(() => {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search)
-      if (params.get('mobile') === '1' || params.get('mobile') === 'true') return true
-      if (params.get('desktop') === '1' || params.get('desktop') === 'true') return false
-    }
-    // 1. Android embedded backend runtime environment
-    if (status?.platform === 'android') return true
-
-    // 2. Mobile User-Agent detection (covers Android, iOS, SkyLeap, HarmonyOS, etc.)
-    if (typeof navigator !== 'undefined') {
-      if (/Android|iPhone|iPad|iPod|Mobile|SkyLeap|HarmonyOS|Silk|Kindle/i.test(navigator.userAgent)) {
-        return true
-      }
-    }
-
-    // 3. Touch / Pointer heuristic (covers mobile browsers, SkyLeap with desktop UA spoofing, tablets, landscape)
-    if (typeof window !== 'undefined') {
-      const isTouch = ('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
-      const isCoarsePointer = Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
-      if (isTouch || isCoarsePointer) {
-        return true
-      }
-    }
-
-    return false
-  }, [status?.platform])
-
-  useEffect(() => {
-    if (isMobile && activeTab !== 'core') {
-      setActiveTab('core')
-    }
-  }, [isMobile, activeTab])
-
   // First-launch Root CA install guide (restores the v1.6 behavior): when the
   // runtime status first authoritatively reports the CA as not installed, auto
   // open the cert guide modal exactly once per app launch. An already-trusted
@@ -272,11 +237,11 @@ export const App: React.FC = () => {
   // re-prompt within the same launch.
   const caGuidePromptedRef = useRef(false)
   useEffect(() => {
-    if (!isMobile && shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
+    if (shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
       caGuidePromptedRef.current = true
       setCaModalAction('install')
     }
-  }, [status, isMobile])
+  }, [status])
 
   const handleQuitApp = async () => {
     setQuitting(true)
@@ -1133,11 +1098,6 @@ export const App: React.FC = () => {
                   <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
                     v{status?.version || '2.1.1'}
                   </span>
-                  {isMobile && (
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-sky-100 text-sky-800 border border-sky-300 shadow-2xs">
-                      移动控制台
-                    </span>
-                  )}
                   {updateInfo?.available && (
                     <button
                       type="button"
@@ -1192,43 +1152,41 @@ export const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Navigation Tabs (Hidden on mobile) */}
-      {!isMobile && (
-        <div className="bg-white border-b border-slate-200/90 px-4 sm:px-6 shrink-0 shadow-2xs">
-          <div className="max-w-5xl mx-auto flex items-center gap-1.5 pt-1.5">
-            <button
-              type="button"
-              onClick={() => setActiveTab('core')}
-              className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
-                activeTab === 'core'
-                  ? 'border-sky-600 text-sky-700 bg-sky-50/60 rounded-t-lg'
-                  : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
-              }`}
-            >
-              <Zap className="w-4 h-4" />
-              <span>核心加速与控制</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('android')}
-              className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
-                activeTab === 'android'
-                  ? 'border-indigo-600 text-indigo-700 bg-indigo-50/60 rounded-t-lg'
-                  : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
-              }`}
-            >
-              <Smartphone className="w-4 h-4" />
-              <span>Android 浏览器 Patch</span>
-            </button>
-          </div>
+      {/* Navigation Tabs */}
+      <div className="bg-white border-b border-slate-200/90 px-4 sm:px-6 shrink-0 shadow-2xs">
+        <div className="max-w-5xl mx-auto flex items-center gap-1.5 pt-1.5">
+          <button
+            type="button"
+            onClick={() => setActiveTab('core')}
+            className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
+              activeTab === 'core'
+                ? 'border-sky-600 text-sky-700 bg-sky-50/60 rounded-t-lg'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
+            }`}
+          >
+            <Zap className="w-4 h-4" />
+            <span>核心加速与控制</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('android')}
+            className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
+              activeTab === 'android'
+                ? 'border-indigo-600 text-indigo-700 bg-indigo-50/60 rounded-t-lg'
+                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
+            }`}
+          >
+            <Smartphone className="w-4 h-4" />
+            <span>Android 浏览器 Patch</span>
+          </button>
         </div>
-      )}
+      </div>
 
-      {/* 2. Main Work Area (Natural Content-Fit, Responsive Card Grid) */}
+      {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
       <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
         {activeTab === 'core' ? (
           <>
-            <div className={`grid gap-4 sm:gap-4.5 ${isMobile ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2'}`}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
           {/* Card 1: Local Cache & Storage */}
           <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
             <div className="space-y-3.5">
@@ -1247,47 +1205,42 @@ export const App: React.FC = () => {
               {/* Local Cache Dir */}
               <div className="space-y-2">
                 <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
-                  {isMobile ? '应用独立沙盒缓存目录：' : '本地缓存目录（支持无缝复用 ACGPower 缓存）：'}
+                  本地缓存目录（支持无缝复用 ACGPower 缓存）：
                 </label>
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                   <input
                     type="text"
                     disabled={Boolean(loadingAction) || loadingBrowse}
-                    readOnly={isMobile}
                     value={cacheDirInput}
                     onChange={(e) => setCacheDirInput(e.target.value)}
                     className="flex-1 min-w-[160px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
                   />
-                  {!isMobile && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={handleBrowseDir}
-                        disabled={loadingBrowse}
-                        aria-busy={loadingBrowse}
-                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
-                      >
-                        {loadingBrowse ? '正在打开...' : '浏览...'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleOpenCacheFolder}
-                        disabled={loadingOpenFolder}
-                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
-                      >
-                        {loadingOpenFolder ? '打开中...' : '打开目录'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleDetectAcgp}
-                        disabled={Boolean(loadingAction)}
-                        aria-busy={isActionLoading('detect-acgp')}
-                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
-                      >
-                        {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
-                      </button>
-                    </>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleBrowseDir}
+                    disabled={loadingBrowse}
+                    aria-busy={loadingBrowse}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
+                  >
+                    {loadingBrowse ? '正在打开...' : '浏览...'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenCacheFolder}
+                    disabled={loadingOpenFolder}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
+                  >
+                    {loadingOpenFolder ? '打开中...' : '打开目录'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDetectAcgp}
+                    disabled={Boolean(loadingAction)}
+                    aria-busy={isActionLoading('detect-acgp')}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
+                  >
+                    {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
+                  </button>
                 </div>
               </div>
 
@@ -1387,9 +1340,7 @@ export const App: React.FC = () => {
             </div>
           </div>
 
-          {!isMobile && (
-            <>
-              {/* Card 2: Upstream Proxy & Network Routing */}
+          {/* Card 2: Upstream Proxy & Network Routing */}
           <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
@@ -1907,8 +1858,6 @@ export const App: React.FC = () => {
               </div>
             </div>
           </div>
-            </>
-          )}
         </div>
 
         {/* 5. Accelerating Engine Telemetry Dashboard */}
@@ -2077,17 +2026,15 @@ export const App: React.FC = () => {
       {/* 3. Fixed Bottom Action Dock (Footer) */}
       <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-4 sm:px-6 py-3 sm:py-3.5 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
         <div className="max-w-5xl mx-auto flex items-center justify-center flex-wrap gap-2.5 sm:gap-3">
-          {!isMobile && (
-            <button
-              type="button"
-              onClick={handleOpenCacheFolder}
-              disabled={loadingOpenFolder}
-              className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-2xs"
-            >
-              <span className="text-base">📁</span>
-              <span>{loadingOpenFolder ? '正在打开...' : '缓存目录'}</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleOpenCacheFolder}
+            disabled={loadingOpenFolder}
+            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-2xs"
+          >
+            <span className="text-base">📁</span>
+            <span>{loadingOpenFolder ? '正在打开...' : '缓存目录'}</span>
+          </button>
 
           <button
             type="button"
