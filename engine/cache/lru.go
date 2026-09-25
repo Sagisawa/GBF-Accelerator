@@ -15,32 +15,65 @@ type CacheItem struct {
 }
 
 type lruNode struct {
-	key  string
-	item *CacheItem
-	prev *lruNode
-	next *lruNode
+	key         string
+	item        *CacheItem
+	prev        *lruNode
+	next        *lruNode
+	isProtected bool
 }
 
 type lruShard struct {
-	mu       sync.RWMutex
-	maxBytes int64
-	curBytes int64
-	items    map[string]*lruNode
-	head     *lruNode // dummy sentinel head
-	tail     *lruNode // dummy sentinel tail
+	mu           sync.RWMutex
+	maxBytes     int64
+	probBytes    int64
+	probMaxBytes int64
+	protBytes    int64
+	protMaxBytes int64
+	items        map[string]*lruNode
+
+	probHead *lruNode // dummy sentinel head for probationary list
+	probTail *lruNode // dummy sentinel tail for probationary list
+
+	protHead *lruNode // dummy sentinel head for protected list
+	protTail *lruNode // dummy sentinel tail for protected list
 }
 
 func newLRUShard(maxBytes int64) *lruShard {
-	head := &lruNode{}
-	tail := &lruNode{}
-	head.next = tail
-	tail.prev = head
-	return &lruShard{
+	probHead := &lruNode{}
+	probTail := &lruNode{}
+	probHead.next = probTail
+	probTail.prev = probHead
+
+	protHead := &lruNode{}
+	protTail := &lruNode{}
+	protHead.next = protTail
+	protTail.prev = protHead
+
+	s := &lruShard{
 		maxBytes: maxBytes,
 		items:    make(map[string]*lruNode),
-		head:     head,
-		tail:     tail,
+		probHead: probHead,
+		probTail: probTail,
+		protHead: protHead,
+		protTail: protTail,
 	}
+	s.calcCapacities(maxBytes)
+	return s
+}
+
+func (s *lruShard) calcCapacities(maxBytes int64) {
+	s.maxBytes = maxBytes
+	if maxBytes <= 0 {
+		s.probMaxBytes = 0
+		s.protMaxBytes = 0
+		return
+	}
+	// Segmented LRU: 25% probationary target, 75% protected target
+	s.probMaxBytes = maxBytes / 4
+	if s.probMaxBytes == 0 {
+		s.probMaxBytes = 1
+	}
+	s.protMaxBytes = maxBytes - s.probMaxBytes
 }
 
 func (s *lruShard) removeNode(n *lruNode) {
@@ -50,35 +83,79 @@ func (s *lruShard) removeNode(n *lruNode) {
 	n.next = nil
 }
 
-func (s *lruShard) pushFront(n *lruNode) {
-	n.next = s.head.next
-	n.prev = s.head
-	s.head.next.prev = n
-	s.head.next = n
+func (s *lruShard) probPushFront(n *lruNode) {
+	n.next = s.probHead.next
+	n.prev = s.probHead
+	s.probHead.next.prev = n
+	s.probHead.next = n
+	n.isProtected = false
 }
 
-func (s *lruShard) moveToFront(n *lruNode) {
-	if s.head.next == n {
-		return
-	}
-	s.removeNode(n)
-	s.pushFront(n)
+func (s *lruShard) protPushFront(n *lruNode) {
+	n.next = s.protHead.next
+	n.prev = s.protHead
+	s.protHead.next.prev = n
+	s.protHead.next = n
+	n.isProtected = true
 }
 
-func (s *lruShard) popTail() *lruNode {
-	if s.tail.prev == s.head {
+func (s *lruShard) probPopTail() *lruNode {
+	if s.probTail.prev == s.probHead {
 		return nil
 	}
-	n := s.tail.prev
+	n := s.probTail.prev
 	s.removeNode(n)
 	return n
+}
+
+func (s *lruShard) protPopTail() *lruNode {
+	if s.protTail.prev == s.protHead {
+		return nil
+	}
+	n := s.protTail.prev
+	s.removeNode(n)
+	return n
+}
+
+func (s *lruShard) demoteProtected() {
+	for s.protMaxBytes > 0 && s.protBytes > s.protMaxBytes && s.protTail.prev != s.protHead {
+		n := s.protPopTail()
+		if n == nil {
+			break
+		}
+		s.protBytes -= n.item.Size
+		s.probPushFront(n)
+		s.probBytes += n.item.Size
+	}
+}
+
+func (s *lruShard) evictProbation() {
+	// First evict from probationary list to keep total usage <= maxBytes
+	for s.maxBytes > 0 && (s.probBytes+s.protBytes > s.maxBytes) && s.probTail.prev != s.probHead {
+		n := s.probPopTail()
+		if n == nil {
+			break
+		}
+		delete(s.items, n.key)
+		s.probBytes -= n.item.Size
+	}
+	// If probationary is empty and protected alone still exceeds maxBytes:
+	for s.maxBytes > 0 && (s.probBytes+s.protBytes > s.maxBytes) && s.protTail.prev != s.protHead {
+		n := s.protPopTail()
+		if n == nil {
+			break
+		}
+		delete(s.items, n.key)
+		s.protBytes -= n.item.Size
+	}
 }
 
 func (s *lruShard) setMaxBytes(maxBytes int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.maxBytes = maxBytes
-	s.evict()
+	s.calcCapacities(maxBytes)
+	s.demoteProtected()
+	s.evictProbation()
 }
 
 func (s *lruShard) get(key string) (*CacheItem, bool) {
@@ -86,7 +163,30 @@ func (s *lruShard) get(key string) (*CacheItem, bool) {
 	defer s.mu.Unlock()
 
 	if node, ok := s.items[key]; ok {
-		s.moveToFront(node)
+		if node.isProtected {
+			if s.protHead.next != node {
+				s.removeNode(node)
+				s.protPushFront(node)
+			}
+		} else {
+			// Second access / hit: Promote from Probationary to Protected
+			s.removeNode(node)
+			s.probBytes -= node.item.Size
+			s.protPushFront(node)
+			s.protBytes += node.item.Size
+
+			s.demoteProtected()
+			s.evictProbation()
+		}
+		return node.item, true
+	}
+	return nil, false
+}
+
+func (s *lruShard) peek(key string) (*CacheItem, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if node, ok := s.items[key]; ok {
 		return node.item, true
 	}
 	return nil, false
@@ -99,7 +199,16 @@ func (s *lruShard) contains(key string) bool {
 	return ok
 }
 
-func (s *lruShard) set(key string, item *CacheItem) {
+func (s *lruShard) isProtected(key string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if node, ok := s.items[key]; ok {
+		return node.isProtected
+	}
+	return false
+}
+
+func (s *lruShard) set(key string, item *CacheItem, isProtected bool) {
 	if item == nil {
 		return
 	}
@@ -111,35 +220,54 @@ func (s *lruShard) set(key string, item *CacheItem) {
 		if node, ok := s.items[key]; ok {
 			s.removeNode(node)
 			delete(s.items, key)
-			s.curBytes -= node.item.Size
+			if node.isProtected {
+				s.protBytes -= node.item.Size
+			} else {
+				s.probBytes -= node.item.Size
+			}
 		}
 		return
 	}
 
 	if node, ok := s.items[key]; ok {
-		s.moveToFront(node)
-		s.curBytes -= node.item.Size
-		node.item = item
-		s.curBytes += item.Size
-		s.evict()
+		if node.isProtected || isProtected {
+			if node.isProtected {
+				s.protBytes -= node.item.Size
+			} else {
+				s.removeNode(node)
+				s.probBytes -= node.item.Size
+			}
+			node.item = item
+			s.protPushFront(node)
+			s.protBytes += item.Size
+			s.demoteProtected()
+			s.evictProbation()
+		} else {
+			// Remains in probation:
+			s.probBytes -= node.item.Size
+			node.item = item
+			s.probBytes += item.Size
+			if s.probHead.next != node {
+				s.removeNode(node)
+				s.probPushFront(node)
+			}
+			s.evictProbation()
+		}
 		return
 	}
 
+	// New entry:
 	node := &lruNode{key: key, item: item}
-	s.pushFront(node)
 	s.items[key] = node
-	s.curBytes += item.Size
-	s.evict()
-}
-
-func (s *lruShard) evict() {
-	for s.maxBytes > 0 && s.curBytes > s.maxBytes && len(s.items) > 0 {
-		node := s.popTail()
-		if node == nil {
-			break
-		}
-		delete(s.items, node.key)
-		s.curBytes -= node.item.Size
+	if isProtected {
+		s.protPushFront(node)
+		s.protBytes += item.Size
+		s.demoteProtected()
+		s.evictProbation()
+	} else {
+		s.probPushFront(node)
+		s.probBytes += item.Size
+		s.evictProbation()
 	}
 }
 
@@ -149,7 +277,11 @@ func (s *lruShard) delete(key string) bool {
 	if node, ok := s.items[key]; ok {
 		s.removeNode(node)
 		delete(s.items, key)
-		s.curBytes -= node.item.Size
+		if node.isProtected {
+			s.protBytes -= node.item.Size
+		} else {
+			s.probBytes -= node.item.Size
+		}
 		return true
 	}
 	return false
@@ -159,15 +291,18 @@ func (s *lruShard) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.items = make(map[string]*lruNode)
-	s.head.next = s.tail
-	s.tail.prev = s.head
-	s.curBytes = 0
+	s.probHead.next = s.probTail
+	s.probTail.prev = s.probHead
+	s.protHead.next = s.protTail
+	s.protTail.prev = s.protHead
+	s.probBytes = 0
+	s.protBytes = 0
 }
 
 func (s *lruShard) stats() (int, int64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.items), s.curBytes
+	return len(s.items), s.probBytes + s.protBytes
 }
 
 const defaultNumShards = 16
@@ -235,12 +370,24 @@ func (c *LRUCache) Get(key string) (*CacheItem, bool) {
 	return c.getShard(key).get(key)
 }
 
+func (c *LRUCache) Peek(key string) (*CacheItem, bool) {
+	return c.getShard(key).peek(key)
+}
+
 func (c *LRUCache) Contains(key string) bool {
 	return c.getShard(key).contains(key)
 }
 
+func (c *LRUCache) IsProtected(key string) bool {
+	return c.getShard(key).isProtected(key)
+}
+
 func (c *LRUCache) Set(key string, item *CacheItem) {
-	c.getShard(key).set(key, item)
+	c.getShard(key).set(key, item, true)
+}
+
+func (c *LRUCache) SetProbation(key string, item *CacheItem) {
+	c.getShard(key).set(key, item, false)
 }
 
 func (c *LRUCache) Delete(key string) bool {

@@ -368,6 +368,38 @@ func (m *Manager) CheckAndQuarantineTamperedJS(filePath string) bool {
 	return false
 }
 
+// PeekRAMWithNamespace returns an item from RAM cache without promoting it or updating LRU order.
+func (m *Manager) PeekRAMWithNamespace(ns, urlPath string) *CacheItem {
+	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	ramKey := makeRAMKey(ns, cleanKey)
+	if m.ramEnabled.Load() {
+		if item, ok := m.ramCache.Peek(ramKey); ok {
+			return item
+		}
+	}
+	return nil
+}
+
+// TouchRAMWithNamespace touches the item in RAM cache, promoting it to Protected if it was in Probation.
+func (m *Manager) TouchRAMWithNamespace(ns, urlPath string) {
+	if !m.ramEnabled.Load() {
+		return
+	}
+	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	ramKey := makeRAMKey(ns, cleanKey)
+	_, _ = m.ramCache.Get(ramKey)
+}
+
+// IsRAMProtected reports whether the asset is in the Protected segment of RAM cache.
+func (m *Manager) IsRAMProtected(ns, urlPath string) bool {
+	if !m.ramEnabled.Load() {
+		return false
+	}
+	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	ramKey := makeRAMKey(ns, cleanKey)
+	return m.ramCache.IsProtected(ramKey)
+}
+
 func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 	return m.GetWithNamespace("gbf", urlPath)
 }
@@ -395,8 +427,8 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		return nil, ""
 	}
 
-	fi, err := os.Stat(filePath)
-	if err != nil || fi.IsDir() || fi.Size() == 0 {
+	data, err := os.ReadFile(filePath)
+	if err != nil || len(data) == 0 {
 		if ns == "" || ns == "gbf" {
 			// Try fallback: prepend or strip "assets" for gbf namespace
 			var altPath string
@@ -406,9 +438,9 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 				altPath, _ = m.resolvePathWithNamespace("gbf", strings.TrimPrefix(cleanKey, "assets/"))
 			}
 			if altPath != "" {
-				if fi2, err2 := os.Stat(altPath); err2 == nil && !fi2.IsDir() && fi2.Size() > 0 {
+				if data2, err2 := os.ReadFile(altPath); err2 == nil && len(data2) > 0 {
 					filePath = altPath
-					fi = fi2
+					data = data2
 				} else {
 					m.markMissing(ramKey)
 					return nil, ""
@@ -428,12 +460,6 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 			m.markMissing(ramKey)
 			return nil, ""
 		}
-	}
-
-	data, err := os.ReadFile(filePath)
-	if err != nil || len(data) == 0 {
-		m.markMissing(ramKey)
-		return nil, ""
 	}
 
 	// Read metadata from .ext
@@ -474,7 +500,11 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	}
 
 	if etag == "" {
-		etag = fmt.Sprintf("\"%x-%x\"", fi.ModTime().Unix(), len(data))
+		if fi, err := os.Stat(filePath); err == nil {
+			etag = fmt.Sprintf("\"%x-%x\"", fi.ModTime().Unix(), len(data))
+		} else {
+			etag = fmt.Sprintf("\"%x-%x\"", time.Now().Unix(), len(data))
+		}
 	}
 
 	// Check gzip signature
@@ -574,7 +604,7 @@ func getHeader(h map[string]string, key string) string {
 	return ""
 }
 
-func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, string, string, uint64, bool) {
+func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte, isProbation bool) (*CacheItem, string, string, uint64, bool) {
 	m.persistMu.RLock()
 	defer m.persistMu.RUnlock()
 	generation := m.generation
@@ -610,7 +640,11 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 		Size:            int64(len(data)),
 	}
 	if m.ramEnabled.Load() {
-		m.ramCache.Set(ramKey, item)
+		if isProbation {
+			m.ramCache.SetProbation(ramKey, item)
+		} else {
+			m.ramCache.Set(ramKey, item)
+		}
 	}
 
 	shard := m.missingShard(ramKey)
@@ -626,7 +660,7 @@ func (m *Manager) SaveRAM(urlPath string, headers map[string]string, data []byte
 }
 
 func (m *Manager) SaveRAMWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
-	item, cleanKey, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data)
+	item, cleanKey, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, false)
 	if !ok || item == nil {
 		return nil, false
 	}
@@ -655,12 +689,39 @@ func (m *Manager) SaveRAMWithNamespace(ns, urlPath string, headers map[string]st
 	return item, true
 }
 
+func (m *Manager) SavePrefetchWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	item, cleanKey, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, true)
+	if !ok || item == nil {
+		return nil, false
+	}
+
+	select {
+	case <-m.stopPersist:
+		return item, true
+	default:
+	}
+
+	select {
+	case m.persistQueue <- &persistTask{
+		ns:         ns,
+		cleanKey:   cleanKey,
+		filePath:   filePath,
+		headers:    headers,
+		data:       data,
+		generation: generation,
+	}:
+	default:
+	}
+
+	return item, true
+}
+
 func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) bool {
 	return m.SaveWithNamespace("gbf", urlPath, headers, data)
 }
 
 func (m *Manager) SaveWithNamespace(ns, urlPath string, headers map[string]string, data []byte) bool {
-	item, _, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data)
+	item, _, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, false)
 	if !ok || item == nil {
 		return false
 	}

@@ -7,9 +7,11 @@ import (
 )
 
 type call struct {
-	done chan struct{}
-	val  interface{}
-	err  error
+	done    chan struct{}
+	val     interface{}
+	err     error
+	dups    int
+	waiters int
 }
 
 const singleFlightShardCount = 16
@@ -54,6 +56,8 @@ func (g *SingleFlight) DoContext(ctx context.Context, key string, fn func() (int
 	shard := g.shard(key)
 	shard.mu.Lock()
 	if c, ok := shard.m[key]; ok {
+		c.dups++
+		c.waiters++
 		shard.mu.Unlock()
 		if ctx == nil {
 			<-c.done
@@ -63,6 +67,9 @@ func (g *SingleFlight) DoContext(ctx context.Context, key string, fn func() (int
 		case <-c.done:
 			return c.val, c.err
 		case <-ctx.Done():
+			shard.mu.Lock()
+			c.waiters--
+			shard.mu.Unlock()
 			return nil, ctx.Err()
 		}
 	}
@@ -98,6 +105,27 @@ func (g *SingleFlight) DoContext(ctx context.Context, key string, fn func() (int
 	c.val, c.err = fn()
 	normalReturn = true
 	return c.val, c.err
+}
+
+// IsInFlight reports whether a call for key is currently in-flight.
+func (g *SingleFlight) IsInFlight(key string) bool {
+	shard := g.shard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	_, ok := shard.m[key]
+	return ok
+}
+
+// Waiters reports the number of currently active, uncancelled followers waiting for key (excluding the leader).
+// Returns -1 if key is not in-flight.
+func (g *SingleFlight) Waiters(key string) int {
+	shard := g.shard(key)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if c, ok := shard.m[key]; ok {
+		return c.waiters
+	}
+	return -1
 }
 
 // Forget tells singleflight to forget about a key. Future calls

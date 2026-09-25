@@ -45,23 +45,25 @@ type PrefetchEngine struct {
 	prio1Queue    chan prefetchItem // High: JS / JSON
 	prio2Queue    chan prefetchItem // Medium: Images / Textures
 	prio3Queue    chan prefetchItem // Low: Audio / Other
-	inflightMu    sync.Mutex
-	inflight      map[string]struct{}
-	discoverySeen map[string]struct{}
-	stopChan      chan struct{}
-	stopOnce      sync.Once
+	inflightMu        sync.Mutex
+	inflight          map[string]struct{}
+	discoverySeen     map[string]struct{}
+	discoverySeenPrev map[string]struct{}
+	stopChan          chan struct{}
+	stopOnce          sync.Once
 }
 
 func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 	pe := &PrefetchEngine{
-		srv:           srv,
-		discoveryCh:   make(chan prefetchCandidate, 128),
-		prio1Queue:    make(chan prefetchItem, 256),
-		prio2Queue:    make(chan prefetchItem, 256),
-		prio3Queue:    make(chan prefetchItem, 256),
-		inflight:      make(map[string]struct{}),
-		discoverySeen: make(map[string]struct{}),
-		stopChan:      make(chan struct{}),
+		srv:               srv,
+		discoveryCh:       make(chan prefetchCandidate, 128),
+		prio1Queue:        make(chan prefetchItem, 256),
+		prio2Queue:        make(chan prefetchItem, 256),
+		prio3Queue:        make(chan prefetchItem, 256),
+		inflight:          make(map[string]struct{}),
+		discoverySeen:     make(map[string]struct{}),
+		discoverySeenPrev: make(map[string]struct{}),
+		stopChan:          make(chan struct{}),
 	}
 	go pe.discoveryWorker()
 	go pe.fetchWorker()
@@ -164,8 +166,13 @@ func (pe *PrefetchEngine) MaybeEnqueueDiscovery(host, path string, data []byte) 
 		pe.inflightMu.Unlock()
 		return
 	}
-	if len(pe.discoverySeen) > 1000 {
-		pe.discoverySeen = make(map[string]struct{})
+	if _, exists := pe.discoverySeenPrev[key]; exists {
+		pe.inflightMu.Unlock()
+		return
+	}
+	if len(pe.discoverySeen) > 2000 {
+		pe.discoverySeenPrev = pe.discoverySeen
+		pe.discoverySeen = make(map[string]struct{}, 512)
 	}
 	pe.discoverySeen[key] = struct{}{}
 	pe.inflightMu.Unlock()
@@ -371,60 +378,109 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 		return
 	}
 	ns, _ := NormalizeAssetNamespace(item.host)
-	if pe.srv.cacheMgr.HasCacheWithNamespace(ns, item.path) {
+	cleanPath, _, _ := strings.Cut(item.path, "?")
+	flightKey := ns + ":" + cleanPath
+
+	if pe.srv.cacheMgr.HasCacheWithNamespace(ns, cleanPath) {
+		return
+	}
+
+	// Guard against duplicate fetch if foreground is ALREADY fetching this exact asset
+	if pe.srv.cacheMgr.SingleFlight().IsInFlight(flightKey) {
 		return
 	}
 
 	pe.srv.stats.IncPrefetchRequest()
-	upURL := fmt.Sprintf("https://%s%s", item.host, item.path)
-	req, err := http.NewRequestWithContext(context.Background(), "GET", upURL, nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("User-Agent", prefetchUserAgent)
-	req.Header.Set("Accept", "*/*")
-	req.Header.Set("Accept-Encoding", "gzip")
-	req.Host = item.host
-
 	fetchStart := time.Now()
-	resp, err := pe.srv.getAssetClient().Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
+
+	// Execute through SingleFlight so concurrent foreground requests coalesce naturally
+	res, err := pe.srv.cacheMgr.SingleFlight().DoContext(context.Background(), flightKey, func() (interface{}, error) {
+		// Double check cache in case it landed just before acquiring flight
+		if pe.srv.cacheMgr.SingleFlight().Waiters(flightKey) > 0 {
+			// Foreground is actively waiting: promote probationary items to protected
+			if cached, _ := pe.srv.cacheMgr.GetWithNamespace(ns, cleanPath); cached != nil {
+				return cached, nil
+			}
+		} else {
+			// Pure prefetch: peek RAM cache without promoting probationary items
+			if cached := pe.srv.cacheMgr.PeekRAMWithNamespace(ns, cleanPath); cached != nil {
+				return cached, nil
+			}
+			if pe.srv.cacheMgr.HasCacheWithNamespace(ns, cleanPath) {
+				return nil, nil
+			}
 		}
-		return
-	}
 
-	data, err := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	fetchMs := time.Since(fetchStart).Milliseconds()
-	if err != nil || len(data) == 0 {
-		return
-	}
-
-	ct := resp.Header.Get("Content-Type")
-	if !cache.IsValidCacheContent(item.path, ct, data) {
-		return
-	}
-
-	headersMap := make(map[string]string)
-	for k, vv := range resp.Header {
-		if len(vv) > 0 {
-			headersMap[strings.ToLower(k)] = vv[0]
+		upURL := fmt.Sprintf("https://%s%s", item.host, item.path)
+		req, err := http.NewRequestWithContext(context.Background(), "GET", upURL, nil)
+		if err != nil {
+			return nil, err
 		}
-	}
-	etag := resp.Header.Get("ETag")
-	if etag == "" {
-		etag = resp.Header.Get("Etag")
-	}
-	if etag != "" {
-		headersMap["etag"] = etag
-	}
+		req.Header.Set("User-Agent", prefetchUserAgent)
+		req.Header.Set("Accept", "*/*")
+		req.Header.Set("Accept-Encoding", "gzip")
+		req.Host = item.host
 
-	if pe.srv.cacheMgr.SaveWithNamespace(ns, item.path, headersMap, data) {
+		resp, err := pe.srv.getAssetClient().Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil && resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			if err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("upstream returned %d", resp.StatusCode)
+		}
+
+		data, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil || len(data) == 0 {
+			return nil, fmt.Errorf("empty body: %v", err)
+		}
+
+		ct := resp.Header.Get("Content-Type")
+		if !cache.IsValidCacheContent(item.path, ct, data) {
+			return nil, fmt.Errorf("invalid cache content")
+		}
+
+		headersMap := make(map[string]string)
+		for k, vv := range resp.Header {
+			if len(vv) > 0 {
+				headersMap[strings.ToLower(k)] = vv[0]
+			}
+		}
+		etag := resp.Header.Get("ETag")
+		if etag == "" {
+			etag = resp.Header.Get("Etag")
+		}
+		if etag != "" {
+			headersMap["etag"] = etag
+		}
+
+		var savedItem *cache.CacheItem
+		var ok bool
+		if pe.srv.cacheMgr.SingleFlight().Waiters(flightKey) > 0 {
+			// Foreground is actively waiting: admit directly to Protected segment
+			savedItem, ok = pe.srv.cacheMgr.SaveRAMWithNamespace(ns, item.path, headersMap, data)
+		} else {
+			// Pure background prefetch: admit to Probationary segment to protect hot cache
+			savedItem, ok = pe.srv.cacheMgr.SavePrefetchWithNamespace(ns, item.path, headersMap, data)
+		}
+		if !ok || savedItem == nil {
+			return nil, fmt.Errorf("failed to save asset")
+		}
+		return savedItem, nil
+	})
+
+	if err == nil && res != nil {
+		fetchMs := time.Since(fetchStart).Milliseconds()
+		dataLen := 0
+		if ci, ok := res.(*cache.CacheItem); ok && ci != nil {
+			dataLen = len(ci.Data)
+		}
 		pe.srv.stats.IncPrefetchSuccess()
-		pe.srv.stats.MarkPrefetchSaved(item.path)
-		pe.srv.stats.Log("INFO", fmt.Sprintf("[PREFETCH] P%d wait=%dms fetch=%dms -> %s%s (%d B)", item.prio, waitMs, fetchMs, item.host, item.path, len(data)))
+		pe.srv.stats.MarkPrefetchSaved(cleanPath)
+		pe.srv.stats.Log("INFO", fmt.Sprintf("[PREFETCH] P%d wait=%dms fetch=%dms -> %s%s (%d B)", item.prio, waitMs, fetchMs, item.host, cleanPath, dataLen))
 	}
 
 	// Pacing jitter (15~35ms)
