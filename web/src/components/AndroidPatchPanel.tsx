@@ -332,11 +332,40 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       showToast('未选择目标设备', 'error')
       return
     }
+
+    const targetPkg = inspectedPkg?.package_name || targetExtractPackage.trim() || 'com.dena.skyleap'
+
+    // When doing regular install (not forceUninstall after signature mismatch modal),
+    // check if the app is already installed on the phone to prompt for overwrite confirmation.
+    if (!forceUninstall) {
+      try {
+        let isInstalled = false
+        let installedVer = ''
+        if (deviceApp && deviceApp.package_name === targetPkg) {
+          isInstalled = Boolean(deviceApp.installed)
+          installedVer = deviceApp.version_name || ''
+        } else {
+          const probe = await probeDeviceApp(selectedDevice, targetPkg)
+          isInstalled = Boolean(probe.installed)
+          installedVer = probe.version_name || ''
+        }
+
+        if (isInstalled) {
+          const appName = targetPkg === 'com.dena.skyleap' ? 'SkyLeap 浏览器' : targetPkg
+          const verInfo = installedVer ? ` (版本: v${installedVer})` : ''
+          const confirmMsg = `检测到手机上已安装此应用【${appName}】${verInfo}。\n\n覆盖安装将使用新制作的加速补丁版替换手机上的原应用。\n是否确认覆盖安装？`
+          if (!window.confirm(confirmMsg)) {
+            return
+          }
+        }
+      } catch (err) {
+        console.warn('Pre-install app probe check error:', err)
+      }
+    }
+
     setIsInstalling(true)
     setInstallResult(null)
     setShowUninstallModal(false)
-
-    const targetPkg = inspectedPkg?.package_name || 'com.dena.skyleap'
 
     try {
       if (forceUninstall) {
@@ -594,6 +623,18 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const resultTotalApks = Number(patchResult?.total_apks ?? patchResult?.TotalApks ?? 0)
   const resultTotalMb = (resultTotalBytes / (1024 * 1024)).toFixed(2)
   const resultGeneratedFile = isResultSplit ? (resultApksArchive || resultSplitDir) : resultSingleApk
+
+  // Unified 3-stage adaptive button states
+  const selectedDeviceBrowser = deviceBrowsers.find(b => b.package_name === (targetExtractPackage.trim() || 'com.dena.skyleap'))
+  const isSelectedBrowserUnsupported = inputMode === 'device' && selectedDeviceBrowser?.is_system_webview === false
+  const isExtractStage =
+    inputMode === 'device' &&
+    Boolean(selectedDevice) &&
+    Boolean(deviceApp?.installed) &&
+    (!inspectedPkg || inspectedPkg.package_name !== (targetExtractPackage.trim() || 'com.dena.skyleap')) &&
+    !isRunning &&
+    !(patchStatus?.done && !patchStatus?.error && patchResult)
+  const isPatchDoneStage = Boolean(patchStatus?.done && !patchStatus?.error && patchResult)
 
   return (
     <div className="w-full flex flex-col gap-4 sm:gap-5">
@@ -1043,24 +1084,22 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                         包名: {deviceApp.package_name}
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleExtractFromDevice}
-                      disabled={isExtracting}
-                      className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-2xs transition-all cursor-pointer self-start sm:self-center disabled:opacity-50"
-                    >
-                      {isExtracting ? (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                          <span>正在从手机提取...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Zap className="w-3.5 h-3.5 fill-current" />
-                          <span>从手机一键提取并载入</span>
-                        </>
-                      )}
-                    </button>
+                    {isExtracting ? (
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-lg shrink-0">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>正在从手机提取...</span>
+                      </div>
+                    ) : inspectedPkg && inspectedPkg.package_name === deviceApp.package_name ? (
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg shrink-0">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>已提取并载入</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg shrink-0">
+                        <span className="w-2 h-2 rounded-full bg-indigo-500" />
+                        <span>就绪待提取</span>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2">
@@ -1268,29 +1307,93 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 {isCorrupted ? '组件损坏，需重新下载' : '需先下载并启用组件'}
               </span>
             )}
-            {inspectedPkg?.is_system_webview === false && (
+            {((inspectedPkg && inspectedPkg.is_system_webview === false) || isSelectedBrowserUnsupported) && (
               <span className="text-[11px] text-rose-600 font-medium">
                 仅支持系统 WebView 浏览器
               </span>
             )}
-            <button
-              type="button"
-              disabled={!isReady || !isComponentsVerified || !inspectedPkg || inspectedPkg.is_system_webview === false || isRunning || isPatchStarting}
-              onClick={handleStartPatch}
-              className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
-            >
-              {isRunning ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>处理中 ({progressPercent}%)...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4 fill-current" />
-                  <span>开始制作全内置补丁</span>
-                </>
-              )}
-            </button>
+            {isExtractStage ? (
+              <button
+                type="button"
+                disabled={isExtracting || !selectedDevice || !deviceApp?.installed || isSelectedBrowserUnsupported || !isReady || !isComponentsVerified}
+                onClick={handleExtractFromDevice}
+                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
+              >
+                {isExtracting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>正在从手机提取并解析...</span>
+                  </>
+                ) : (
+                  <>
+                    <Zap className="w-4 h-4 fill-current" />
+                    <span>从手机一键提取并载入</span>
+                  </>
+                )}
+              </button>
+            ) : isPatchDoneStage ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setPatchStatus(null)}
+                  className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-semibold transition-all cursor-pointer"
+                  title="重新制作补丁包"
+                >
+                  重新制作
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenOutput}
+                  className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-semibold transition-all cursor-pointer"
+                  title="打开生成文件所在目录"
+                >
+                  打开产物目录
+                </button>
+                <button
+                  type="button"
+                  disabled={isInstalling || adbDevices.filter(d => d.state === 'device').length === 0}
+                  onClick={() => handleInstallToDevice(false)}
+                  title={adbDevices.filter(d => d.state === 'device').length === 0 ? '未检测到已连接手机，请通过 USB 连接手机并开启 USB 调试' : '一键将补丁版安装到手机'}
+                  className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
+                >
+                  {isInstalling ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>正在安装至手机...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-4 h-4 fill-current" />
+                      <span>一键安装到手机</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={!isReady || !isComponentsVerified || !inspectedPkg || inspectedPkg.is_system_webview === false || isRunning || isPatchStarting}
+                onClick={handleStartPatch}
+                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
+              >
+                {isRunning ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>处理中 ({progressPercent}%)...</span>
+                  </>
+                ) : !inspectedPkg ? (
+                  <>
+                    <Play className="w-4 h-4 fill-current opacity-60" />
+                    <span>请先导入或选择安装包</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4 fill-current" />
+                    <span>开始制作全内置补丁</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1420,7 +1523,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     <span>如何与手机上的官方正版共存？</span>
                   </div>
                   <div>• <strong>系统双开 / 应用分身：</strong>现代 Android 手机（小米、华为、三星、OPPO、vivo 等）均支持在系统设置中开启「应用双开 / 应用分身」，安装补丁版后直接开启双开即可拥有两套独立数据与账号。</div>
-                  <div>• <strong>修补通用浏览器：</strong>亦可直接选择修补另一款轻量基于系统 WebView 的浏览器（如 Via、Kiwi、X浏览器等），由于包名不同，天然与官方 SkyLeap 完美共存。</div>
+                  <div>• <strong>修补通用浏览器：</strong>亦可直接选择修补另一款轻量基于系统 WebView 的浏览器（如 Via、X 浏览器、Lightning 等），由于包名不同，天然与官方 SkyLeap 完美共存。</div>
                   <div>• <strong>原版数据安全：</strong>原版安装包已自动备份至 <code>backups/</code> 目录。若直接覆盖安装官方 SkyLeap，由于签名变更 Android 会提示冲突，点击下方「一键安装到手机」可智能一键先卸载再安装。</div>
                 </div>
                 <ul className="list-disc pl-4 space-y-0.5 pt-1">
