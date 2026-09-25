@@ -666,7 +666,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              将 Go 原生加速核心直接内嵌至浏览器安装包，免 Root、安装即用。优先推荐 DeNA SkyLeap，亦支持任意系统 WebView 浏览器或双开分身。
+              将 Go 原生加速核心直接内嵌至浏览器安装包，免 Root、安装即用。优先推荐 DeNA SkyLeap，亦支持任意系统 WebView 浏览器。
             </p>
           </div>
 
@@ -1242,8 +1242,8 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               </div>
             </div>
 
-            {/* Package Coexistence & Signature Note */}
-            {inspectedPkg.is_system_webview === false ? (
+            {/* Kernel Support Note */}
+            {inspectedPkg.is_system_webview === false && (
               <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-900 flex items-start gap-2.5">
                 <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                 <div className="space-y-1">
@@ -1252,15 +1252,6 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     {inspectedPkg.unsupported_reason || '检测到该安装包为独立 Chromium/Gecko 内核浏览器（如 Chrome、Kiwi 等）。GBF 补丁仅支持基于 Android 系统原生 WebView 的浏览器（如官方 SkyLeap、Via 等）。暂不支持为独立内核浏览器注入补丁。'}
                   </div>
                 </div>
-              </div>
-            ) : (
-              <div className="bg-slate-50/80 p-3 rounded-lg border border-slate-200 text-xs text-slate-600 space-y-1">
-                <div className="font-semibold text-slate-700 flex items-center gap-1.5">
-                  <span>💡 原版共存提示：</span>
-                </div>
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  为确保浏览器底层组件与 Provider 正常运作，补丁将完整保留原始包名。由于补丁版与官方原版签名不同，直接覆盖安装需卸载原版。如需两者同时在手机上并存，<strong>推荐使用手机系统自带的「应用双开 / 应用分身」功能</strong>，或直接为系统内其他通用浏览器打补丁。
-                </p>
               </div>
             )}
 
@@ -1516,16 +1507,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
               {/* Installation guidance */}
               <div className="pt-2 border-t border-emerald-200/60 text-slate-600 space-y-2">
-                <div className="font-bold text-slate-800">在手机上的安装与多开共存：</div>
-                <div className="bg-sky-50 border border-sky-200 rounded-lg p-3 text-[11px] text-sky-950 space-y-1.5 leading-relaxed">
-                  <div className="font-bold text-sky-900 flex items-center gap-1.5">
-                    <Smartphone className="w-3.5 h-3.5 text-sky-700" />
-                    <span>如何与手机上的官方正版共存？</span>
-                  </div>
-                  <div>• <strong>系统双开 / 应用分身：</strong>现代 Android 手机（小米、华为、三星、OPPO、vivo 等）均支持在系统设置中开启「应用双开 / 应用分身」，安装补丁版后直接开启双开即可拥有两套独立数据与账号。</div>
-                  <div>• <strong>修补通用浏览器：</strong>亦可直接选择修补另一款轻量基于系统 WebView 的浏览器（如 Via、X 浏览器、Lightning 等），由于包名不同，天然与官方 SkyLeap 完美共存。</div>
-                  <div>• <strong>原版数据安全：</strong>原版安装包已自动备份至 <code>backups/</code> 目录。若直接覆盖安装官方 SkyLeap，由于签名变更 Android 会提示冲突，点击「一键安装到手机」可智能一键先卸载再安装。</div>
-                </div>
+                <div className="font-bold text-slate-800">在手机上的安装说明：</div>
                 <ul className="list-disc pl-4 space-y-0.5 pt-1">
                   <li>
                     <span className="font-semibold">一键安装:</span> 若手机已连接电脑并开启 USB 调试，直接点击上方主操作栏「一键安装到手机」自动推入安装。
@@ -1651,13 +1633,10 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         </div>
         <ul className="list-disc pl-4 space-y-1 leading-relaxed text-slate-600">
           <li>
-            <strong className="text-slate-700">浏览器支持与推荐：</strong> 推荐使用标准系统 WebView 浏览器（优先推荐 DeNA SkyLeap），亦兼容各类基于系统 WebView 打造的浏览器或分身多开工具。
+            <strong className="text-slate-700">浏览器支持与推荐：</strong> 推荐使用标准系统 WebView 浏览器（优先推荐 DeNA SkyLeap），亦兼容各类基于系统 WebView 打造的轻量浏览器。
           </li>
           <li>
             <strong className="text-slate-700">全内置自包含架构：</strong> 补丁将 Go 加速核心内嵌于 APK 内部，应用启动时主进程会自动拉起本地代理与缓存服务，退出时自动终止，手机桌面无需再安装或常驻独立的加速器宿主 App。
-          </li>
-          <li>
-            <strong className="text-slate-700">共存分身与多开：</strong> 勾选「更换包名」后，补丁包将作为独立应用安装，可与官方原版 SkyLeap 完美共存，无需卸载原版，账号相互隔离。
           </li>
           <li>
             <strong className="text-slate-700">100% 本地运算与合规：</strong> 所有解包、注入与签名过程完全在您的本地电脑完成，绝不向任何外部服务器上传安装包；本工具不分发、不篡改官方 SkyLeap 原始字节，用户需自行通过官方渠道获取安装包。
