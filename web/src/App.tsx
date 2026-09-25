@@ -237,13 +237,15 @@ export const App: React.FC = () => {
   // re-prompt within the same launch.
   const caGuidePromptedRef = useRef(false)
   useEffect(() => {
-    if (isAndroidRuntime) return
+    // The certificate flow is a desktop integration feature; Android manages
+    // its own trust model and must never open the desktop CA guide.
+    if (status?.platform === 'android') return
 
     if (shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
       caGuidePromptedRef.current = true
       setCaModalAction('install')
     }
-  }, [status, isAndroidRuntime])
+  }, [status])
 
   const handleQuitApp = async () => {
     setQuitting(true)
