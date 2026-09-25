@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -57,6 +58,29 @@ func (c *ControlServer) getExeDir() string {
 		return filepath.Dir(exe)
 	}
 	return "."
+}
+
+// resolveAndroidPatchOutputDir resolves relative patch output paths against the
+// writable application data directory on macOS app bundles. Portable Windows
+// builds keep their existing working-directory behavior.
+func resolveAndroidPatchOutputDir(rawPath string) string {
+	return resolveAndroidPatchOutputDirFor(rawPath, runtime.GOOS, config.GetBaseDir())
+}
+
+func resolveAndroidPatchOutputDirFor(rawPath, platform, baseDir string) string {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		path = "output_patched"
+	}
+
+	if platform == "darwin" && !filepath.IsAbs(path) {
+		path = filepath.Join(baseDir, path)
+	}
+
+	if absPath, err := filepath.Abs(path); err == nil {
+		return absPath
+	}
+	return path
 }
 
 func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Request) {
@@ -389,14 +413,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
-	outputDir := strings.TrimSpace(body.OutputDir)
-	if outputDir == "" {
-		outputDir = filepath.Join(".", "output_patched")
-	}
-	absOutputDir, err := filepath.Abs(outputDir)
-	if err == nil {
-		outputDir = absOutputDir
-	}
+	outputDir := resolveAndroidPatchOutputDir(body.OutputDir)
 
 	// Validate target package is a supported System WebView browser
 	inspectWorkDir, err := os.MkdirTemp("", "gbf_patch_precheck_*")
@@ -520,14 +537,7 @@ func (c *ControlServer) handleAndroidPatchOpenOutput(w http.ResponseWriter, req 
 		c.androidPatchMu.Unlock()
 	}
 
-	if targetDir == "" {
-		targetDir = filepath.Join(".", "output_patched")
-	}
-
-	absDir, err := filepath.Abs(targetDir)
-	if err == nil {
-		targetDir = absDir
-	}
+	targetDir = resolveAndroidPatchOutputDir(targetDir)
 
 	_ = os.MkdirAll(targetDir, 0755)
 
