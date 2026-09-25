@@ -600,6 +600,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleAndroidAdbDevices(w, req)
 			return
 		}
+	case "/api/android/adb/list-browsers":
+		if req.Method == http.MethodPost {
+			c.handleAndroidAdbListBrowsers(w, req)
+			return
+		}
 	case "/api/android/adb/probe-app":
 		if req.Method == http.MethodPost {
 			c.handleAndroidAdbProbeApp(w, req)

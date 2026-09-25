@@ -292,3 +292,16 @@ export interface AdbInstallResponse {
   error?: string;
 }
 
+export interface DeviceBrowserItem {
+  package_name: string;
+  label: string;
+  is_installed: boolean;
+  is_skyleap: boolean;
+}
+
+export interface AdbListBrowsersResponse {
+  ok: boolean;
+  browsers: DeviceBrowserItem[];
+  error?: string;
+}
+

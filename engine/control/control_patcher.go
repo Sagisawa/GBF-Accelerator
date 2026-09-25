@@ -660,6 +660,33 @@ func (c *ControlServer) handleAndroidAdbDevices(w http.ResponseWriter, req *http
 	})
 }
 
+func (c *ControlServer) handleAndroidAdbListBrowsers(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Serial string `json:"serial"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+
+	serial := strings.TrimSpace(body.Serial)
+	toolsDir := patcher.GetAndroidToolsDir()
+	exeDir := c.getExeDir()
+	adbPath, err := patcher.FindAdb(toolsDir, exeDir)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "ADB 未找到: " + err.Error()})
+		return
+	}
+
+	browsers, err := patcher.ListDeviceBrowsers(adbPath, serial)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": fmt.Sprintf("获取设备浏览器列表失败: %v", err)})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":       true,
+		"browsers": browsers,
+	})
+}
+
 func (c *ControlServer) handleAndroidAdbProbeApp(w http.ResponseWriter, req *http.Request) {
 	var body struct {
 		Serial      string `json:"serial"`

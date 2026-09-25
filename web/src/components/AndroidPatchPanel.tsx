@@ -29,6 +29,7 @@ import {
   AdbDevice,
   AdbProbeAppResponse,
   AdbInstallResponse,
+  DeviceBrowserItem,
 } from '../types'
 import {
   fetchAndroidEnv,
@@ -43,6 +44,7 @@ import {
   fetchAndroidComponentDownloadStatus,
   cancelAndroidComponentDownload,
   fetchAdbDevices,
+  fetchDeviceBrowsers,
   probeDeviceApp,
   extractDeviceApp,
   installToDevice,
@@ -86,6 +88,8 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   // ADB & Device state
   const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([])
   const [selectedDevice, setSelectedDevice] = useState<string>('')
+  const [deviceBrowsers, setDeviceBrowsers] = useState<DeviceBrowserItem[]>([])
+  const [isLoadingBrowsers, setIsLoadingBrowsers] = useState<boolean>(false)
   const [targetExtractPackage, setTargetExtractPackage] = useState<string>('com.dena.skyleap')
   const [isCustomExtractPackage, setIsCustomExtractPackage] = useState<boolean>(false)
   const [deviceApp, setDeviceApp] = useState<AdbProbeAppResponse | null>(null)
@@ -235,6 +239,38 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       // quiet error
     }
   }, [selectedDevice])
+
+  // Query installed browsers when selectedDevice connects
+  useEffect(() => {
+    if (!selectedDevice) {
+      setDeviceBrowsers([])
+      return
+    }
+    const dev = adbDevices.find(d => d.serial === selectedDevice)
+    if (dev && dev.state === 'device') {
+      setIsLoadingBrowsers(true)
+      fetchDeviceBrowsers(selectedDevice)
+        .then((res) => {
+          if (res.ok && res.browsers && res.browsers.length > 0) {
+            setDeviceBrowsers(res.browsers)
+            // If current target is not custom and not installed, auto-select first installed browser
+            if (!isCustomExtractPackage) {
+              const installedSkyLeap = res.browsers.find(b => b.is_skyleap && b.is_installed)
+              if (installedSkyLeap) {
+                setTargetExtractPackage(installedSkyLeap.package_name)
+              } else {
+                const firstInstalled = res.browsers.find(b => b.is_installed)
+                if (firstInstalled) {
+                  setTargetExtractPackage(firstInstalled.package_name)
+                }
+              }
+            }
+          }
+        })
+        .catch((e) => console.error('Failed to list device browsers:', e))
+        .finally(() => setIsLoadingBrowsers(false))
+    }
+  }, [selectedDevice, adbDevices])
 
   // Probe app on selected device
   useEffect(() => {
@@ -834,9 +870,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
                     <span className="font-bold text-slate-800 flex items-center gap-1.5">
                       <span>待提取的目标浏览器应用：</span>
+                      {isLoadingBrowsers && (
+                        <span className="text-[11px] text-indigo-600 font-normal animate-pulse">
+                          (正在扫描手机已安装应用...)
+                        </span>
+                      )}
                     </span>
                     <span className="text-[11px] text-slate-500">
-                      默认优先推荐 SkyLeap，亦可提取或指定其它已安装浏览器
+                      自动探测手机已安装浏览器，优先推荐 SkyLeap，支持一键选取
                     </span>
                   </div>
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
@@ -850,14 +891,42 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                           setTargetExtractPackage(e.target.value)
                         }
                       }}
-                      className="text-xs font-semibold text-slate-800 bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                      className="text-xs font-semibold text-slate-800 bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer flex-1"
                     >
-                      <option value="com.dena.skyleap">DeNA SkyLeap (官方推荐 · com.dena.skyleap)</option>
-                      <option value="com.android.chrome">Google Chrome (com.android.chrome)</option>
-                      <option value="com.sec.android.app.sbrowser">三星浏览器 (com.sec.android.app.sbrowser)</option>
-                      <option value="com.brave.browser">Brave (com.brave.browser)</option>
-                      <option value="com.kiwibrowser.browser">Kiwi Browser (com.kiwibrowser.browser)</option>
-                      <option value="__custom__">自定义指定其它包名...</option>
+                      {deviceBrowsers.length > 0 ? (
+                        <>
+                          {deviceBrowsers.some(b => b.is_installed) && (
+                            <optgroup label="📱 手机已安装的浏览器与应用 (自动探测)">
+                              {deviceBrowsers.filter(b => b.is_installed).map(b => (
+                                <option key={b.package_name} value={b.package_name}>
+                                  {b.is_skyleap ? '⭐ ' : '🌐 '}{b.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {deviceBrowsers.some(b => !b.is_installed) && (
+                            <optgroup label="🌐 其它常见浏览器 (未检测到安装)">
+                              {deviceBrowsers.filter(b => !b.is_installed).map(b => (
+                                <option key={b.package_name} value={b.package_name}>
+                                  {b.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <option value="com.dena.skyleap">DeNA SkyLeap (官方推荐 · com.dena.skyleap)</option>
+                          <option value="com.android.chrome">Google Chrome (com.android.chrome)</option>
+                          <option value="com.microsoft.emmx">Microsoft Edge (com.microsoft.emmx)</option>
+                          <option value="mark.via.gp">Via 浏览器 (mark.via.gp)</option>
+                          <option value="com.quark.browser">夸克浏览器 (com.quark.browser)</option>
+                          <option value="com.sec.android.app.sbrowser">三星浏览器 (com.sec.android.app.sbrowser)</option>
+                          <option value="com.brave.browser">Brave (com.brave.browser)</option>
+                          <option value="com.kiwibrowser.browser">Kiwi Browser (com.kiwibrowser.browser)</option>
+                        </>
+                      )}
+                      <option value="__custom__">✍️ 自定义指定其它包名...</option>
                     </select>
                     {isCustomExtractPackage && (
                       <input

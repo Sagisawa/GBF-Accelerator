@@ -13,6 +13,7 @@ import {
   AdbDevicesResponse,
   AdbProbeAppResponse,
   AdbInstallResponse,
+  AdbListBrowsersResponse,
 } from './types'
 
 const BASE = ''
@@ -527,6 +528,19 @@ export async function cancelAndroidComponentDownload(): Promise<{ ok: boolean; m
 
 export async function fetchAdbDevices(): Promise<AdbDevicesResponse> {
   const res = await fetch(`${BASE}/api/android/adb/devices`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function fetchDeviceBrowsers(serial: string): Promise<AdbListBrowsersResponse> {
+  const res = await fetch(`${BASE}/api/android/adb/list-browsers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ serial }),
+  })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     throw new Error(data.error || data.message || `HTTP ${res.status}`)

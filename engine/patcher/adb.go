@@ -243,6 +243,134 @@ func GetDeviceApp(adbPath, serial, packageName string) (*DeviceAppInfo, error) {
 	}, nil
 }
 
+type InstalledBrowserApp struct {
+	PackageName string `json:"package_name"`
+	Label       string `json:"label"`
+	IsInstalled bool   `json:"is_installed"`
+	IsSkyLeap   bool   `json:"is_skyleap"`
+}
+
+var knownBrowserCatalog = []struct {
+	pkg   string
+	label string
+}{
+	{"com.dena.skyleap", "DeNA SkyLeap (官方推荐)"},
+	{"com.android.chrome", "Google Chrome"},
+	{"com.microsoft.emmx", "Microsoft Edge"},
+	{"mark.via.gp", "Via 浏览器"},
+	{"mark.via", "Via 浏览器"},
+	{"com.quark.browser", "夸克浏览器"},
+	{"com.sec.android.app.sbrowser", "三星浏览器"},
+	{"com.brave.browser", "Brave 浏览器"},
+	{"com.kiwibrowser.browser", "Kiwi Browser"},
+	{"org.mozilla.firefox", "Firefox 火狐浏览器"},
+	{"com.opera.browser", "Opera 浏览器"},
+	{"com.opera.mini.native", "Opera Mini"},
+	{"com.heytap.browser", "OPPO/OnePlus 系统浏览器"},
+	{"com.mi.globalbrowser", "小米系统浏览器"},
+	{"com.android.browser", "Android 原生浏览器"},
+	{"com.vivo.browser", "vivo 系统浏览器"},
+	{"com.huawei.browser", "华为系统浏览器"},
+	{"com.ucmobile", "UC 浏览器"},
+	{"com.UCMobile", "UC 浏览器"},
+	{"com.baidu.searchbox", "百度 App / 浏览器"},
+}
+
+// ListDeviceBrowsers discovers all browser and SkyLeap packages on the target device.
+func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, adbPath, "-s", serial, "shell", "pm", "list", "packages")
+	prepareCmd(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query packages on device: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	installedMap := make(map[string]bool)
+	var deviceInstalledPkgs []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "package:") {
+			pkg := strings.TrimSpace(strings.TrimPrefix(line, "package:"))
+			if pkg != "" {
+				installedMap[pkg] = true
+				deviceInstalledPkgs = append(deviceInstalledPkgs, pkg)
+			}
+		}
+	}
+
+	seen := make(map[string]bool)
+	var results []InstalledBrowserApp
+
+	// 1. SkyLeap or SkyLeap clones on the device
+	if installedMap["com.dena.skyleap"] {
+		results = append(results, InstalledBrowserApp{
+			PackageName: "com.dena.skyleap",
+			Label:       "DeNA SkyLeap (官方推荐 · 已安装)",
+			IsInstalled: true,
+			IsSkyLeap:   true,
+		})
+		seen["com.dena.skyleap"] = true
+	}
+
+	for _, pkg := range deviceInstalledPkgs {
+		if strings.Contains(strings.ToLower(pkg), "skyleap") && !seen[pkg] {
+			results = append(results, InstalledBrowserApp{
+				PackageName: pkg,
+				Label:       fmt.Sprintf("SkyLeap (%s · 已安装)", pkg),
+				IsInstalled: true,
+				IsSkyLeap:   true,
+			})
+			seen[pkg] = true
+		}
+	}
+
+	// 2. Known browsers installed on the device
+	for _, def := range knownBrowserCatalog {
+		if installedMap[def.pkg] && !seen[def.pkg] {
+			results = append(results, InstalledBrowserApp{
+				PackageName: def.pkg,
+				Label:       fmt.Sprintf("%s (%s · 已安装)", def.label, def.pkg),
+				IsInstalled: true,
+				IsSkyLeap:   false,
+			})
+			seen[def.pkg] = true
+		}
+	}
+
+	// 3. Other packages containing "browser" installed on the device
+	for _, pkg := range deviceInstalledPkgs {
+		pLower := strings.ToLower(pkg)
+		if strings.Contains(pLower, "browser") && !seen[pkg] {
+			results = append(results, InstalledBrowserApp{
+				PackageName: pkg,
+				Label:       fmt.Sprintf("浏览器应用 (%s · 已安装)", pkg),
+				IsInstalled: true,
+				IsSkyLeap:   false,
+			})
+			seen[pkg] = true
+		}
+	}
+
+	// 4. Other common browsers that are NOT installed on device
+	for _, def := range knownBrowserCatalog {
+		if !seen[def.pkg] {
+			results = append(results, InstalledBrowserApp{
+				PackageName: def.pkg,
+				Label:       fmt.Sprintf("%s (%s · 未安装)", def.label, def.pkg),
+				IsInstalled: false,
+				IsSkyLeap:   def.pkg == "com.dena.skyleap",
+			})
+			seen[def.pkg] = true
+		}
+	}
+
+	return results, nil
+}
+
 // PullDeviceApp pulls all APK parts of a package from the device into targetDir.
 func PullDeviceApp(
 	ctx context.Context,
