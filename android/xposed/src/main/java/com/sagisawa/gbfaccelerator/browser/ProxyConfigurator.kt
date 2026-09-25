@@ -74,11 +74,18 @@ class AndroidProxyOverrideExecutor : ProxyOverrideExecutor {
             return
         }
 
+        if (reverseBypass && !isReverseBypassSupported) {
+            val err = UnsupportedOperationException("PROXY_OVERRIDE_REVERSE_BYPASS is not supported on this device/WebView")
+            Log.w(TAG, "[GBF-ACC][Proxy] Reverse Bypass requested but PROXY_OVERRIDE_REVERSE_BYPASS not supported! Fail-Closed to DIRECT.")
+            onError(err)
+            return
+        }
+
         try {
             val builder = ProxyConfig.Builder()
                 .addProxyRule(proxyUrl)
 
-            if (reverseBypass && isReverseBypassSupported) {
+            if (reverseBypass) {
                 bypassRules.forEach { rule ->
                     builder.addBypassRule(rule)
                 }
@@ -147,6 +154,15 @@ class ProxyConfigurator(
         if (!executor.isSupported()) {
             val err = UnsupportedOperationException("PROXY_OVERRIDE is not supported on this device/WebView")
             Log.w(TAG, "[GBF-ACC][Proxy] PROXY_OVERRIDE not supported! Maintaining Fail-Closed.")
+            state.set(ProxyState.FAILED)
+            lastError.set(err)
+            onComplete?.invoke(false, err)
+            return
+        }
+
+        if (reverseBypass && !executor.isReverseBypassSupported()) {
+            val err = UnsupportedOperationException("PROXY_OVERRIDE_REVERSE_BYPASS is not supported on this device/WebView")
+            Log.w(TAG, "[GBF-ACC][Proxy] PROXY_OVERRIDE_REVERSE_BYPASS not supported! Maintaining Fail-Closed.")
             state.set(ProxyState.FAILED)
             lastError.set(err)
             onComplete?.invoke(false, err)

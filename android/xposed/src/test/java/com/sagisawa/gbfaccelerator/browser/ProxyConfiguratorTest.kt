@@ -44,6 +44,11 @@ class ProxyConfiguratorTest {
                 return
             }
 
+            if (reverseBypass && !isReverseBypassSupported()) {
+                onError(UnsupportedOperationException("PROXY_OVERRIDE_REVERSE_BYPASS is not supported"))
+                return
+            }
+
             if (simulatedException != null) {
                 onError(simulatedException!!)
                 return
@@ -156,6 +161,29 @@ class ProxyConfiguratorTest {
         assertTrue(callbackError is UnsupportedOperationException)
         assertEquals(ProxyState.FAILED, configurator.currentState)
         assertTrue(configurator.isFailed)
+        assertEquals(0, mockExecutor.clearedOverrideCount)
+    }
+
+    @Test
+    fun testUnsupportedReverseBypassEnforcesFailClosed() {
+        mockExecutor.reverseBypassSupported = false
+
+        var callbackSuccess: Boolean? = null
+        var callbackError: Throwable? = null
+
+        configurator.applyProxyConfig { success, error ->
+            callbackSuccess = success
+            callbackError = error
+        }
+
+        assertFalse("applyProxyConfig must fail when PROXY_OVERRIDE_REVERSE_BYPASS is unsupported", callbackSuccess == true)
+        assertNotNull(callbackError)
+        assertTrue("Error must be UnsupportedOperationException", callbackError is UnsupportedOperationException)
+        assertEquals(ProxyState.FAILED, configurator.currentState)
+        assertTrue(configurator.isFailed)
+        assertFalse(configurator.isReady)
+        // Executor apply was never called (early fail-closed) and no clearProxyOverride was invoked
+        assertEquals("apply must not be invoked on unsupported reverse bypass", 0, mockExecutor.applyCallCount)
         assertEquals(0, mockExecutor.clearedOverrideCount)
     }
 

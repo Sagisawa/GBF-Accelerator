@@ -1,6 +1,7 @@
 package com.sagisawa.gbfaccelerator.browser
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -35,8 +36,28 @@ class WebViewBrowserAdapterTest {
         }
     }
 
-    private class FakeSslError(private val url: String) {
-        fun getUrl(): String = url
+    private class FakeDName(
+        private val oName: String? = null,
+        private val cName: String? = null
+    ) {
+        fun getOName(): String? = oName
+        fun getCName(): String? = cName
+    }
+
+    private class FakeSslCertificate(
+        private val issuedBy: FakeDName? = null,
+        private val certString: String = ""
+    ) {
+        fun getIssuedBy(): FakeDName? = issuedBy
+        override fun toString(): String = certString
+    }
+
+    private class FakeSslError(
+        private val url: String? = null,
+        private val cert: FakeSslCertificate? = null
+    ) {
+        fun getUrl(): String? = url
+        fun getCertificate(): FakeSslCertificate? = cert
     }
 
     private class TestWebViewBrowserAdapter(
@@ -106,29 +127,71 @@ class WebViewBrowserAdapterTest {
     }
 
     @Test
-    fun testSslErrorAutoProceedsForGbfDomains() {
+    fun testSslErrorAutoProceedsForLocalCaCert() {
         adapter.installWebViewHooks(mockRegistry)
 
         val handler = FakeSslErrorHandler()
-        val error = FakeSslError("https://game.granbluefantasy.jp/#mypage")
+        val localCaCert = FakeSslCertificate(
+            issuedBy = FakeDName(oName = "GBF Local Accelerator", cName = "GBF Local Accelerator Root CA"),
+            certString = "GBF Local Accelerator Root CA"
+        )
+        val error = FakeSslError("https://game.granbluefantasy.jp/#mypage", localCaCert)
 
         val intercepted = adapter.handleSslError(listOf(null, handler, error))
 
-        assertTrue("GBF domains must be auto-approved to bypass untrusted cert error", intercepted)
+        assertTrue("Cert issued by GBF Local Accelerator Root CA must be approved", intercepted)
         assertTrue("handler.proceed() must be called", handler.proceedCalled)
     }
 
     @Test
-    fun testSslErrorAutoProceedsForAkamaiDomains() {
+    fun testSslErrorAutoProceedsForLocalCaCertOnAkamai() {
         adapter.installWebViewHooks(mockRegistry)
 
         val handler = FakeSslErrorHandler()
-        val error = FakeSslError("https://prd-game-a1-gbf.granbluefantasy.akamaized.net/assets/app.js")
+        val localCaCert = FakeSslCertificate(
+            issuedBy = FakeDName(oName = "GBF Local Accelerator", cName = "GBF Local Accelerator Root CA"),
+            certString = "GBF Local Accelerator Root CA"
+        )
+        val error = FakeSslError("https://prd-game-a1-gbf.granbluefantasy.akamaized.net/assets/app.js", localCaCert)
 
         val intercepted = adapter.handleSslError(listOf(null, handler, error))
 
-        assertTrue("Akamai static assets must be auto-approved", intercepted)
+        assertTrue("Akamai static assets signed by local CA must be auto-approved", intercepted)
         assertTrue("handler.proceed() must be called", handler.proceedCalled)
+    }
+
+    @Test
+    fun testSslErrorEmptyUrlWithUnknownCertRejected() {
+        adapter.installWebViewHooks(mockRegistry)
+
+        val handler = FakeSslErrorHandler()
+        val unknownCert = FakeSslCertificate(
+            issuedBy = FakeDName(oName = "Untrusted Authority", cName = "Rogue Root CA"),
+            certString = "Rogue Root CA"
+        )
+        val error = FakeSslError("", unknownCert)
+
+        val intercepted = adapter.handleSslError(listOf(null, handler, error))
+
+        assertFalse("Empty URL with unknown cert must NOT be auto-approved (Fail-Closed)", intercepted)
+        assertFalse("handler.proceed() must NOT be called", handler.proceedCalled)
+    }
+
+    @Test
+    fun testSslErrorGbfDomainWithUnknownCertRejected() {
+        adapter.installWebViewHooks(mockRegistry)
+
+        val handler = FakeSslErrorHandler()
+        val rogueCert = FakeSslCertificate(
+            issuedBy = FakeDName(oName = "Public Rogue CA", cName = "Fake Granblue CA"),
+            certString = "Fake Granblue CA"
+        )
+        val error = FakeSslError("https://game.granbluefantasy.jp/#mypage", rogueCert)
+
+        val intercepted = adapter.handleSslError(listOf(null, handler, error))
+
+        assertFalse("GBF domain with unknown external cert must NOT be approved (anti-MITM)", intercepted)
+        assertFalse("handler.proceed() must NOT be called", handler.proceedCalled)
     }
 
     @Test
@@ -136,11 +199,11 @@ class WebViewBrowserAdapterTest {
         adapter.installWebViewHooks(mockRegistry)
 
         val handler = FakeSslErrorHandler()
-        val error = FakeSslError("https://example.com/untrusted")
+        val error = FakeSslError("https://example.com/untrusted", null)
 
         val intercepted = adapter.handleSslError(listOf(null, handler, error))
 
-        org.junit.Assert.assertFalse("Non-GBF domains must not be auto-approved", intercepted)
-        org.junit.Assert.assertFalse("handler.proceed() must not be called", handler.proceedCalled)
+        assertFalse("Non-GBF domains must not be auto-approved", intercepted)
+        assertFalse("handler.proceed() must not be called", handler.proceedCalled)
     }
 }

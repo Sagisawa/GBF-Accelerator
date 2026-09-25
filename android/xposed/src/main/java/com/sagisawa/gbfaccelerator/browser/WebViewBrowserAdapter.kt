@@ -221,8 +221,8 @@ abstract class WebViewBrowserAdapter(
             false
         }
 
-        if (isOurCaCert || failingUrl.isEmpty() || GbfRoutingRules.shouldProxy(failingUrl)) {
-            Log.i(TAG, "[GBF-ACC] Auto-accepting SSL error for GBF proxy (isOurCaCert=$isOurCaCert): $failingUrl")
+        if (isOurCaCert) {
+            Log.i(TAG, "[GBF-ACC] Auto-accepting SSL error for GBF proxy (valid local CA): $failingUrl")
             return try {
                 val proceedMethod = handler?.javaClass?.getMethod("proceed")
                 proceedMethod?.invoke(handler)
