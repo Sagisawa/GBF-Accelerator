@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"gbf-proxy/config"
 	"gbf-proxy/desktop"
 	"gbf-proxy/patcher"
 )
@@ -125,6 +126,22 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 
 	ready := javaFound && componentsVerified
 
+	var toolsDiskBytes int64
+	_ = filepath.Walk(toolsDir, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && fi != nil && !fi.IsDir() {
+			toolsDiskBytes += fi.Size()
+		}
+		return nil
+	})
+	jreDir := filepath.Join(config.GetBaseDir(), "jre")
+	_ = filepath.Walk(jreDir, func(p string, fi os.FileInfo, err error) error {
+		if err == nil && fi != nil && !fi.IsDir() {
+			toolsDiskBytes += fi.Size()
+		}
+		return nil
+	})
+	backupDir := filepath.Join(config.GetBaseDir(), "backups")
+
 	c.componentDlMu.Lock()
 	dlActive := c.componentDlActive
 	dlProg := c.componentDlProgress
@@ -133,6 +150,9 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                   true,
 		"ready":                ready,
+		"full_env_ready":       ready && adbFound,
+		"tools_disk_bytes":     toolsDiskBytes,
+		"backup_dir":           backupDir,
 		"components_installed": componentsInstalled,
 		"components_verified":  componentsVerified,
 		"components_corrupted": componentsCorrupted,
@@ -223,14 +243,15 @@ func (c *ControlServer) handleAndroidInspect(w http.ResponseWriter, req *http.Re
 	isOfficialSkyLeap := (pkg.PackageName == "com.dena.skyleap")
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":                  true,
-		"file_path":           targetPath,
-		"base_input_name":     filepath.Base(targetPath),
-		"package_name":        pkg.PackageName,
-		"version_name":        pkg.VersionName,
-		"is_split":            pkg.IsSplit,
-		"total_apks":          pkg.TotalApks,
-		"is_official_skyleap": isOfficialSkyLeap,
+		"ok":                      true,
+		"file_path":               targetPath,
+		"base_input_name":         filepath.Base(targetPath),
+		"package_name":            pkg.PackageName,
+		"version_name":            pkg.VersionName,
+		"is_split":                pkg.IsSplit,
+		"total_apks":              pkg.TotalApks,
+		"is_official_skyleap":     isOfficialSkyLeap,
+		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})
 }
 
@@ -296,21 +317,24 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 	isOfficialSkyLeap := (pkg.PackageName == "com.dena.skyleap")
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":                  true,
-		"file_path":           savedPath,
-		"base_input_name":     header.Filename,
-		"package_name":        pkg.PackageName,
-		"version_name":        pkg.VersionName,
-		"is_split":            pkg.IsSplit,
-		"total_apks":          pkg.TotalApks,
-		"is_official_skyleap": isOfficialSkyLeap,
+		"ok":                      true,
+		"file_path":               savedPath,
+		"base_input_name":         header.Filename,
+		"package_name":            pkg.PackageName,
+		"version_name":            pkg.VersionName,
+		"is_split":                pkg.IsSplit,
+		"total_apks":              pkg.TotalApks,
+		"is_official_skyleap":     isOfficialSkyLeap,
+		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})
 }
 
 func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Request) {
 	var body struct {
-		FilePath  string `json:"file_path"`
-		OutputDir string `json:"output_dir"`
+		FilePath       string `json:"file_path"`
+		OutputDir      string `json:"output_dir"`
+		NewPackageName string `json:"new_package_name"`
+		AutoBackup     *bool  `json:"auto_backup"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid JSON body"})
@@ -327,6 +351,12 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": fmt.Sprintf("Target package not found: %v", err)})
 		return
 	}
+
+	autoBackup := true
+	if body.AutoBackup != nil {
+		autoBackup = *body.AutoBackup
+	}
+	newPkg := strings.TrimSpace(body.NewPackageName)
 
 	c.androidPatchMu.Lock()
 	if c.androidPatchStatus.Running {
@@ -383,12 +413,14 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 	c.androidPatchMu.Unlock()
 
 	// Launch patch execution in background goroutine (non-blocking)
-	go func(inPath, outDir string) {
+	go func(inPath, outDir, customPkg string, backup bool) {
 		bridge := &patchListenerBridge{server: c}
 		opts := patcher.PatchOptions{
-			InputPath: inPath,
-			OutputDir: outDir,
-			Listener:  bridge,
+			InputPath:      inPath,
+			OutputDir:      outDir,
+			NewPackageName: customPkg,
+			AutoBackup:     backup,
+			Listener:       bridge,
 		}
 
 		p, err := patcher.NewPatcher(opts)
@@ -417,7 +449,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 			c.androidPatchStatus.Stage = 5
 			c.androidPatchStatus.StageText = "Patch completed successfully"
 		}
-	}(targetPath, outputDir)
+	}(targetPath, outputDir, newPkg, autoBackup)
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
@@ -429,6 +461,7 @@ func (c *ControlServer) handleAndroidPatchStatus(w http.ResponseWriter, req *htt
 	c.androidPatchMu.Lock()
 	defer c.androidPatchMu.Unlock()
 
+	backupDir := filepath.Join(config.GetBaseDir(), "backups")
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":         true,
 		"running":    c.androidPatchStatus.Running,
@@ -439,6 +472,7 @@ func (c *ControlServer) handleAndroidPatchStatus(w http.ResponseWriter, req *htt
 		"error":      c.androidPatchStatus.Error,
 		"done":       c.androidPatchStatus.Done,
 		"result":     c.androidPatchStatus.Result,
+		"backup_dir": backupDir,
 	})
 }
 
@@ -752,14 +786,15 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":                  true,
-		"file_path":           targetInspectPath,
-		"base_input_name":     fmt.Sprintf("%s (从设备提取)", pkgName),
-		"package_name":        pkg.PackageName,
-		"version_name":        pkg.VersionName,
-		"is_split":            pkg.IsSplit,
-		"total_apks":          pkg.TotalApks,
-		"is_official_skyleap": (pkg.PackageName == "com.dena.skyleap"),
+		"ok":                      true,
+		"file_path":               targetInspectPath,
+		"base_input_name":         fmt.Sprintf("%s (从设备提取)", pkgName),
+		"package_name":            pkg.PackageName,
+		"version_name":            pkg.VersionName,
+		"is_split":                pkg.IsSplit,
+		"total_apks":              pkg.TotalApks,
+		"is_official_skyleap":     (pkg.PackageName == "com.dena.skyleap"),
+		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})
 }
 
@@ -926,6 +961,114 @@ func (c *ControlServer) handleAndroidAdbInstallHostApp(w http.ResponseWriter, re
 		"output":  installOut,
 	})
 }
+
+func (c *ControlServer) handleAndroidPatchOpenBackup(w http.ResponseWriter, req *http.Request) {
+	backupDir := filepath.Join(config.GetBaseDir(), "backups")
+	absDir, err := filepath.Abs(backupDir)
+	if err == nil {
+		backupDir = absDir
+	}
+
+	_ = os.MkdirAll(backupDir, 0755)
+
+	go func() {
+		_ = desktop.OpenFolder(backupDir)
+	}()
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":   true,
+		"path": backupDir,
+	})
+}
+
+func (c *ControlServer) handleAndroidEnvInstallAll(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		CustomURLs map[string]string `json:"custom_urls,omitempty"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+
+	toolsDir := patcher.GetAndroidToolsDir()
+
+	c.componentDlMu.Lock()
+	if c.componentDlActive {
+		c.componentDlMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "组件或环境安装任务正在进行中",
+		})
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c.componentDlActive = true
+	c.componentDlCancelFn = cancel
+	c.componentDlProgress = patcher.DownloadProgress{
+		Active:  true,
+		Stage:   "downloading",
+		Percent: 0,
+	}
+	c.componentDlMu.Unlock()
+
+	go func(ctx context.Context, toolsDir string, customURLs map[string]string) {
+		err := patcher.InstallAllComponents(ctx, toolsDir, customURLs, func(p patcher.DownloadProgress) {
+			c.componentDlMu.Lock()
+			c.componentDlProgress = p
+			c.componentDlMu.Unlock()
+		})
+
+		c.componentDlMu.Lock()
+		defer c.componentDlMu.Unlock()
+		c.componentDlActive = false
+		c.componentDlCancelFn = nil
+		if err != nil {
+			c.componentDlProgress.Active = false
+			c.componentDlProgress.Done = false
+			c.componentDlProgress.Stage = "error"
+			c.componentDlProgress.Error = err.Error()
+		} else {
+			c.componentDlProgress.Active = false
+			c.componentDlProgress.Done = true
+			c.componentDlProgress.Stage = "done"
+			c.componentDlProgress.Percent = 100
+			c.componentDlProgress.Error = ""
+		}
+	}(ctx, toolsDir, body.CustomURLs)
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "全环境组件下载与解压安装任务已启动",
+	})
+}
+
+func (c *ControlServer) handleAndroidEnvUninstallAll(w http.ResponseWriter, req *http.Request) {
+	c.componentDlMu.Lock()
+	if c.componentDlActive {
+		c.componentDlMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "组件正在下载安装中，请等待完成或取消后再卸载",
+		})
+		return
+	}
+	c.componentDlMu.Unlock()
+
+	files, bytes, err := patcher.UninstallAllComponents()
+	if err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("卸载失败: %v", err),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":          true,
+		"message":     fmt.Sprintf("已成功卸载全套 Android 工具链与 JRE 环境，释放 %d 个文件 (%.1f MB)", files, float64(bytes)/(1024*1024)),
+		"freed_files": files,
+		"freed_bytes": bytes,
+	})
+}
+
 
 
 

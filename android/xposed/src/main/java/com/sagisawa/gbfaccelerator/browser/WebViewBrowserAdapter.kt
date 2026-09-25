@@ -1,6 +1,9 @@
 package com.sagisawa.gbfaccelerator.browser
 
+import android.content.Context
 import android.util.Log
+import android.view.View
+import com.sagisawa.gbfaccelerator.core.EmbeddedCoreManager
 
 /**
  * Base adapter strictly for Android browsers that rely on the standard Android WebView (android.webkit.WebView)
@@ -29,16 +32,18 @@ abstract class WebViewBrowserAdapter(
     }
 
     override fun matchesPackage(packageName: String): Boolean {
-        return packageName in targetPackages
+        return "*" in targetPackages || packageName in targetPackages
     }
 
     override fun matchesProcess(processName: String): Boolean {
+        if ("*" in targetPackages) return true
         return targetPackages.any { pkg ->
             processName == pkg || processName.startsWith("$pkg:")
         }
     }
 
     override fun onModuleLoaded(processName: String, hookRegistry: HookRegistry) {
+        installApplicationHooks(hookRegistry)
         installWebViewHooks(hookRegistry)
     }
 
@@ -55,6 +60,39 @@ abstract class WebViewBrowserAdapter(
     }
 
     private val hookedClientClasses = java.util.Collections.synchronizedSet(mutableSetOf<Class<*>>())
+
+    /**
+     * Installs lifecycle hooks on Application class to capture Context and ensure Go Core is started early.
+     */
+    open fun installApplicationHooks(hookRegistry: HookRegistry, classLoader: ClassLoader = javaClass.classLoader ?: ClassLoader.getSystemClassLoader()) {
+        try {
+            val appClass = Class.forName("android.app.Application", true, classLoader)
+            val contextClass = Class.forName("android.content.Context", true, classLoader)
+            val attachBaseContextMethod = appClass.getDeclaredMethod("attachBaseContext", contextClass)
+            val success = hookRegistry.hookMethod(attachBaseContextMethod) { thisObj, args ->
+                val ctx = args.firstOrNull() as? Context ?: (thisObj as? Context)
+                ctx?.let { onContextAvailable(it) }
+                false
+            }
+            if (success) {
+                Log.i(TAG, "[GBF-ACC] Application.attachBaseContext hook installed")
+            }
+        } catch (_: Throwable) {
+        }
+
+        try {
+            val appClass = Class.forName("android.app.Application", true, classLoader)
+            val onCreateMethod = appClass.getMethod("onCreate")
+            val success = hookRegistry.hookMethod(onCreateMethod) { thisObj, _ ->
+                (thisObj as? Context)?.let { onContextAvailable(it) }
+                false
+            }
+            if (success) {
+                Log.i(TAG, "[GBF-ACC] Application.onCreate hook installed")
+            }
+        } catch (_: Throwable) {
+        }
+    }
 
     /**
      * Installs hooks on standard WebView methods using reflection.
@@ -200,6 +238,17 @@ abstract class WebViewBrowserAdapter(
      * Invoked when any hooked WebView activity is detected.
      */
     protected open fun triggerProxyConfig(webViewObj: Any?) {
+        if (webViewObj is View) {
+            onContextAvailable(webViewObj.context)
+        } else if (webViewObj != null) {
+            try {
+                val getContextMethod = webViewObj.javaClass.getMethod("getContext")
+                val ctx = getContextMethod.invoke(webViewObj) as? Context
+                ctx?.let { onContextAvailable(it) }
+            } catch (_: Throwable) {
+            }
+        }
+
         proxyConfigurator.applyProxyConfig { success, err ->
             if (success) {
                 Log.i(TAG, "[GBF-ACC] ProxyController configured (Reverse Bypass active)")
@@ -207,5 +256,12 @@ abstract class WebViewBrowserAdapter(
                 Log.e(TAG, "[GBF-ACC][Proxy] Failed to configure ProxyController: ${err?.message}", err)
             }
         }
+    }
+
+    /**
+     * Invoked whenever an Android Context is obtained to ensure the embedded Go Core is active.
+     */
+    open fun onContextAvailable(context: Context) {
+        EmbeddedCoreManager.ensureStarted(context)
     }
 }

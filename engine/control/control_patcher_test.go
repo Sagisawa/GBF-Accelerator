@@ -488,6 +488,82 @@ func TestControlAndroidAdbInstallHostApp(t *testing.T) {
 	}
 }
 
+func TestControlAndroidPatchOpenBackup(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
 
+	req := httptest.NewRequest(http.MethodPost, "/api/android/patch/open-backup", nil)
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
 
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
 
+	var res struct {
+		OK   bool   `json:"ok"`
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if !res.OK {
+		t.Errorf("expected ok=true, got false")
+	}
+	if res.Path == "" {
+		t.Errorf("expected non-empty path in response")
+	}
+}
+
+func TestControlAndroidEnvInstallAndUninstallAll(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// Conflict when active
+	ctrl.componentDlMu.Lock()
+	ctrl.componentDlActive = true
+	ctrl.componentDlMu.Unlock()
+
+	reqInstallConflict := httptest.NewRequest(http.MethodPost, "/api/android/env/install-all", nil)
+	reqInstallConflict.Host = "127.0.0.1:8125"
+	wInstallConflict := httptest.NewRecorder()
+	ctrl.handleRoute(wInstallConflict, reqInstallConflict)
+	if wInstallConflict.Code != http.StatusConflict {
+		t.Errorf("expected 409 Conflict when active, got %d", wInstallConflict.Code)
+	}
+
+	reqUninstallConflict := httptest.NewRequest(http.MethodPost, "/api/android/env/uninstall-all", nil)
+	reqUninstallConflict.Host = "127.0.0.1:8125"
+	wUninstallConflict := httptest.NewRecorder()
+	ctrl.handleRoute(wUninstallConflict, reqUninstallConflict)
+	if wUninstallConflict.Code != http.StatusConflict {
+		t.Errorf("expected 409 Conflict when active, got %d", wUninstallConflict.Code)
+	}
+
+	// Reset active
+	ctrl.componentDlMu.Lock()
+	ctrl.componentDlActive = false
+	ctrl.componentDlMu.Unlock()
+
+	// Uninstall when inactive
+	reqUninstall := httptest.NewRequest(http.MethodPost, "/api/android/env/uninstall-all", nil)
+	reqUninstall.Host = "127.0.0.1:8125"
+	wUninstall := httptest.NewRecorder()
+	ctrl.handleRoute(wUninstall, reqUninstall)
+	if wUninstall.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for uninstall, got %d: %s", wUninstall.Code, wUninstall.Body.String())
+	}
+	var uninstRes struct {
+		OK         bool   `json:"ok"`
+		FreedFiles int    `json:"freed_files"`
+		FreedBytes int64  `json:"freed_bytes"`
+		Message    string `json:"message"`
+	}
+	if err := json.Unmarshal(wUninstall.Body.Bytes(), &uninstRes); err != nil {
+		t.Fatalf("failed to decode uninstall response: %v", err)
+	}
+	if !uninstRes.OK {
+		t.Errorf("expected ok=true for uninstall")
+	}
+}

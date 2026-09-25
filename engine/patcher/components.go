@@ -9,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -100,6 +102,38 @@ func GetDefaultComponentSpecs() []ComponentSpec {
 	}
 }
 
+// GetFullEnvironmentSpecs returns the full closed-loop Android environment specification
+// including LSPatch, Xposed module, licenses, platform-tools (ADB), and portable JRE.
+func GetFullEnvironmentSpecs() []ComponentSpec {
+	tag := "v" + config.AppVersion
+	baseReleaseURL := "https://github.com/" + GitHubRepo + "/releases/download/" + tag + "/"
+	specs := GetDefaultComponentSpecs()
+
+	// Platform tools archive for current OS
+	ptFileName := fmt.Sprintf("platform-tools-%s.zip", runtime.GOOS)
+	specs = append(specs, ComponentSpec{
+		ID:          "platform-tools",
+		FileName:    ptFileName,
+		Size:        5200000,
+		SHA256:      "",
+		URL:         baseReleaseURL + ptFileName,
+		Description: "Android 平台调试工具 (ADB)",
+	})
+
+	if runtime.GOOS == "windows" {
+		specs = append(specs, ComponentSpec{
+			ID:          "jre",
+			FileName:    "jre-windows-x64.zip",
+			Size:        48000000,
+			SHA256:      "",
+			URL:         baseReleaseURL + "jre-windows-x64.zip",
+			Description: "便携 Java 21+ 运行环境 (JBR / OpenJDK)",
+		})
+	}
+
+	return specs
+}
+
 // ComputeFileSHA256 calculates the lowercase hex SHA-256 checksum of a file.
 func ComputeFileSHA256(filePath string) (string, error) {
 	f, err := os.Open(filePath)
@@ -178,7 +212,7 @@ func CheckComponentsWithSpecs(toolsDir string, exeDir string, specs []ComponentS
 		}
 
 		st.ActualSHA = actualSHA
-		if !strings.EqualFold(actualSHA, spec.SHA256) {
+		if spec.SHA256 != "" && !strings.EqualFold(actualSHA, spec.SHA256) {
 			st.Verified = false
 			st.Error = fmt.Sprintf("哈希校验不匹配: 期望 %s, 实际 %s", spec.SHA256, actualSHA)
 			errs = append(errs, fmt.Sprintf("%s 校验失败", spec.FileName))
@@ -268,10 +302,20 @@ func DownloadComponentsWithSpecs(
 
 		// 1. If file already exists and passes SHA-256, skip re-download
 		if fi, err := os.Stat(targetPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
-			if existingSHA, err := ComputeFileSHA256(targetPath); err == nil && strings.EqualFold(existingSHA, spec.SHA256) {
+			if spec.SHA256 != "" {
+				if existingSHA, err := ComputeFileSHA256(targetPath); err == nil && strings.EqualFold(existingSHA, spec.SHA256) {
+					prog.DownloadedBytes += spec.Size
+					prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
+					downloadedMap[spec.ID] = existingSHA
+					if progressFn != nil {
+						progressFn(prog)
+					}
+					continue
+				}
+			} else if fi.Size() >= spec.Size/2 {
 				prog.DownloadedBytes += spec.Size
 				prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
-				downloadedMap[spec.ID] = existingSHA
+				downloadedMap[spec.ID] = "installed"
 				if progressFn != nil {
 					progressFn(prog)
 				}
@@ -390,7 +434,7 @@ func DownloadComponentsWithSpecs(
 			}
 
 			actualSHA := hex.EncodeToString(hasher.Sum(nil))
-			if !strings.EqualFold(actualSHA, spec.SHA256) {
+			if spec.SHA256 != "" && !strings.EqualFold(actualSHA, spec.SHA256) {
 				cleanupTemp()
 				_ = os.Remove(targetPath)
 				return fmt.Errorf("checksum validation failed for %s: expected %s, got %s", spec.FileName, spec.SHA256, actualSHA)
@@ -401,6 +445,15 @@ func DownloadComponentsWithSpecs(
 			if err := os.Rename(tempPath, targetPath); err != nil {
 				cleanupTemp()
 				return fmt.Errorf("failed to finalize component %s: %w", spec.FileName, err)
+			}
+
+			// Automatically unpack archives into their canonical tool locations
+			if spec.ID == "platform-tools" && strings.HasSuffix(spec.FileName, ".zip") {
+				_ = unzipArchive(targetPath, toolsDir)
+			} else if spec.ID == "jre" && strings.HasSuffix(spec.FileName, ".zip") {
+				jreDir := filepath.Join(config.GetBaseDir(), "jre")
+				_ = os.MkdirAll(jreDir, 0755)
+				_ = unzipArchive(targetPath, jreDir)
 			}
 
 			downloadedMap[spec.ID] = actualSHA
@@ -516,5 +569,79 @@ func FindOrFetchHostApp(ctx context.Context, toolsDir string, exeDir string) (st
 	}
 
 	return targetPath, nil
+}
+
+// InstallAllComponents downloads, validates, and sets up all components for the complete Android environment.
+func InstallAllComponents(
+	ctx context.Context,
+	toolsDir string,
+	customURLs map[string]string,
+	progressFn func(DownloadProgress),
+) error {
+	specs := GetFullEnvironmentSpecs()
+	return DownloadComponentsWithSpecs(ctx, toolsDir, specs, customURLs, progressFn)
+}
+
+// StopAdbSafely stops the ADB server process to allow clean uninstallation.
+func StopAdbSafely() {
+	toolsDir := GetAndroidToolsDir()
+	exeDir := ""
+	if exe, err := os.Executable(); err == nil {
+		exeDir = filepath.Dir(exe)
+	}
+	if adbPath, err := FindAdb(toolsDir, exeDir); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, adbPath, "kill-server")
+		prepareCmd(cmd)
+		_ = cmd.Run()
+	}
+
+	if runtime.GOOS == "windows" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "taskkill", "/F", "/IM", "adb.exe")
+		prepareCmd(cmd)
+		_ = cmd.Run()
+	}
+}
+
+// UninstallAllComponents safely stops any active ADB daemons and recursively purges
+// the tools/android and jre runtime directories, returning freed file count and total bytes.
+func UninstallAllComponents() (int, int64, error) {
+	StopAdbSafely()
+
+	var totalFiles int
+	var totalBytes int64
+
+	countAndRemove := func(dir string) {
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			return
+		}
+		_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+			if err == nil && info != nil && !info.IsDir() {
+				totalFiles++
+				totalBytes += info.Size()
+			}
+			return nil
+		})
+		_ = os.RemoveAll(dir)
+	}
+
+	toolsDir := GetAndroidToolsDir()
+	countAndRemove(toolsDir)
+
+	jreDir := filepath.Join(config.GetBaseDir(), "jre")
+	countAndRemove(jreDir)
+
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		if exeDir != config.GetBaseDir() {
+			countAndRemove(filepath.Join(exeDir, "tools", "android"))
+			countAndRemove(filepath.Join(exeDir, "jre"))
+		}
+	}
+
+	return totalFiles, totalBytes, nil
 }
 

@@ -5,6 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"gbf-proxy/config"
 )
 
 type PatchListener interface {
@@ -15,6 +18,9 @@ type PatchListener interface {
 type PatchOptions struct {
 	InputPath       string
 	OutputDir       string
+	NewPackageName  string
+	AutoBackup      bool
+	BackupDir       string
 	JavaOverride    string
 	LSPatchOverride string
 	ModuleOverride  string
@@ -137,6 +143,47 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		p.logf("      [+] Validated official SkyLeap target.\n")
 	}
 
+	if p.opts.NewPackageName != "" {
+		if !IsValidPackageName(p.opts.NewPackageName) {
+			return nil, fmt.Errorf("invalid custom package name %q: must contain at least two segments with valid characters", p.opts.NewPackageName)
+		}
+		p.logf("      - Custom Clone Package: %s\n", p.opts.NewPackageName)
+	}
+
+	// Automatic Backup of original APK before patching
+	var backupPath string
+	var backupDir string
+	if p.opts.AutoBackup {
+		backupDir = p.opts.BackupDir
+		if backupDir == "" {
+			backupDir = filepath.Join(config.GetBaseDir(), "backups")
+		}
+		if err := os.MkdirAll(backupDir, 0755); err == nil {
+			safePkg := pkgLabel
+			if safePkg == "" || safePkg == "unknown" {
+				safePkg = "app"
+			}
+			safeVer := verLabel
+			if safeVer == "" || safeVer == "unknown" {
+				safeVer = "1.0"
+			}
+			safeVer = strings.ReplaceAll(safeVer, " ", "_")
+			ts := time.Now().Format("20060102_150405")
+			origExt := filepath.Ext(p.opts.InputPath)
+			if origExt == "" {
+				origExt = ".apk"
+			}
+			backupFileName := fmt.Sprintf("%s_v%s_%s_original%s", safePkg, safeVer, ts, origExt)
+			destBackup := filepath.Join(backupDir, backupFileName)
+			if fi, statErr := os.Stat(p.opts.InputPath); statErr == nil && !fi.IsDir() {
+				if copyErr := copyFile(p.opts.InputPath, destBackup); copyErr == nil {
+					backupPath = destBackup
+					p.logf("      [+] Original package backed up to: %s\n", backupPath)
+				}
+			}
+		}
+	}
+
 	// 4. Run LSPatch Portable
 	p.stage(3, "Executing LSPatch Portable injection...", 0.60)
 	lspatchOutDir := filepath.Join(workDir, "lspatch_raw_out")
@@ -148,6 +195,7 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		JavaBinaryPath: javaPath,
 		LSPatchJarPath: lspatchJar,
 		ModuleApkPath:  moduleApk,
+		NewPackageName: p.opts.NewPackageName,
 		Verbose:        p.opts.Verbose,
 		LogFn: func(line string) {
 			p.logf("      %s\n", line)
@@ -166,6 +214,10 @@ func (p *Patcher) Run() (*BundleResult, error) {
 	result, err := BundleOutput(pkgInfo.IsSplit, baseInputName, rawOutputs, p.opts.OutputDir)
 	if err != nil {
 		return nil, err
+	}
+	if result != nil {
+		result.BackupPath = backupPath
+		result.BackupDir = backupDir
 	}
 
 	p.stage(5, "Performing post-patch integrity audit...", 1.00)

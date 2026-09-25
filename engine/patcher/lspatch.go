@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"gbf-proxy/config"
 )
 
 var (
@@ -24,6 +26,7 @@ type LSPatchConfig struct {
 	JavaBinaryPath string
 	LSPatchJarPath string
 	ModuleApkPath  string
+	NewPackageName string
 	Verbose        bool
 	LogFn          func(string)
 }
@@ -52,6 +55,19 @@ func FindJavaRuntime(overridePath string) (path string, version string, err erro
 				filepath.Join(exeDir, "jdk", "bin", "java"),
 			)
 		}
+	}
+
+	baseDir := config.GetBaseDir()
+	if runtime.GOOS == "windows" {
+		candidates = append(candidates,
+			filepath.Join(baseDir, "jre", "bin", "java.exe"),
+			filepath.Join(baseDir, "tools", "jre", "bin", "java.exe"),
+		)
+	} else {
+		candidates = append(candidates,
+			filepath.Join(baseDir, "jre", "bin", "java"),
+			filepath.Join(baseDir, "tools", "jre", "bin", "java"),
+		)
 	}
 
 	if jh := os.Getenv("JAVA_HOME"); jh != "" {
@@ -356,6 +372,10 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 		"-o", outputDir,
 		"-f", // force overwrite
 	)
+
+	if cfg.NewPackageName != "" {
+		args = append(args, "-pkg", cfg.NewPackageName)
+	}
 
 	if cfg.Verbose {
 		args = append(args, "-v")

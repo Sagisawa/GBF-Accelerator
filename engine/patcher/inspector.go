@@ -171,7 +171,7 @@ func parseApkMetadata(apkPath string) (pkgName string, versionName string, isSpl
 	return info.PackageName, info.VersionName, info.IsSplit, nil
 }
 
-func isValidPackageName(s string) bool {
+func IsValidPackageName(s string) bool {
 	parts := strings.Split(s, ".")
 	if len(parts) < 2 {
 		return false
@@ -187,6 +187,10 @@ func isValidPackageName(s string) bool {
 		}
 	}
 	return true
+}
+
+func isValidPackageName(s string) bool {
+	return IsValidPackageName(s)
 }
 
 func unzipArchive(srcZip, destDir string) error {

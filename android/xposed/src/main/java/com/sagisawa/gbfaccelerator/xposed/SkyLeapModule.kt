@@ -4,6 +4,7 @@ import android.util.Log
 import com.sagisawa.gbfaccelerator.browser.BrowserAdapterRegistry
 import com.sagisawa.gbfaccelerator.browser.HookInvocationCallback
 import com.sagisawa.gbfaccelerator.browser.HookRegistry
+import com.sagisawa.gbfaccelerator.browser.UniversalBrowserAdapter
 import io.github.libxposed.api.XposedInterface
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
@@ -59,26 +60,26 @@ class SkyLeapModule : XposedModule() {
         Log.i(TAG, "[GBF-ACC] onModuleLoaded (process: $currentProcessName)")
         Log.i(TAG, "==================================================")
 
-        // Resolve adapter for current process, defaulting to SkyLeap for backward-compatibility in sandboxed environments
+        // Resolve adapter for current process, defaulting to SkyLeap for backward-compatibility in sandboxed environments,
+        // or UniversalBrowserAdapter for app clones and standard WebView browsers.
         val adapter = BrowserAdapterRegistry.findAdapterByProcess(currentProcessName)
             ?: BrowserAdapterRegistry.findAdapterByPackage("com.dena.skyleap")
+            ?: UniversalBrowserAdapter(currentProcessName)
 
-        if (adapter != null) {
-            adapter.onModuleLoaded(currentProcessName, hookRegistry)
-        } else {
-            Log.w(TAG, "[GBF-ACC] No matching browser adapter for process: $currentProcessName")
-        }
+        adapter.onModuleLoaded(currentProcessName, hookRegistry)
     }
 
     override fun onPackageLoaded(param: PackageLoadedParam) {
         super.onPackageLoaded(param)
         val adapter = BrowserAdapterRegistry.findAdapterByPackage(param.packageName)
-        adapter?.onPackageLoaded(param.packageName)
+            ?: UniversalBrowserAdapter(param.packageName)
+        adapter.onPackageLoaded(param.packageName)
     }
 
     override fun onPackageReady(param: PackageReadyParam) {
         super.onPackageReady(param)
         val adapter = BrowserAdapterRegistry.findAdapterByPackage(param.packageName)
-        adapter?.onPackageReady(param.packageName)
+            ?: UniversalBrowserAdapter(param.packageName)
+        adapter.onPackageReady(param.packageName)
     }
 }

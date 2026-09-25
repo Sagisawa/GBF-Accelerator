@@ -565,6 +565,21 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleAndroidPatchOpenOutput(w, req)
 			return
 		}
+	case "/api/android/patch/open-backup":
+		if req.Method == http.MethodPost || req.Method == http.MethodGet {
+			c.handleAndroidPatchOpenBackup(w, req)
+			return
+		}
+	case "/api/android/env/install-all":
+		if req.Method == http.MethodPost {
+			c.handleAndroidEnvInstallAll(w, req)
+			return
+		}
+	case "/api/android/env/uninstall-all":
+		if req.Method == http.MethodPost {
+			c.handleAndroidEnvUninstallAll(w, req)
+			return
+		}
 	case "/api/android/components/download":
 		if req.Method == http.MethodPost {
 			c.handleAndroidComponentsDownload(w, req)

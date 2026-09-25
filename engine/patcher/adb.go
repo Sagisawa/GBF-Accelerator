@@ -367,7 +367,7 @@ func DownloadPlatformTools(
 	if customURL != "" {
 		candidateURLs = []string{customURL}
 	} else {
-		candidateURLs = []string{PlatformToolsDownloadURL(), PlatformToolsGoogleFallbackURL()}
+		candidateURLs = []string{PlatformToolsDownloadURL()}
 	}
 
 	if err := os.MkdirAll(toolsDir, 0755); err != nil {

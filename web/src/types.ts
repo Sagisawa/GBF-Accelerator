@@ -170,6 +170,9 @@ export interface AndroidComponentDownloadProgress {
 export interface AndroidEnvStatus {
   ok: boolean;
   ready: boolean;
+  full_env_ready?: boolean;
+  tools_disk_bytes?: number;
+  backup_dir?: string;
   components_installed: boolean;
   components_verified: boolean;
   components_corrupted: boolean;
@@ -215,6 +218,7 @@ export interface AndroidPackageInspection {
   is_split: boolean;
   total_apks: number;
   is_official_skyleap: boolean;
+  suggested_clone_package?: string;
   error?: string;
 }
 
@@ -227,6 +231,8 @@ export interface AndroidPatchResult {
   total_apks?: number;
   total_bytes?: number;
   package_files?: string[];
+  backup_path?: string;
+  backup_dir?: string;
   IsSplit?: boolean;
   SingleApk?: string;
   SplitDir?: string;
@@ -235,6 +241,8 @@ export interface AndroidPatchResult {
   TotalApks?: number;
   TotalBytes?: number;
   PackageFiles?: string[];
+  BackupPath?: string;
+  BackupDir?: string;
 }
 
 export interface AndroidPatchProgress {
@@ -246,6 +254,7 @@ export interface AndroidPatchProgress {
   logs: string[];
   error: string;
   done: boolean;
+  backup_dir?: string;
   result?: AndroidPatchResult | null;
 }
 

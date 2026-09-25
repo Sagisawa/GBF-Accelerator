@@ -17,6 +17,8 @@ type BundleResult struct {
 	TotalApks    int      `json:"total_apks"`
 	TotalBytes   int64    `json:"total_bytes"`
 	PackageFiles []string `json:"package_files"`
+	BackupPath   string   `json:"backup_path,omitempty"`
+	BackupDir    string   `json:"backup_dir,omitempty"`
 }
 
 // BundleOutput organizes the patched APKs produced by LSPatch into the final user output directory.

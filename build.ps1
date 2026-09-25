@@ -190,18 +190,30 @@ function Build-Windows {
         if (Test-Path $ModuleSrc) {
             Copy-Item -Path $ModuleSrc -Destination (Join-Path $ReleaseDir "xposed-release.apk") -Force
         }
-        $HostAppSrc = Join-Path $RootDir "android\app\build\outputs\apk\release\app-release.apk"
-        if (-not (Test-Path $HostAppSrc)) {
-            $HostAppSrc = Join-Path $RootDir "android\app\build\outputs\apk\debug\app-debug.apk"
-        }
-        if (Test-Path $HostAppSrc) {
-            $HostAppReleaseName = ("GBF_Accelerator_v{0}_Android.apk" -f $AppVersion)
-            Copy-Item -Path $HostAppSrc -Destination (Join-Path $ReleaseDir $HostAppReleaseName) -Force
-            Write-Host ("[+] Android Host App release asset generated: {0} ({1:F2} MB)" -f $HostAppReleaseName, ((Get-Item (Join-Path $ReleaseDir $HostAppReleaseName)).Length / 1MB)) -ForegroundColor Green
-        }
         $LicensesSrc = Join-Path $RootDir "tools\gbf-acc-patcher\THIRD_PARTY_LICENSES.md"
         if (Test-Path $LicensesSrc) {
             Copy-Item -Path $LicensesSrc -Destination (Join-Path $ReleaseDir "THIRD_PARTY_LICENSES.md") -Force
+        }
+
+        # Stage jre-windows-x64.zip as release asset if JBR / Java 21+ is available
+        $JbrCandidates = @(
+            "C:\Program Files\Android\Android Studio\jbr",
+            $env:JAVA_HOME
+        )
+        $JbrFound = $null
+        foreach ($cand in $JbrCandidates) {
+            if ($cand -and (Test-Path (Join-Path $cand "bin\java.exe"))) {
+                $JbrFound = $cand
+                break
+            }
+        }
+        if ($JbrFound) {
+            $JreZip = Join-Path $ReleaseDir "jre-windows-x64.zip"
+            if (-not (Test-Path $JreZip)) {
+                Write-Host ("[+] Generating jre-windows-x64.zip from {0}..." -f $JbrFound) -ForegroundColor Cyan
+                Compress-Archive -Path (Join-Path $JbrFound "*") -DestinationPath $JreZip -Force
+                Write-Host ("[+] JRE release asset generated: {0} ({1:F2} MB)" -f $JreZip, ((Get-Item $JreZip).Length / 1MB)) -ForegroundColor Green
+            }
         }
 
         # Stage lightweight platform-tools archive as release asset

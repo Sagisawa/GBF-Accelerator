@@ -412,11 +412,21 @@ export async function uploadAndroidPackage(
   })
 }
 
-export async function startAndroidPatch(filePath: string, outputDir?: string): Promise<{ ok: boolean; message?: string }> {
+export async function startAndroidPatch(
+  filePath: string,
+  outputDir?: string,
+  newPackageName?: string,
+  autoBackup?: boolean
+): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/android/patch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ file_path: filePath, output_dir: outputDir || '' }),
+    body: JSON.stringify({
+      file_path: filePath,
+      output_dir: outputDir || '',
+      new_package_name: newPackageName || '',
+      auto_backup: autoBackup !== undefined ? autoBackup : true,
+    }),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -439,6 +449,43 @@ export async function openPatchOutputFolder(path?: string): Promise<{ ok: boolea
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: path || '' }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function openPatchBackupFolder(): Promise<{ ok: boolean; path?: string }> {
+  const res = await fetch(`${BASE}/api/android/patch/open-backup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function installAllAndroidEnv(customUrls?: Record<string, string>): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/android/env/install-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ custom_urls: customUrls }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function uninstallAllAndroidEnv(): Promise<{ ok: boolean; message?: string; freed_files?: number; freed_bytes?: number }> {
+  const res = await fetch(`${BASE}/api/android/env/uninstall-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
