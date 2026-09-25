@@ -80,9 +80,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [uploadPercent, setUploadPercent] = useState<number>(0)
   const [isInspecting, setIsInspecting] = useState<boolean>(false)
 
-  // Custom Package Name & Launcher Label & Backup state
-  const [enableCustomPackage, setEnableCustomPackage] = useState<boolean>(false)
-  const [customPackageName, setCustomPackageName] = useState<string>('')
+  // Custom Launcher Label & Backup state
   const [enableCustomLabel, setEnableCustomLabel] = useState<boolean>(false)
   const [customAppLabel, setCustomAppLabel] = useState<string>('')
   const [autoBackup, setAutoBackup] = useState<boolean>(true)
@@ -109,15 +107,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [showLogs, setShowLogs] = useState<boolean>(true)
   const logTerminalRef = useRef<HTMLDivElement>(null)
 
-  // Sync suggested launcher label and package name when inspectedPkg changes
+  // Sync suggested launcher label when inspectedPkg changes
   useEffect(() => {
-    if (inspectedPkg?.package_name) {
-      setCustomPackageName(`${inspectedPkg.package_name}.acc`)
-      if (inspectedPkg.is_official_skyleap) {
-        setCustomAppLabel('SkyLeap 加速版')
-      } else {
-        setCustomAppLabel('浏览器加速版')
-      }
+    if (inspectedPkg?.is_official_skyleap) {
+      setCustomAppLabel('SkyLeap 加速版')
+    } else if (inspectedPkg?.package_name) {
+      setCustomAppLabel('浏览器加速版')
     }
   }, [inspectedPkg])
 
@@ -481,11 +476,10 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     }
 
     const finalAppLabel = enableCustomLabel ? customAppLabel.trim() : ''
-    const finalNewPackage = enableCustomPackage ? customPackageName.trim() : ''
 
     setIsPatchStarting(true)
     try {
-      await startAndroidPatch(inspectedPkg.file_path, outputDir, finalAppLabel, autoBackup, finalNewPackage)
+      await startAndroidPatch(inspectedPkg.file_path, outputDir, finalAppLabel, autoBackup)
       showToast('处理任务已启动', 'success')
       setPatchStatus({
         ok: true,
@@ -495,7 +489,6 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         progress: 0.1,
         logs: [
           `Patch requested for: ${inspectedPkg.base_input_name}`,
-          ...(finalNewPackage ? [`Custom package name: ${finalNewPackage}`] : []),
           ...(finalAppLabel ? [`Custom launcher label: ${finalAppLabel}`] : []),
           `Auto backup enabled: ${autoBackup}`,
         ],
@@ -1065,42 +1058,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               </div>
             </div>
 
-            {/* Custom Package Name Setting (App Clone / Dual Install) */}
-            <div className="bg-white/80 p-3 rounded-lg border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={enableCustomPackage}
-                    onChange={(e) => setEnableCustomPackage(e.target.checked)}
-                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
-                  />
-                  <span className="text-xs font-bold text-slate-800">
-                    更换应用包名 (分身多开 · 与原版共存免卸载)
-                  </span>
-                </label>
-                <span className="text-[11px] text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded font-semibold border border-indigo-200">
-                  支持原版共存
-                </span>
+            {/* Package Coexistence & Signature Note */}
+            <div className="bg-slate-50/80 p-3 rounded-lg border border-slate-200 text-xs text-slate-600 space-y-1">
+              <div className="font-semibold text-slate-700 flex items-center gap-1.5">
+                <span>💡 原版共存提示：</span>
               </div>
-
-              {enableCustomPackage && (
-                <div className="pt-1.5 space-y-1.5 animate-in fade-in duration-150">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-slate-600 shrink-0">自定义新包名：</span>
-                    <input
-                      type="text"
-                      value={customPackageName}
-                      onChange={(e) => setCustomPackageName(e.target.value.trim())}
-                      placeholder="例如: com.dena.skyleap.acc"
-                      className="flex-1 bg-slate-50 border border-slate-200 rounded px-2.5 py-1 text-xs font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    💡 提示：更改底层 Package Name 后，补丁应用将作为全新独立 App 安装，<strong>无需卸载官方原版应用，两者可同时在手机上双开运行</strong>。
-                  </p>
-                </div>
-              )}
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                为确保浏览器底层组件与 Provider 正常运作，补丁将完整保留原始包名。由于补丁版与官方原版签名不同，直接覆盖安装需卸载原版。如需两者同时在手机上并存，<strong>推荐使用手机系统自带的「应用双开 / 应用分身」功能</strong>，或直接为系统内其他通用浏览器打补丁。
+              </p>
             </div>
 
             {/* Custom App Launcher Label Setting */}

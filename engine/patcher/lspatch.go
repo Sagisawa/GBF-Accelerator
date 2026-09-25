@@ -369,9 +369,6 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 		"--target-sdk", "28",
 	}
 
-	if cfg.NewPackageName != "" {
-		args = append(args, "-pkg", cfg.NewPackageName)
-	}
 
 	if cfg.AppLabel != "" {
 		args = append(args, "--name", cfg.AppLabel)
