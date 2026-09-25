@@ -594,27 +594,3 @@ func TestInputRemainsUnmodified(t *testing.T) {
 		t.Errorf("input file was modified during processing!")
 	}
 }
-
-func TestDetectEngine(t *testing.T) {
-	tests := []struct {
-		pkgName      string
-		expectedType BrowserEngineType
-	}{
-		{"com.dena.skyleap", EngineTypeWebView},
-		{"mark.via", EngineTypeWebView},
-		{"com.xbext.browser", EngineTypeWebView},
-		{"com.android.chrome", EngineTypeChromium},
-		{"com.kiwibrowser.browser", EngineTypeChromium},
-		{"com.microsoft.emmx", EngineTypeChromium},
-		{"com.brave.browser", EngineTypeChromium},
-		{"org.mozilla.firefox", EngineTypeUnsupported},
-		{"org.torproject.torbrowser", EngineTypeUnsupported},
-	}
-
-	for _, tt := range tests {
-		engType, engName := DetectEngineFromPackageName(tt.pkgName)
-		if engType != tt.expectedType {
-			t.Errorf("package %s: expected %v, got %v (%s)", tt.pkgName, tt.expectedType, engType, engName)
-		}
-	}
-}

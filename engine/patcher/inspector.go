@@ -10,78 +10,18 @@ import (
 	"strings"
 )
 
-type BrowserEngineType string
-
-const (
-	EngineTypeWebView     BrowserEngineType = "webview"
-	EngineTypeChromium    BrowserEngineType = "chromium"
-	EngineTypeUnsupported BrowserEngineType = "unsupported"
-)
-
 type ApkPackageInfo struct {
-	IsSplit       bool              `json:"is_split"`
-	BaseApkPath   string            `json:"base_apk_path"`
-	SplitApkPaths []string          `json:"split_apk_paths"`
-	PackageName   string            `json:"package_name"`
-	VersionName   string            `json:"version_name"`
-	TotalApks     int               `json:"total_apks"`
-	EngineType    BrowserEngineType `json:"engine_type"`
-	EngineName    string            `json:"engine_name"`
+	IsSplit       bool
+	BaseApkPath   string
+	SplitApkPaths []string
+	PackageName   string
+	VersionName   string
+	TotalApks     int
 }
 
 var (
 	semverRegex = regexp.MustCompile(`^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$`)
 )
-
-// DetectEngineFromZip inspects an APK zip structure for known native libraries or package names
-// to determine whether the app is a system WebView browser, standalone Chromium, or unsupported engine.
-func DetectEngineFromZip(zr *zip.Reader, pkgName string) (BrowserEngineType, string) {
-	for _, f := range zr.File {
-		nameLower := strings.ToLower(f.Name)
-		baseName := filepath.Base(nameLower)
-		if strings.HasPrefix(nameLower, "lib/") {
-			if strings.Contains(baseName, "monochrome") ||
-				strings.Contains(baseName, "libchrome") ||
-				strings.Contains(baseName, "libkiwi") ||
-				strings.Contains(baseName, "libbrave") ||
-				strings.Contains(baseName, "libedge") ||
-				strings.Contains(baseName, "cronet") {
-				return EngineTypeChromium, "Chromium 独立内核 (Chrome / Kiwi 等)"
-			}
-			if strings.Contains(baseName, "libxul") || strings.Contains(baseName, "libmozglue") {
-				return EngineTypeUnsupported, "Gecko 内核 (Firefox 等)"
-			}
-		}
-	}
-
-	if pkgName != "" {
-		return DetectEngineFromPackageName(pkgName)
-	}
-
-	return EngineTypeWebView, "Android 系统 WebView"
-}
-
-// DetectEngineFromPackageName inspects known browser package prefixes.
-func DetectEngineFromPackageName(pkgName string) (BrowserEngineType, string) {
-	lowerPkg := strings.ToLower(pkgName)
-	if strings.HasPrefix(lowerPkg, "com.android.chrome") ||
-		strings.HasPrefix(lowerPkg, "com.chrome.") ||
-		strings.HasPrefix(lowerPkg, "org.chromium.") ||
-		strings.HasPrefix(lowerPkg, "com.kiwibrowser.") ||
-		strings.HasPrefix(lowerPkg, "com.microsoft.emmx") ||
-		strings.HasPrefix(lowerPkg, "com.brave.browser") ||
-		strings.HasPrefix(lowerPkg, "com.opera.") ||
-		strings.HasPrefix(lowerPkg, "com.vivaldi.browser") {
-		return EngineTypeChromium, "Chromium 独立内核 (Chrome / Kiwi 等)"
-	}
-
-	if strings.HasPrefix(lowerPkg, "org.mozilla.") ||
-		strings.HasPrefix(lowerPkg, "org.torproject.") {
-		return EngineTypeUnsupported, "Gecko 内核 (Firefox 等)"
-	}
-
-	return EngineTypeWebView, "Android 系统 WebView"
-}
 
 // InspectInput analyzes the user's input path (single .apk, .apks/.xapk/.zip archive, or directory).
 // If an archive (.apks/.xapk/.zip) is provided, it unpacks it into workDir/unpacked.
@@ -114,7 +54,7 @@ func InspectInput(inputPath string, workDir string) (*ApkPackageInfo, error) {
 }
 
 func inspectSingleApk(apkPath string) (*ApkPackageInfo, error) {
-	pkg, ver, _, engType, engName, err := parseApkMetadata(apkPath)
+	pkg, ver, _, err := parseApkMetadata(apkPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse APK %s: %w", filepath.Base(apkPath), err)
 	}
@@ -126,8 +66,6 @@ func inspectSingleApk(apkPath string) (*ApkPackageInfo, error) {
 		PackageName:   pkg,
 		VersionName:   ver,
 		TotalApks:     1,
-		EngineType:    engType,
-		EngineName:    engName,
 	}, nil
 }
 
@@ -152,30 +90,21 @@ func inspectDirectory(dirPath string) (*ApkPackageInfo, error) {
 		return inspectSingleApk(apkFiles[0])
 	}
 
-	// Multiple APKs: Identify base.apk vs splits and aggregate engine detection
+	// Multiple APKs: Identify base.apk vs splits
 	var baseApk string
 	var splitApks []string
 	var foundPackage string
 	var foundVersion string
-	var foundEngineType BrowserEngineType = EngineTypeWebView
-	var foundEngineName string = "Android 系统 WebView"
 
 	for _, apk := range apkFiles {
 		baseName := strings.ToLower(filepath.Base(apk))
-		pkg, ver, isSplit, engType, engName, _ := parseApkMetadata(apk)
+		pkg, ver, isSplit, _ := parseApkMetadata(apk)
 
 		if pkg != "" && foundPackage == "" {
 			foundPackage = pkg
 		}
 		if ver != "" && foundVersion == "" {
 			foundVersion = ver
-		}
-		if engType == EngineTypeChromium {
-			foundEngineType = EngineTypeChromium
-			foundEngineName = engName
-		} else if engType == EngineTypeUnsupported && foundEngineType != EngineTypeChromium {
-			foundEngineType = EngineTypeUnsupported
-			foundEngineName = engName
 		}
 
 		if baseName == "base.apk" || (!isSplit && baseApk == "") {
@@ -194,14 +123,6 @@ func inspectDirectory(dirPath string) (*ApkPackageInfo, error) {
 		splitApks = apkFiles[1:]
 	}
 
-	if foundEngineType == EngineTypeWebView && foundPackage != "" {
-		pkgType, pkgEngName := DetectEngineFromPackageName(foundPackage)
-		if pkgType != EngineTypeWebView {
-			foundEngineType = pkgType
-			foundEngineName = pkgEngName
-		}
-	}
-
 	return &ApkPackageInfo{
 		IsSplit:       true,
 		BaseApkPath:   baseApk,
@@ -209,15 +130,13 @@ func inspectDirectory(dirPath string) (*ApkPackageInfo, error) {
 		PackageName:   foundPackage,
 		VersionName:   foundVersion,
 		TotalApks:     len(apkFiles),
-		EngineType:    foundEngineType,
-		EngineName:    foundEngineName,
 	}, nil
 }
 
-func parseApkMetadata(apkPath string) (pkgName string, versionName string, isSplit bool, engineType BrowserEngineType, engineName string, err error) {
+func parseApkMetadata(apkPath string) (pkgName string, versionName string, isSplit bool, err error) {
 	zr, err := zip.OpenReader(apkPath)
 	if err != nil {
-		return "", "", false, EngineTypeWebView, "", err
+		return "", "", false, err
 	}
 	defer zr.Close()
 
@@ -230,27 +149,26 @@ func parseApkMetadata(apkPath string) (pkgName string, versionName string, isSpl
 	}
 
 	if manifestFile == nil {
-		return "", "", false, EngineTypeWebView, "", fmt.Errorf("AndroidManifest.xml not found in APK")
+		return "", "", false, fmt.Errorf("AndroidManifest.xml not found in APK")
 	}
 
 	rc, err := manifestFile.Open()
 	if err != nil {
-		return "", "", false, EngineTypeWebView, "", err
+		return "", "", false, err
 	}
 	defer rc.Close()
 
 	data, err := io.ReadAll(rc)
 	if err != nil {
-		return "", "", false, EngineTypeWebView, "", err
+		return "", "", false, err
 	}
 
 	info, err := ParseManifest(data)
 	if err != nil {
-		return "", "", false, EngineTypeWebView, "", err
+		return "", "", false, err
 	}
 
-	engType, engName := DetectEngineFromZip(&zr.Reader, info.PackageName)
-	return info.PackageName, info.VersionName, info.IsSplit, engType, engName, nil
+	return info.PackageName, info.VersionName, info.IsSplit, nil
 }
 
 func IsValidPackageName(s string) bool {

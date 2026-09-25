@@ -2,7 +2,6 @@ package com.sagisawa.gbfaccelerator.xposed
 
 import android.util.Log
 import com.sagisawa.gbfaccelerator.browser.BrowserAdapterRegistry
-import com.sagisawa.gbfaccelerator.browser.ChromiumBrowserAdapter
 import com.sagisawa.gbfaccelerator.browser.HookInvocationCallback
 import com.sagisawa.gbfaccelerator.browser.HookRegistry
 import com.sagisawa.gbfaccelerator.browser.UniversalBrowserAdapter
@@ -62,52 +61,25 @@ class SkyLeapModule : XposedModule() {
         Log.i(TAG, "==================================================")
 
         // Resolve adapter for current process, defaulting to SkyLeap for backward-compatibility in sandboxed environments,
-        // ChromiumBrowserAdapter for standalone Chromium browsers, or UniversalBrowserAdapter for app clones and standard WebView browsers.
-        val isChromium = isChromiumEnvironment(currentProcessName)
+        // or UniversalBrowserAdapter for app clones and standard WebView browsers.
         val adapter = BrowserAdapterRegistry.findAdapterByProcess(currentProcessName)
-            ?: BrowserAdapterRegistry.findAdapterByPackage(currentProcessName)
-            ?: if (isChromium) ChromiumBrowserAdapter(currentProcessName) else UniversalBrowserAdapter(currentProcessName)
+            ?: BrowserAdapterRegistry.findAdapterByPackage("com.dena.skyleap")
+            ?: UniversalBrowserAdapter(currentProcessName)
 
         adapter.onModuleLoaded(currentProcessName, hookRegistry)
     }
 
     override fun onPackageLoaded(param: PackageLoadedParam) {
         super.onPackageLoaded(param)
-        val isChromium = isChromiumEnvironment(param.packageName)
         val adapter = BrowserAdapterRegistry.findAdapterByPackage(param.packageName)
-            ?: if (isChromium) ChromiumBrowserAdapter(param.packageName) else UniversalBrowserAdapter(param.packageName)
+            ?: UniversalBrowserAdapter(param.packageName)
         adapter.onPackageLoaded(param.packageName)
     }
 
     override fun onPackageReady(param: PackageReadyParam) {
         super.onPackageReady(param)
-        val isChromium = isChromiumEnvironment(param.packageName)
         val adapter = BrowserAdapterRegistry.findAdapterByPackage(param.packageName)
-            ?: if (isChromium) ChromiumBrowserAdapter(param.packageName) else UniversalBrowserAdapter(param.packageName)
+            ?: UniversalBrowserAdapter(param.packageName)
         adapter.onPackageReady(param.packageName)
-    }
-
-    private fun isChromiumEnvironment(name: String, classLoader: ClassLoader? = Thread.currentThread().contextClassLoader ?: javaClass.classLoader): Boolean {
-        if (classLoader != null) {
-            try {
-                Class.forName("org.chromium.base.CommandLine", false, classLoader)
-                return true
-            } catch (_: Throwable) {
-            }
-            try {
-                Class.forName("org.chromium.chrome.browser.ChromeActivity", false, classLoader)
-                return true
-            } catch (_: Throwable) {
-            }
-        }
-        val lower = name.lowercase()
-        return lower.startsWith("com.android.chrome") ||
-                lower.startsWith("com.chrome.") ||
-                lower.startsWith("org.chromium.") ||
-                lower.startsWith("com.kiwibrowser.") ||
-                lower.startsWith("com.microsoft.emmx") ||
-                lower.startsWith("com.brave.browser") ||
-                lower.startsWith("com.opera.") ||
-                lower.startsWith("com.vivaldi.browser")
     }
 }

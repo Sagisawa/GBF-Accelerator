@@ -241,14 +241,6 @@ func (c *ControlServer) handleAndroidInspect(w http.ResponseWriter, req *http.Re
 		return
 	}
 
-	if pkg.EngineType == patcher.EngineTypeUnsupported {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":    false,
-			"error": fmt.Sprintf("不支持该浏览器内核（%s）。GBF 加速补丁目前仅支持 Android 系统 WebView 浏览器（如 SkyLeap、Via）或独立 Chromium 浏览器（如 Chrome、Kiwi）。", pkg.EngineName),
-		})
-		return
-	}
-
 	isOfficialSkyLeap := (pkg.PackageName == "com.dena.skyleap")
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
@@ -259,8 +251,6 @@ func (c *ControlServer) handleAndroidInspect(w http.ResponseWriter, req *http.Re
 		"version_name":            pkg.VersionName,
 		"is_split":                pkg.IsSplit,
 		"total_apks":              pkg.TotalApks,
-		"engine_type":             pkg.EngineType,
-		"engine_name":             pkg.EngineName,
 		"is_official_skyleap":     isOfficialSkyLeap,
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})
@@ -325,14 +315,6 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	if pkg.EngineType == patcher.EngineTypeUnsupported {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":    false,
-			"error": fmt.Sprintf("不支持该浏览器内核（%s）。GBF 加速补丁目前仅支持 Android 系统 WebView 浏览器（如 SkyLeap、Via）或独立 Chromium 浏览器（如 Chrome、Kiwi）。", pkg.EngineName),
-		})
-		return
-	}
-
 	isOfficialSkyLeap := (pkg.PackageName == "com.dena.skyleap")
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
@@ -343,8 +325,6 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 		"version_name":            pkg.VersionName,
 		"is_split":                pkg.IsSplit,
 		"total_apks":              pkg.TotalApks,
-		"engine_type":             pkg.EngineType,
-		"engine_name":             pkg.EngineName,
 		"is_official_skyleap":     isOfficialSkyLeap,
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})
@@ -837,14 +817,6 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 		return
 	}
 
-	if pkg.EngineType == patcher.EngineTypeUnsupported {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":    false,
-			"error": fmt.Sprintf("不支持该浏览器内核（%s）。GBF 加速补丁目前仅支持 Android 系统 WebView 浏览器（如 SkyLeap、Via）或独立 Chromium 浏览器（如 Chrome、Kiwi）。", pkg.EngineName),
-		})
-		return
-	}
-
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                      true,
 		"file_path":               targetInspectPath,
@@ -853,8 +825,6 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 		"version_name":            pkg.VersionName,
 		"is_split":                pkg.IsSplit,
 		"total_apks":              pkg.TotalApks,
-		"engine_type":             pkg.EngineType,
-		"engine_name":             pkg.EngineName,
 		"is_official_skyleap":     (pkg.PackageName == "com.dena.skyleap"),
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})

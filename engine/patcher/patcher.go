@@ -121,10 +121,6 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		return nil, fmt.Errorf("failed to inspect input: %w", err)
 	}
 
-	if pkgInfo.EngineType == EngineTypeUnsupported {
-		return nil, fmt.Errorf("unsupported browser engine (%s): only Android System WebView and standalone Chromium browsers are supported", pkgInfo.EngineName)
-	}
-
 	pkgLabel := pkgInfo.PackageName
 	if pkgLabel == "" {
 		pkgLabel = "unknown"
@@ -136,19 +132,16 @@ func (p *Patcher) Run() (*BundleResult, error) {
 
 	p.logf("      - Package: %s\n", pkgLabel)
 	p.logf("      - Version: %s\n", verLabel)
-	p.logf("      - Engine: %s\n", pkgInfo.EngineName)
 	if pkgInfo.IsSplit {
 		p.logf("      - Structure: Split APK (%d files: base + %d splits)\n", pkgInfo.TotalApks, len(pkgInfo.SplitApkPaths))
 	} else {
 		p.logf("      - Structure: Single Standalone APK\n")
 	}
 
-	if pkgLabel == "com.dena.skyleap" {
-		p.logf("      [+] Validated official SkyLeap target.\n")
-	} else if pkgInfo.EngineType == EngineTypeChromium {
-		p.logf("      [+] Detected standalone Chromium browser: applying native Chromium command-line & SSL bypass.\n")
+	if pkgLabel != "com.dena.skyleap" {
+		p.logf("      [!] Warning: Detected package %q differs from official SkyLeap (com.dena.skyleap).\n", pkgLabel)
 	} else {
-		p.logf("      [+] Detected standard WebView browser.\n")
+		p.logf("      [+] Validated official SkyLeap target.\n")
 	}
 
 	// Automatic Backup of original APK before patching
