@@ -61,8 +61,5 @@ val buildGoCore = tasks.register<Exec>("buildGoCore") {
 }
 
 tasks.named("preBuild") {
-    val soFile = file("src/main/jniLibs/arm64-v8a/libgbfcore.so")
-    if (!soFile.exists()) {
-        dependsOn(buildGoCore)
-    }
+    dependsOn(buildGoCore)
 }

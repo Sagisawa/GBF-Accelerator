@@ -237,10 +237,26 @@ export const App: React.FC = () => {
       if (params.get('mobile') === '1' || params.get('mobile') === 'true') return true
       if (params.get('desktop') === '1' || params.get('desktop') === 'true') return false
     }
+    // 1. Android embedded backend runtime environment
     if (status?.platform === 'android') return true
-    if (typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)) {
-      return true
+
+    // 2. Mobile User-Agent detection (including SkyLeap, HarmonyOS, etc.)
+    if (typeof navigator !== 'undefined') {
+      if (/Android|iPhone|iPad|iPod|Mobile|SkyLeap|HarmonyOS/i.test(navigator.userAgent)) {
+        return true
+      }
     }
+
+    // 3. Touch + Screen heuristic (covers mobile browsers or SkyLeap with desktop UA spoofing)
+    if (typeof window !== 'undefined') {
+      const isTouch = ('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+      const isCoarsePointer = Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+      const isMobileScreen = window.innerWidth <= 820 || window.screen.width <= 820
+      if ((isTouch || isCoarsePointer) && isMobileScreen) {
+        return true
+      }
+    }
+
     return false
   }, [status?.platform])
 
