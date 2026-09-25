@@ -415,9 +415,7 @@ export async function uploadAndroidPackage(
 export async function startAndroidPatch(
   filePath: string,
   outputDir?: string,
-  appLabel?: string,
-  autoBackup?: boolean,
-  newPackageName?: string
+  autoBackup?: boolean
 ): Promise<{ ok: boolean; message?: string }> {
   const res = await fetch(`${BASE}/api/android/patch`, {
     method: 'POST',
@@ -425,9 +423,7 @@ export async function startAndroidPatch(
     body: JSON.stringify({
       file_path: filePath,
       output_dir: outputDir || '',
-      app_label: appLabel || '',
       auto_backup: autoBackup !== undefined ? autoBackup : true,
-      new_package_name: newPackageName || '',
     }),
   })
   const data = await res.json().catch(() => ({}))

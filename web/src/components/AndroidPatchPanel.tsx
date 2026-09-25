@@ -80,9 +80,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [uploadPercent, setUploadPercent] = useState<number>(0)
   const [isInspecting, setIsInspecting] = useState<boolean>(false)
 
-  // Custom Launcher Label & Backup state
-  const [enableCustomLabel, setEnableCustomLabel] = useState<boolean>(false)
-  const [customAppLabel, setCustomAppLabel] = useState<string>('')
+  // Backup state
   const [autoBackup, setAutoBackup] = useState<boolean>(true)
 
   // ADB & Device state
@@ -106,15 +104,6 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [isPatchStarting, setIsPatchStarting] = useState<boolean>(false)
   const [showLogs, setShowLogs] = useState<boolean>(true)
   const logTerminalRef = useRef<HTMLDivElement>(null)
-
-  // Sync suggested launcher label when inspectedPkg changes
-  useEffect(() => {
-    if (inspectedPkg?.is_official_skyleap) {
-      setCustomAppLabel('SkyLeap 加速版')
-    } else if (inspectedPkg?.package_name) {
-      setCustomAppLabel('浏览器加速版')
-    }
-  }, [inspectedPkg])
 
   // Load Environment on mount
   const checkEnv = useCallback(async () => {
@@ -475,11 +464,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       return
     }
 
-    const finalAppLabel = enableCustomLabel ? customAppLabel.trim() : ''
-
     setIsPatchStarting(true)
     try {
-      await startAndroidPatch(inspectedPkg.file_path, outputDir, finalAppLabel, autoBackup)
+      await startAndroidPatch(inspectedPkg.file_path, outputDir, autoBackup)
       showToast('处理任务已启动', 'success')
       setPatchStatus({
         ok: true,
@@ -489,7 +476,6 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         progress: 0.1,
         logs: [
           `Patch requested for: ${inspectedPkg.base_input_name}`,
-          ...(finalAppLabel ? [`Custom launcher label: ${finalAppLabel}`] : []),
           `Auto backup enabled: ${autoBackup}`,
         ],
         error: '',
@@ -1068,41 +1054,6 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               </p>
             </div>
 
-            {/* Custom App Launcher Label Setting */}
-            <div className="bg-white/80 p-3 rounded-lg border border-slate-200 space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={enableCustomLabel}
-                    onChange={(e) => setEnableCustomLabel(e.target.checked)}
-                    className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
-                  />
-                  <span className="text-xs font-bold text-slate-800">
-                    自定义手机桌面显示名称（如：SkyLeap 加速版）
-                  </span>
-                </label>
-                <span className="text-[11px] text-slate-500 font-medium">可选</span>
-              </div>
-
-              {enableCustomLabel && (
-                <div className="pt-1.5 space-y-1.5 animate-in fade-in duration-150">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-slate-600 shrink-0">桌面显示名称：</span>
-                    <input
-                      type="text"
-                      value={customAppLabel}
-                      onChange={(e) => setCustomAppLabel(e.target.value)}
-                      placeholder="例如: SkyLeap 加速版"
-                      className="flex-1 bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    💡 提示：在手机桌面上显示自定义应用名称，方便在桌面上与普通浏览器进行视觉区分。
-                  </p>
-                </div>
-              )}
-            </div>
 
             {/* Auto Backup Setting */}
             <div className="bg-white/80 p-3 rounded-lg border border-slate-200 flex items-center justify-between">

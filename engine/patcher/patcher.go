@@ -144,13 +144,6 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		p.logf("      [+] Validated official SkyLeap target.\n")
 	}
 
-	if p.opts.AppLabel != "" {
-		p.logf("      - Custom Launcher Label: %s\n", p.opts.AppLabel)
-	}
-	if p.opts.NewPackageName != "" {
-		p.logf("      [i] Notice: LSPatch maintains original package name to ensure component integrity. Retained package: %s\n", pkgLabel)
-	}
-
 	// Automatic Backup of original APK before patching
 	var backupPath string
 	var backupDir string
