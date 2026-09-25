@@ -12,13 +12,12 @@ class GbfRoutingRulesTest {
         val expectedRules = listOf(
             "*.granbluefantasy.jp",
             "granbluefantasy.jp",
-            "*.granbluefantasy.akamaized.net",
-            "*.granbluefantasy-steam.akamaized.net",
-            "*.gbf.akamaized.net",
-            "gbf.game.mbga.jp"
+            "*granbluefantasy.akamaized.net",
+            "*granbluefantasy-steam.akamaized.net",
+            "*gbf.akamaized.net"
         )
         assertEquals("Canonical bypass rules must match exactly", expectedRules, GbfRoutingRules.GBF_BYPASS_RULES)
-        assertEquals("Must contain exactly 6 canonical rules", 6, GbfRoutingRules.GBF_BYPASS_RULES.size)
+        assertEquals("Must contain exactly 5 canonical rules", 5, GbfRoutingRules.GBF_BYPASS_RULES.size)
     }
 
     @Test
@@ -32,25 +31,27 @@ class GbfRoutingRulesTest {
         assertTrue("granbluefantasy.jp must enter proxy", GbfRoutingRules.shouldProxy("granbluefantasy.jp"))
         assertTrue("https://granbluefantasy.jp/ must enter proxy", GbfRoutingRules.shouldProxy("https://granbluefantasy.jp/"))
 
-        // 3. *.granbluefantasy.akamaized.net
-        assertTrue("*.granbluefantasy.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a1-gbf.granbluefantasy.akamaized.net"))
+        // 3. *granbluefantasy.akamaized.net (real Akamai CDN shards use hyphens, e.g. prd-game-a)
+        assertTrue("prd-game-a-granbluefantasy.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a-granbluefantasy.akamaized.net"))
+        assertTrue("prd-game-a1-granbluefantasy.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a1-granbluefantasy.akamaized.net"))
+        assertTrue("prd-game-a5-granbluefantasy.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a5-granbluefantasy.akamaized.net"))
+        assertTrue("prd-game-a1-gbf.granbluefantasy.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a1-gbf.granbluefantasy.akamaized.net"))
 
-        // 4. *.granbluefantasy-steam.akamaized.net
-        assertTrue("*.granbluefantasy-steam.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a-gbf.granbluefantasy-steam.akamaized.net"))
+        // 4. *granbluefantasy-steam.akamaized.net
+        assertTrue("prd-game-a-granbluefantasy-steam.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a-granbluefantasy-steam.akamaized.net"))
+        assertTrue("prd-game-a-gbf.granbluefantasy-steam.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a-gbf.granbluefantasy-steam.akamaized.net"))
 
-        // 5. *.gbf.akamaized.net
-        assertTrue("*.gbf.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a.gbf.akamaized.net"))
+        // 5. *gbf.akamaized.net
+        assertTrue("prd-game-a-gbf.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a-gbf.akamaized.net"))
+        assertTrue("prd-game-a.gbf.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("prd-game-a.gbf.akamaized.net"))
         assertTrue("sub.gbf.akamaized.net must enter proxy", GbfRoutingRules.shouldProxy("sub.gbf.akamaized.net"))
-
-        // 6. gbf.game.mbga.jp
-        assertTrue("gbf.game.mbga.jp must enter proxy", GbfRoutingRules.shouldProxy("gbf.game.mbga.jp"))
-        assertTrue("https://gbf.game.mbga.jp/ must enter proxy", GbfRoutingRules.shouldProxy("https://gbf.game.mbga.jp/"))
     }
 
     @Test
     fun testExplicitExcludedMobageDomainsDirect() {
         // Explicit non-proxy verification for sensitive Mobage / payment / authentication / legacy shard domains
         val excludedMobageDomains = listOf(
+            "gbf.game.mbga.jp",
             "connect.mobage.jp",
             "sp.mbga.jp",
             "gbf.game-a.mbga.jp",

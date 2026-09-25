@@ -25,10 +25,9 @@ object GbfRoutingRules {
     val GBF_BYPASS_RULES: List<String> = listOf(
         "*.granbluefantasy.jp",
         "granbluefantasy.jp",
-        "*.granbluefantasy.akamaized.net",
-        "*.granbluefantasy-steam.akamaized.net",
-        "*.gbf.akamaized.net",
-        "gbf.game.mbga.jp"
+        "*granbluefantasy.akamaized.net",
+        "*granbluefantasy-steam.akamaized.net",
+        "*gbf.akamaized.net"
     )
 
     /**
@@ -73,6 +72,9 @@ object GbfRoutingRules {
             val suffix = cleanPattern.substring(1) // e.g. ".granbluefantasy.jp"
             val domainWithoutWildcard = cleanPattern.substring(2) // e.g. "granbluefantasy.jp"
             return cleanHost.endsWith(suffix) || cleanHost == domainWithoutWildcard
+        } else if (cleanPattern.startsWith("*")) {
+            val suffix = cleanPattern.substring(1) // e.g. "granbluefantasy.akamaized.net"
+            return cleanHost.endsWith(suffix)
         }
 
         return cleanHost == cleanPattern

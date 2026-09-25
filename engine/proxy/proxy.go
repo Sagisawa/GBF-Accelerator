@@ -146,8 +146,20 @@ func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
 		assetTr.Proxy, assetTr.DialContext = nil, dialFunc
 	}
 	return &upstreamClients{
-		api: &http.Client{Transport: apiTr, Timeout: 45 * time.Second},
-		asset: &http.Client{Transport: assetTr, Timeout: 45 * time.Second},
+		api: &http.Client{
+			Transport: apiTr,
+			Timeout:   45 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		asset: &http.Client{
+			Transport: assetTr,
+			Timeout:   45 * time.Second,
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		proxy: normalized,
 	}
 }

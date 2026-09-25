@@ -833,4 +833,61 @@ func TestAndroidSkyLeapCDN_Matching(t *testing.T) {
 	}
 }
 
+func TestProxyRedirectTransparency(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tmpDir, "config.json"))
+	cfgMgr.Update(func(c *config.Config) {
+		c.DirectMode = true
+		c.VerifyUpstreamTLS = false
+		c.CacheDir = tmpDir
+	})
+
+	certMgr, err := cert.NewManager(filepath.Join(tmpDir, "certs"))
+	if err != nil {
+		t.Fatalf("failed to init cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tmpDir, 16)
+	stats := telemetry.NewStats()
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	activeCfg := cfgMgr.Get()
+	srv.updateClients(&activeCfg)
+
+	// Upstream TLS server that returns 302 Found redirect
+	redirectCount := 0
+	targetHit := false
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			redirectCount++
+			http.Redirect(w, r, "/target", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/target" {
+			targetHit = true
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("target page"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+
+	req, _ := http.NewRequest(http.MethodGet, "https://"+u.Host+"/redirect", nil)
+	var buf bytes.Buffer
+	srv.handleDynamicAPI(&buf, req, u.Host)
+
+	// Verify that the proxy returned 302 Found directly to the client
+	respStr := buf.String()
+	if !strings.Contains(respStr, "302 Found") && !strings.Contains(respStr, "HTTP/1.1 302") {
+		t.Errorf("expected proxy to return 302 Found directly, got: %s", respStr)
+	}
+	if !strings.Contains(respStr, "Location: /target") && !strings.Contains(respStr, "Location: "+ts.URL+"/target") {
+		t.Errorf("expected proxy to preserve Location header in 302 response, got: %s", respStr)
+	}
+	if targetHit {
+		t.Error("apiClient must NOT auto-follow redirect to /target; it must be returned as-is to the client")
+	}
+}
+
 
