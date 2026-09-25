@@ -78,7 +78,7 @@ func buildDownloadHTTPClient(proxyURL string) *http.Client {
 // DisableSystemTools temporarily disables fallback discovery of host system Java
 // (JAVA_HOME, Android Studio JBR, system PATH) and host system ADB (C:\platform-tools, SDK, PATH).
 // When true, the engine strictly requires the isolated portable tools inside tools/android and jre.
-var DisableSystemTools = true
+var DisableSystemTools = false
 
 func isSystemToolsDisabled() bool {
 	if v := os.Getenv("GBF_DISABLE_SYSTEM_TOOLS"); v != "" {
