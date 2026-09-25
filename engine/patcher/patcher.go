@@ -18,6 +18,7 @@ type PatchListener interface {
 type PatchOptions struct {
 	InputPath       string
 	OutputDir       string
+	AppLabel        string
 	NewPackageName  string
 	AutoBackup      bool
 	BackupDir       string
@@ -143,11 +144,11 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		p.logf("      [+] Validated official SkyLeap target.\n")
 	}
 
+	if p.opts.AppLabel != "" {
+		p.logf("      - Custom Launcher Label: %s\n", p.opts.AppLabel)
+	}
 	if p.opts.NewPackageName != "" {
-		if !IsValidPackageName(p.opts.NewPackageName) {
-			return nil, fmt.Errorf("invalid custom package name %q: must contain at least two segments with valid characters", p.opts.NewPackageName)
-		}
-		p.logf("      - Custom Clone Package: %s\n", p.opts.NewPackageName)
+		p.logf("      [i] Notice: LSPatch maintains original package name to ensure component integrity. Retained package: %s\n", pkgLabel)
 	}
 
 	// Automatic Backup of original APK before patching
@@ -195,6 +196,7 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		JavaBinaryPath: javaPath,
 		LSPatchJarPath: lspatchJar,
 		ModuleApkPath:  moduleApk,
+		AppLabel:       p.opts.AppLabel,
 		NewPackageName: p.opts.NewPackageName,
 		Verbose:        p.opts.Verbose,
 		LogFn: func(line string) {

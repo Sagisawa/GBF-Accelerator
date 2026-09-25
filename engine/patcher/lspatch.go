@@ -26,6 +26,7 @@ type LSPatchConfig struct {
 	JavaBinaryPath string
 	LSPatchJarPath string
 	ModuleApkPath  string
+	AppLabel       string
 	NewPackageName string
 	Verbose        bool
 	LogFn          func(string)
@@ -362,24 +363,21 @@ func ValidateModuleApk(apkPath string) error {
 func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outputDir string) ([]string, error) {
 	args := []string{
 		"-jar", cfg.LSPatchJarPath,
-	}
-
-	args = append(args, baseApk)
-	args = append(args, splitApks...)
-
-	args = append(args,
 		"-m", cfg.ModuleApkPath,
 		"-o", outputDir,
 		"-f", // force overwrite
-	)
+	}
 
-	if cfg.NewPackageName != "" {
-		args = append(args, "-pkg", cfg.NewPackageName)
+	if cfg.AppLabel != "" {
+		args = append(args, "--name", cfg.AppLabel)
 	}
 
 	if cfg.Verbose {
 		args = append(args, "-v")
 	}
+
+	args = append(args, baseApk)
+	args = append(args, splitApks...)
 
 	cmd := exec.Command(cfg.JavaBinaryPath, args...)
 	prepareCmd(cmd)

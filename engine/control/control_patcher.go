@@ -333,6 +333,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 	var body struct {
 		FilePath       string `json:"file_path"`
 		OutputDir      string `json:"output_dir"`
+		AppLabel       string `json:"app_label"`
 		NewPackageName string `json:"new_package_name"`
 		AutoBackup     *bool  `json:"auto_backup"`
 	}
@@ -356,6 +357,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 	if body.AutoBackup != nil {
 		autoBackup = *body.AutoBackup
 	}
+	appLabel := strings.TrimSpace(body.AppLabel)
 	newPkg := strings.TrimSpace(body.NewPackageName)
 
 	c.androidPatchMu.Lock()
@@ -413,11 +415,12 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 	c.androidPatchMu.Unlock()
 
 	// Launch patch execution in background goroutine (non-blocking)
-	go func(inPath, outDir, customPkg string, backup bool) {
+	go func(inPath, outDir, label, customPkg string, backup bool) {
 		bridge := &patchListenerBridge{server: c}
 		opts := patcher.PatchOptions{
 			InputPath:      inPath,
 			OutputDir:      outDir,
+			AppLabel:       label,
 			NewPackageName: customPkg,
 			AutoBackup:     backup,
 			Listener:       bridge,
@@ -449,7 +452,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 			c.androidPatchStatus.Stage = 5
 			c.androidPatchStatus.StageText = "Patch completed successfully"
 		}
-	}(targetPath, outputDir, newPkg, autoBackup)
+	}(targetPath, outputDir, appLabel, newPkg, autoBackup)
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,

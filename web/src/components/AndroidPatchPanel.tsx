@@ -82,9 +82,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [uploadPercent, setUploadPercent] = useState<number>(0)
   const [isInspecting, setIsInspecting] = useState<boolean>(false)
 
-  // Package Clone & Backup state
-  const [enableClone, setEnableClone] = useState<boolean>(false)
-  const [clonePackageName, setClonePackageName] = useState<string>('')
+  // Custom Launcher Label & Backup state
+  const [enableCustomLabel, setEnableCustomLabel] = useState<boolean>(false)
+  const [customAppLabel, setCustomAppLabel] = useState<string>('')
   const [autoBackup, setAutoBackup] = useState<boolean>(true)
 
   // ADB & Device state
@@ -107,12 +107,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [showLogs, setShowLogs] = useState<boolean>(true)
   const logTerminalRef = useRef<HTMLDivElement>(null)
 
-  // Sync suggested clone package name when inspectedPkg changes
+  // Sync suggested launcher label when inspectedPkg changes
   useEffect(() => {
-    if (inspectedPkg?.suggested_clone_package) {
-      setClonePackageName(inspectedPkg.suggested_clone_package)
+    if (inspectedPkg?.is_official_skyleap) {
+      setCustomAppLabel('SkyLeap 加速版')
     } else if (inspectedPkg?.package_name) {
-      setClonePackageName(inspectedPkg.package_name + '.accelerated')
+      setCustomAppLabel('浏览器加速版')
     }
   }, [inspectedPkg])
 
@@ -255,14 +255,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     }
     const dev = adbDevices.find(d => d.serial === selectedDevice)
     if (dev && dev.state === 'device') {
-      const targetPkg = (enableClone && clonePackageName.trim()) ? clonePackageName.trim() : 'com.dena.skyleap'
+      const targetPkg = inspectedPkg?.package_name || 'com.dena.skyleap'
       probeDeviceApp(selectedDevice, targetPkg)
         .then(setDeviceApp)
         .catch(() => setDeviceApp(null))
     } else {
       setDeviceApp(null)
     }
-  }, [selectedDevice, adbDevices, enableClone, clonePackageName])
+  }, [selectedDevice, adbDevices, inspectedPkg])
 
   // Auto poll devices every 3s
   useEffect(() => {
@@ -295,7 +295,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     setInstallResult(null)
     setShowUninstallModal(false)
 
-    const targetPkg = (enableClone && clonePackageName.trim()) ? clonePackageName.trim() : (inspectedPkg?.package_name || 'com.dena.skyleap')
+    const targetPkg = inspectedPkg?.package_name || 'com.dena.skyleap'
 
     try {
       if (forceUninstall) {
@@ -473,11 +473,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       return
     }
 
-    const finalPkgName = enableClone ? clonePackageName.trim() : ''
+    const finalAppLabel = enableCustomLabel ? customAppLabel.trim() : ''
 
     setIsPatchStarting(true)
     try {
-      await startAndroidPatch(inspectedPkg.file_path, outputDir, finalPkgName, autoBackup)
+      await startAndroidPatch(inspectedPkg.file_path, outputDir, finalAppLabel, autoBackup)
       showToast('处理任务已启动', 'success')
       setPatchStatus({
         ok: true,
@@ -487,7 +487,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         progress: 0.1,
         logs: [
           `Patch requested for: ${inspectedPkg.base_input_name}`,
-          ...(finalPkgName ? [`Custom cloned package: ${finalPkgName}`] : []),
+          ...(finalAppLabel ? [`Custom launcher label: ${finalAppLabel}`] : []),
           `Auto backup enabled: ${autoBackup}`,
         ],
         error: '',
@@ -1150,37 +1150,37 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               </div>
             </div>
 
-            {/* Package Clone / Rename Setting */}
+            {/* Custom App Launcher Label Setting */}
             <div className="bg-white/80 p-3 rounded-lg border border-slate-200 space-y-2">
               <div className="flex items-center justify-between">
                 <label className="flex items-center gap-2 cursor-pointer select-none">
                   <input
                     type="checkbox"
-                    checked={enableClone}
-                    onChange={(e) => setEnableClone(e.target.checked)}
+                    checked={enableCustomLabel}
+                    onChange={(e) => setEnableCustomLabel(e.target.checked)}
                     className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
                   />
                   <span className="text-xs font-bold text-slate-800">
-                    更换包名（创建独立分身应用，可与原版共存免卸载）
+                    自定义手机桌面显示名称（如：SkyLeap 加速版）
                   </span>
                 </label>
-                <span className="text-[11px] text-indigo-700 font-medium">推荐启用</span>
+                <span className="text-[11px] text-slate-500 font-medium">可选</span>
               </div>
 
-              {enableClone && (
+              {enableCustomLabel && (
                 <div className="pt-1.5 space-y-1.5 animate-in fade-in duration-150">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-slate-600 shrink-0">分身新包名：</span>
+                    <span className="text-xs font-medium text-slate-600 shrink-0">桌面显示名称：</span>
                     <input
                       type="text"
-                      value={clonePackageName}
-                      onChange={(e) => setClonePackageName(e.target.value)}
-                      placeholder="例如: com.dena.skyleap.accelerated"
-                      className="flex-1 bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      value={customAppLabel}
+                      onChange={(e) => setCustomAppLabel(e.target.value)}
+                      placeholder="例如: SkyLeap 加速版"
+                      className="flex-1 bg-slate-50 border border-slate-200 rounded px-2 py-1 text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
                   <p className="text-[11px] text-slate-500 leading-relaxed">
-                    💡 提示：更改包名后将作为全新独立 App 安装，无需卸载手机上的官方原版 SkyLeap，两套应用数据相互隔离、并存共生，免受签名冲突困扰！
+                    💡 提示：在手机桌面上显示自定义应用名称，方便在桌面上与普通浏览器进行视觉区分。
                   </p>
                 </div>
               )}
@@ -1368,17 +1368,17 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               </div>
 
               {/* Installation guidance */}
-              <div className="pt-2 border-t border-emerald-200/60 text-slate-600 space-y-1">
-                <div className="font-bold text-slate-800">在手机上的安装与使用：</div>
-                {enableClone ? (
-                  <p className="text-emerald-900 font-medium">
-                    ✨ 本次制作已启用独立分身包名 (<code>{clonePackageName}</code>)，安装后可与手机上的官方正版 SkyLeap 共存，无需卸载原版！
-                  </p>
-                ) : (
-                  <p className="text-amber-900 font-medium">
-                    ⚠️ 保持原版包名安装时，因签名差异，覆盖安装时 Android 会提示签名冲突，需先卸载手机上的旧版。
-                  </p>
-                )}
+              <div className="pt-2 border-t border-emerald-200/60 text-slate-600 space-y-2">
+                <div className="font-bold text-slate-800">在手机上的安装与多开共存：</div>
+                <div className="bg-sky-50 border border-sky-200 rounded-lg p-3 text-[11px] text-sky-950 space-y-1.5 leading-relaxed">
+                  <div className="font-bold text-sky-900 flex items-center gap-1.5">
+                    <Smartphone className="w-3.5 h-3.5 text-sky-700" />
+                    <span>如何与手机上的官方正版共存？</span>
+                  </div>
+                  <div>• <strong>系统双开 / 应用分身：</strong>现代 Android 手机（小米、华为、三星、OPPO、vivo 等）均支持在系统设置中开启「应用双开 / 应用分身」，安装补丁版后直接开启双开即可拥有两套独立数据与账号。</div>
+                  <div>• <strong>修补通用浏览器：</strong>亦可直接选择修补另一款轻量基于系统 WebView 的浏览器（如 Via、Kiwi、X浏览器等），由于包名不同，天然与官方 SkyLeap 完美共存。</div>
+                  <div>• <strong>原版数据安全：</strong>原版安装包已自动备份至 <code>backups/</code> 目录。若直接覆盖安装官方 SkyLeap，由于签名变更 Android 会提示冲突，点击下方「一键安装到手机」可智能一键先卸载再安装。</div>
+                </div>
                 <ul className="list-disc pl-4 space-y-0.5 pt-1">
                   <li>
                     <span className="font-semibold">一键安装:</span> 若手机已连接电脑并开启 USB 调试，直接点击下方「一键安装到手机」自动推入安装。
