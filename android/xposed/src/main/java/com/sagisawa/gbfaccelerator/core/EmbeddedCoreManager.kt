@@ -293,17 +293,30 @@ object EmbeddedCoreManager {
             context.cacheDir
         ).distinct()
 
+        val appLastUpdate = try {
+            val pi = context.packageManager.getPackageInfo(context.packageName, 0)
+            pi.lastUpdateTime
+        } catch (_: Throwable) {
+            0L
+        }
+
         for (dir in candidateDirs) {
             dir.mkdirs()
             val targetFile = File(dir, "libgbfcore.so")
-            if (targetFile.exists() && targetFile.length() >= 1000000L) {
+            if (targetFile.exists() && targetFile.length() >= 1000000L && targetFile.lastModified() >= appLastUpdate) {
                 targetFile.setExecutable(true, false)
                 Log.i(TAG, "[GBF-ACC] Using cached libgbfcore.so in: ${targetFile.absolutePath}")
                 return targetFile
             }
 
+            // Stale or missing: remove old core before re-extracting from updated package
+            if (targetFile.exists()) {
+                targetFile.delete()
+            }
+
             val extracted = extractCoreFromClassLoaderResource(targetFile)
             if (extracted != null && extracted.exists() && extracted.length() > 0) {
+                extracted.setLastModified(System.currentTimeMillis())
                 Log.i(TAG, "[GBF-ACC] Extracted libgbfcore.so via ClassLoader resource to: ${extracted.absolutePath}")
                 return extracted
             }

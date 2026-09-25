@@ -240,19 +240,18 @@ export const App: React.FC = () => {
     // 1. Android embedded backend runtime environment
     if (status?.platform === 'android') return true
 
-    // 2. Mobile User-Agent detection (including SkyLeap, HarmonyOS, etc.)
+    // 2. Mobile User-Agent detection (covers Android, iOS, SkyLeap, HarmonyOS, etc.)
     if (typeof navigator !== 'undefined') {
-      if (/Android|iPhone|iPad|iPod|Mobile|SkyLeap|HarmonyOS/i.test(navigator.userAgent)) {
+      if (/Android|iPhone|iPad|iPod|Mobile|SkyLeap|HarmonyOS|Silk|Kindle/i.test(navigator.userAgent)) {
         return true
       }
     }
 
-    // 3. Touch + Screen heuristic (covers mobile browsers or SkyLeap with desktop UA spoofing)
+    // 3. Touch / Pointer heuristic (covers mobile browsers, SkyLeap with desktop UA spoofing, tablets, landscape)
     if (typeof window !== 'undefined') {
       const isTouch = ('ontouchstart' in window) || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
       const isCoarsePointer = Boolean(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
-      const isMobileScreen = window.innerWidth <= 820 || window.screen.width <= 820
-      if ((isTouch || isCoarsePointer) && isMobileScreen) {
+      if (isTouch || isCoarsePointer) {
         return true
       }
     }
