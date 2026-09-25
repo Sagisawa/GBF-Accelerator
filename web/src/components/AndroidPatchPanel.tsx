@@ -539,6 +539,23 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const isComponentsVerified = Boolean(envStatus?.components_verified)
   const isDownloadActive = Boolean(downloadProgress?.active || envStatus?.download?.active)
   const isEnvironmentReady = isReady && isComponentsVerified
+
+  // Component-specific installation status in the portable tools environment
+  const lspatchComp = envStatus?.components?.find(c => c.id === 'lspatch')
+  const isLspatchInstalled = Boolean(lspatchComp?.installed && lspatchComp?.verified)
+
+  const moduleComp = envStatus?.components?.find(c => c.id === 'module')
+  const isModuleInstalled = Boolean(moduleComp?.installed && moduleComp?.verified)
+
+  const toolsDir = (envStatus?.tools_dir || '').toLowerCase().replace(/\\/g, '/')
+  const adbPath = (envStatus?.adb?.path || '').toLowerCase().replace(/\\/g, '/')
+  const isInternalAdb = Boolean(envStatus?.adb?.found && toolsDir && adbPath.startsWith(toolsDir))
+  const isAdbFound = Boolean(envStatus?.adb?.found)
+
+  const javaPath = (envStatus?.java?.path || '').toLowerCase().replace(/\\/g, '/')
+  const isPortableJava = Boolean(envStatus?.java?.found && (javaPath.includes('/jre/') || javaPath.includes('/tools/jre/')) && !javaPath.includes('android studio') && !javaPath.includes('program files'))
+  const isJavaFound = Boolean(envStatus?.java?.found)
+
   const progressPercent = Math.round((patchStatus?.progress ?? 0) * 100)
 
   const patchResult = patchStatus?.result
@@ -657,25 +674,44 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
           {/* Quick status pills for components */}
           <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
+            {/* Java 21+ */}
             <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
-              envStatus?.java?.found ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-white/5 border-white/10 text-slate-400'
+              isPortableJava
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : isJavaFound
+                  ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
+                  : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {envStatus?.java?.found ? '✓' : '✗'} Java 21+
+              {isJavaFound ? '✓' : '✗'} Java 21+{!isPortableJava && isJavaFound ? ' (系统)' : ''}
             </span>
+
+            {/* LSPatch */}
             <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
-              envStatus?.lspatch?.found && envStatus.lspatch.verified ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-white/5 border-white/10 text-slate-400'
+              isLspatchInstalled
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {envStatus?.lspatch?.found && envStatus.lspatch.verified ? '✓' : '✗'} LSPatch
+              {isLspatchInstalled ? '✓' : '✗'} LSPatch
             </span>
+
+            {/* 内置模块 */}
             <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
-              envStatus?.module?.found && envStatus.module.verified ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-white/5 border-white/10 text-slate-400'
+              isModuleInstalled
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {envStatus?.module?.found && envStatus.module.verified ? '✓' : '✗'} 内置模块
+              {isModuleInstalled ? '✓' : '✗'} 内置模块
             </span>
+
+            {/* ADB */}
             <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
-              envStatus?.adb?.found ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-white/5 border-white/10 text-slate-400'
+              isInternalAdb
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                : isAdbFound
+                  ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
+                  : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {envStatus?.adb?.found ? '✓' : '✗'} ADB
+              {isAdbFound ? '✓' : '✗'} ADB{!isInternalAdb && isAdbFound ? ' (系统)' : ''}
             </span>
           </div>
         </div>

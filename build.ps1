@@ -297,8 +297,11 @@ function Build-Windows {
     # Keep unzipped distribution directory for immediate testing
     $UnzippedDistDir = Join-Path $ReleaseDir "GBF_Accelerator_v$($AppVersion)_GUI"
     Stop-Process -Name "adb", "GBF_Accelerator" -Force -ErrorAction SilentlyContinue
-    if (Test-Path $UnzippedDistDir) { Remove-Item $UnzippedDistDir -Recurse -Force }
-    Copy-Item -Path $StagingDir -Destination $UnzippedDistDir -Recurse -Force
+    Start-Sleep -Milliseconds 200
+    if (-not (Test-Path $UnzippedDistDir)) {
+        New-Item -ItemType Directory -Path $UnzippedDistDir -Force | Out-Null
+    }
+    Copy-Item -Path "$StagingDir\*" -Destination $UnzippedDistDir -Recurse -Force
 
     # Ensure unzipped distribution directory has Android tools & JRE populated for immediate local testing
     $UnzippedTools = Join-Path $UnzippedDistDir "tools\android"
