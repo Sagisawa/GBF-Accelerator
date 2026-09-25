@@ -231,7 +231,7 @@ func TestResolveAndroidPatchOutputDir(t *testing.T) {
 			want:     filepath.Join(string(filepath.Separator), "tmp", "output_patched"),
 		},
 		{
-			name:     "Windows relative path keeps existing working-directory behavior",
+			name:     "Windows relative path keeps working-directory behavior",
 			rawPath:  "output_patched",
 			platform: "windows",
 			want:     "output_patched",
@@ -241,22 +241,12 @@ func TestResolveAndroidPatchOutputDir(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := resolveAndroidPatchOutputDirFor(tt.rawPath, tt.platform, baseDir)
-			if tt.platform != "windows" || filepath.IsAbs(tt.want) {
-				wantAbs, err := filepath.Abs(tt.want)
-				if err != nil {
-					t.Fatalf("failed to resolve expected path: %v", err)
-				}
-				if got != wantAbs {
-					t.Fatalf("expected %q, got %q", wantAbs, got)
-				}
-				return
-			}
-			wantAbs, err := filepath.Abs(tt.want)
+			want, err := filepath.Abs(tt.want)
 			if err != nil {
 				t.Fatalf("failed to resolve expected path: %v", err)
 			}
-			if got != wantAbs {
-				t.Fatalf("expected %q, got %q", wantAbs, got)
+			if got != want {
+				t.Fatalf("expected %q, got %q", want, got)
 			}
 		})
 	}
