@@ -6,7 +6,11 @@ import java.lang.reflect.Method
  * Invocation callback for intercepted method calls.
  */
 fun interface HookInvocationCallback {
-    fun onInvoked(thisObject: Any?, args: List<Any?>)
+    /**
+     * @return true if the hook consumed/handled the invocation (skipping original execution),
+     *         false to proceed with original method invocation.
+     */
+    fun onInvoked(thisObject: Any?, args: List<Any?>): Boolean
 }
 
 /**

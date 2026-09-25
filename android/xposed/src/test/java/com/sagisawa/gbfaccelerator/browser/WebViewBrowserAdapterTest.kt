@@ -17,9 +17,26 @@ class WebViewBrowserAdapterTest {
             return true
         }
 
-        fun triggerHook(methodName: String, thisObject: Any? = null, args: List<Any?> = emptyList()) {
-            hookedMethods[methodName]?.onInvoked(thisObject, args)
+        fun triggerHook(methodName: String, thisObject: Any? = null, args: List<Any?> = emptyList()): Boolean {
+            return hookedMethods[methodName]?.onInvoked(thisObject, args) ?: false
         }
+    }
+
+    private class FakeSslErrorHandler {
+        var proceedCalled = false
+        var cancelCalled = false
+
+        fun proceed() {
+            proceedCalled = true
+        }
+
+        fun cancel() {
+            cancelCalled = true
+        }
+    }
+
+    private class FakeSslError(private val url: String) {
+        fun getUrl(): String = url
     }
 
     private class TestWebViewBrowserAdapter(
@@ -64,9 +81,10 @@ class WebViewBrowserAdapterTest {
     fun testInstallWebViewHooksRegistersExpectedMethods() {
         adapter.installWebViewHooks(mockRegistry)
 
+        assertNotNull("onReceivedSslError hook must be registered", mockRegistry.hookedMethods["onReceivedSslError"])
         assertNotNull("setWebViewClient hook must be registered", mockRegistry.hookedMethods["setWebViewClient"])
         assertNotNull("loadUrl hook must be registered", mockRegistry.hookedMethods["loadUrl"])
-        assertEquals(2, mockRegistry.hookedMethods.size)
+        assertEquals(3, mockRegistry.hookedMethods.size)
     }
 
     @Test
@@ -75,7 +93,7 @@ class WebViewBrowserAdapterTest {
         assertEquals(0, mockExecutor.callCount)
 
         // Simulate WebView triggering setWebViewClient
-        mockRegistry.triggerHook("setWebViewClient", thisObject = Any())
+        mockRegistry.triggerHook("setWebViewClient", thisObject = Any(), args = listOf(Any()))
 
         assertEquals("Proxy configuration should be triggered on first WebView interaction", 1, mockExecutor.callCount)
         assertTrue(configurator.isReady)
@@ -85,5 +103,44 @@ class WebViewBrowserAdapterTest {
 
         // Must remain idempotent (still 1)
         assertEquals("Subsequent WebView interactions must not re-trigger configuration", 1, mockExecutor.callCount)
+    }
+
+    @Test
+    fun testSslErrorAutoProceedsForGbfDomains() {
+        adapter.installWebViewHooks(mockRegistry)
+
+        val handler = FakeSslErrorHandler()
+        val error = FakeSslError("https://game.granbluefantasy.jp/#mypage")
+
+        val intercepted = adapter.handleSslError(listOf(null, handler, error))
+
+        assertTrue("GBF domains must be auto-approved to bypass untrusted cert error", intercepted)
+        assertTrue("handler.proceed() must be called", handler.proceedCalled)
+    }
+
+    @Test
+    fun testSslErrorAutoProceedsForAkamaiDomains() {
+        adapter.installWebViewHooks(mockRegistry)
+
+        val handler = FakeSslErrorHandler()
+        val error = FakeSslError("https://prd-game-a1-gbf.granbluefantasy.akamaized.net/assets/app.js")
+
+        val intercepted = adapter.handleSslError(listOf(null, handler, error))
+
+        assertTrue("Akamai static assets must be auto-approved", intercepted)
+        assertTrue("handler.proceed() must be called", handler.proceedCalled)
+    }
+
+    @Test
+    fun testSslErrorNotInterceptedForNonGbfDomains() {
+        adapter.installWebViewHooks(mockRegistry)
+
+        val handler = FakeSslErrorHandler()
+        val error = FakeSslError("https://example.com/untrusted")
+
+        val intercepted = adapter.handleSslError(listOf(null, handler, error))
+
+        org.junit.Assert.assertFalse("Non-GBF domains must not be auto-approved", intercepted)
+        org.junit.Assert.assertFalse("handler.proceed() must not be called", handler.proceedCalled)
     }
 }

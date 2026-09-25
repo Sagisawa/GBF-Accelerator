@@ -177,7 +177,6 @@ object CoreManager {
             val cmd = listOf(
                 coreBinary.absolutePath,
                 "-nogui",
-                "-direct-mode",
                 "-base-dir", baseDir.absolutePath,
                 "-proxy-port", PROXY_PORT.toString(),
                 "-control-port", CONTROL_PORT.toString(),

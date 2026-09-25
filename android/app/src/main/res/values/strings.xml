@@ -38,7 +38,7 @@
     <string name="cert_install_btn">安装证书 (系统对话框)</string>
     <string name="cert_export_btn">导出 ca.crt</string>
     <string name="cert_settings_btn">系统安全设置</string>
-    <string name="cert_instructions">说明：游戏静态素材 (Akamai CDN) 本地缓存与 HTTPS 代理需要信任此根证书。\nAndroid 11+ 若系统阻止直接安装，请点击【导出 ca.crt】，再前往【系统安全设置】 -> 【凭据存储 / 加密与凭据】 -> 【从存储设备安装证书】 -> 【CA 证书】中选择导出的文件。</string>
+    <string name="cert_instructions">说明：配合本工具处理后的 SkyLeap 无需手动安装证书，模块已实现对 GBF 域名的透明受信。\n若使用外部未经处理的第三方浏览器，可点击【导出 ca.crt】并在系统安全设置中手动导入。</string>
 
     <!-- Metrics & Logs -->
     <string name="section_metrics_title">运行指标与缓存监控</string>

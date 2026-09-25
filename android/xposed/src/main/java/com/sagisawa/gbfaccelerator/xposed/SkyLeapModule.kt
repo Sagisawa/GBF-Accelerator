@@ -30,8 +30,12 @@ class SkyLeapModule : XposedModule() {
                 hook(method).intercept { chain: XposedInterface.Chain ->
                     val thisObj = chain.thisObject
                     val args: List<Any?> = chain.args
-                    callback.onInvoked(thisObj, args)
-                    chain.proceed()
+                    val handled = callback.onInvoked(thisObj, args)
+                    if (!handled) {
+                        chain.proceed()
+                    } else {
+                        null
+                    }
                 }
                 true
             } catch (e: Throwable) {
