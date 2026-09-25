@@ -11,12 +11,78 @@ import (
 )
 
 type ApkPackageInfo struct {
-	IsSplit       bool
-	BaseApkPath   string
-	SplitApkPaths []string
-	PackageName   string
-	VersionName   string
-	TotalApks     int
+	IsSplit           bool     `json:"is_split"`
+	BaseApkPath       string   `json:"base_apk_path"`
+	SplitApkPaths     []string `json:"split_apk_paths"`
+	PackageName       string   `json:"package_name"`
+	VersionName       string   `json:"version_name"`
+	TotalApks         int      `json:"total_apks"`
+	IsSystemWebView   bool     `json:"is_system_webview"`
+	EngineDesc        string   `json:"engine_desc"`
+	UnsupportedReason string   `json:"unsupported_reason,omitempty"`
+}
+
+var standaloneEngines = []struct {
+	pattern string
+	engine  string
+}{
+	{"libmonochrome", "Chromium (Monochrome)"},
+	{"libchrome.so", "Chromium"},
+	{"libkiwi.so", "Chromium (Kiwi)"},
+	{"libbrave.so", "Chromium (Brave)"},
+	{"libmsedge.so", "Chromium (Edge)"},
+	{"libedge.so", "Chromium (Edge)"},
+	{"libxul.so", "Gecko (Firefox)"},
+	{"libgeckoview.so", "Gecko (Firefox)"},
+}
+
+var standalonePackages = map[string]string{
+	"com.android.chrome":           "Google Chrome",
+	"com.chrome.beta":              "Chrome Beta",
+	"com.chrome.dev":               "Chrome Dev",
+	"com.chrome.canary":            "Chrome Canary",
+	"com.kiwibrowser.browser":      "Kiwi Browser",
+	"com.brave.browser":            "Brave Browser",
+	"com.microsoft.emmx":           "Microsoft Edge",
+	"com.sec.android.app.sbrowser": "三星浏览器 (Samsung Internet)",
+	"org.mozilla.firefox":          "Firefox 火狐浏览器",
+	"org.mozilla.fenix":            "Firefox Fenix",
+	"org.mozilla.focus":            "Firefox Focus",
+	"org.torproject.torbrowser":    "Tor Browser",
+	"com.opera.browser":            "Opera 浏览器",
+	"com.opera.mini.native":        "Opera Mini",
+	"com.opera.touch":              "Opera Touch",
+	"com.opera.gx":                 "Opera GX",
+	"com.yandex.browser":           "Yandex 浏览器",
+}
+
+// CheckIsSystemWebView inspects the given APK paths and package name to verify if it is an Android System WebView browser.
+func CheckIsSystemWebView(apkPaths []string, pkgName string) (isWebView bool, engineDesc string, unsupportedReason string) {
+	if brand, ok := standalonePackages[pkgName]; ok {
+		return false, fmt.Sprintf("独立浏览器内核 (%s · 暂不支持)", brand), fmt.Sprintf("检测到 %s 采用独立浏览器内核，暂不支持。GBF 补丁仅支持基于 Android 系统原生 WebView 的浏览器（如 SkyLeap、Via 等）。", brand)
+	}
+
+	for _, apk := range apkPaths {
+		zr, err := zip.OpenReader(apk)
+		if err != nil {
+			continue
+		}
+		for _, f := range zr.File {
+			nameLower := strings.ToLower(f.Name)
+			for _, eng := range standaloneEngines {
+				if strings.Contains(nameLower, eng.pattern) {
+					_ = zr.Close()
+					return false, fmt.Sprintf("独立浏览器内核 (%s · 暂不支持)", eng.engine), fmt.Sprintf("检测到安装包内包含独立浏览器引擎 (%s: %s)，暂不支持。GBF 补丁仅支持基于 Android 系统原生 WebView 的浏览器（如 SkyLeap、Via 等）。", eng.engine, filepath.Base(f.Name))
+				}
+			}
+		}
+		_ = zr.Close()
+	}
+
+	if pkgName == "com.dena.skyleap" {
+		return true, "Android 系统原生 WebView (SkyLeap 官方认证 · 支持)", ""
+	}
+	return true, "Android 系统原生 WebView (支持)", ""
 }
 
 var (
@@ -59,13 +125,18 @@ func inspectSingleApk(apkPath string) (*ApkPackageInfo, error) {
 		return nil, fmt.Errorf("failed to parse APK %s: %w", filepath.Base(apkPath), err)
 	}
 
+	isWebView, engineDesc, unsuppReason := CheckIsSystemWebView([]string{apkPath}, pkg)
+
 	return &ApkPackageInfo{
-		IsSplit:       false,
-		BaseApkPath:   apkPath,
-		SplitApkPaths: nil,
-		PackageName:   pkg,
-		VersionName:   ver,
-		TotalApks:     1,
+		IsSplit:           false,
+		BaseApkPath:       apkPath,
+		SplitApkPaths:     nil,
+		PackageName:       pkg,
+		VersionName:       ver,
+		TotalApks:         1,
+		IsSystemWebView:   isWebView,
+		EngineDesc:        engineDesc,
+		UnsupportedReason: unsuppReason,
 	}, nil
 }
 
@@ -123,13 +194,19 @@ func inspectDirectory(dirPath string) (*ApkPackageInfo, error) {
 		splitApks = apkFiles[1:]
 	}
 
+	allApks := append([]string{baseApk}, splitApks...)
+	isWebView, engineDesc, unsuppReason := CheckIsSystemWebView(allApks, foundPackage)
+
 	return &ApkPackageInfo{
-		IsSplit:       true,
-		BaseApkPath:   baseApk,
-		SplitApkPaths: splitApks,
-		PackageName:   foundPackage,
-		VersionName:   foundVersion,
-		TotalApks:     len(apkFiles),
+		IsSplit:           true,
+		BaseApkPath:       baseApk,
+		SplitApkPaths:     splitApks,
+		PackageName:       foundPackage,
+		VersionName:       foundVersion,
+		TotalApks:         len(apkFiles),
+		IsSystemWebView:   isWebView,
+		EngineDesc:        engineDesc,
+		UnsupportedReason: unsuppReason,
 	}, nil
 }
 

@@ -315,7 +315,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     try {
       const result = await extractDeviceApp(selectedDevice, pkg)
       setInspectedPkg(result)
-      showToast(`提取成功！${appLabel} 版本 ${result.version_name || '已就绪'} (${result.total_apks} 个分包已就绪)`, 'success')
+      if (result.is_system_webview === false) {
+        showToast(`提取完成，但检测到该应用为独立内核浏览器 (${result.engine_desc || '非系统 WebView'})，GBF 补丁暂不支持`, 'error')
+      } else {
+        showToast(`提取成功！${appLabel} 版本 ${result.version_name || '已就绪'} (${result.total_apks} 个分包已就绪)`, 'success')
+      }
     } catch (e: any) {
       showToast(`从手机提取失败: ${e.message}`, 'error')
     } finally {
@@ -467,7 +471,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         setUploadPercent(percent)
       })
       setInspectedPkg(result)
-      showToast(`解析成功: ${result.package_name} (v${result.version_name})`, 'success')
+      if (result.is_system_webview === false) {
+        showToast(`检测到该安装包为独立内核浏览器 (${result.engine_desc || '非系统 WebView'})，GBF 补丁暂不支持`, 'error')
+      } else {
+        showToast(`解析成功: ${result.package_name} (v${result.version_name})`, 'success')
+      }
     } catch (e: any) {
       showToast(`上传解析失败: ${e.message}`, 'error')
     } finally {
@@ -486,7 +494,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     try {
       const result = await inspectAndroidPackage(path)
       setInspectedPkg(result)
-      showToast(`解析成功: ${result.package_name} (v${result.version_name})`, 'success')
+      if (result.is_system_webview === false) {
+        showToast(`检测到该安装包为独立内核浏览器 (${result.engine_desc || '非系统 WebView'})，GBF 补丁暂不支持`, 'error')
+      } else {
+        showToast(`解析成功: ${result.package_name} (v${result.version_name})`, 'success')
+      }
     } catch (e: any) {
       showToast(`解析失败: ${e.message}`, 'error')
     } finally {
@@ -497,6 +509,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const handleStartPatch = async () => {
     if (!inspectedPkg) {
       showToast('请先选择或拖入要处理的安装包', 'error')
+      return
+    }
+
+    if (inspectedPkg.is_system_webview === false) {
+      showToast(inspectedPkg.unsupported_reason || '不支持该浏览器内核，GBF 补丁仅支持系统 WebView 浏览器', 'error')
       return
     }
 
@@ -941,11 +958,20 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     >
                       {deviceBrowsers.length > 0 ? (
                         <>
-                          {deviceBrowsers.some(b => b.is_installed) && (
-                            <optgroup label="📱 手机已安装的浏览器与应用 (自动探测)">
-                              {deviceBrowsers.filter(b => b.is_installed).map(b => (
+                          {deviceBrowsers.some(b => b.is_installed && b.is_system_webview !== false) && (
+                            <optgroup label="✅ 手机已安装的系统 WebView 浏览器 (支持加速)">
+                              {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview !== false).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
                                   {b.is_skyleap ? '⭐ ' : '🌐 '}{b.label}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {deviceBrowsers.some(b => b.is_installed && b.is_system_webview === false) && (
+                            <optgroup label="⚠️ 手机已安装的独立内核浏览器 (暂不支持)">
+                              {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview === false).map(b => (
+                                <option key={b.package_name} value={b.package_name}>
+                                  🚫 {b.label}
                                 </option>
                               ))}
                             </optgroup>
@@ -954,7 +980,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             <optgroup label="🌐 其它常见浏览器 (未检测到安装)">
                               {deviceBrowsers.filter(b => !b.is_installed).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
-                                  {b.label}
+                                  {b.is_system_webview !== false ? '🌐 ' : '🚫 '}{b.label}
                                 </option>
                               ))}
                             </optgroup>
@@ -962,14 +988,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                         </>
                       ) : (
                         <>
-                          <option value="com.dena.skyleap">DeNA SkyLeap (官方推荐 · com.dena.skyleap)</option>
-                          <option value="com.android.chrome">Google Chrome (com.android.chrome)</option>
-                          <option value="com.microsoft.emmx">Microsoft Edge (com.microsoft.emmx)</option>
-                          <option value="mark.via.gp">Via 浏览器 (mark.via.gp)</option>
-                          <option value="com.quark.browser">夸克浏览器 (com.quark.browser)</option>
-                          <option value="com.sec.android.app.sbrowser">三星浏览器 (com.sec.android.app.sbrowser)</option>
-                          <option value="com.brave.browser">Brave (com.brave.browser)</option>
-                          <option value="com.kiwibrowser.browser">Kiwi Browser (com.kiwibrowser.browser)</option>
+                          <option value="com.dena.skyleap">⭐ DeNA SkyLeap (官方推荐 · 系统 WebView)</option>
+                          <option value="mark.via.gp">🌐 Via 浏览器 (系统 WebView · 支持)</option>
+                          <option value="com.android.chrome">🚫 Google Chrome (独立 Chromium · 暂不支持)</option>
+                          <option value="com.kiwibrowser.browser">🚫 Kiwi Browser (独立 Chromium · 暂不支持)</option>
+                          <option value="com.microsoft.emmx">🚫 Microsoft Edge (独立 Chromium · 暂不支持)</option>
+                          <option value="com.brave.browser">🚫 Brave (独立 Chromium · 暂不支持)</option>
                         </>
                       )}
                       <option value="__custom__">✍️ 自定义指定其它包名...</option>
@@ -984,6 +1008,21 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                       />
                     )}
                   </div>
+                  {(() => {
+                    const sel = deviceBrowsers.find(b => b.package_name === targetExtractPackage)
+                    if (sel && sel.is_system_webview === false) {
+                      return (
+                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-xs text-amber-900 flex items-start gap-2 mt-1">
+                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                          <div className="text-[11px] leading-relaxed">
+                            <strong>暂不支持该浏览器：</strong>
+                            <span>{sel.label} 采用独立 Chromium / Gecko 内核。GBF 补丁专为基于 Android 系统原生 WebView 的浏览器设计（优先推荐 SkyLeap 或 Via）。</span>
+                          </div>
+                        </div>
+                      )
+                    }
+                    return null
+                  })()}
                 </div>
 
                 {deviceApp?.installed ? (
@@ -1125,15 +1164,20 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-200/80 text-slate-700">
                     v{inspectedPkg.version_name}
                   </span>
-                  {inspectedPkg.is_official_skyleap ? (
+                  {inspectedPkg.is_system_webview === false ? (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200 inline-flex items-center gap-1">
+                      <AlertTriangle className="w-3 h-3 text-rose-600" />
+                      <span>{inspectedPkg.engine_desc || '独立内核 · 暂不支持'}</span>
+                    </span>
+                  ) : inspectedPkg.is_official_skyleap ? (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      <span>官方 SkyLeap 认证</span>
+                      <span>官方 SkyLeap 认证 (系统 WebView)</span>
                     </span>
                   ) : (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200 inline-flex items-center gap-1">
                       <Globe className="w-3 h-3 text-sky-600" />
-                      <span>通用系统 WebView 浏览器</span>
+                      <span>通用系统 WebView 浏览器 (支持)</span>
                     </span>
                   )}
                 </div>
@@ -1160,15 +1204,26 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             </div>
 
             {/* Package Coexistence & Signature Note */}
-            <div className="bg-slate-50/80 p-3 rounded-lg border border-slate-200 text-xs text-slate-600 space-y-1">
-              <div className="font-semibold text-slate-700 flex items-center gap-1.5">
-                <span>💡 原版共存提示：</span>
+            {inspectedPkg.is_system_webview === false ? (
+              <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-900 flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-bold">❌ 暂不支持该浏览器内核</div>
+                  <div className="text-rose-800 text-[11px] leading-relaxed">
+                    {inspectedPkg.unsupported_reason || '检测到该安装包为独立 Chromium/Gecko 内核浏览器（如 Chrome、Kiwi 等）。GBF 补丁仅支持基于 Android 系统原生 WebView 的浏览器（如官方 SkyLeap、Via 等）。暂不支持为独立内核浏览器注入补丁。'}
+                  </div>
+                </div>
               </div>
-              <p className="text-[11px] text-slate-500 leading-relaxed">
-                为确保浏览器底层组件与 Provider 正常运作，补丁将完整保留原始包名。由于补丁版与官方原版签名不同，直接覆盖安装需卸载原版。如需两者同时在手机上并存，<strong>推荐使用手机系统自带的「应用双开 / 应用分身」功能</strong>，或直接为系统内其他通用浏览器打补丁。
-              </p>
-            </div>
-
+            ) : (
+              <div className="bg-slate-50/80 p-3 rounded-lg border border-slate-200 text-xs text-slate-600 space-y-1">
+                <div className="font-semibold text-slate-700 flex items-center gap-1.5">
+                  <span>💡 原版共存提示：</span>
+                </div>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  为确保浏览器底层组件与 Provider 正常运作，补丁将完整保留原始包名。由于补丁版与官方原版签名不同，直接覆盖安装需卸载原版。如需两者同时在手机上并存，<strong>推荐使用手机系统自带的「应用双开 / 应用分身」功能</strong>，或直接为系统内其他通用浏览器打补丁。
+                </p>
+              </div>
+            )}
 
             {/* Auto Backup Setting */}
             <div className="bg-white/80 p-3 rounded-lg border border-slate-200 flex items-center justify-between">
@@ -1213,9 +1268,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 {isCorrupted ? '组件损坏，需重新下载' : '需先下载并启用组件'}
               </span>
             )}
+            {inspectedPkg?.is_system_webview === false && (
+              <span className="text-[11px] text-rose-600 font-medium">
+                仅支持系统 WebView 浏览器
+              </span>
+            )}
             <button
               type="button"
-              disabled={!isReady || !isComponentsVerified || !inspectedPkg || isRunning || isPatchStarting}
+              disabled={!isReady || !isComponentsVerified || !inspectedPkg || inspectedPkg.is_system_webview === false || isRunning || isPatchStarting}
               onClick={handleStartPatch}
               className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
             >

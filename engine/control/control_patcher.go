@@ -252,6 +252,9 @@ func (c *ControlServer) handleAndroidInspect(w http.ResponseWriter, req *http.Re
 		"is_split":                pkg.IsSplit,
 		"total_apks":              pkg.TotalApks,
 		"is_official_skyleap":     isOfficialSkyLeap,
+		"is_system_webview":       pkg.IsSystemWebView,
+		"engine_desc":             pkg.EngineDesc,
+		"unsupported_reason":      pkg.UnsupportedReason,
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})
 }
@@ -326,6 +329,9 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 		"is_split":                pkg.IsSplit,
 		"total_apks":              pkg.TotalApks,
 		"is_official_skyleap":     isOfficialSkyLeap,
+		"is_system_webview":       pkg.IsSystemWebView,
+		"engine_desc":             pkg.EngineDesc,
+		"unsupported_reason":      pkg.UnsupportedReason,
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})
 }
@@ -390,6 +396,21 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 	absOutputDir, err := filepath.Abs(outputDir)
 	if err == nil {
 		outputDir = absOutputDir
+	}
+
+	// Validate target package is a supported System WebView browser
+	inspectWorkDir, err := os.MkdirTemp("", "gbf_patch_precheck_*")
+	if err == nil {
+		defer os.RemoveAll(inspectWorkDir)
+		if pkg, pErr := patcher.InspectInput(targetPath, inspectWorkDir); pErr == nil {
+			if !pkg.IsSystemWebView {
+				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"ok":    false,
+					"error": pkg.UnsupportedReason,
+				})
+				return
+			}
+		}
 	}
 
 	c.androidPatchMu.Lock()
@@ -826,6 +847,9 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 		"is_split":                pkg.IsSplit,
 		"total_apks":              pkg.TotalApks,
 		"is_official_skyleap":     (pkg.PackageName == "com.dena.skyleap"),
+		"is_system_webview":       pkg.IsSystemWebView,
+		"engine_desc":             pkg.EngineDesc,
+		"unsupported_reason":      pkg.UnsupportedReason,
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
 	})
 }

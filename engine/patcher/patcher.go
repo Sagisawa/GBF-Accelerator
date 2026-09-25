@@ -138,6 +138,11 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		p.logf("      - Structure: Single Standalone APK\n")
 	}
 
+	if !pkgInfo.IsSystemWebView {
+		p.logf("      [!] Error: %s\n", pkgInfo.UnsupportedReason)
+		return nil, fmt.Errorf("不支持该浏览器内核: %s", pkgInfo.UnsupportedReason)
+	}
+
 	if pkgLabel != "com.dena.skyleap" {
 		p.logf("      [!] Warning: Detected package %q differs from official SkyLeap (com.dena.skyleap).\n", pkgLabel)
 	} else {

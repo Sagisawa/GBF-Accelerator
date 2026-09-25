@@ -594,3 +594,90 @@ func TestInputRemainsUnmodified(t *testing.T) {
 		t.Errorf("input file was modified during processing!")
 	}
 }
+
+func TestCheckIsSystemWebView(t *testing.T) {
+	// 1. SkyLeap package
+	isWebView, _, unsupp := CheckIsSystemWebView(nil, "com.dena.skyleap")
+	if !isWebView || unsupp != "" {
+		t.Errorf("expected SkyLeap to be identified as system webview, got %v (%s)", isWebView, unsupp)
+	}
+
+	// 2. Via browser package
+	isWebView, _, unsupp = CheckIsSystemWebView(nil, "mark.via.gp")
+	if !isWebView || unsupp != "" {
+		t.Errorf("expected Via to be identified as system webview, got %v (%s)", isWebView, unsupp)
+	}
+
+	// 3. Known standalone Chrome package
+	isWebView, _, _ = CheckIsSystemWebView(nil, "com.android.chrome")
+	if isWebView {
+		t.Errorf("expected Chrome to be identified as standalone non-webview")
+	}
+
+	// 4. Known standalone Kiwi package
+	isWebView, _, _ = CheckIsSystemWebView(nil, "com.kiwibrowser.browser")
+	if isWebView {
+		t.Errorf("expected Kiwi to be identified as standalone non-webview")
+	}
+
+	// 5. APK with embedded libmonochrome.so
+	tempDir := t.TempDir()
+	chromeApk := filepath.Join(tempDir, "fake_chrome.apk")
+	f, err := os.Create(chromeApk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("lib/arm64-v8a/libmonochrome.so")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.Write([]byte("fake monochrome binary"))
+	_ = zw.Close()
+	_ = f.Close()
+
+	isWebView, _, unsupp = CheckIsSystemWebView([]string{chromeApk}, "com.custom.browser")
+	if isWebView {
+		t.Errorf("expected APK containing libmonochrome.so to be rejected as non-webview")
+	}
+
+	// 6. APK with embedded libxul.so (Firefox Gecko)
+	firefoxApk := filepath.Join(tempDir, "fake_firefox.apk")
+	ff, err := os.Create(firefoxApk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fzw := zip.NewWriter(ff)
+	fw, err := fzw.Create("lib/arm64-v8a/libxul.so")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fw.Write([]byte("fake xul binary"))
+	_ = fzw.Close()
+	_ = ff.Close()
+
+	isWebView, _, unsupp = CheckIsSystemWebView([]string{firefoxApk}, "org.custom.browser")
+	if isWebView {
+		t.Errorf("expected APK containing libxul.so to be rejected as non-webview")
+	}
+
+	// 7. Clean APK with standard resources
+	cleanApk := filepath.Join(tempDir, "clean_app.apk")
+	cf, err := os.Create(cleanApk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	czw := zip.NewWriter(cf)
+	cw, err := czw.Create("classes.dex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = cw.Write([]byte("fake dex"))
+	_ = czw.Close()
+	_ = cf.Close()
+
+	isWebView, _, unsupp = CheckIsSystemWebView([]string{cleanApk}, "com.custom.clean.browser")
+	if !isWebView || unsupp != "" {
+		t.Errorf("expected clean app to be identified as system webview, got %v (%s)", isWebView, unsupp)
+	}
+}

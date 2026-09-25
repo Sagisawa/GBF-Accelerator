@@ -253,36 +253,44 @@ func GetDeviceApp(adbPath, serial, packageName string) (*DeviceAppInfo, error) {
 }
 
 type InstalledBrowserApp struct {
-	PackageName string `json:"package_name"`
-	Label       string `json:"label"`
-	IsInstalled bool   `json:"is_installed"`
-	IsSkyLeap   bool   `json:"is_skyleap"`
+	PackageName     string `json:"package_name"`
+	Label           string `json:"label"`
+	IsInstalled     bool   `json:"is_installed"`
+	IsSkyLeap       bool   `json:"is_skyleap"`
+	IsSystemWebView bool   `json:"is_system_webview"`
+	EngineDesc      string `json:"engine_desc"`
 }
 
-var knownBrowserCatalog = []struct {
-	pkg   string
-	label string
-}{
-	{"com.dena.skyleap", "DeNA SkyLeap (官方推荐)"},
-	{"com.android.chrome", "Google Chrome"},
-	{"com.microsoft.emmx", "Microsoft Edge"},
-	{"mark.via.gp", "Via 浏览器"},
-	{"mark.via", "Via 浏览器"},
-	{"com.quark.browser", "夸克浏览器"},
-	{"com.sec.android.app.sbrowser", "三星浏览器"},
-	{"com.brave.browser", "Brave 浏览器"},
-	{"com.kiwibrowser.browser", "Kiwi Browser"},
-	{"org.mozilla.firefox", "Firefox 火狐浏览器"},
-	{"com.opera.browser", "Opera 浏览器"},
-	{"com.opera.mini.native", "Opera Mini"},
-	{"com.heytap.browser", "OPPO/OnePlus 系统浏览器"},
-	{"com.mi.globalbrowser", "小米系统浏览器"},
-	{"com.android.browser", "Android 原生浏览器"},
-	{"com.vivo.browser", "vivo 系统浏览器"},
-	{"com.huawei.browser", "华为系统浏览器"},
-	{"com.ucmobile", "UC 浏览器"},
-	{"com.UCMobile", "UC 浏览器"},
-	{"com.baidu.searchbox", "百度 App / 浏览器"},
+type knownBrowserDef struct {
+	pkg             string
+	label           string
+	isSystemWebView bool
+	engineDesc      string
+}
+
+var knownBrowserCatalog = []knownBrowserDef{
+	{"com.dena.skyleap", "DeNA SkyLeap", true, "系统 WebView · 官方推荐"},
+	{"mark.via.gp", "Via 浏览器", true, "系统 WebView · 支持"},
+	{"mark.via", "Via 浏览器", true, "系统 WebView · 支持"},
+	{"com.xbrowser.play", "X 浏览器", true, "系统 WebView · 支持"},
+	{"com.mb.browser", "X 浏览器", true, "系统 WebView · 支持"},
+	{"com.android.browser", "Android 原生浏览器", true, "系统 WebView · 支持"},
+	{"acr.browser.lightning", "Lightning 浏览器", true, "系统 WebView · 支持"},
+	{"com.android.chrome", "Google Chrome", false, "独立 Chromium · 暂不支持"},
+	{"com.kiwibrowser.browser", "Kiwi Browser", false, "独立 Chromium · 暂不支持"},
+	{"com.microsoft.emmx", "Microsoft Edge", false, "独立 Chromium · 暂不支持"},
+	{"com.brave.browser", "Brave 浏览器", false, "独立 Chromium · 暂不支持"},
+	{"com.sec.android.app.sbrowser", "三星浏览器", false, "独立 Chromium · 暂不支持"},
+	{"org.mozilla.firefox", "Firefox 火狐浏览器", false, "独立 Gecko · 暂不支持"},
+	{"com.opera.browser", "Opera 浏览器", false, "独立 Chromium · 暂不支持"},
+	{"com.quark.browser", "夸克浏览器", false, "独立内核 · 暂不支持"},
+	{"com.ucmobile", "UC 浏览器", false, "独立 U4 内核 · 暂不支持"},
+	{"com.UCMobile", "UC 浏览器", false, "独立 U4 内核 · 暂不支持"},
+	{"com.baidu.searchbox", "百度 App / 浏览器", false, "独立内核 · 暂不支持"},
+	{"com.heytap.browser", "OPPO/OnePlus 系统浏览器", true, "系统 WebView · 支持"},
+	{"com.mi.globalbrowser", "小米系统浏览器", true, "系统 WebView · 支持"},
+	{"com.vivo.browser", "vivo 系统浏览器", true, "系统 WebView · 支持"},
+	{"com.huawei.browser", "华为系统浏览器", true, "系统 WebView · 支持"},
 }
 
 // ListDeviceBrowsers discovers all browser and SkyLeap packages on the target device.
@@ -317,10 +325,12 @@ func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 	// 1. SkyLeap or SkyLeap clones on the device
 	if installedMap["com.dena.skyleap"] {
 		results = append(results, InstalledBrowserApp{
-			PackageName: "com.dena.skyleap",
-			Label:       "DeNA SkyLeap (官方推荐 · 已安装)",
-			IsInstalled: true,
-			IsSkyLeap:   true,
+			PackageName:     "com.dena.skyleap",
+			Label:           "DeNA SkyLeap (官方推荐 · 系统 WebView · 已安装)",
+			IsInstalled:     true,
+			IsSkyLeap:       true,
+			IsSystemWebView: true,
+			EngineDesc:      "系统 WebView · 官方推荐",
 		})
 		seen["com.dena.skyleap"] = true
 	}
@@ -328,10 +338,12 @@ func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 	for _, pkg := range deviceInstalledPkgs {
 		if strings.Contains(strings.ToLower(pkg), "skyleap") && !seen[pkg] {
 			results = append(results, InstalledBrowserApp{
-				PackageName: pkg,
-				Label:       fmt.Sprintf("SkyLeap (%s · 已安装)", pkg),
-				IsInstalled: true,
-				IsSkyLeap:   true,
+				PackageName:     pkg,
+				Label:           fmt.Sprintf("SkyLeap (%s · 系统 WebView · 已安装)", pkg),
+				IsInstalled:     true,
+				IsSkyLeap:       true,
+				IsSystemWebView: true,
+				EngineDesc:      "系统 WebView",
 			})
 			seen[pkg] = true
 		}
@@ -340,11 +352,17 @@ func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 	// 2. Known browsers installed on the device
 	for _, def := range knownBrowserCatalog {
 		if installedMap[def.pkg] && !seen[def.pkg] {
+			statusTag := "系统 WebView · 已安装"
+			if !def.isSystemWebView {
+				statusTag = "独立内核暂不支持 · 已安装"
+			}
 			results = append(results, InstalledBrowserApp{
-				PackageName: def.pkg,
-				Label:       fmt.Sprintf("%s (%s · 已安装)", def.label, def.pkg),
-				IsInstalled: true,
-				IsSkyLeap:   false,
+				PackageName:     def.pkg,
+				Label:           fmt.Sprintf("%s (%s · %s)", def.label, def.pkg, statusTag),
+				IsInstalled:     true,
+				IsSkyLeap:       def.pkg == "com.dena.skyleap",
+				IsSystemWebView: def.isSystemWebView,
+				EngineDesc:      def.engineDesc,
 			})
 			seen[def.pkg] = true
 		}
@@ -354,11 +372,18 @@ func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 	for _, pkg := range deviceInstalledPkgs {
 		pLower := strings.ToLower(pkg)
 		if strings.Contains(pLower, "browser") && !seen[pkg] {
+			isWebView, engineDesc, _ := CheckIsSystemWebView(nil, pkg)
+			statusTag := "已安装"
+			if !isWebView {
+				statusTag = "独立内核暂不支持 · 已安装"
+			}
 			results = append(results, InstalledBrowserApp{
-				PackageName: pkg,
-				Label:       fmt.Sprintf("浏览器应用 (%s · 已安装)", pkg),
-				IsInstalled: true,
-				IsSkyLeap:   false,
+				PackageName:     pkg,
+				Label:           fmt.Sprintf("浏览器应用 (%s · %s)", pkg, statusTag),
+				IsInstalled:     true,
+				IsSkyLeap:       false,
+				IsSystemWebView: isWebView,
+				EngineDesc:      engineDesc,
 			})
 			seen[pkg] = true
 		}
@@ -367,11 +392,17 @@ func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 	// 4. Other common browsers that are NOT installed on device
 	for _, def := range knownBrowserCatalog {
 		if !seen[def.pkg] {
+			statusTag := "未安装"
+			if !def.isSystemWebView {
+				statusTag = "独立内核暂不支持 · 未安装"
+			}
 			results = append(results, InstalledBrowserApp{
-				PackageName: def.pkg,
-				Label:       fmt.Sprintf("%s (%s · 未安装)", def.label, def.pkg),
-				IsInstalled: false,
-				IsSkyLeap:   def.pkg == "com.dena.skyleap",
+				PackageName:     def.pkg,
+				Label:           fmt.Sprintf("%s (%s · %s)", def.label, def.pkg, statusTag),
+				IsInstalled:     false,
+				IsSkyLeap:       def.pkg == "com.dena.skyleap",
+				IsSystemWebView: def.isSystemWebView,
+				EngineDesc:      def.engineDesc,
 			})
 			seen[def.pkg] = true
 		}

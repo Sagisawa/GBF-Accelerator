@@ -219,6 +219,9 @@ export interface AndroidPackageInspection {
   is_split: boolean;
   total_apks: number;
   is_official_skyleap: boolean;
+  is_system_webview?: boolean;
+  engine_desc?: string;
+  unsupported_reason?: string;
   suggested_clone_package?: string;
   error?: string;
 }
@@ -298,6 +301,8 @@ export interface DeviceBrowserItem {
   label: string;
   is_installed: boolean;
   is_skyleap: boolean;
+  is_system_webview?: boolean;
+  engine_desc?: string;
 }
 
 export interface AdbListBrowsersResponse {
