@@ -176,10 +176,19 @@ func (p *Patcher) Run() (*BundleResult, error) {
 			}
 			backupFileName := fmt.Sprintf("%s_v%s_%s_original%s", safePkg, safeVer, ts, origExt)
 			destBackup := filepath.Join(backupDir, backupFileName)
-			if fi, statErr := os.Stat(p.opts.InputPath); statErr == nil && !fi.IsDir() {
-				if copyErr := copyFile(p.opts.InputPath, destBackup); copyErr == nil {
-					backupPath = destBackup
-					p.logf("      [+] Original package backed up to: %s\n", backupPath)
+			if fi, statErr := os.Stat(p.opts.InputPath); statErr == nil {
+				if !fi.IsDir() {
+					if copyErr := copyFile(p.opts.InputPath, destBackup); copyErr == nil {
+						backupPath = destBackup
+						p.logf("      [+] Original package backed up to: %s\n", backupPath)
+					}
+				} else {
+					destBackup = strings.TrimSuffix(destBackup, filepath.Ext(destBackup)) + ".apks"
+					allSplits := append([]string{pkgInfo.BaseApkPath}, pkgInfo.SplitApkPaths...)
+					if err := createApksArchive(allSplits, destBackup); err == nil {
+						backupPath = destBackup
+						p.logf("      [+] Original split packages backed up to: %s\n", backupPath)
+					}
 				}
 			}
 		}
