@@ -366,6 +366,11 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 		"-m", cfg.ModuleApkPath,
 		"-o", outputDir,
 		"-f", // force overwrite
+		"--target-sdk", "28",
+	}
+
+	if cfg.NewPackageName != "" {
+		args = append(args, "-pkg", cfg.NewPackageName)
 	}
 
 	if cfg.AppLabel != "" {
