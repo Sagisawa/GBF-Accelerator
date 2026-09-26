@@ -39,18 +39,152 @@ type prefetchItem struct {
 	path string
 }
 
+const (
+	defaultDeadFilterCap = 1024
+	defaultDeadFilterTTL = 30 * time.Minute
+)
+
+type deadKey struct {
+	host string
+	path string
+}
+
+type deadNode struct {
+	key       deadKey
+	expiresAt time.Time
+	prev      *deadNode
+	next      *deadNode
+}
+
+// prefetchDeadFilter records assets that returned 404 or 410 on recent background prefetch
+// attempts. It operates exclusively in the prefetch pipeline (never touched by foreground
+// requests), using an in-memory LRU doubly-linked list with capacity bounding and TTL to keep
+// memory strictly bounded within approximately 100~150 KB.
+type prefetchDeadFilter struct {
+	mu       sync.RWMutex
+	capacity int
+	ttl      time.Duration
+	items    map[deadKey]*deadNode
+	head     *deadNode // dummy sentinel head
+	tail     *deadNode // dummy sentinel tail
+}
+
+func newPrefetchDeadFilter(capacity int, ttl time.Duration) *prefetchDeadFilter {
+	if capacity <= 0 {
+		capacity = defaultDeadFilterCap
+	}
+	if ttl <= 0 {
+		ttl = defaultDeadFilterTTL
+	}
+	head := &deadNode{}
+	tail := &deadNode{}
+	head.next = tail
+	tail.prev = head
+
+	return &prefetchDeadFilter{
+		capacity: capacity,
+		ttl:      ttl,
+		items:    make(map[deadKey]*deadNode, capacity),
+		head:     head,
+		tail:     tail,
+	}
+}
+
+func (f *prefetchDeadFilter) removeNode(n *deadNode) {
+	n.prev.next = n.next
+	n.next.prev = n.prev
+	n.prev = nil
+	n.next = nil
+}
+
+func (f *prefetchDeadFilter) pushFront(n *deadNode) {
+	n.next = f.head.next
+	n.prev = f.head
+	f.head.next.prev = n
+	f.head.next = n
+}
+
+func (f *prefetchDeadFilter) popTail() *deadNode {
+	if f.tail.prev == f.head {
+		return nil
+	}
+	n := f.tail.prev
+	f.removeNode(n)
+	return n
+}
+
+func (f *prefetchDeadFilter) Add(host, path string) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	k := deadKey{host: host, path: path}
+	now := time.Now()
+	exp := now.Add(f.ttl)
+
+	if node, exists := f.items[k]; exists {
+		node.expiresAt = exp
+		f.removeNode(node)
+		f.pushFront(node)
+		return
+	}
+
+	if len(f.items) >= f.capacity {
+		if old := f.popTail(); old != nil {
+			delete(f.items, old.key)
+		}
+	}
+
+	node := &deadNode{
+		key:       k,
+		expiresAt: exp,
+	}
+	f.pushFront(node)
+	f.items[k] = node
+}
+
+func (f *prefetchDeadFilter) IsDead(host, path string) bool {
+	if f == nil {
+		return false
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+
+	k := deadKey{host: host, path: path}
+	node, exists := f.items[k]
+	if !exists {
+		return false
+	}
+	if time.Now().After(node.expiresAt) {
+		return false
+	}
+	return true
+}
+
+func (f *prefetchDeadFilter) Len() int {
+	if f == nil {
+		return 0
+	}
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return len(f.items)
+}
+
 type PrefetchEngine struct {
-	srv           *ProxyServer
-	discoveryCh   chan prefetchCandidate
-	prio1Queue    chan prefetchItem // High: JS / JSON
-	prio2Queue    chan prefetchItem // Medium: Images / Textures
-	prio3Queue    chan prefetchItem // Low: Audio / Other
+	srv               *ProxyServer
+	discoveryCh       chan prefetchCandidate
+	prio1Queue        chan prefetchItem // High: JS / JSON
+	prio2Queue        chan prefetchItem // Medium: Images / Textures
+	prio3Queue        chan prefetchItem // Low: Audio / Other
 	inflightMu        sync.Mutex
 	inflight          map[string]struct{}
 	discoverySeen     map[string]struct{}
 	discoverySeenPrev map[string]struct{}
 	stopChan          chan struct{}
 	stopOnce          sync.Once
+	deadFilter        *prefetchDeadFilter
 }
 
 func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
@@ -64,6 +198,7 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 		discoverySeen:     make(map[string]struct{}),
 		discoverySeenPrev: make(map[string]struct{}),
 		stopChan:          make(chan struct{}),
+		deadFilter:        newPrefetchDeadFilter(defaultDeadFilterCap, defaultDeadFilterTTL),
 	}
 	go pe.discoveryWorker()
 	go pe.fetchWorker()
@@ -330,6 +465,10 @@ func (pe *PrefetchEngine) discoveryWorker() {
 				if pe.srv.cacheMgr.HasCacheWithNamespace(ns, p) {
 					continue
 				}
+				cleanP, _, _ := strings.Cut(p, "?")
+				if pe.deadFilter.IsDead(h, cleanP) {
+					continue
+				}
 				key := h + p
 				pe.inflightMu.Lock()
 				if _, ok := pe.inflight[key]; ok {
@@ -379,6 +518,9 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	}
 	ns, _ := NormalizeAssetNamespace(item.host)
 	cleanPath, _, _ := strings.Cut(item.path, "?")
+	if pe.deadFilter.IsDead(item.host, cleanPath) {
+		return
+	}
 	flightKey := ns + ":" + cleanPath
 
 	if pe.srv.cacheMgr.HasCacheWithNamespace(ns, cleanPath) {
@@ -423,6 +565,9 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 
 		resp, err := pe.srv.getAssetClient().Do(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone) {
+				pe.deadFilter.Add(item.host, cleanPath)
+			}
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
