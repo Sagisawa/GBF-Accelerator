@@ -152,8 +152,8 @@ certutil -A -n GBF-Accelerator -t C,C \
 | `upstream_proxy` | `auto` | 上游代理；`auto` 自动探测 7897/7890/8123/10808/10809；也可填 `http://127.0.0.1:7897` 等 |
 | `direct_mode` | `false` | 直连模式（仍使用本地缓存，但跳过上游代理） |
 | `cache_dir` | `auto` | 静态资源缓存目录 |
-| `asset_max_connections` | `100` | 静态素材连接池上限（HTTP/2 多路复用，无需调高） |
-| `asset_max_keepalive` | `40` | 静态素材 Keep-Alive 上限 |
+| `asset_max_connections` | `32` | 静态素材连接池上限（HTTP/2 多路复用，推荐保守水线 <= 32） |
+| `asset_max_keepalive` | `16` | 静态素材 Keep-Alive 上限（推荐保守水线 <= 16） |
 | `enable_prefetch` | `true` | 后台预加载缺失素材（与 Windows 版行为一致：平滑调度、避让前台） |
 | `enable_ram_cache` | `true` | 内存热缓存开关 |
 

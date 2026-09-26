@@ -206,6 +206,11 @@ func TestControlAndroidPatchStatus(t *testing.T) {
 func TestResolveAndroidPatchOutputDir(t *testing.T) {
 	baseDir := filepath.Join(t.TempDir(), "Application Support", "GBF-Accelerator")
 
+	absCustomPath, err := filepath.Abs(filepath.Join(string(filepath.Separator), "tmp", "output_patched"))
+	if err != nil {
+		t.Fatalf("failed to resolve absolute test path: %v", err)
+	}
+
 	tests := []struct {
 		name     string
 		rawPath  string
@@ -226,9 +231,9 @@ func TestResolveAndroidPatchOutputDir(t *testing.T) {
 		},
 		{
 			name:     "macOS absolute path remains unchanged",
-			rawPath:  filepath.Join(string(filepath.Separator), "tmp", "output_patched"),
+			rawPath:  absCustomPath,
 			platform: "darwin",
-			want:     filepath.Join(string(filepath.Separator), "tmp", "output_patched"),
+			want:     absCustomPath,
 		},
 		{
 			name:     "Windows relative path keeps working-directory behavior",
