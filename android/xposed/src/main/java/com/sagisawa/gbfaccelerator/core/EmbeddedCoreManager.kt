@@ -131,9 +131,31 @@ object EmbeddedCoreManager {
         Log.i(TAG, "==================================================")
         Log.i(TAG, "[GBF-ACC] Initializing Embedded Go Core daemon...")
 
+        // ARCHITECTURE NOTE - Android Multi-Browser Concurrency & The Cgroup Freezer Pitfall:
+        // -----------------------------------------------------------------------------
+        // In the single-instance mobile architecture (all browsers sharing 127.0.0.1:8124 / 8125):
+        //
+        // 1. Android Process Freezer (cgroup v2 freezer):
+        //    When Browser A (e.g., SkyLeap) moves to background, Android OS immediately freezes
+        //    all processes in Browser A's Linux UID cgroup (including the child libgbfcore.so).
+        //    While the Linux kernel TCP stack continues to acknowledge TCP 3-way handshakes
+        //    (meaning isPortReachable() returns true), the frozen userspace Go process gets 0 CPU cycles
+        //    and cannot process incoming HTTP requests or proxy traffic.
+        //
+        // 2. Android UID Sandbox File Isolation:
+        //    Linux DAC permissions (/data/user/0/<package> mode 700) prevent Browser B (e.g., Via)
+        //    from reading Browser A's Root CA certificate (/data/user/0/com.dena.skyleap/files/gbf_core/certs/ca.crt).
+        //    Therefore, Browser B cannot cryptographically verify proxy certificates created by Browser A.
+        //
+        // Operational Requirement:
+        // When switching between different accelerated browsers on the same device, users must
+        // fully swipe-kill (terminate) the previous browser from the Android Recents screen
+        // before launching the new browser, ensuring ports and core resources are cleanly released.
+        //
         // 1. Check if ports are already serviced by a healthy instance
         if (isPortReachable(CONTROL_PORT) && isPortReachable(PROXY_PORT)) {
             Log.i(TAG, "[GBF-ACC] Existing Go Core daemon detected on 127.0.0.1:$PROXY_PORT / $CONTROL_PORT")
+            Log.w(TAG, "[GBF-ACC] Notice: If switching from another backgrounded browser, ensure the previous browser is completely terminated to avoid cgroup freezer stalls.")
             isStarted.set(true)
             return
         }
