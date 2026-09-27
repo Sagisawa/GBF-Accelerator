@@ -145,7 +145,9 @@ class ProxyConfigurator(
     fun applyProxyConfig(onComplete: ((success: Boolean, error: Throwable?) -> Unit)? = null) {
         if (!isProxySetupStarted.compareAndSet(false, true)) {
             val current = state.get()
-            onComplete?.invoke(current == ProxyState.READY, lastError.get())
+            if (current != ProxyState.CONFIGURING) {
+                onComplete?.invoke(current == ProxyState.READY, lastError.get())
+            }
             return
         }
 

@@ -14,34 +14,12 @@ import io.github.libxposed.api.XposedModuleInterface.PackageLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.lang.reflect.Method
 
-@io.github.libxposed.api.annotations.XposedHooker
-class DynamicHooker : io.github.libxposed.api.XposedInterface.Hooker {
-    companion object {
-        private val callbacks = java.util.concurrent.ConcurrentHashMap<java.lang.reflect.Member, HookInvocationCallback>()
-
-        fun register(member: java.lang.reflect.Member, callback: HookInvocationCallback) {
-            callbacks[member] = callback
-        }
-
-        @JvmStatic
-        @io.github.libxposed.api.annotations.BeforeInvocation
-        fun before(callback: io.github.libxposed.api.XposedInterface.BeforeHookCallback) {
-            val cb = callbacks[callback.member] ?: return
-            val argsList = callback.args?.toList() ?: emptyList()
-            val handled = cb.onInvoked(callback.thisObject, argsList)
-            if (handled) {
-                callback.returnAndSkip(null)
-            }
-        }
-    }
-}
-
 /**
  * Xposed / LSPosed module entry point.
  * Defined in META-INF/xposed/java_init.list.
  * Delegates browser identification, lifecycle events, and proxy interception to BrowserAdapterRegistry.
  *
- * Supports both LibXposed API 102 (no-arg constructor + attachFramework) and LSPosed 1.9.2 (LibXposed API 100/101 reflection constructor).
+ * Implements LibXposed modern API 102 specification.
  */
 class SkyLeapModule : XposedModule {
 
@@ -53,13 +31,7 @@ class SkyLeapModule : XposedModule {
     constructor(base: XposedInterface, param: ModuleLoadedParam) : super() {
         xposedBase = base
         runCatching {
-            val attachMethod = XposedInterfaceWrapper::class.java.getDeclaredMethod(
-                "attachFramework",
-                XposedInterface::class.java,
-                Runnable::class.java
-            )
-            attachMethod.isAccessible = true
-            attachMethod.invoke(this, base, Runnable {})
+            attachFramework(base, Runnable {})
         }
         try {
             onModuleLoaded(param)
@@ -76,20 +48,22 @@ class SkyLeapModule : XposedModule {
 
     private val hookRegistry = object : HookRegistry {
         override fun hookMethod(method: Method, callback: HookInvocationCallback): Boolean {
-            val target = xposedBase ?: (this@SkyLeapModule as? XposedInterface)
-            if (target == null) {
-                Log.e(TAG, "[GBF-ACC] XposedInterface base is null; cannot hook ${method.name}")
-                return false
-            }
-
             return try {
-                DynamicHooker.register(method, callback)
-                target.hook(method, DynamicHooker::class.java)
+                val target: XposedInterface = xposedBase ?: this@SkyLeapModule
+                target.hook(method).intercept { chain ->
+                    val thisObj = chain.thisObject
+                    val args: List<Any?> = chain.args
+                    val handled = callback.onInvoked(thisObj, args)
+                    if (!handled) {
+                        chain.proceed()
+                    } else {
+                        null
+                    }
+                }
                 Log.i(TAG, "[GBF-ACC] Hook installed for ${method.declaringClass.simpleName}.${method.name}")
                 true
             } catch (e: Throwable) {
-                val cause = (e as? java.lang.reflect.InvocationTargetException)?.targetException ?: e
-                Log.e(TAG, "[GBF-ACC] Failed to hook method ${method.name}: ${cause.message}", cause)
+                Log.e(TAG, "[GBF-ACC] Failed to hook method ${method.name}: ${e.message}", e)
                 false
             }
         }

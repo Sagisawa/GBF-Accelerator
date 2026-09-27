@@ -22,4 +22,3 @@ dependencyResolutionManagement {
 rootProject.name = "GBF-Accelerator-Android"
 include(":app")
 include(":xposed")
-include(":api-stub")
