@@ -2,5 +2,7 @@
 <resources>
     <string-array name="xposed_scope">
         <item>com.dena.skyleap</item>
+        <item>mark.via</item>
+        <item>mark.via.gp</item>
     </string-array>
 </resources>

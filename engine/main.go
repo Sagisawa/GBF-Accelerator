@@ -105,6 +105,7 @@ func main() {
 	minimized := flag.Bool("minimized", false, "Start minimized in system tray without opening window")
 	enableRAMCache := flag.Bool("enable-ram-cache", false, "Enable in-memory RAM LRU cache")
 	enablePrefetch := flag.Bool("enable-prefetch", false, "Enable background static asset prefetching")
+	shimakazeMode := flag.Bool("shimakaze-mode", false, "Enable compatibility mode for ShimakazeGo / ACGPower self-signed certificates")
 
 	flag.Parse()
 
@@ -169,6 +170,9 @@ func main() {
 		}
 		if flagWasSet("enable-prefetch") {
 			c.EnablePrefetch = *enablePrefetch
+		}
+		if flagWasSet("shimakaze-mode") {
+			c.ShimakazeMode = *shimakazeMode
 		}
 	})
 

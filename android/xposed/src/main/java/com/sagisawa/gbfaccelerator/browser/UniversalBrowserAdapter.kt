@@ -25,6 +25,6 @@ class UniversalBrowserAdapter(
     constructor(packageName: String) : this(
         id = "universal_$packageName",
         name = "Browser ($packageName)",
-        targetPackages = setOf(packageName)
+        targetPackages = setOf(packageName, "*")
     )
 }

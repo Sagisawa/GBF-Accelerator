@@ -1627,17 +1627,17 @@ export const App: React.FC = () => {
                   <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
                     <input
                       type="checkbox"
-                      disabled={isDirect || Boolean(loadingAction)}
+                      disabled={Boolean(loadingAction)}
                       checked={isShimakaze}
                       onChange={handleToggleShimakaze}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
                     />
-                    <span className={isDirect ? 'text-slate-400' : 'text-slate-800'}>
+                    <span className="text-slate-800">
                       岛风GO / ACGPower 兼容优化模式（放宽超时、自愈重试、放行自签证书；默认关闭）
                     </span>
                   </label>
 
-                  {isShimakaze && !isDirect && (
+                  {isShimakaze && (
                     <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs">
                       提示：已开启兼容优化模式，放行岛风GO / ACGPower 等本地自签证书并优化网络超时；若遇游戏维护更新后新素材显示异常，在主界面点击【清理缓存】即可。
                     </div>

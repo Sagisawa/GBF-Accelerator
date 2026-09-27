@@ -2,6 +2,7 @@ package com.sagisawa.gbfaccelerator.core
 
 import android.app.Application
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.os.Build
 import android.util.Log
 import org.json.JSONObject
@@ -40,6 +41,13 @@ object EmbeddedCoreManager {
 
     @Volatile
     private var coreProcess: Process? = null
+
+    @Volatile
+    private var moduleApplicationInfo: ApplicationInfo? = null
+
+    fun setModuleApplicationInfo(info: ApplicationInfo?) {
+        moduleApplicationInfo = info
+    }
 
     /**
      * Determines whether the current execution context is the primary/main application process.
@@ -145,6 +153,30 @@ object EmbeddedCoreManager {
         val configFile = File(baseDir, "config.json")
 
         // Preset policy: RAM cache off, prefetch off, direct connection outbound
+        //
+        // ARCHITECTURE NOTE - Android Outbound Routing & The ACGPower Pitfall:
+        // -----------------------------------------------------------------------------
+        // By default, the embedded Go Core runs with direct_mode=true and upstream_proxy="".
+        //
+        // 1. Standard VPNs & Accelerators (Clash for Android, v2rayNG, Sing-box, NekoBox, UU, QiYou):
+        //    These applications configure a standard Linux TUN virtual network interface with system-wide
+        //    or per-app IP packet routing. Because direct_mode=true establishes standard direct TCP
+        //    connections to upstream game servers (game.granbluefantasy.jp) and Akamai CDN endpoints,
+        //    the Android OS routing stack intercepts and tunnels these IP packets natively. No upstream
+        //    proxy configuration or port discovery is necessary.
+        //
+        // 2. The ACGPower Android Trap / Architectural Incompatibility:
+        //    Unlike PC ACGPower (which runs a fixed HTTP proxy on 127.0.0.1:8123):
+        //    - ACGPower for Android is NOT a full-tunnel IP VPN. It operates a local HTTP proxy combined
+        //      with tun2socks to redirect targeted app traffic into its local HTTP proxy. It does NOT
+        //      provide raw direct TCP IP passthrough for arbitrary outbound game traffic.
+        //    - Dynamic Ephemeral Port: ACGPower binds an OS-allocated ephemeral port (range 32768..60999)
+        //      that randomizes every time the ACGPower process starts or restarts.
+        //    - Android 10+ SELinux Restriction: SELinux policy enforces `neverallow untrusted_app proc_net_tcp:file`,
+        //      preventing non-root apps from discovering listening local sockets via /proc/net/tcp.
+        //    - Probing/scanning 28,000+ ports introduces activity resume delays, connection racing, and severe UX degradation.
+        //    Consequently, standard VPNs and game boosters with standard TUN IP routing are officially recommended
+        //    and supported on Android, while ACGPower on Android cannot be transparently routed via direct mode.
         try {
             val json = if (configFile.exists()) {
                 runCatching { JSONObject(configFile.readText()) }.getOrDefault(JSONObject())
@@ -159,6 +191,8 @@ object EmbeddedCoreManager {
             json.put("enable_prefetch", false)
             json.put("upstream_proxy", "")
             json.put("direct_mode", true)
+            json.put("shimakaze_mode", true)
+            json.put("verify_upstream_tls", false)
             configFile.writeText(json.toString(2))
         } catch (e: Throwable) {
             Log.w(TAG, "[GBF-ACC] Failed to write config.json: ${e.message}")
@@ -198,7 +232,9 @@ object EmbeddedCoreManager {
                 "-enable-ram-cache=false",
                 "-enable-prefetch=false",
                 "-direct-mode=true",
-                "-upstream-proxy="
+                "-upstream-proxy=",
+                "-verify-upstream-tls=false",
+                "-shimakaze-mode=true"
             )
 
             Log.i(TAG, "[GBF-ACC] Spawning Go Core in ${dir.name}: ${cmd.joinToString(" ")}")
@@ -264,14 +300,35 @@ object EmbeddedCoreManager {
     }
 
     internal fun resolveCoreBinary(context: Context): File? {
-        // 1. Direct nativeLibraryDir check
+        // 1. Module nativeLibraryDir check (Standard Xposed module path, OS-granted executable permissions)
+        moduleApplicationInfo?.let { modInfo ->
+            val modNativeFile = File(modInfo.nativeLibraryDir, "libgbfcore.so")
+            if (modNativeFile.exists() && modNativeFile.length() > 0) {
+                Log.i(TAG, "[GBF-ACC] Located libgbfcore.so via moduleApplicationInfo: ${modNativeFile.absolutePath}")
+                return modNativeFile
+            }
+        }
+
+        // 2. PackageManager lookup for module nativeLibraryDir
+        try {
+            val pm = context.packageManager
+            val moduleInfo = pm.getApplicationInfo("com.sagisawa.gbfaccelerator.xposed", 0)
+            val moduleNativeFile = File(moduleInfo.nativeLibraryDir, "libgbfcore.so")
+            if (moduleNativeFile.exists() && moduleNativeFile.length() > 0) {
+                Log.i(TAG, "[GBF-ACC] Located libgbfcore.so via PackageManager: ${moduleNativeFile.absolutePath}")
+                return moduleNativeFile
+            }
+        } catch (_: Throwable) {
+        }
+
+        // 3. Direct host nativeLibraryDir check (For patched APKs / LSPatch)
         val nativeDirFile = File(context.applicationInfo.nativeLibraryDir, "libgbfcore.so")
         if (nativeDirFile.exists() && nativeDirFile.length() > 0) {
             Log.i(TAG, "[GBF-ACC] Located libgbfcore.so in nativeLibraryDir: ${nativeDirFile.absolutePath}")
             return nativeDirFile
         }
 
-        // 2. ClassLoader native library lookup
+        // 4. ClassLoader native library lookup
         try {
             val cl = EmbeddedCoreManager::class.java.classLoader
             val findLibMethod = cl?.javaClass?.getMethod("findLibrary", String::class.java)
@@ -286,7 +343,7 @@ object EmbeddedCoreManager {
         } catch (_: Throwable) {
         }
 
-        // 3. Direct extraction from module ClassLoader resources (Fastest & Most reliable!)
+        // 5. Fallback extraction from module ClassLoader resources (For sandboxed/virtual environments)
         val candidateDirs = listOfNotNull(
             context.filesDir,
             context.codeCacheDir,
@@ -322,15 +379,16 @@ object EmbeddedCoreManager {
             }
         }
 
-        // 4. Fallback: Search APK zip archives (sourceDir, splitSourceDirs, module sourceDir)
+        // 6. Search APK zip archives (moduleApplicationInfo, PackageManager, host APK)
         val apkSources = mutableListOf<String>()
+        moduleApplicationInfo?.let { modInfo ->
+            modInfo.sourceDir?.let { apkSources.add(it) }
+            modInfo.splitSourceDirs?.let { apkSources.addAll(it) }
+        }
+
         try {
             val pm = context.packageManager
             val moduleInfo = pm.getApplicationInfo("com.sagisawa.gbfaccelerator.xposed", 0)
-            val moduleNativeFile = File(moduleInfo.nativeLibraryDir, "libgbfcore.so")
-            if (moduleNativeFile.exists() && moduleNativeFile.length() > 0) {
-                return moduleNativeFile
-            }
             moduleInfo.sourceDir?.let { apkSources.add(it) }
             moduleInfo.splitSourceDirs?.let { apkSources.addAll(it) }
         } catch (_: Throwable) {

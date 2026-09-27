@@ -45,7 +45,7 @@ android {
 }
 
 dependencies {
-    compileOnly("io.github.libxposed:api:102.0.0")
+    compileOnly(project(":api-stub"))
     implementation("androidx.annotation:annotation:1.8.0")
     implementation("androidx.webkit:webkit:1.12.0")
     testImplementation("junit:junit:4.13.2")

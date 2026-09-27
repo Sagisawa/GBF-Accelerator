@@ -95,6 +95,23 @@ abstract class WebViewBrowserAdapter(
             }
         } catch (_: Throwable) {
         }
+
+        try {
+            val activityClass = Class.forName("android.app.Activity", true, classLoader)
+            val bundleClass = Class.forName("android.os.Bundle", true, classLoader)
+            val onCreateMethod = activityClass.getDeclaredMethod("onCreate", bundleClass)
+            val success = hookRegistry.hookMethod(onCreateMethod) { thisObj, _ ->
+                (thisObj as? Context)?.let { onContextAvailable(it) }
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    applyProxyConfigInternal()
+                }
+                false
+            }
+            if (success) {
+                Log.i(TAG, "[GBF-ACC] Activity.onCreate hook installed")
+            }
+        } catch (_: Throwable) {
+        }
     }
 
     /**
@@ -240,6 +257,15 @@ abstract class WebViewBrowserAdapter(
             }
         }
 
+        applyProxyConfigInternal()
+    }
+
+    open fun onContextAvailable(context: Context) {
+        currentContext = context
+        EmbeddedCoreManager.ensureStarted(context)
+    }
+
+    open fun applyProxyConfigInternal() {
         proxyConfigurator.applyProxyConfig { success, err ->
             if (success) {
                 Log.i(TAG, "[GBF-ACC] ProxyController configured (Reverse Bypass active)")
@@ -247,13 +273,5 @@ abstract class WebViewBrowserAdapter(
                 Log.e(TAG, "[GBF-ACC][Proxy] Failed to configure ProxyController: ${err?.message}", err)
             }
         }
-    }
-
-    /**
-     * Invoked whenever an Android Context is obtained to ensure the embedded Go Core is active.
-     */
-    open fun onContextAvailable(context: Context) {
-        currentContext = context
-        EmbeddedCoreManager.ensureStarted(context)
     }
 }

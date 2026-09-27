@@ -22,6 +22,9 @@ var probePorts = []struct {
 	{10809, "v2rayN (HTTP)"},
 	{10808, "v2rayN (SOCKS5)"},
 	{8099, "岛风 GO (HTTP)"},
+	// Port 8123 is standard for ACGPower on desktop (Windows/macOS).
+	// Note: On Android, ACGPower does NOT listen on 8123; it binds a dynamic ephemeral port
+	// (32768-60999) redirected via tun2socks, which is blocked by Android 10+ SELinux.
 	{8123, "ACGPower (HTTP)"},
 }
 
