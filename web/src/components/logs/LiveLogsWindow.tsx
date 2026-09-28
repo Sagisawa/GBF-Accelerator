@@ -5,7 +5,10 @@ import {
   Play,
   Pause,
   Terminal,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react'
+import { parseSearchTokens, matchesAllTokens, highlightText } from './highlight'
 
 export interface LiveLogsWindowProps {
   isOpen: boolean
@@ -430,6 +433,11 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
   const [frozenLogs, setFrozenLogs] = useState<LogItem[]>([])
   const terminalRef = useRef<HTMLDivElement>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const activeRowRef = useRef<HTMLDivElement>(null)
+
+  // Search tokens & navigation state
+  const tokens = useMemo(() => parseSearchTokens(filterText), [filterText])
+  const [activeMatchIndex, setActiveMatchIndex] = useState<number>(0)
 
   // Pause / Resume handling
   const togglePause = useCallback(() => {
@@ -444,49 +452,12 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
 
   const activeLogs = isPaused ? frozenLogs : logs
 
-  // Auto-scroll on new records
+  // Auto-scroll on new records (suspended while user actively has search tokens)
   useEffect(() => {
-    if (autoScroll && terminalRef.current && !isPaused) {
+    if (autoScroll && terminalRef.current && !isPaused && tokens.length === 0) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight
     }
-  }, [activeLogs, autoScroll, isPaused, isOpen])
-
-  // Global Keyboard shortcuts when window is visible
-  useEffect(() => {
-    if (!isOpen || isMinimized) return
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Space: Toggle pause (unless typing in search input)
-      if (e.code === 'Space' && document.activeElement !== searchInputRef.current) {
-        e.preventDefault()
-        togglePause()
-        return
-      }
-
-      // Ctrl+F / Cmd+F: Focus Search
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
-        e.preventDefault()
-        searchInputRef.current?.focus()
-        searchInputRef.current?.select()
-        return
-      }
-
-      // Escape: clear filter or close context menu
-      if (e.key === 'Escape') {
-        if (contextMenu) {
-          setContextMenu(null)
-          return
-        }
-        if (filterText) {
-          setFilterText('')
-          return
-        }
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [isOpen, isMinimized, togglePause, filterText, contextMenu])
+  }, [activeLogs, autoScroll, isPaused, isOpen, tokens.length])
 
   // Mouse wheel zoom font size (Ctrl + Wheel)
   const handleWheel = (e: React.WheelEvent) => {
@@ -505,7 +476,6 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
     (item: LogItem): boolean => {
       const rawMsg = item.msg || ''
       const lvl = item.level || 'INFO'
-      const lineLower = (rawMsg + ' ' + lvl).toLowerCase()
 
       // 1. Checkboxes
       if (hideConnect && (rawMsg.includes('CONNECT') || rawMsg.includes('BYPASS-TCP') || rawMsg.includes('TLS '))) {
@@ -518,9 +488,8 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
         return false
       }
 
-      // 2. Search Text
-      const q = filterText.trim().toLowerCase()
-      if (q && !lineLower.includes(q)) {
+      // 2. Search Text (Multiple words separated by space: all must match)
+      if (tokens.length > 0 && !matchesAllTokens(rawMsg + ' ' + lvl, tokens)) {
         return false
       }
 
@@ -552,7 +521,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
 
       return true
     },
-    [filterText, filterCat, hideConnect, muteAssets, hideMocks]
+    [tokens, filterCat, hideConnect, muteAssets, hideMocks]
   )
 
   // Parsed and filtered records
@@ -564,6 +533,162 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
     }
     return list
   }, [activeLogs, matchesFilter, alignFormat, compactDomain, maskPrivacy])
+
+  // Reset or clamp active match index when filter/query changes
+  useEffect(() => {
+    setActiveMatchIndex(0)
+  }, [filterText, filterCat, hideConnect, muteAssets, hideMocks])
+
+  useEffect(() => {
+    if (renderedRecords.length > 0 && activeMatchIndex >= renderedRecords.length) {
+      setActiveMatchIndex(0)
+    }
+  }, [renderedRecords.length, activeMatchIndex])
+
+  // Navigate matching rows (Next / Previous)
+  const nextMatch = useCallback(() => {
+    if (renderedRecords.length === 0) return
+    setActiveMatchIndex((prev) => (prev + 1) % renderedRecords.length)
+  }, [renderedRecords.length])
+
+  const prevMatch = useCallback(() => {
+    if (renderedRecords.length === 0) return
+    setActiveMatchIndex((prev) => (prev - 1 + renderedRecords.length) % renderedRecords.length)
+  }, [renderedRecords.length])
+
+  // Scroll active match row into view
+  useEffect(() => {
+    if (tokens.length > 0 && activeRowRef.current) {
+      activeRowRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      })
+    }
+  }, [activeMatchIndex, tokens.length])
+
+  // Search input keydown handler
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.shiftKey) {
+        prevMatch()
+      } else {
+        nextMatch()
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      if (filterText) {
+        setFilterText('')
+        setActiveMatchIndex(0)
+      } else {
+        searchInputRef.current?.blur()
+      }
+    }
+  }
+
+  // Global Keyboard shortcuts when window is visible
+  useEffect(() => {
+    if (!isOpen || isMinimized) return
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 1. IME composition guard: Never intercept IME candidate selection (Space/Enter/numbers)
+      if (e.isComposing || e.keyCode === 229) {
+        return
+      }
+
+      // 2. Input / Textarea / Select / ContentEditable guard
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        if (e.key === 'Escape') {
+          target.blur()
+          if (filterText) {
+            e.preventDefault()
+            e.stopPropagation()
+            e.stopImmediatePropagation?.()
+            setFilterText('')
+            setActiveMatchIndex(0)
+          }
+        }
+        return
+      }
+
+      // 3. Button guard: Allow native button click with Space
+      if (target && (target.tagName === 'BUTTON' || target.closest?.('button'))) {
+        if (e.key === ' ' || e.code === 'Space') {
+          return
+        }
+      }
+
+      // 4. Ctrl+F / Cmd+F: Focus Search
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation?.()
+        searchInputRef.current?.focus()
+        searchInputRef.current?.select()
+        return
+      }
+
+      // 5. F3 / Shift+F3: Next / Previous Match
+      if (e.key === 'F3') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation?.()
+        if (e.shiftKey) {
+          prevMatch()
+        } else {
+          nextMatch()
+        }
+        return
+      }
+
+      // 6. Space: Toggle pause
+      if (e.code === 'Space' || e.key === ' ') {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation?.()
+        togglePause()
+        return
+      }
+
+      // 7. Escape: clear filter or close context menu or close drawer
+      if (e.key === 'Escape') {
+        if (contextMenu) {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation?.()
+          setContextMenu(null)
+          return
+        }
+        if (filterText) {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation?.()
+          setFilterText('')
+          setActiveMatchIndex(0)
+          return
+        }
+        if (!isStandalone && onClose) {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation?.()
+          onClose()
+          return
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => window.removeEventListener('keydown', handleKeyDown, true)
+  }, [isOpen, isMinimized, togglePause, filterText, contextMenu, isStandalone, onClose, nextMatch, prevMatch])
 
   // Copy operations
   const copyAllVisible = () => {
@@ -630,11 +755,11 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
   }
 
   // --- Render Individual Token Styling ---
-  const renderLogContent = (item: ParsedLogLine) => {
+  const renderLogContent = (item: ParsedLogLine, isActiveRow: boolean) => {
     if (item.isSystem || !alignFormat) {
       return (
         <span className={item.isError ? 'text-red-400 font-bold' : 'text-slate-200'}>
-          {item.systemMsg || item.raw}
+          {highlightText(item.systemMsg || item.raw, tokens, isActiveRow)}
         </span>
       )
     }
@@ -685,14 +810,14 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
         {/* Method (exact 5 chars: 4 chars + 1 space) */}
         {item.method && (
           <span className={methodColor}>
-            {(item.method || '').trim().padEnd(4, ' ') + ' '}
+            {highlightText((item.method || '').trim().padEnd(4, ' ') + ' ', tokens, isActiveRow)}
           </span>
         )}
 
         {/* Status Code (exact 5 chars: 3 chars + 2 spaces) */}
         {item.statusCode && (
           <span className={codeColor}>
-            {(item.statusCode || '').trim().padEnd(3, ' ') + '  '}
+            {highlightText((item.statusCode || '').trim().padEnd(3, ' ') + '  ', tokens, isActiveRow)}
           </span>
         )}
 
@@ -700,7 +825,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
         {item.latencyStr && (
           <span>
             <span className={latencyClass}>
-              {(item.latencyStr || '').trim().padStart(6, ' ')}
+              {highlightText((item.latencyStr || '').trim().padStart(6, ' '), tokens, isActiveRow)}
             </span>
             <span> </span>
           </span>
@@ -709,22 +834,22 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
         {/* Connection/Reuse State (exact 9 chars: 8 chars + 1 space) */}
         {item.stateTag && (
           <span className={stateClass}>
-            {(item.stateTag || '').padEnd(8, ' ') + ' '}
+            {highlightText((item.stateTag || '').padEnd(8, ' ') + ' ', tokens, isActiveRow)}
           </span>
         )}
 
         {/* Simplified Host Tag if enabled (exact 7 chars: 6 chars + 1 space) */}
         {item.hostTag && (
           <span className="text-[#79c0ff]">
-            {item.hostTag.padEnd(6, ' ') + ' '}
+            {highlightText(item.hostTag.padEnd(6, ' ') + ' ', tokens, isActiveRow)}
           </span>
         )}
 
         {/* URL Path (white) + Query params (bright readable silver) - never truncated */}
         <span>
-          <span className="text-[#f0f6fc]">{item.urlPath}</span>
-          {item.urlQuery && <span className="text-[#c9d1d9]">{item.urlQuery}</span>}
-          {item.urlExtra && <span className="text-[#8fa1b3] text-[11px] ml-1.5">{item.urlExtra}</span>}
+          <span className="text-[#f0f6fc]">{highlightText(item.urlPath, tokens, isActiveRow)}</span>
+          {item.urlQuery && <span className="text-[#c9d1d9]">{highlightText(item.urlQuery, tokens, isActiveRow)}</span>}
+          {item.urlExtra && <span className="text-[#8fa1b3] text-[11px] ml-1.5">{highlightText(item.urlExtra, tokens, isActiveRow)}</span>}
         </span>
       </div>
     )
@@ -807,27 +932,78 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
         <div className="bg-[#252526] border-b border-black/40 px-3 py-2 flex flex-wrap items-center justify-between gap-y-2 text-xs text-slate-300 shrink-0 font-sans">
           {/* Left Controls: Search, Category, and Checkboxes */}
           <div className="flex flex-wrap items-center gap-3">
-            {/* Search Input */}
+            {/* Search Input with Match Counter and Prev/Next */}
             <div className="flex items-center gap-1.5">
               <span className="text-slate-400">搜索:</span>
-              <div className="relative">
+              <div className="relative flex items-center">
                 <input
                   ref={searchInputRef}
                   type="text"
                   value={filterText}
-                  onChange={(e) => setFilterText(e.target.value)}
-                  placeholder="Ctrl+F 搜索..."
-                  className="bg-[#181818] border border-slate-700/80 rounded px-2 py-0.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 w-32 sm:w-40 font-mono transition-all"
+                  onChange={(e) => {
+                    setFilterText(e.target.value)
+                    setActiveMatchIndex(0)
+                  }}
+                  onKeyDown={handleSearchKeyDown}
+                  placeholder="Ctrl+F 搜索 (多词空格)..."
+                  className={`bg-[#181818] border rounded py-0.5 pl-2 text-xs text-white placeholder-slate-500 focus:outline-none font-mono transition-all w-36 sm:w-52 ${
+                    tokens.length > 0 && renderedRecords.length === 0
+                      ? 'border-red-600/80 focus:border-red-500 pr-14'
+                      : tokens.length > 0
+                      ? 'border-blue-500/80 pr-16'
+                      : 'border-slate-700/80 focus:border-blue-500 pr-6'
+                  }`}
                 />
+                {tokens.length > 0 && (
+                  <span
+                    className={`absolute right-6 text-[10px] font-mono select-none px-1 rounded pointer-events-none ${
+                      renderedRecords.length === 0
+                        ? 'text-red-400 bg-red-950/50'
+                        : 'text-amber-300/90 bg-amber-950/50'
+                    }`}
+                  >
+                    {renderedRecords.length === 0 ? '0/0' : `${activeMatchIndex + 1}/${renderedRecords.length}`}
+                  </span>
+                )}
                 {filterText && (
                   <button
-                    onClick={() => setFilterText('')}
-                    className="absolute right-1 top-1 text-slate-400 hover:text-white"
+                    type="button"
+                    onClick={() => {
+                      setFilterText('')
+                      setActiveMatchIndex(0)
+                    }}
+                    className="absolute right-1.5 text-slate-400 hover:text-white"
+                    title="清空搜索 (Esc)"
                   >
                     <X className="w-3 h-3" />
                   </button>
                 )}
               </div>
+
+              {/* Prev / Next Buttons (visible when searching) */}
+              {tokens.length > 0 && (
+                <div className="flex items-center bg-[#181818] border border-slate-700/80 rounded overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={prevMatch}
+                    disabled={renderedRecords.length === 0}
+                    className="p-1 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title="上一个 (Shift+Enter / ↑)"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                  <div className="w-[1px] h-3 bg-slate-700" />
+                  <button
+                    type="button"
+                    onClick={nextMatch}
+                    disabled={renderedRecords.length === 0}
+                    className="p-1 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title="下一个 (Enter / ↓)"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Category Dropdown */}
@@ -978,44 +1154,52 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
               <span>暂无符合过滤条件的网络或转发日志</span>
             </div>
           ) : (
-            renderedRecords.map((item, idx) => (
-              <div
-                key={idx}
-                onContextMenu={(e) => handleContextMenu(e, item)}
-                className={`flex items-center px-1.5 py-0.5 rounded transition-colors hover:bg-white/[0.06] whitespace-pre font-mono min-w-max ${
-                  item.isError ? 'bg-[#381a1a]/60 text-red-200' : ''
-                }`}
-              >
-                {/* Timestamp (exact 11 chars: [HH:MM:SS] + 1 space) */}
-                <span className="text-[#6e7681] shrink-0 select-none whitespace-pre">
-                  [{item.time}]{' '}
-                </span>
-
-                {/* Level Tag (exact 13 chars: [TAG       ] + 1 space) */}
-                <span
-                  className={`shrink-0 font-bold whitespace-pre ${
-                    item.levelTag.includes('API')
-                      ? 'text-[#4ec9b0]'
-                      : item.levelTag.includes('CACHE')
-                      ? 'text-[#89d185]'
-                      : item.levelTag.includes('FETCH')
-                      ? 'text-[#569cd6]'
-                      : item.levelTag.includes('PREFETCH')
-                      ? 'text-[#c586c0]'
-                      : item.levelTag.includes('RETRY') || item.levelTag.includes('WARN')
-                      ? 'text-[#e5c07b]'
-                      : item.levelTag.includes('ERR') || item.levelTag.includes('BLOCK')
-                      ? 'text-[#f14c4c]'
-                      : 'text-[#9cdcfe]'
+            renderedRecords.map((item, idx) => {
+              const isActive = tokens.length > 0 && idx === activeMatchIndex
+              return (
+                <div
+                  key={idx}
+                  ref={isActive ? activeRowRef : undefined}
+                  onContextMenu={(e) => handleContextMenu(e, item)}
+                  className={`flex items-center px-1.5 py-0.5 rounded transition-colors whitespace-pre font-mono min-w-max ${
+                    isActive
+                      ? 'bg-amber-950/45 ring-1 ring-amber-500/80 shadow-xs'
+                      : item.isError
+                      ? 'bg-[#381a1a]/60 text-red-200 hover:bg-white/[0.06]'
+                      : 'hover:bg-white/[0.06]'
                   }`}
                 >
-                  {`[${item.levelTag.padEnd(10, ' ')}] `}
-                </span>
+                  {/* Timestamp (exact 11 chars: [HH:MM:SS] + 1 space) */}
+                  <span className="text-[#6e7681] shrink-0 select-none whitespace-pre">
+                    [{item.time}]{' '}
+                  </span>
 
-                {/* Structured Columns */}
-                {renderLogContent(item)}
-              </div>
-            ))
+                  {/* Level Tag (exact 13 chars: [TAG       ] + 1 space) */}
+                  <span
+                    className={`shrink-0 font-bold whitespace-pre ${
+                      item.levelTag.includes('API')
+                        ? 'text-[#4ec9b0]'
+                        : item.levelTag.includes('CACHE')
+                        ? 'text-[#89d185]'
+                        : item.levelTag.includes('FETCH')
+                        ? 'text-[#569cd6]'
+                        : item.levelTag.includes('PREFETCH')
+                        ? 'text-[#c586c0]'
+                        : item.levelTag.includes('RETRY') || item.levelTag.includes('WARN')
+                        ? 'text-[#e5c07b]'
+                        : item.levelTag.includes('ERR') || item.levelTag.includes('BLOCK')
+                        ? 'text-[#f14c4c]'
+                        : 'text-[#9cdcfe]'
+                    }`}
+                  >
+                    {highlightText(`[${item.levelTag.padEnd(10, ' ')}] `, tokens, isActive)}
+                  </span>
+
+                  {/* Structured Columns */}
+                  {renderLogContent(item, isActive)}
+                </div>
+              )
+            })
           )}
         </div>
 
@@ -1074,9 +1258,11 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
             </span>
           </div>
 
-          {/* Right: Shortcut hints (1:1 aligned with Image 1) */}
+          {/* Right: Shortcut hints */}
           <div className="text-slate-500 hidden md:flex items-center gap-2">
             <span>Ctrl+F 搜索</span>
+            <span>|</span>
+            <span>Enter / Shift+Enter 换词跳转</span>
             <span>|</span>
             <span>空格 暂停</span>
             <span>|</span>

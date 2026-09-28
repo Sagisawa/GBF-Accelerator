@@ -994,17 +994,25 @@ export const App: React.FC = () => {
     isAuditModalOpen ||
     isSlimModalOpen ||
     isUpdateModalOpen ||
-    caModalAction !== null
+    caModalAction !== null ||
+    isStandaloneLogsPage
 
   // Keyboard Shortcuts
   useKeyboardShortcuts({
     onToggleProxy: handleToggleProxy,
-    onToggleLogs: openLogsWindow,
+    onToggleLogs: () => {
+      if (isLogDrawerOpen) {
+        setIsLogDrawerOpen(false)
+      } else {
+        openLogsWindow()
+      }
+    },
     onToggleDirect: handleToggleDirect,
     onOpenClearModal: () => setIsClearModalOpen(true),
     onOpenShortcutsModal: () => setIsShortcutsModalOpen(true),
     onCloseAll: handleCloseAll,
     isModalOpen: isAnyModalOpen,
+    disabled: isStandaloneLogsPage,
   })
 
   // If navigated to standalone logs page, render ONLY the full-screen live logs window!

@@ -8,6 +8,7 @@ export interface ShortcutHandlers {
   onOpenShortcutsModal?: () => void
   onCloseAll?: () => void
   isModalOpen?: boolean
+  disabled?: boolean
 }
 
 export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
@@ -15,7 +16,15 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
   handlersRef.current = handlers
 
   useEffect(() => {
+    if (handlers.disabled) {
+      return
+    }
+
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (handlersRef.current.disabled) {
+        return
+      }
+
       // 1. IME composition guard: Never intercept IME candidate selection (Space/Enter/numbers)
       if (e.isComposing || e.keyCode === 229) {
         return
@@ -39,7 +48,7 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
       }
 
       // 3. Button guard: Allow native button click with Space
-      if (target && (target.tagName === 'BUTTON' || target.closest('button'))) {
+      if (target && (target.tagName === 'BUTTON' || target.closest?.('button'))) {
         if (e.key === ' ') {
           return
         }
@@ -105,6 +114,6 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [handlers.disabled])
 }
 
