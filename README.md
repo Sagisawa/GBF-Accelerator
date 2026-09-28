@@ -13,6 +13,7 @@
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
 > - **Windows**：下载 `GBF_Accelerator_v2.2.0_GUI.zip`，解压即用。
 > - **macOS**：下载 `GBF_Accelerator_v2.2.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Android**：v2.2.0 起支持 **Root（LSPosed）与免 Root** 两种使用方式。
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
