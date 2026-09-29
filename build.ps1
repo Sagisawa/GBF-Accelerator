@@ -252,7 +252,7 @@ function Build-Windows {
         Write-Host ("[+] Platform-tools release asset generated: {0} ({1:F2} MB)" -f $PtZip, ((Get-Item $PtZip).Length / 1MB)) -ForegroundColor Green
     }
 
-    if ($BundleTools -or (-not (Test-Path (Join-Path $ReleaseDir "lspatch.jar")))) {
+    if ($BundleTools) {
         Write-Host "[*] Bundling full Android tooling environment into release package..." -ForegroundColor Yellow
         $ToolsAndroidDir = Join-Path $StagingDir "tools\android"
         New-Item -ItemType Directory -Path $ToolsAndroidDir -Force | Out-Null
