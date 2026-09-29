@@ -5,7 +5,24 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gbf-proxy/process"
 )
+
+func TestMain(m *testing.M) {
+	// Guarantee an isolated, hermetic environment for package cache tests.
+	// Default mock memory reports 16 GB available RAM so host memory pressure
+	// does not interfere with functional and lifecycle prewarm assertions.
+	cleanup := SetSystemMemoryProviderForTest(func() (process.MemoryInfo, error) {
+		return process.MemoryInfo{
+			TotalBytes:     32 * 1024 * 1024 * 1024,
+			AvailableBytes: 16 * 1024 * 1024 * 1024,
+		}, nil
+	})
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
 
 type mockFGWaiter struct {
 	isIdle bool
@@ -327,6 +344,44 @@ func TestBoost_DisableDuringPrewarmRace(t *testing.T) {
 	}
 	if mgr.RAMBudget().ResidentBytes() != 0 {
 		t.Fatalf("expected 0 resident bytes in budget coordinator, got %d", mgr.RAMBudget().ResidentBytes())
+	}
+}
+
+func TestBoost_MemoryGuardStop(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_boost_memguard_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	assetsDir := filepath.Join(tempDir, "assets", "memguard")
+	_ = os.MkdirAll(assetsDir, 0755)
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRdata")
+	for i := 0; i < 5; i++ {
+		p := filepath.Join(assetsDir, fmt.Sprintf("item_%d.png", i))
+		_ = os.WriteFile(p, validPng, 0644)
+		_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
+	}
+
+	// Mock host available RAM to 1 GB (< 2 GB default safety threshold)
+	cleanup := SetSystemMemoryProviderForTest(func() (process.MemoryInfo, error) {
+		return process.MemoryInfo{
+			TotalBytes:     16 * 1024 * 1024 * 1024,
+			AvailableBytes: 1024 * 1024 * 1024, // 1 GB
+		}, nil
+	})
+	defer cleanup()
+
+	finalProgress := mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
+	if finalProgress.State != BoostStateMemoryGuardStopped {
+		t.Fatalf("expected state %s when available memory is below 2GB, got %s", BoostStateMemoryGuardStopped, finalProgress.State)
+	}
+	if finalProgress.LoadedFiles != 0 {
+		t.Fatalf("expected 0 loaded files due to immediate memory guard halt, got %d", finalProgress.LoadedFiles)
 	}
 }
 

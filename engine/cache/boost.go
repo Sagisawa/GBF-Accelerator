@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gbf-proxy/process"
@@ -20,6 +21,35 @@ const (
 
 	defaultMinSystemReserveBytes = uint64(2 * 1024 * 1024 * 1024) // 2 GB minimum reserve
 )
+
+var (
+	boostMemMu      sync.RWMutex
+	getSystemMemory = process.GetSystemMemory
+)
+
+func querySystemMemory() (process.MemoryInfo, error) {
+	boostMemMu.RLock()
+	fn := getSystemMemory
+	boostMemMu.RUnlock()
+	if fn != nil {
+		return fn()
+	}
+	return process.GetSystemMemory()
+}
+
+// SetSystemMemoryProviderForTest overrides the memory provider function for unit testing.
+// Returns a cleanup function that restores the previous provider.
+func SetSystemMemoryProviderForTest(fn func() (process.MemoryInfo, error)) func() {
+	boostMemMu.Lock()
+	prev := getSystemMemory
+	getSystemMemory = fn
+	boostMemMu.Unlock()
+	return func() {
+		boostMemMu.Lock()
+		getSystemMemory = prev
+		boostMemMu.Unlock()
+	}
+}
 
 // BoostProgress details the current state and progress metrics of the RAM Boost loader.
 type BoostProgress struct {
@@ -215,7 +245,7 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 		}
 
 		// d. Memory guard check (host physical RAM Available threshold)
-		if memInfo, err := process.GetSystemMemory(); err == nil && memInfo.AvailableBytes > 0 {
+		if memInfo, err := querySystemMemory(); err == nil && memInfo.AvailableBytes > 0 {
 			if memInfo.AvailableBytes <= defaultMinSystemReserveBytes {
 				state = BoostStateMemoryGuardStopped
 				break
