@@ -11,12 +11,19 @@
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
 
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
-> - **Windows**：下载 `GBF_Accelerator_v2.2.0_GUI.zip`，解压即用。
-> - **macOS**：下载 `GBF_Accelerator_v2.2.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
-> - **Android**：v2.2.0 起支持 **Root（LSPosed）与免 Root** 两种使用方式。
+> - **Windows**：下载 `GBF_Accelerator_v2.3.0_GUI.zip`，解压即用。
+> - **macOS**：下载 `GBF_Accelerator_v2.3.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Android**：支持 **Root（LSPosed）与免 Root** 两种使用方式。
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
+
+## v2.3.0 发布要点
+
+- **全局 RAM Boost 激进内存缓存**：实现全量 RAM Boost 激进内存缓存策略与全量预热，统一内存预算管理，支持一键将高频与热点静态资源保存在 RAM 中，保障并发访问下的生命周期安全。
+- **日志多词高亮与 macOS 原生键位自适应**：实时网络与代理日志支持空格分隔的多关键词独立匹配高亮；日志搜索自适应 macOS 原生快捷键（`Cmd+G` / `Cmd+Shift+G`）与特定字符字形，解决浏览器默认搜索快捷键冲突。
+- **Android 架构加固与官方 LibXposed 102 适配**：全面接入官方 LibXposed API 102 接口规范，移除旧版 api-stub；解耦 Context 获取并安全注册 Activity 生命周期回调，解决宿主启动 NPE 隐患；增强免根证书 SSL 旁路。
+- **无效素材预取抑制与 Patcher 路径修复**：自动识别并抑制上游 404/410 无效素材的循环预取；PC 端 Patcher 工具相对输出路径修复并严格锚定至 App 基目录。
 
 ## v2.2.0 发布要点
 
