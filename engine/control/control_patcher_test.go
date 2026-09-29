@@ -236,10 +236,22 @@ func TestResolveAndroidPatchOutputDir(t *testing.T) {
 			want:     absCustomPath,
 		},
 		{
-			name:     "Windows relative path keeps working-directory behavior",
+			name:     "Windows relative path resolves under base dir",
 			rawPath:  "output_patched",
 			platform: "windows",
-			want:     "output_patched",
+			want:     filepath.Join(baseDir, "output_patched"),
+		},
+		{
+			name:     "Windows empty path resolves to default under base dir",
+			rawPath:  "",
+			platform: "windows",
+			want:     filepath.Join(baseDir, "output_patched"),
+		},
+		{
+			name:     "Linux relative path resolves under base dir",
+			rawPath:  "output_patched",
+			platform: "linux",
+			want:     filepath.Join(baseDir, "output_patched"),
 		},
 	}
 

@@ -60,9 +60,8 @@ func (c *ControlServer) getExeDir() string {
 	return "."
 }
 
-// resolveAndroidPatchOutputDir resolves relative patch output paths against the
-// writable application data directory on macOS app bundles. Portable Windows
-// builds keep their existing working-directory behavior.
+// resolveAndroidPatchOutputDir resolves relative patch output paths against
+// config.GetBaseDir() across all platforms.
 func resolveAndroidPatchOutputDir(rawPath string) string {
 	return resolveAndroidPatchOutputDirFor(rawPath, runtime.GOOS, config.GetBaseDir())
 }
@@ -73,7 +72,7 @@ func resolveAndroidPatchOutputDirFor(rawPath, platform, baseDir string) string {
 		path = "output_patched"
 	}
 
-	if platform == "darwin" && !filepath.IsAbs(path) {
+	if !filepath.IsAbs(path) {
 		path = filepath.Join(baseDir, path)
 	}
 
