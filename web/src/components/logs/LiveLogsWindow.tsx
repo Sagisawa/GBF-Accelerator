@@ -438,6 +438,11 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
   // Search tokens & navigation state
   const tokens = useMemo(() => parseSearchTokens(filterText), [filterText])
   const [activeMatchIndex, setActiveMatchIndex] = useState<number>(0)
+  const isMac = useMemo(
+    () => typeof navigator !== 'undefined' && /mac/i.test(navigator.userAgent || navigator.platform || ''),
+    []
+  )
+  const modKey = isMac ? '⌘' : 'Ctrl'
 
   // Pause / Resume handling
   const togglePause = useCallback(() => {
@@ -576,6 +581,14 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
       } else {
         nextMatch()
       }
+    } else if ((e.metaKey || e.ctrlKey) && (e.key === 'g' || e.key === 'G')) {
+      e.preventDefault()
+      e.stopPropagation()
+      if (e.shiftKey) {
+        prevMatch()
+      } else {
+        nextMatch()
+      }
     } else if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
@@ -637,8 +650,8 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
         return
       }
 
-      // 5. F3 / Shift+F3: Next / Previous Match
-      if (e.key === 'F3') {
+      // 5. F3 / Shift+F3 or Cmd+G / Ctrl+G: Next / Previous Match
+      if (e.key === 'F3' || ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G'))) {
         e.preventDefault()
         e.stopPropagation()
         e.stopImmediatePropagation?.()
@@ -945,7 +958,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                     setActiveMatchIndex(0)
                   }}
                   onKeyDown={handleSearchKeyDown}
-                  placeholder="Ctrl+F 搜索 (多词空格)..."
+                  placeholder={`${modKey}+F 搜索 (多词空格)...`}
                   className={`bg-[#181818] border rounded py-0.5 pl-2 text-xs text-white placeholder-slate-500 focus:outline-none font-mono transition-all w-36 sm:w-52 ${
                     tokens.length > 0 && renderedRecords.length === 0
                       ? 'border-red-600/80 focus:border-red-500 pr-14'
@@ -988,7 +1001,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                     onClick={prevMatch}
                     disabled={renderedRecords.length === 0}
                     className="p-1 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title="上一个 (Shift+Enter / ↑)"
+                    title={`上一个 (${isMac ? '⇧⌘G / ' : ''}Shift+Enter / ↑)`}
                   >
                     <ChevronUp className="w-3.5 h-3.5" />
                   </button>
@@ -998,7 +1011,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                     onClick={nextMatch}
                     disabled={renderedRecords.length === 0}
                     className="p-1 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title="下一个 (Enter / ↓)"
+                    title={`下一个 (${isMac ? '⌘G / ' : ''}Enter / ↓)`}
                   >
                     <ChevronDown className="w-3.5 h-3.5" />
                   </button>
@@ -1260,13 +1273,13 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
 
           {/* Right: Shortcut hints */}
           <div className="text-slate-500 hidden md:flex items-center gap-2">
-            <span>Ctrl+F 搜索</span>
+            <span>{modKey}+F 搜索</span>
             <span>|</span>
-            <span>Enter / Shift+Enter 换词跳转</span>
+            <span>{isMac ? '⌘G / ⇧⌘G 跳转' : 'Enter / Shift+Enter 换词跳转'}</span>
             <span>|</span>
             <span>空格 暂停</span>
             <span>|</span>
-            <span>Ctrl+滚轮 缩放</span>
+            <span>{modKey}+滚轮 缩放</span>
           </div>
         </div>
       </div>
