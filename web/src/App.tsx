@@ -32,6 +32,7 @@ import { RoutingGuideModal } from './components/modals/RoutingGuideModal'
 import { LatencyTestModal } from './components/modals/LatencyTestModal'
 import { AuditModal } from './components/modals/AuditModal'
 import { SlimModal } from './components/modals/SlimModal'
+import { BoostModal } from './components/modals/BoostModal'
 import { CaCertModal } from './components/modals/CaCertModal'
 import { UpdateModal } from './components/modals/UpdateModal'
 import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
@@ -217,6 +218,7 @@ export const App: React.FC = () => {
   const [isLatencyModalOpen, setIsLatencyModalOpen] = useState<boolean>(false)
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false)
   const [isSlimModalOpen, setIsSlimModalOpen] = useState<boolean>(false)
+  const [isBoostModalOpen, setIsBoostModalOpen] = useState<boolean>(false)
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false)
   const [isUpstreamSelectModalOpen, setIsUpstreamSelectModalOpen] = useState<boolean>(false)
   const [upstreamCandidates, setUpstreamCandidates] = useState<ProxyCandidate[]>([])
@@ -349,6 +351,32 @@ export const App: React.FC = () => {
             window.dispatchEvent(new CustomEvent('gbf-metrics', { detail: data }))
           }
         } catch {}
+      })
+
+      es.addEventListener('boost_progress', (e) => {
+        fetchCacheStats().then(setCacheStats).catch(() => {})
+        try {
+          const data = JSON.parse(e.data)
+          window.dispatchEvent(new CustomEvent('gbf-boost-progress', { detail: data }))
+        } catch {}
+      })
+
+      es.addEventListener('boost_done', (e) => {
+        fetchCacheStats().then(setCacheStats).catch(() => {})
+        try {
+          const data = JSON.parse(e.data)
+          window.dispatchEvent(new CustomEvent('gbf-boost-done', { detail: data }))
+          if (data?.state === 'completed') {
+            showToast('RAM Boost 快照预载入完成', 'success')
+          } else if (data?.state === 'partial') {
+            showToast('RAM Boost 已载入部分素材 (达到内存预算上限)', 'info')
+          }
+        } catch {}
+      })
+
+      es.addEventListener('boost_disabled', () => {
+        fetchCacheStats().then(setCacheStats).catch(() => {})
+        window.dispatchEvent(new CustomEvent('gbf-boost-disabled'))
       })
     } catch (e) {
       console.warn('SSE connection failed, falling back to polling', e)
@@ -899,15 +927,16 @@ export const App: React.FC = () => {
   }
   const handleApplyRamMb = async () => {
     const mb = parseInt(ramMbInput.trim(), 10)
-    if (isNaN(mb) || mb < 64 || mb > 2048) {
-      showToast('请输入 64 到 2048 MB 之间的有效内存上限', 'error')
+    const maxAllowed = 65536
+    if (isNaN(mb) || mb < 64 || mb > maxAllowed) {
+      showToast(`请输入 64 到 ${maxAllowed} MB (64GB) 之间的有效内存上限`, 'error')
       return
     }
     await runConfigAction('ram-mb', async () => {
       try {
         await applyConfig({ ram_cache_max_mb: mb })
         setConfig((prev) => ({ ...prev, ram_cache_max_mb: mb }))
-        showToast(`内存缓存上限已设置为 ${mb} MB`, 'success')
+        showToast(`内存缓存上限已设置为 ${mb} MB (${Math.round((mb / 1024) * 10) / 10} GB)`, 'success')
         loadState()
       } catch (e: any) {
         showToast(`设置内存上限失败: ${e.message}`, 'error')
@@ -1276,7 +1305,7 @@ export const App: React.FC = () => {
                     className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                   />
                   <span>
-                    启用内存热点缓存 (RAM Cache) - 占用上限约 {ramMaxMb}MB，高频静态资源 0 磁盘 I/O 直接响应
+                    启用内存热点缓存 (RAM Cache) - 占用上限约 {ramMaxMb}MB{ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : ''}，高频静态资源 0 磁盘 I/O 直接响应
                   </span>
                 </label>
 
@@ -1289,7 +1318,7 @@ export const App: React.FC = () => {
                         disabled={Boolean(loadingAction)}
                         value={ramMbInput}
                         onChange={(e) => setRamMbInput(e.target.value)}
-                        className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                        className="w-24 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
                       />
                       <button
                         type="button"
@@ -1300,15 +1329,51 @@ export const App: React.FC = () => {
                       >
                         {isActionLoading('ram-mb') ? '应用中...' : '应用'}
                       </button>
-                      <span className="text-slate-500 font-mono text-xs">
-                        {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
-                      </span>
+                      {(cacheStats?.resident_bytes ?? 0) > 0 ? (
+                        <div className="flex items-center gap-2.5 text-xs font-mono text-slate-600 flex-wrap">
+                          <span>常规: {ramUsageMb}MB</span>
+                          <span className="text-amber-700 font-medium">驻留: {cacheStats?.resident_mb ?? 0}MB</span>
+                          <span className="font-semibold text-slate-800">已用: {cacheStats?.total_ram_mb ?? (ramUsageMb + (cacheStats?.resident_mb ?? 0))} / {ramMaxMb}MB</span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-500 font-mono text-xs">
+                          {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
+                        </span>
+                      )}
                       <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
                         <div
                           className="h-full bg-emerald-500 rounded-full transition-all duration-300"
-                          style={{ width: `${Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%` }}
+                          style={{
+                            width: `${Math.min(100, Math.round(((cacheStats?.total_ram_mb ?? ramUsageMb) / Math.max(1, ramMaxMb)) * 100))}%`
+                          }}
                         />
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsBoostModalOpen(true)}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-medium border active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0 ${
+                          (cacheStats?.resident_bytes ?? 0) > 0
+                            ? 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-300'
+                            : cacheStats?.boost_state === 'loading'
+                            ? 'text-sky-800 bg-sky-50 hover:bg-sky-100 border-sky-300 animate-pulse'
+                            : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-300'
+                        }`}
+                        title="把本地静态素材全量载入内存加速 (RAM Boost)"
+                      >
+                        <span>⚡</span>
+                        <span>
+                          {cacheStats?.boost_state === 'loading'
+                            ? '全量载入中...'
+                            : (cacheStats?.resident_bytes ?? 0) > 0
+                            ? `已全量驻留 (${cacheStats?.resident_mb ?? 0} MB)`
+                            : '全量加速 (Boost)'}
+                        </span>
+                      </button>
+                      {(cacheStats?.system_total_mb ?? 0) > 0 && (
+                        <span className="text-slate-400 text-xs font-mono ml-auto sm:ml-0">
+                          (本机: {Math.round((cacheStats?.system_total_mb ?? 0) / 1024)}GB)
+                        </span>
+                      )}
                     </div>
 
                     <label className="inline-flex items-start gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none leading-snug">
@@ -1339,7 +1404,7 @@ export const App: React.FC = () => {
                   <span>自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防黑屏卡死</span>
                 </label>
 
-                <div className="flex items-center gap-2 pt-0.5">
+                <div className="flex items-center gap-2 pt-0.5 flex-wrap">
                   <button
                     type="button"
                     onClick={() => setIsAuditModalOpen(true)}
@@ -2160,6 +2225,14 @@ export const App: React.FC = () => {
         onClose={() => setIsSlimModalOpen(false)}
         onRefresh={loadState}
         onToast={showToast}
+      />
+
+      <BoostModal
+        isOpen={isBoostModalOpen}
+        onClose={() => setIsBoostModalOpen(false)}
+        onRefresh={loadState}
+        onToast={showToast}
+        cacheStats={cacheStats}
       />
 
       <CaCertModal

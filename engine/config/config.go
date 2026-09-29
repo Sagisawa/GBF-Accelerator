@@ -126,7 +126,7 @@ func (m *Manager) publishSnapshot() {
 
 func normalizeRAMCacheMaxMB(v int) int {
 	const minMB = 16
-	const maxMB = 8192
+	const maxMB = 65536
 	if v < minMB {
 		return minMB
 	}

@@ -806,6 +806,61 @@ func TestMultiTaskDrainOnClose(t *testing.T) {
 	}
 }
 
+func TestLoadAndValidateDiskItem(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_validate_test_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	// 1. Valid PNG with .ext metadata
+	pngDir := filepath.Join(tempDir, "assets", "img")
+	_ = os.MkdirAll(pngDir, 0755)
+	pngFile := filepath.Join(pngDir, "test.png")
+	pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRheader")
+	if err := os.WriteFile(pngFile, pngData, 0644); err != nil {
+		t.Fatalf("failed to write test png: %v", err)
+	}
+	extData := `{"ContentType":"image/png","ETag":"\"custom-etag\"","LastModified":"Sun, 01 Jan 2023 00:00:00 GMT","v":1}`
+	if err := os.WriteFile(pngFile+".ext", []byte(extData), 0644); err != nil {
+		t.Fatalf("failed to write test .ext: %v", err)
+	}
+
+	item, err := mgr.loadAndValidateDiskItem("gbf", "assets/img/test.png", pngFile)
+	if err != nil {
+		t.Fatalf("expected valid load, got error: %v", err)
+	}
+	if item.ContentType != "image/png" || item.ETag != "\"custom-etag\"" {
+		t.Errorf("unexpected metadata: %+v", item)
+	}
+	if string(item.Data) != string(pngData) {
+		t.Errorf("data mismatch")
+	}
+
+	// 2. Empty file should error
+	emptyFile := filepath.Join(pngDir, "empty.png")
+	_ = os.WriteFile(emptyFile, []byte{}, 0644)
+	if _, err := mgr.loadAndValidateDiskItem("gbf", "assets/img/empty.png", emptyFile); err == nil {
+		t.Errorf("expected error for empty file, got nil")
+	}
+
+	// 3. Corrupt file (HTML error page saved with .js) should error and auto-repair delete
+	corruptJs := filepath.Join(pngDir, "bad.js")
+	_ = os.WriteFile(corruptJs, []byte("<html><body>502 Bad Gateway</body></html>"), 0644)
+	_ = os.WriteFile(corruptJs+".ext", []byte(`{"ContentType":"text/html","v":1}`), 0644)
+	if _, err := mgr.loadAndValidateDiskItem("gbf", "assets/img/bad.js", corruptJs); err == nil {
+		t.Errorf("expected error for invalid cache content, got nil")
+	}
+	// Verify corrupt file was deleted by auto-repair
+	if _, err := os.Stat(corruptJs); !os.IsNotExist(err) {
+		t.Errorf("expected corrupt file to be removed by autoRepair, but it still exists")
+	}
+}
+
+
 
 
 

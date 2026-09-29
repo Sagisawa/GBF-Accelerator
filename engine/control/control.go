@@ -25,6 +25,7 @@ import (
 	"gbf-proxy/desktop"
 	"gbf-proxy/firewall"
 	"gbf-proxy/patcher"
+	"gbf-proxy/process"
 	"gbf-proxy/proxy"
 	"gbf-proxy/res"
 	"gbf-proxy/startup"
@@ -54,10 +55,13 @@ type ControlServer struct {
 	cacheTaskMu     sync.Mutex
 	isAuditing      bool
 	isSlimming      bool
+	isBoosting      bool
 	auditProgress   cache.AuditProgress
 	slimProgress    cache.SlimProgress
+	boostProgress   cache.BoostProgress
 	lastAuditResult map[string]interface{}
 	lastSlimResult  map[string]interface{}
+	lastBoostResult cache.BoostProgress
 	cacheCancelCh   chan struct{}
 
 
@@ -406,6 +410,16 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleCacheSlim(w, req)
 			return
 		}
+	case "/api/cache/boost":
+		if req.Method == http.MethodPost {
+			c.handleCacheBoost(w, req)
+			return
+		}
+	case "/api/cache/boost/disable":
+		if req.Method == http.MethodPost {
+			c.handleCacheBoostDisable(w, req)
+			return
+		}
 	case "/api/cache/task-status":
 		if req.Method == http.MethodGet {
 			c.handleCacheTaskStatus(w, req)
@@ -743,6 +757,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 	c.cacheTaskMu.Lock()
 	isAuditing := c.isAuditing
 	isSlimming := c.isSlimming
+	isBoosting := c.isBoosting
 	c.cacheTaskMu.Unlock()
 
 	effectiveUpstreamProxy := c.cfgMgr.GetEffectiveUpstreamProxy()
@@ -772,6 +787,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"startup_supported":        startup.IsStartupSupported(),
 		"is_auditing_cache":        isAuditing,
 		"is_slimming_cache":        isSlimming,
+		"is_boosting_cache":        isBoosting,
 		"active_api_count":         c.stats.ActiveAPICount.Load(),
 		"active_foreground_assets": c.stats.ActiveForegroundAssets.Load(),
 		"uptime_seconds":           uptime,
@@ -1112,18 +1128,53 @@ func (c *ControlServer) handleCacheStats(w http.ResponseWriter, req *http.Reques
 		hitRatio = math.Round(float64(c.stats.TotalHits.Load())/float64(totalLookups)*1000) / 10
 	}
 
+	rItems, rBytes := 0, int64(0)
+	boostState := cache.BoostStateDisabled
+	pool := c.cacheMgr.ResidentPool()
+	if pool != nil {
+		rItems, rBytes = pool.Stats()
+		if pool.Enabled() {
+			boostState = cache.BoostStateCompleted
+		}
+	}
+	c.cacheTaskMu.Lock()
+	if c.isBoosting {
+		boostState = cache.BoostStateLoading
+	} else if pool != nil && !pool.Enabled() {
+		boostState = cache.BoostStateDisabled
+	} else if c.lastBoostResult.State != "" {
+		boostState = c.lastBoostResult.State
+	}
+	c.cacheTaskMu.Unlock()
+
+	var totalPhys, availPhys uint64
+	if memInfo, err := process.GetSystemMemory(); err == nil {
+		totalPhys = memInfo.TotalBytes
+		availPhys = memInfo.AvailableBytes
+	}
+
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                 true,
 		"cache_base":         c.cacheMgr.GetCacheBase(),
 		"ram_items":          items,
 		"ram_bytes":          bytes,
 		"ram_mb":             math.Round(float64(bytes)/(1024*1024)*100) / 100,
+		"resident_items":     rItems,
+		"resident_bytes":     rBytes,
+		"resident_mb":        math.Round(float64(rBytes)/(1024*1024)*100) / 100,
+		"total_ram_bytes":    bytes + rBytes,
+		"total_ram_mb":       math.Round(float64(bytes+rBytes)/(1024*1024)*100) / 100,
 		"ram_max_mb":         cfg.RAMCacheMaxMB,
+		"boost_state":        boostState,
+		"system_total_bytes": totalPhys,
+		"system_avail_bytes": availPhys,
+		"system_total_mb":    math.Round(float64(totalPhys)/(1024*1024)*100) / 100,
+		"system_avail_mb":    math.Round(float64(availPhys)/(1024*1024)*100) / 100,
 		"hits_total":         c.stats.TotalHits.Load(),
 		"hits_ram":           c.stats.RAMHits.Load(),
 		"hits_disk":          c.stats.DiskHits.Load(),
 		"misses":             c.stats.CacheMisses.Load(),
-		"hit_ratio_percent": hitRatio,
+		"hit_ratio_percent":  hitRatio,
 	})
 }
 
@@ -1135,6 +1186,14 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 	var diskFreed int64
 	if !ramOnly {
 		diskDeleted, diskFreed = c.cacheMgr.ClearAll()
+		c.cacheTaskMu.Lock()
+		c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
+		c.lastBoostResult = c.boostProgress
+		c.cacheTaskMu.Unlock()
+		c.broadcastEvent("boost_disabled", map[string]interface{}{
+			"state":          cache.BoostStateDisabled,
+			"resident_bytes": 0,
+		})
 	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
@@ -1179,11 +1238,11 @@ func (c *ControlServer) broadcastEvent(event string, data interface{}) {
 
 func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Request) {
 	c.cacheTaskMu.Lock()
-	if c.isAuditing || c.isSlimming {
+	if c.isAuditing || c.isSlimming || c.isBoosting {
 		c.cacheTaskMu.Unlock()
 		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 			"ok":    false,
-			"error": "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成",
+			"error": "当前有缓存维护任务（体检、瘦身或全量载入）正在进行中，请稍候完成",
 		})
 		return
 	}
@@ -1235,11 +1294,11 @@ func (c *ControlServer) handleCacheSlim(w http.ResponseWriter, req *http.Request
 	}
 
 	c.cacheTaskMu.Lock()
-	if c.isAuditing || c.isSlimming {
+	if c.isAuditing || c.isSlimming || c.isBoosting {
 		c.cacheTaskMu.Unlock()
 		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 			"ok":    false,
-			"error": "当前有缓存维护任务（体检或瘦身）正在进行中，请稍候完成",
+			"error": "当前有缓存维护任务（体检、瘦身或全量载入）正在进行中，请稍候完成",
 		})
 		return
 	}
@@ -1290,6 +1349,99 @@ func (c *ControlServer) handleCacheSlim(w http.ResponseWriter, req *http.Request
 	})
 }
 
+func (c *ControlServer) handleCacheBoost(w http.ResponseWriter, req *http.Request) {
+	c.cacheTaskMu.Lock()
+	if c.isAuditing || c.isSlimming || c.isBoosting {
+		c.cacheTaskMu.Unlock()
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok":    false,
+			"error": "当前有缓存维护任务（体检、瘦身或全量载入）正在进行中，请稍候完成",
+		})
+		return
+	}
+	c.isBoosting = true
+	c.boostProgress = cache.BoostProgress{State: cache.BoostStateLoading}
+	c.cacheCancelCh = make(chan struct{})
+	cancelCh := c.cacheCancelCh
+	c.cacheTaskMu.Unlock()
+
+	c.stats.Log("INFO", "[CACHE-BOOST] Starting RAM Boost snapshot prewarm task...")
+
+	go func() {
+		defer func() {
+			c.cacheTaskMu.Lock()
+			c.isBoosting = false
+			c.cacheTaskMu.Unlock()
+		}()
+
+		res := c.cacheMgr.PrewarmBoostPoolWithProgress(c.stats, func(p cache.BoostProgress) {
+			c.cacheTaskMu.Lock()
+			if c.boostProgress.State != cache.BoostStateDisabled {
+				c.boostProgress = p
+				c.cacheTaskMu.Unlock()
+				c.broadcastEvent("boost_progress", p)
+			} else {
+				c.cacheTaskMu.Unlock()
+			}
+		}, cancelCh)
+
+		c.cacheTaskMu.Lock()
+		c.isBoosting = false
+		if c.boostProgress.State != cache.BoostStateDisabled && res.State != cache.BoostStateDisabled {
+			c.lastBoostResult = res
+			c.boostProgress = res
+			c.cacheTaskMu.Unlock()
+			c.broadcastEvent("boost_done", res)
+		} else {
+			c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
+			c.lastBoostResult = c.boostProgress
+			c.cacheTaskMu.Unlock()
+		}
+
+		c.stats.Log("INFO", fmt.Sprintf("[CACHE-BOOST] Finished: state %s, loaded %d/%d files, %.2f MB",
+			res.State, res.LoadedFiles, res.TotalFiles, float64(res.LoadedBytes)/(1024*1024)))
+	}()
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "RAM Boost prewarm started in background",
+		"task":    "boost",
+	})
+}
+
+func (c *ControlServer) handleCacheBoostDisable(w http.ResponseWriter, req *http.Request) {
+	c.cacheTaskMu.Lock()
+	if c.isBoosting && c.cacheCancelCh != nil {
+		select {
+		case <-c.cacheCancelCh:
+		default:
+			close(c.cacheCancelCh)
+		}
+	}
+	c.cacheTaskMu.Unlock()
+
+	c.cacheMgr.DisableBoost()
+
+	c.cacheTaskMu.Lock()
+	c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
+	c.lastBoostResult = c.boostProgress
+	c.cacheTaskMu.Unlock()
+
+	c.broadcastEvent("boost_disabled", map[string]interface{}{
+		"state":          cache.BoostStateDisabled,
+		"resident_bytes": 0,
+	})
+
+	c.stats.Log("INFO", "[CACHE-BOOST] RAM Boost closed, resident pool cleared and RAM budget returned")
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":             true,
+		"state":          cache.BoostStateDisabled,
+		"resident_bytes": 0,
+		"message":        "RAM Boost 已关闭",
+	})
+}
+
 func (c *ControlServer) handleCacheTaskStatus(w http.ResponseWriter, req *http.Request) {
 	c.cacheTaskMu.Lock()
 	defer c.cacheTaskMu.Unlock()
@@ -1298,10 +1450,13 @@ func (c *ControlServer) handleCacheTaskStatus(w http.ResponseWriter, req *http.R
 		"ok":                true,
 		"is_auditing":       c.isAuditing,
 		"is_slimming":       c.isSlimming,
+		"is_boosting":       c.isBoosting,
 		"audit_progress":    c.auditProgress,
 		"slim_progress":     c.slimProgress,
+		"boost_progress":    c.boostProgress,
 		"last_audit_result": c.lastAuditResult,
 		"last_slim_result":  c.lastSlimResult,
+		"last_boost_result": c.lastBoostResult,
 	})
 }
 

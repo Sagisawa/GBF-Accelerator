@@ -1416,7 +1416,7 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 	item, hitSrc := s.cacheMgr.GetWithNamespace(ns, req.URL.Path)
 	if item != nil {
 		s.stats.CheckAndRecordPrefetchReused(cleanPath)
-		if hitSrc == "RAM" {
+		if hitSrc == "RAM" || hitSrc == "RAM-BOOST" {
 			s.stats.IncRAMHit()
 			// P2: Hot path optimization: lightweight atomic counters only for RAM hits
 		} else {

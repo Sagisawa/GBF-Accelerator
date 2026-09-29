@@ -1371,3 +1371,189 @@ func TestCertInstallErrorExposure(t *testing.T) {
 	}
 }
 
+func TestControlCacheBoostAndDisable(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+
+	// Seed sample cache file
+	p := filepath.Join(tempDir, "assets", "item.png")
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	_ = os.WriteFile(p, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRsample"), 0644)
+	_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
+
+	stats := telemetry.NewStats()
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	// 1. Check initial stats
+	rStats := httptest.NewRequest(http.MethodGet, "/api/cache/stats", nil)
+	rStats.Host = "127.0.0.1:8125"
+	wStats := httptest.NewRecorder()
+	ctrl.handleRoute(wStats, rStats)
+	if wStats.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/cache/stats, got %d", wStats.Code)
+	}
+	var statsBody map[string]interface{}
+	_ = json.Unmarshal(wStats.Body.Bytes(), &statsBody)
+	if statsBody["boost_state"] != "disabled" {
+		t.Fatalf("expected initial boost_state to be disabled, got %v", statsBody["boost_state"])
+	}
+
+	// 2. Trigger Boost
+	rBoost := httptest.NewRequest(http.MethodPost, "/api/cache/boost", nil)
+	rBoost.Host = "127.0.0.1:8125"
+	wBoost := httptest.NewRecorder()
+	ctrl.handleRoute(wBoost, rBoost)
+	if wBoost.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/cache/boost, got %d", wBoost.Code)
+	}
+
+	// Wait briefly for prewarm to finish in background
+	time.Sleep(100 * time.Millisecond)
+
+	// 3. Query task status
+	rTask := httptest.NewRequest(http.MethodGet, "/api/cache/task-status", nil)
+	rTask.Host = "127.0.0.1:8125"
+	wTask := httptest.NewRecorder()
+	ctrl.handleRoute(wTask, rTask)
+	var taskBody map[string]interface{}
+	_ = json.Unmarshal(wTask.Body.Bytes(), &taskBody)
+	if taskBody["boost_progress"] == nil {
+		t.Fatalf("expected boost_progress in task-status, got nil")
+	}
+
+	// 4. Disable Boost
+	rDisable := httptest.NewRequest(http.MethodPost, "/api/cache/boost/disable", nil)
+	rDisable.Host = "127.0.0.1:8125"
+	wDisable := httptest.NewRecorder()
+	ctrl.handleRoute(wDisable, rDisable)
+	if wDisable.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/cache/boost/disable, got %d", wDisable.Code)
+	}
+	var disableBody map[string]interface{}
+	_ = json.Unmarshal(wDisable.Body.Bytes(), &disableBody)
+	if disableBody["state"] != "disabled" {
+		t.Fatalf("expected state disabled in disable response, got %v", disableBody["state"])
+	}
+}
+
+func TestControl_StatusIncludesIsBoostingCache(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, telemetry.NewStats())
+
+	r := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	r.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/status, got %d", w.Code)
+	}
+
+	var body map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if _, exists := body["is_boosting_cache"]; !exists {
+		t.Fatalf("expected is_boosting_cache in /api/status response, but field was missing")
+	}
+}
+
+func TestControl_DisableDuringActiveBoostRace(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+
+	// Seed 20 files
+	for i := 0; i < 20; i++ {
+		p := filepath.Join(tempDir, "assets", fmt.Sprintf("item_%d.png", i))
+		_ = os.MkdirAll(filepath.Dir(p), 0755)
+		_ = os.WriteFile(p, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRsample"), 0644)
+		_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
+	}
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, telemetry.NewStats())
+
+	// Start Boost
+	rBoost := httptest.NewRequest(http.MethodPost, "/api/cache/boost", nil)
+	rBoost.Host = "127.0.0.1:8125"
+	wBoost := httptest.NewRecorder()
+	ctrl.handleRoute(wBoost, rBoost)
+	if wBoost.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/cache/boost, got %d", wBoost.Code)
+	}
+
+	// Immediately Disable Boost while prewarm may still be in-flight
+	rDisable := httptest.NewRequest(http.MethodPost, "/api/cache/boost/disable", nil)
+	rDisable.Host = "127.0.0.1:8125"
+	wDisable := httptest.NewRecorder()
+	ctrl.handleRoute(wDisable, rDisable)
+	if wDisable.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/cache/boost/disable, got %d", wDisable.Code)
+	}
+
+	// Wait for background worker to terminate
+	time.Sleep(150 * time.Millisecond)
+
+	// Check cache stats - state must be disabled, NEVER overwritten by cancelled
+	rStats := httptest.NewRequest(http.MethodGet, "/api/cache/stats", nil)
+	rStats.Host = "127.0.0.1:8125"
+	wStats := httptest.NewRecorder()
+	ctrl.handleRoute(wStats, rStats)
+	var statsBody map[string]interface{}
+	_ = json.Unmarshal(wStats.Body.Bytes(), &statsBody)
+	if statsBody["boost_state"] != "disabled" {
+		t.Fatalf("expected boost_state to remain disabled after disable, got %v", statsBody["boost_state"])
+	}
+}
+
+func TestControl_ClearAllDisablesBoost(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+
+	p := filepath.Join(tempDir, "assets", "item.png")
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	_ = os.WriteFile(p, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRsample"), 0644)
+	_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, telemetry.NewStats())
+
+	// Start and wait for Boost to complete
+	rBoost := httptest.NewRequest(http.MethodPost, "/api/cache/boost", nil)
+	rBoost.Host = "127.0.0.1:8125"
+	wBoost := httptest.NewRecorder()
+	ctrl.handleRoute(wBoost, rBoost)
+	time.Sleep(100 * time.Millisecond)
+
+	// ClearAll
+	rClear := httptest.NewRequest(http.MethodPost, "/api/cache/clear", nil)
+	rClear.Host = "127.0.0.1:8125"
+	wClear := httptest.NewRecorder()
+	ctrl.handleRoute(wClear, rClear)
+	if wClear.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/cache/clear, got %d", wClear.Code)
+	}
+
+	// Verify stats: boost_state must be disabled
+	rStats := httptest.NewRequest(http.MethodGet, "/api/cache/stats", nil)
+	rStats.Host = "127.0.0.1:8125"
+	wStats := httptest.NewRecorder()
+	ctrl.handleRoute(wStats, rStats)
+	var statsBody map[string]interface{}
+	_ = json.Unmarshal(wStats.Body.Bytes(), &statsBody)
+	if statsBody["boost_state"] != "disabled" {
+		t.Fatalf("expected boost_state to be disabled after ClearAll, got %v", statsBody["boost_state"])
+	}
+}
+
+
+

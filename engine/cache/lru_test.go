@@ -1,7 +1,11 @@
 package cache
 
 import (
+	"fmt"
+	"math/rand"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestLRUCache(t *testing.T) {
@@ -223,5 +227,79 @@ func TestShardedLRU(t *testing.T) {
 		t.Fatalf("expected 0 stats after clear, got items=%d bytes=%d", items, bytes)
 	}
 }
+
+func TestLRUCache_ConcurrentSetDeleteClear(t *testing.T) {
+	lru := NewLRUCache(16 * 1024 * 1024)
+
+	var wg sync.WaitGroup
+	workers := 16
+	iterations := 100
+
+	// Mutators: Set & Delete
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				key := fmt.Sprintf("w_%d_key_%d", workerID, i%20)
+				item := &CacheItem{Key: key, Data: make([]byte, 1024+rand.Intn(2048))}
+				lru.Set(key, item)
+				if i%3 == 0 {
+					lru.Delete(key)
+				}
+			}
+		}(w)
+	}
+
+	// Concurrent Clear workers
+	for c := 0; c < 3; c++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 15; i++ {
+				time.Sleep(time.Duration(rand.Intn(2)+1) * time.Millisecond)
+				lru.Clear()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	totalBytes := lru.TotalBytes()
+	if totalBytes < 0 {
+		t.Fatalf("totalBytes went negative: %d", totalBytes)
+	}
+
+	items, statsBytes := lru.Stats()
+	if totalBytes != statsBytes {
+		t.Fatalf("inconsistent totalBytes vs Stats: totalBytes=%d, statsBytes=%d", totalBytes, statsBytes)
+	}
+
+	var actualBytes int64
+	var actualItems int
+	for _, s := range lru.shards {
+		cnt, b := s.stats()
+		actualItems += cnt
+		actualBytes += b
+	}
+
+	if totalBytes != actualBytes {
+		t.Fatalf("inconsistent totalBytes vs actual shard sum: totalBytes=%d, actualBytes=%d", totalBytes, actualBytes)
+	}
+	if items != actualItems {
+		t.Fatalf("inconsistent items vs actual shard sum: items=%d, actualItems=%d", items, actualItems)
+	}
+
+	// Repeated Clear safety
+	lru.Clear()
+	lru.Clear()
+	if lru.TotalBytes() != 0 {
+		t.Fatalf("expected 0 totalBytes after repeated Clear, got %d", lru.TotalBytes())
+	}
+	if items, bytes := lru.Stats(); items != 0 || bytes != 0 {
+		t.Fatalf("expected (0, 0) Stats after repeated Clear, got (%d, %d)", items, bytes)
+	}
+}
+
 
 

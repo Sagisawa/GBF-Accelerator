@@ -111,6 +111,24 @@ export async function slimCache(keep = 8): Promise<any> {
   return res.json()
 }
 
+export async function startBoost(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cache/boost`, { method: 'POST' })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function disableBoost(): Promise<any> {
+  const res = await fetch(`${BASE}/api/cache/boost/disable`, { method: 'POST' })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function fetchPrefetchStatus(): Promise<PrefetchStatus> {
   const res = await fetch(`${BASE}/api/prefetch/status`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)

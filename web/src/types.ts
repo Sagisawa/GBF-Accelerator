@@ -19,6 +19,7 @@ export interface RuntimeStatus {
   startup_supported?: boolean;
   is_auditing_cache?: boolean;
   is_slimming_cache?: boolean;
+  is_boosting_cache?: boolean;
   cache_dir?: string;
   active_api_count: number;
   active_foreground_assets: number;
@@ -70,12 +71,37 @@ export interface CacheStats {
   ram_items: number;
   ram_bytes: number;
   ram_mb: number;
+  resident_items?: number;
+  resident_bytes?: number;
+  resident_mb?: number;
+  total_ram_bytes?: number;
+  total_ram_mb?: number;
   ram_max_mb: number;
+  boost_state?: 'disabled' | 'loading' | 'completed' | 'partial' | 'cancelled' | 'memory_guard_stopped';
+  system_total_bytes?: number;
+  system_avail_bytes?: number;
+  system_total_mb?: number;
+  system_avail_mb?: number;
   hits_total: number;
   hits_ram: number;
   hits_disk: number;
   misses: number;
   hit_ratio_percent: number;
+}
+
+export interface BoostProgress {
+  state: 'disabled' | 'loading' | 'completed' | 'partial' | 'cancelled' | 'memory_guard_stopped';
+  loaded_files: number;
+  total_files: number;
+  skipped_files?: number;
+  loaded_bytes: number;
+  total_bytes: number;
+  speed_bytes_sec: number;
+  resident_bytes: number;
+  pending_bytes: number;
+  is_paused_by_fg: boolean;
+  done: boolean;
+  message?: string;
 }
 
 export interface PrefetchStatus {

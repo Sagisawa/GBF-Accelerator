@@ -2,6 +2,7 @@ package cache
 
 import (
 	"sync"
+	"sync/atomic"
 )
 
 type CacheItem struct {
@@ -36,9 +37,22 @@ type lruShard struct {
 
 	protHead *lruNode // dummy sentinel head for protected list
 	protTail *lruNode // dummy sentinel tail for protected list
+
+	cacheTotalBytes *atomic.Int64 // Shared pointer to parent LRUCache.totalBytes for O(1) atomic tracking
 }
 
-func newLRUShard(maxBytes int64) *lruShard {
+func (s *lruShard) updateDelta(oldBytes int64) {
+	if s.cacheTotalBytes == nil {
+		return
+	}
+	newBytes := s.probBytes + s.protBytes
+	delta := newBytes - oldBytes
+	if delta != 0 {
+		s.cacheTotalBytes.Add(delta)
+	}
+}
+
+func newLRUShard(maxBytes int64, cacheTotalBytes *atomic.Int64) *lruShard {
 	probHead := &lruNode{}
 	probTail := &lruNode{}
 	probHead.next = probTail
@@ -50,12 +64,13 @@ func newLRUShard(maxBytes int64) *lruShard {
 	protTail.prev = protHead
 
 	s := &lruShard{
-		maxBytes: maxBytes,
-		items:    make(map[string]*lruNode),
-		probHead: probHead,
-		probTail: probTail,
-		protHead: protHead,
-		protTail: protTail,
+		maxBytes:        maxBytes,
+		items:           make(map[string]*lruNode),
+		probHead:        probHead,
+		probTail:        probTail,
+		protHead:        protHead,
+		protTail:        protTail,
+		cacheTotalBytes: cacheTotalBytes,
 	}
 	s.calcCapacities(maxBytes)
 	return s
@@ -77,6 +92,9 @@ func (s *lruShard) calcCapacities(maxBytes int64) {
 }
 
 func (s *lruShard) removeNode(n *lruNode) {
+	if n == nil || n.prev == nil || n.next == nil {
+		return
+	}
 	n.prev.next = n.next
 	n.next.prev = n.prev
 	n.prev = nil
@@ -153,9 +171,11 @@ func (s *lruShard) evictProbation() {
 func (s *lruShard) setMaxBytes(maxBytes int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	oldBytes := s.probBytes + s.protBytes
 	s.calcCapacities(maxBytes)
 	s.demoteProtected()
 	s.evictProbation()
+	s.updateDelta(oldBytes)
 }
 
 func (s *lruShard) get(key string) (*CacheItem, bool) {
@@ -169,6 +189,7 @@ func (s *lruShard) get(key string) (*CacheItem, bool) {
 				s.protPushFront(node)
 			}
 		} else {
+			oldBytes := s.probBytes + s.protBytes
 			// Second access / hit: Promote from Probationary to Protected
 			s.removeNode(node)
 			s.probBytes -= node.item.Size
@@ -177,6 +198,7 @@ func (s *lruShard) get(key string) (*CacheItem, bool) {
 
 			s.demoteProtected()
 			s.evictProbation()
+			s.updateDelta(oldBytes)
 		}
 		return node.item, true
 	}
@@ -214,6 +236,8 @@ func (s *lruShard) set(key string, item *CacheItem, isProtected bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	oldBytes := s.probBytes + s.protBytes
+	defer s.updateDelta(oldBytes)
 
 	item.Size = int64(len(item.Data))
 	if s.maxBytes > 0 && item.Size > s.maxBytes {
@@ -231,10 +255,10 @@ func (s *lruShard) set(key string, item *CacheItem, isProtected bool) {
 
 	if node, ok := s.items[key]; ok {
 		if node.isProtected || isProtected {
+			s.removeNode(node)
 			if node.isProtected {
 				s.protBytes -= node.item.Size
 			} else {
-				s.removeNode(node)
 				s.probBytes -= node.item.Size
 			}
 			node.item = item
@@ -282,14 +306,15 @@ func (s *lruShard) delete(key string) bool {
 		} else {
 			s.probBytes -= node.item.Size
 		}
+		if s.cacheTotalBytes != nil {
+			s.cacheTotalBytes.Add(-node.item.Size)
+		}
 		return true
 	}
 	return false
 }
 
-func (s *lruShard) clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *lruShard) resetLocked() {
 	s.items = make(map[string]*lruNode)
 	s.probHead.next = s.probTail
 	s.probTail.prev = s.probHead
@@ -297,6 +322,16 @@ func (s *lruShard) clear() {
 	s.protTail.prev = s.protHead
 	s.probBytes = 0
 	s.protBytes = 0
+}
+
+func (s *lruShard) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	oldBytes := s.probBytes + s.protBytes
+	s.resetLocked()
+	if s.cacheTotalBytes != nil && oldBytes > 0 {
+		s.cacheTotalBytes.Add(-oldBytes)
+	}
 }
 
 func (s *lruShard) stats() (int, int64) {
@@ -308,10 +343,11 @@ func (s *lruShard) stats() (int, int64) {
 const defaultNumShards = 16
 
 type LRUCache struct {
-	shards    []*lruShard
-	mask      uint32
-	maxBytes  int64
-	numShards int
+	shards     []*lruShard
+	mask       uint32
+	maxBytes   int64
+	numShards  int
+	totalBytes atomic.Int64
 }
 
 func fnv32(key string) uint32 {
@@ -329,6 +365,12 @@ func NewLRUCache(maxBytes int64) *LRUCache {
 		numShards = defaultNumShards
 	}
 
+	c := &LRUCache{
+		mask:      uint32(numShards - 1),
+		maxBytes:  maxBytes,
+		numShards: numShards,
+	}
+
 	shards := make([]*lruShard, numShards)
 	perShard := maxBytes
 	if numShards > 1 {
@@ -336,15 +378,11 @@ func NewLRUCache(maxBytes int64) *LRUCache {
 	}
 
 	for i := 0; i < numShards; i++ {
-		shards[i] = newLRUShard(perShard)
+		shards[i] = newLRUShard(perShard, &c.totalBytes)
 	}
+	c.shards = shards
 
-	return &LRUCache{
-		shards:    shards,
-		mask:      uint32(numShards - 1),
-		maxBytes:  maxBytes,
-		numShards: numShards,
-	}
+	return c
 }
 
 func (c *LRUCache) getShard(key string) *lruShard {
@@ -395,18 +433,49 @@ func (c *LRUCache) Delete(key string) bool {
 }
 
 func (c *LRUCache) Clear() {
-	for _, shard := range c.shards {
-		shard.clear()
+	if c == nil {
+		return
 	}
+	// Lock all shards in strict ascending order (0 -> N-1) to block concurrent
+	// mutations and prevent partial-clear races.
+	for _, shard := range c.shards {
+		shard.mu.Lock()
+	}
+	defer func() {
+		for i := len(c.shards) - 1; i >= 0; i-- {
+			c.shards[i].mu.Unlock()
+		}
+	}()
+
+	for _, shard := range c.shards {
+		shard.resetLocked()
+	}
+	c.totalBytes.Store(0)
+}
+
+func (c *LRUCache) TotalBytes() int64 {
+	if c == nil {
+		return 0
+	}
+	t := c.totalBytes.Load()
+	if t < 0 {
+		return 0
+	}
+	return t
+}
+
+func (c *LRUCache) MaxBytes() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.maxBytes
 }
 
 func (c *LRUCache) Stats() (int, int64) {
 	var totalItems int
-	var totalBytes int64
 	for _, shard := range c.shards {
-		items, bytes := shard.stats()
+		items, _ := shard.stats()
 		totalItems += items
-		totalBytes += bytes
 	}
-	return totalItems, totalBytes
+	return totalItems, c.TotalBytes()
 }

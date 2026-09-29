@@ -185,7 +185,24 @@ func main() {
 			if maxMB <= 0 {
 				maxMB = 256
 			}
-			debug.SetMemoryLimit(int64(maxMB+128) * 1024 * 1024)
+			// Provide runtime headroom (128MB to 2048MB) above raw RAM cache budget
+			headroomMB := maxMB / 8
+			if headroomMB < 128 {
+				headroomMB = 128
+			}
+			if headroomMB > 2048 {
+				headroomMB = 2048
+			}
+			limitBytes := int64(maxMB+headroomMB) * 1024 * 1024
+
+			// Never exceed 85% of total physical memory if detectable
+			if memInfo, err := process.GetSystemMemory(); err == nil && memInfo.TotalBytes > 0 {
+				maxSafe := int64(memInfo.TotalBytes * 85 / 100)
+				if limitBytes > maxSafe && maxSafe > 256*1024*1024 {
+					limitBytes = maxSafe
+				}
+			}
+			debug.SetMemoryLimit(limitBytes)
 		}
 		if os.Getenv("GOGC") == "" {
 			debug.SetGCPercent(200)

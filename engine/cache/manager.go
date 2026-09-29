@@ -41,6 +41,8 @@ type Manager struct {
 	mu           sync.RWMutex
 	cacheBase    string
 	ramCache     *LRUCache
+	ramBudget    *RAMBudget
+	residentPool *ResidentPool
 	sf           *SingleFlight
 	missingShards [missingCacheShardCount]missingCacheShard
 	persistQueue chan *persistTask
@@ -118,9 +120,14 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 	if ramMaxMB <= 0 {
 		ramMaxMB = 256
 	}
+	ramCache := NewLRUCache(int64(ramMaxMB) * 1024 * 1024)
+	budget := NewRAMBudget(int64(ramMaxMB)*1024*1024, ramCache)
+	resident := NewResidentPool(budget)
 	m := &Manager{
 		cacheBase:    cacheBase,
-		ramCache:     NewLRUCache(int64(ramMaxMB) * 1024 * 1024),
+		ramBudget:    budget,
+		residentPool: resident,
+		ramCache:     ramCache,
 		sf:           NewSingleFlight(),
 		persistQueue: make(chan *persistTask, 1024),
 		stopPersist:  make(chan struct{}),
@@ -181,6 +188,7 @@ func (m *Manager) SetCacheBase(base string) {
 	m.mu.Unlock()
 
 	m.ramCache.Clear()
+	m.DisableBoost()
 	m.clearMissing()
 }
 
@@ -205,7 +213,25 @@ func (m *Manager) GetCacheBase() string {
 }
 
 func (m *Manager) SetRAMLimit(maxMB int) {
-	m.ramCache.SetMaxBytes(int64(maxMB) * 1024 * 1024)
+	newTotal := int64(maxMB) * 1024 * 1024
+	if m.ramBudget != nil {
+		if m.residentPool != nil && m.residentPool.Enabled() && newTotal < m.ramBudget.ResidentBytes() {
+			// Lowering RAM limit below currently resident payload:
+			// Safely disable Boost so that resident payload does not exceed the new configured limit
+			m.DisableBoost()
+		}
+		m.ramBudget.SetTotalBudget(newTotal, m.ramCache)
+	} else {
+		m.ramCache.SetMaxBytes(newTotal)
+	}
+}
+
+func (m *Manager) ResidentPool() *ResidentPool {
+	return m.residentPool
+}
+
+func (m *Manager) RAMBudget() *RAMBudget {
+	return m.ramBudget
 }
 
 func (m *Manager) SingleFlight() *SingleFlight {
@@ -409,7 +435,14 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	cleanKey := strings.TrimPrefix(basePath, "/")
 	ramKey := makeRAMKey(ns, cleanKey)
 
-	// 1. Check RAM Cache
+	// 1. Check Resident Pool if Boost is active
+	if m.residentPool != nil && m.residentPool.Enabled() {
+		if item, ok := m.residentPool.Get(ramKey); ok {
+			return item, "RAM-BOOST"
+		}
+	}
+
+	// 2. Check RAM Cache
 	if m.ramEnabled.Load() {
 		if item, ok := m.ramCache.Get(ramKey); ok {
 			return item, "RAM"
@@ -427,20 +460,23 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		return nil, ""
 	}
 
-	data, err := os.ReadFile(filePath)
-	if err != nil || len(data) == 0 {
+	item, err := m.loadAndValidateDiskItem(ns, cleanKey, filePath)
+	if err != nil {
 		if ns == "" || ns == "gbf" {
 			// Try fallback: prepend or strip "assets" for gbf namespace
 			var altPath string
+			var altKey string
 			if !strings.HasPrefix(cleanKey, "assets") {
-				altPath, _ = m.resolvePathWithNamespace("gbf", "assets/"+cleanKey)
+				altKey = "assets/" + cleanKey
+				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
 			} else {
-				altPath, _ = m.resolvePathWithNamespace("gbf", strings.TrimPrefix(cleanKey, "assets/"))
+				altKey = strings.TrimPrefix(cleanKey, "assets/")
+				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
 			}
 			if altPath != "" {
-				if data2, err2 := os.ReadFile(altPath); err2 == nil && len(data2) > 0 {
-					filePath = altPath
-					data = data2
+				if item2, err2 := m.loadAndValidateDiskItem("gbf", altKey, altPath); err2 == nil && item2 != nil {
+					item2.Key = ramKey
+					item = item2
 				} else {
 					m.markMissing(ramKey)
 					return nil, ""
@@ -455,10 +491,28 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		}
 	}
 
+	// Store into RAM cache only when enabled.
+	if m.ramEnabled.Load() {
+		m.ramCache.Set(ramKey, item)
+	}
+	return item, "DISK"
+}
+
+func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath string) (*CacheItem, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty cache file: %s", filePath)
+	}
+
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
 		if m.CheckAndQuarantineTamperedJS(filePath) {
-			m.markMissing(ramKey)
-			return nil, ""
+			if m.residentPool != nil {
+				m.residentPool.Delete(makeRAMKey(ns, cleanKey))
+			}
+			return nil, fmt.Errorf("tampered JS quarantined: %s", filePath)
 		}
 	}
 
@@ -494,9 +548,11 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		if m.autoRepair.Load() {
 			_ = os.Remove(filePath)
 			_ = os.Remove(extPath)
+			if m.residentPool != nil {
+				m.residentPool.Delete(makeRAMKey(ns, cleanKey))
+			}
 		}
-		m.markMissing(ramKey)
-		return nil, ""
+		return nil, fmt.Errorf("invalid cache content: %s", filePath)
 	}
 
 	if etag == "" {
@@ -515,7 +571,8 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		contentEncoding = ""
 	}
 
-	item := &CacheItem{
+	ramKey := makeRAMKey(ns, cleanKey)
+	return &CacheItem{
 		Key:             ramKey,
 		Data:            data,
 		ContentType:     contentType,
@@ -523,13 +580,7 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		ETag:            etag,
 		LastModified:    lastMod,
 		Size:            int64(len(data)),
-	}
-
-	// Store into RAM cache only when enabled.
-	if m.ramEnabled.Load() {
-		m.ramCache.Set(ramKey, item)
-	}
-	return item, "DISK"
+	}, nil
 }
 
 var fallbackTimestampRe = regexp.MustCompile(`^(assets(?:_(?:en|jp))?)/(\d+)/(.+)$`)
@@ -645,6 +696,11 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 		} else {
 			m.ramCache.Set(ramKey, item)
 		}
+	}
+
+	// Section V.5: Invalidate old Resident Pool entry when new cache item arrives
+	if m.residentPool != nil {
+		m.residentPool.Delete(ramKey)
 	}
 
 	shard := m.missingShard(ramKey)
@@ -816,6 +872,7 @@ func (m *Manager) ClearAll() (int, int64) {
 	defer m.persistMu.Unlock()
 	m.generation++
 	m.ClearRAM()
+	m.DisableBoost()
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
@@ -896,6 +953,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			if m.CheckAndQuarantineTamperedJS(p) {
 				corrupted++
 				m.ramCache.Delete(ramKey)
+				if m.residentPool != nil {
+					m.residentPool.Delete(ramKey)
+				}
 				return nil
 			}
 		}
@@ -925,6 +985,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			_ = os.Remove(p)
 			_ = os.Remove(p + ".ext")
 			m.ramCache.Delete(ramKey)
+			if m.residentPool != nil {
+				m.residentPool.Delete(ramKey)
+			}
 		} else {
 			healthy++
 		}
@@ -1051,6 +1114,12 @@ func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(
 				deletedFiles++
 				if info, err := d.Info(); err == nil {
 					freedBytes += info.Size()
+				}
+				if _, _, ramKey, ok := extractNamespaceAndKey(base, p); ok {
+					m.ramCache.Delete(ramKey)
+					if m.residentPool != nil {
+						m.residentPool.Delete(ramKey)
+					}
 				}
 			}
 			return nil

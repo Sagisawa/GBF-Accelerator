@@ -8,7 +8,7 @@ import (
 
 func TestRAMCacheMaxMBIsClampedToDocumentedRange(t *testing.T) {
     cases := []struct { value, want int }{
-        {0, 16}, {8, 16}, {256, 256}, {8192, 8192}, {99999, 8192},
+        {0, 16}, {8, 16}, {256, 256}, {8192, 8192}, {65536, 65536}, {99999, 65536},
     }
     for i, tc := range cases {
         t.Run(string(rune('a'+i)), func(t *testing.T) {
