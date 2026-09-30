@@ -30,3 +30,34 @@ func BenchmarkCheckAndRecordPrefetchReusedParallel(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkCheckAndRecordPrefetchReusedMultiKeyParallel measures prefetch lookup
+// throughput when concurrent requests hit multiple distinct asset paths.
+func BenchmarkCheckAndRecordPrefetchReusedMultiKeyParallel(b *testing.B) {
+	stats := NewStats()
+	defer stats.Close()
+
+	paths := make([]string, 64)
+	for i := 0; i < 64; i++ {
+		paths[i] = fmt.Sprintf("/assets/js/1000/asset_%d.js", i)
+	}
+
+	for _, workers := range []int{1, 2, 4, 8, 16, 32} {
+		workers := workers
+		b.Run(fmt.Sprintf("workers_%d", workers), func(b *testing.B) {
+			old := runtime.GOMAXPROCS(workers)
+			defer runtime.GOMAXPROCS(old)
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				idx := 0
+				for pb.Next() {
+					stats.CheckAndRecordPrefetchReused(paths[idx&63])
+					idx++
+				}
+			})
+		})
+	}
+}
+

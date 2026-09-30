@@ -1258,7 +1258,10 @@ func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, tar
 var reVersioned = regexp.MustCompile(`/(?:assets(?:_(?:en|jp))?)/\d+/|/\d{8,}/`)
 
 func isBlockedWindowsPath(s string) bool {
-	s = strings.ToLower(s)
+	return isBlockedWindowsPathLower(strings.ToLower(s))
+}
+
+func isBlockedWindowsPathLower(s string) bool {
 	if strings.HasPrefix(s, "windows/") || strings.HasPrefix(s, "windows\\") ||
 		s == "windows" ||
 		strings.HasPrefix(s, "/windows/") || strings.HasPrefix(s, `\windows\`) ||
@@ -1269,11 +1272,54 @@ func isBlockedWindowsPath(s string) bool {
 		strings.HasSuffix(s, "/windows") || strings.HasSuffix(s, `\windows`) {
 		return true
 	}
-	if len(s) >= 2 && s[1] == ':' && ((s[0] >= 'a' && s[0] <= 'z') || (s[0] >= 'A' && s[0] <= 'Z')) {
+	if len(s) >= 2 && s[1] == ':' && (s[0] >= 'a' && s[0] <= 'z') {
 		rest := s[2:]
 		if rest == `\windows` || rest == `/windows` ||
 			strings.HasPrefix(rest, `\windows\`) || strings.HasPrefix(rest, `/windows/`) ||
-			strings.HasPrefix(rest, `\windows/`) || strings.HasPrefix(rest, `/windows\`) {
+			strings.HasPrefix(rest, `\windows/`) || strings.HasPrefix(rest, `/windows\\`) {
+			return true
+		}
+	}
+	return false
+}
+
+func isVersionedAssetPath(p string) bool {
+	for i := 0; i < len(p); i++ {
+		if p[i] != '/' {
+			continue
+		}
+		sub := p[i:]
+		var rest string
+		if strings.HasPrefix(sub, "/assets/") {
+			rest = sub[8:]
+		} else if strings.HasPrefix(sub, "/assets_en/") {
+			rest = sub[11:]
+		} else if strings.HasPrefix(sub, "/assets_jp/") {
+			rest = sub[11:]
+		}
+
+		if rest != "" {
+			slashIdx := strings.IndexByte(rest, '/')
+			if slashIdx > 0 {
+				allDigits := true
+				for k := 0; k < slashIdx; k++ {
+					if rest[k] < '0' || rest[k] > '9' {
+						allDigits = false
+						break
+					}
+				}
+				if allDigits {
+					return true
+				}
+			}
+		}
+
+		start := i + 1
+		end := start
+		for end < len(p) && p[end] >= '0' && p[end] <= '9' {
+			end++
+		}
+		if (end-start) >= 8 && end < len(p) && p[end] == '/' {
 			return true
 		}
 	}
@@ -1284,7 +1330,7 @@ func (s *ProxyServer) getCacheControlHeader(urlPath string) string {
 	cfg := s.cfgMgr.Get()
 	if !cfg.EnableBrowserCache {
 		return "no-cache"
-	} else if reVersioned.MatchString(urlPath) {
+	} else if isVersionedAssetPath(urlPath) {
 		return "public, max-age=31536000, immutable"
 	}
 	return "public, max-age=3600"
@@ -1387,10 +1433,10 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 	if strings.Contains(req.RequestURI, "..") ||
 		strings.Contains(req.URL.Path, "..") ||
 		strings.Contains(unescapedURI, "..") ||
-		isBlockedWindowsPath(reqURILower) ||
-		isBlockedWindowsPath(pathLower) ||
-		isBlockedWindowsPath(unescapedLower) ||
-		isBlockedWindowsPath(unescapedPathLower) ||
+		isBlockedWindowsPathLower(reqURILower) ||
+		isBlockedWindowsPathLower(pathLower) ||
+		isBlockedWindowsPathLower(unescapedLower) ||
+		isBlockedWindowsPathLower(unescapedPathLower) ||
 		strings.Contains(reqURILower, "passwd") ||
 		strings.Contains(pathLower, "passwd") ||
 		strings.Contains(unescapedLower, "passwd") ||

@@ -31,7 +31,24 @@ type LogEntry struct {
 	Msg   string `json:"msg"`
 }
 
-const maxLogEntries = 1000
+const (
+	maxLogEntries           = 1000
+	prefetchSavedShardCount = 16
+)
+
+type prefetchSavedShard struct {
+	mu    sync.Mutex
+	items map[string]struct{}
+}
+
+func prefetchHash(key string) uint32 {
+	var hash uint32 = 2166136261
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= 16777619
+	}
+	return hash
+}
 
 type Stats struct {
 	StartTime              time.Time
@@ -55,15 +72,14 @@ type Stats struct {
 	ProtoH1     atomic.Int64
 	ProtoH2     atomic.Int64
 
-	mu            sync.RWMutex
-	logBuf        []LogEntry
-	logIdx        int
-	logCount      int
-	subMu         sync.RWMutex
-	subscribers   []chan LogEntry
-	prefetchMu    sync.RWMutex
-	prefetchSaved map[string]struct{}
-	logChan       chan LogEntry
+	mu             sync.RWMutex
+	logBuf         []LogEntry
+	logIdx         int
+	logCount       int
+	subMu          sync.RWMutex
+	subscribers    []chan LogEntry
+	prefetchShards [prefetchSavedShardCount]prefetchSavedShard
+	logChan        chan LogEntry
 
 	idleMu     sync.Mutex
 	idleChan   chan struct{}
@@ -83,13 +99,15 @@ var GlobalStats = NewStats()
 
 func NewStats() *Stats {
 	s := &Stats{
-		StartTime:     time.Now(),
-		logBuf:        make([]LogEntry, maxLogEntries),
-		subscribers:   make([]chan LogEntry, 0),
-		prefetchSaved: make(map[string]struct{}),
-		logChan:       make(chan LogEntry, 1024),
-		idleChan:      make(chan struct{}),
-		closedChan:    make(chan struct{}),
+		StartTime:   time.Now(),
+		logBuf:      make([]LogEntry, maxLogEntries),
+		subscribers: make([]chan LogEntry, 0),
+		logChan:     make(chan LogEntry, 1024),
+		idleChan:    make(chan struct{}),
+		closedChan:  make(chan struct{}),
+	}
+	for i := range s.prefetchShards {
+		s.prefetchShards[i].items = make(map[string]struct{}, 64)
 	}
 	go s.logWorker()
 	return s
@@ -206,13 +224,15 @@ func (s *Stats) IncPrefetchReused() {
 }
 
 func (s *Stats) MarkPrefetchSaved(path string) {
-	s.prefetchMu.Lock()
-	defer s.prefetchMu.Unlock()
-	s.prefetchSaved[path] = struct{}{}
-	if len(s.prefetchSaved) > 2000 {
-		for k := range s.prefetchSaved {
-			delete(s.prefetchSaved, k)
-			if len(s.prefetchSaved) <= 1500 {
+	idx := int(prefetchHash(path) & (prefetchSavedShardCount - 1))
+	shard := &s.prefetchShards[idx]
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	shard.items[path] = struct{}{}
+	if len(shard.items) > 128 {
+		for k := range shard.items {
+			delete(shard.items, k)
+			if len(shard.items) <= 96 {
 				break
 			}
 		}
@@ -220,12 +240,14 @@ func (s *Stats) MarkPrefetchSaved(path string) {
 }
 
 func (s *Stats) CheckAndRecordPrefetchReused(path string) {
-	s.prefetchMu.Lock()
-	_, ok := s.prefetchSaved[path]
+	idx := int(prefetchHash(path) & (prefetchSavedShardCount - 1))
+	shard := &s.prefetchShards[idx]
+	shard.mu.Lock()
+	_, ok := shard.items[path]
 	if ok {
-		delete(s.prefetchSaved, path)
+		delete(shard.items, path)
 	}
-	s.prefetchMu.Unlock()
+	shard.mu.Unlock()
 	if ok {
 		s.PrefetchReused.Add(1)
 	}

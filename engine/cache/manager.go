@@ -3,8 +3,6 @@ package cache
 import (
 	"bytes"
 	"compress/gzip"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,6 +26,15 @@ type cacheMetadata struct {
 	Version         int    `json:"v"`
 }
 
+type diskMeta struct {
+	LastModified    string `json:"LastModified,omitempty"`
+	ETag            string `json:"ETag,omitempty"`
+	AccessTime      int64  `json:"at,omitempty"`
+	ContentEncoding string `json:"ce,omitempty"`
+	ContentType     string `json:"ct,omitempty"`
+	Version         int    `json:"v"`
+}
+
 type persistTask struct {
 	ns         string
 	cleanKey   string
@@ -38,21 +45,22 @@ type persistTask struct {
 }
 
 type Manager struct {
-	mu           sync.RWMutex
-	cacheBase    string
-	ramCache     *LRUCache
-	ramBudget    *RAMBudget
-	residentPool *ResidentPool
-	sf           *SingleFlight
-	missingShards [missingCacheShardCount]missingCacheShard
-	persistQueue chan *persistTask
-	stopPersist  chan struct{}
-	persistDone  chan struct{}
-	stopOnce     sync.Once
-	persistMu    sync.RWMutex
-	generation   uint64
-	ramEnabled   atomic.Bool
-	autoRepair   atomic.Bool
+	mu             sync.RWMutex
+	cacheBase      string
+	ramCache       *LRUCache
+	ramBudget      *RAMBudget
+	residentPool   *ResidentPool
+	sf             *SingleFlight
+	missingShards  [missingCacheShardCount]missingCacheShard
+	diskMetaShards [diskMetaShardCount]diskMetaShard
+	persistQueue   chan *persistTask
+	stopPersist    chan struct{}
+	persistDone    chan struct{}
+	stopOnce       sync.Once
+	persistMu      sync.RWMutex
+	generation     uint64
+	ramEnabled     atomic.Bool
+	autoRepair     atomic.Bool
 }
 
 var mimeFallbacks = map[string]string{
@@ -79,7 +87,112 @@ var mimeFallbacks = map[string]string{
 const (
 	defaultPersistWorkers  = 4
 	missingCacheShardCount = 16
+	diskMetaShardCount     = 16
 )
+
+type diskMetaEntry struct {
+	mtimeNano       int64
+	size            int64
+	contentType     string
+	contentEncoding string
+	etag            string
+	lastModified    string
+	exists          bool
+	hasMeta         bool
+}
+
+type diskMetaShard struct {
+	mu    sync.RWMutex
+	items map[string]diskMetaEntry
+}
+
+func (m *Manager) initDiskMetaShards() {
+	for i := range m.diskMetaShards {
+		m.diskMetaShards[i].items = make(map[string]diskMetaEntry)
+	}
+}
+
+func (m *Manager) diskMetaShard(key string) *diskMetaShard {
+	return &m.diskMetaShards[int(fnv32(key)&(diskMetaShardCount-1))]
+}
+
+func (m *Manager) getDiskMeta(key string) (diskMetaEntry, bool) {
+	shard := m.diskMetaShard(key)
+	shard.mu.RLock()
+	entry, ok := shard.items[key]
+	shard.mu.RUnlock()
+	return entry, ok
+}
+
+func (m *Manager) recordDiskPresence(key string, mtimeNano int64, size int64) {
+	shard := m.diskMetaShard(key)
+	shard.mu.Lock()
+	if entry, ok := shard.items[key]; ok {
+		if entry.mtimeNano != mtimeNano || entry.size != size {
+			entry.hasMeta = false
+			entry.contentType = ""
+			entry.contentEncoding = ""
+			entry.etag = ""
+			entry.lastModified = ""
+		}
+		entry.exists = true
+		entry.mtimeNano = mtimeNano
+		entry.size = size
+		shard.items[key] = entry
+	} else {
+		shard.items[key] = diskMetaEntry{
+			mtimeNano: mtimeNano,
+			size:      size,
+			exists:    true,
+			hasMeta:   false,
+		}
+		if len(shard.items) > 4096 {
+			count := 0
+			for k := range shard.items {
+				delete(shard.items, k)
+				count++
+				if count >= 1024 {
+					break
+				}
+			}
+		}
+	}
+	shard.mu.Unlock()
+}
+
+func (m *Manager) setDiskMeta(key string, entry diskMetaEntry) {
+	shard := m.diskMetaShard(key)
+	shard.mu.Lock()
+	entry.exists = true
+	shard.items[key] = entry
+	if len(shard.items) > 4096 {
+		count := 0
+		for k := range shard.items {
+			delete(shard.items, k)
+			count++
+			if count >= 1024 {
+				break
+			}
+		}
+	}
+	shard.mu.Unlock()
+}
+
+func (m *Manager) deleteDiskMeta(key string) {
+	shard := m.diskMetaShard(key)
+	shard.mu.Lock()
+	delete(shard.items, key)
+	shard.mu.Unlock()
+}
+
+func (m *Manager) clearDiskMeta() {
+	for i := range m.diskMetaShards {
+		shard := &m.diskMetaShards[i]
+		shard.mu.Lock()
+		shard.items = make(map[string]diskMetaEntry)
+		shard.mu.Unlock()
+	}
+}
 
 type missingCacheShard struct {
 	mu    sync.RWMutex
@@ -135,6 +248,7 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 		generation:   1,
 	}
 	m.initMissingCacheShards()
+	m.initDiskMetaShards()
 	m.ramEnabled.Store(true)
 	m.autoRepair.Store(true)
 	var wg sync.WaitGroup
@@ -190,6 +304,7 @@ func (m *Manager) SetCacheBase(base string) {
 	m.ramCache.Clear()
 	m.DisableBoost()
 	m.clearMissing()
+	m.clearDiskMeta()
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {
@@ -324,6 +439,11 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 		return false
 	}
 	ramKey := makeRAMKey(ns, cleanKey)
+	if m.residentPool != nil && m.residentPool.Enabled() {
+		if _, ok := m.residentPool.Get(ramKey); ok {
+			return true
+		}
+	}
 	if m.ramEnabled.Load() && m.ramCache.Contains(ramKey) {
 		return true
 	}
@@ -335,22 +455,29 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 		return false
 	}
 	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+		m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
 		return true
 	}
 	// Fallback check (only in gbf namespace)
 	if ns == "" || ns == "gbf" {
 		var altPath string
+		var altKey string
 		if !strings.HasPrefix(cleanKey, "assets") {
-			altPath, _ = m.resolvePathWithNamespace("gbf", "assets/"+cleanKey)
+			altKey = "assets/" + cleanKey
+			altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
 		} else {
-			altPath, _ = m.resolvePathWithNamespace("gbf", strings.TrimPrefix(cleanKey, "assets/"))
+			altKey = strings.TrimPrefix(cleanKey, "assets/")
+			altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
 		}
 		if altPath != "" {
 			if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
 				return true
 			}
 		}
 	}
+	m.deleteDiskMeta(ramKey)
+	m.markMissing(ramKey)
 	return false
 }
 
@@ -477,6 +604,17 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 				if item2, err2 := m.loadAndValidateDiskItem("gbf", altKey, altPath); err2 == nil && item2 != nil {
 					item2.Key = ramKey
 					item = item2
+					altMeta, _ := m.getDiskMeta(makeRAMKey("gbf", altKey))
+					m.setDiskMeta(ramKey, diskMetaEntry{
+						mtimeNano:       altMeta.mtimeNano,
+						size:            altMeta.size,
+						contentType:     item2.ContentType,
+						contentEncoding: item2.ContentEncoding,
+						etag:            item2.ETag,
+						lastModified:    item2.LastModified,
+						exists:          true,
+						hasMeta:         true,
+					})
 				} else {
 					m.markMissing(ramKey)
 					return nil, ""
@@ -499,68 +637,96 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 }
 
 func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath string) (*CacheItem, error) {
-	data, err := os.ReadFile(filePath)
+	ramKey := makeRAMKey(ns, cleanKey)
+
+	f, err := os.Open(filePath)
 	if err != nil {
+		m.deleteDiskMeta(ramKey)
 		return nil, err
 	}
-	if len(data) == 0 {
-		return nil, fmt.Errorf("empty cache file: %s", filePath)
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() || fi.Size() == 0 {
+		m.deleteDiskMeta(ramKey)
+		if fi != nil && fi.Size() == 0 {
+			return nil, fmt.Errorf("empty cache file: %s", filePath)
+		}
+		return nil, fmt.Errorf("invalid cache file: %s", filePath)
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil || len(data) == 0 {
+		m.deleteDiskMeta(ramKey)
+		return nil, fmt.Errorf("failed to read cache file: %s", filePath)
 	}
 
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
+		_ = f.Close()
 		if m.CheckAndQuarantineTamperedJS(filePath) {
+			m.deleteDiskMeta(ramKey)
 			if m.residentPool != nil {
-				m.residentPool.Delete(makeRAMKey(ns, cleanKey))
+				m.residentPool.Delete(ramKey)
 			}
 			return nil, fmt.Errorf("tampered JS quarantined: %s", filePath)
 		}
 	}
 
-	// Read metadata from .ext
+	mtimeNano := fi.ModTime().UnixNano()
+	size := fi.Size()
+
+	// Read metadata: check in-memory metadata index first to avoid reading .ext from disk
 	extPath := filePath + ".ext"
 	contentType := ""
 	contentEncoding := ""
 	etag := ""
 	lastMod := ""
 
-	if metaBytes, err := os.ReadFile(extPath); err == nil {
-		var meta cacheMetadata
-		if err := json.Unmarshal(metaBytes, &meta); err == nil && meta.Version == 1 {
-			contentType = meta.ContentType
-			contentEncoding = meta.ContentEncoding
-			etag = meta.ETag
-			lastMod = meta.LastModified
+	needsIndexSave := false
+	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.mtimeNano == mtimeNano && meta.size == size {
+		contentType = meta.contentType
+		contentEncoding = meta.contentEncoding
+		etag = meta.etag
+		lastMod = meta.lastModified
+	} else {
+		needsIndexSave = true
+		if metaBytes, err := os.ReadFile(extPath); err == nil {
+			var meta cacheMetadata
+			if err := json.Unmarshal(metaBytes, &meta); err == nil && meta.Version == 1 {
+				contentType = meta.ContentType
+				contentEncoding = meta.ContentEncoding
+				etag = meta.ETag
+				lastMod = meta.LastModified
+			}
 		}
-	}
 
-	if contentType == "" {
-		ext := strings.ToLower(filepath.Ext(filePath))
-		contentType = mimeFallbacks[ext]
 		if contentType == "" {
-			contentType = mime.TypeByExtension(ext)
-		}
-		if contentType == "" {
-			contentType = "application/octet-stream"
+			ext := strings.ToLower(filepath.Ext(filePath))
+			contentType = mimeFallbacks[ext]
+			if contentType == "" {
+				contentType = mime.TypeByExtension(ext)
+			}
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
 		}
 	}
 
 	if !IsValidCacheContent(cleanKey, contentType, data) {
+		m.deleteDiskMeta(ramKey)
 		if m.autoRepair.Load() {
+			_ = f.Close()
 			_ = os.Remove(filePath)
 			_ = os.Remove(extPath)
 			if m.residentPool != nil {
-				m.residentPool.Delete(makeRAMKey(ns, cleanKey))
+				m.residentPool.Delete(ramKey)
 			}
 		}
 		return nil, fmt.Errorf("invalid cache content: %s", filePath)
 	}
 
 	if etag == "" {
-		if fi, err := os.Stat(filePath); err == nil {
-			etag = fmt.Sprintf("\"%x-%x\"", fi.ModTime().Unix(), len(data))
-		} else {
-			etag = fmt.Sprintf("\"%x-%x\"", time.Now().Unix(), len(data))
-		}
+		etag = fmt.Sprintf("\"%x-%x\"", fi.ModTime().Unix(), len(data))
 	}
 
 	// Check gzip signature
@@ -571,7 +737,19 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 		contentEncoding = ""
 	}
 
-	ramKey := makeRAMKey(ns, cleanKey)
+	if needsIndexSave {
+		m.setDiskMeta(ramKey, diskMetaEntry{
+			mtimeNano:       mtimeNano,
+			size:            size,
+			contentType:     contentType,
+			contentEncoding: contentEncoding,
+			etag:            etag,
+			lastModified:    lastMod,
+			exists:          true,
+			hasMeta:         true,
+		})
+	}
+
 	return &CacheItem{
 		Key:             ramKey,
 		Data:            data,
@@ -690,6 +868,7 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 		LastModified:    lastMod,
 		Size:            int64(len(data)),
 	}
+
 	if m.ramEnabled.Load() {
 		if isProbation {
 			m.ramCache.SetProbation(ramKey, item)
@@ -823,30 +1002,58 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 	tmpDataPath := fmt.Sprintf("%s.tmp.%d.%d.%d", filePath, pid, ts, seq)
 	if err := os.WriteFile(tmpDataPath, data, 0644); err != nil {
 		_ = os.Remove(tmpDataPath)
+		m.mu.RLock()
+		base := m.cacheBase
+		m.mu.RUnlock()
+		if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
+			m.deleteDiskMeta(ramKey)
+		}
 		return false
 	}
 	if err := renameWithRetry(tmpDataPath, filePath, 3); err != nil {
 		_ = os.Remove(tmpDataPath)
+		m.mu.RLock()
+		base := m.cacheBase
+		m.mu.RUnlock()
+		if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
+			m.deleteDiskMeta(ramKey)
+		}
 		return false
 	}
 
 	// Write .ext
 	extPath := filePath + ".ext"
-	sum := md5.Sum(data)
-	meta := map[string]interface{}{
-		"LastModified": lastMod,
-		"ETag":         etag,
-		"at":           time.Now().Unix(),
-		"md5":          hex.EncodeToString(sum[:]),
-		"ce":           ce,
-		"ct":           ct,
-		"v":            1,
+	meta := diskMeta{
+		LastModified:    lastMod,
+		ETag:            etag,
+		AccessTime:      time.Now().Unix(),
+		ContentEncoding: ce,
+		ContentType:     ct,
+		Version:         1,
 	}
-	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	metaBytes, _ := json.Marshal(&meta)
 	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d.%d", extPath, pid, ts, seq)
 	if err := os.WriteFile(tmpExtPath, metaBytes, 0644); err == nil {
 		if err := renameWithRetry(tmpExtPath, extPath, 3); err != nil {
 			_ = os.Remove(tmpExtPath)
+		}
+	}
+
+	m.mu.RLock()
+	base := m.cacheBase
+	m.mu.RUnlock()
+	if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
+		if fi, err := os.Stat(filePath); err == nil {
+			m.setDiskMeta(ramKey, diskMetaEntry{
+				mtimeNano:       fi.ModTime().UnixNano(),
+				size:            fi.Size(),
+				contentType:     ct,
+				contentEncoding: ce,
+				etag:            etag,
+				lastModified:    lastMod,
+				exists:          true,
+				hasMeta:         true,
+			})
 		}
 	}
 
@@ -892,6 +1099,7 @@ func (m *Manager) ClearAll() (int, int64) {
 	})
 
 	m.clearMissing()
+	m.clearDiskMeta()
 
 	return deletedFiles, freedBytes
 }
@@ -956,6 +1164,7 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 				if m.residentPool != nil {
 					m.residentPool.Delete(ramKey)
 				}
+				m.deleteDiskMeta(ramKey)
 				return nil
 			}
 		}
@@ -988,6 +1197,7 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			if m.residentPool != nil {
 				m.residentPool.Delete(ramKey)
 			}
+			m.deleteDiskMeta(ramKey)
 		} else {
 			healthy++
 		}
@@ -1120,6 +1330,7 @@ func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(
 					if m.residentPool != nil {
 						m.residentPool.Delete(ramKey)
 					}
+					m.deleteDiskMeta(ramKey)
 				}
 			}
 			return nil

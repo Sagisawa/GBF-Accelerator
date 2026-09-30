@@ -890,4 +890,70 @@ func TestProxyRedirectTransparency(t *testing.T) {
 	}
 }
 
+func TestIsVersionedAssetPathEquivalence(t *testing.T) {
+	testCases := []string{
+		"/assets/123456/sound/se.mp3",
+		"/assets_en/999999/img/sp/quest.png",
+		"/assets_jp/1111/cjs/cjs.js",
+		"/assets/1/app.js",
+		"/assets_en/2/app.js",
+		"/assets_jp/3/app.js",
+		"/12345678/manifest.json",
+		"/123456789/data.bin",
+		"/game/12345678/asset.js",
+		"/sub/path/12345678/file.png",
+		"/assets/img/sp/quest.png",
+		"/assets/js/app.js",
+		"/assets_en/img/banner.png",
+		"/assets_jp/sound/bgm.mp3",
+		"/1234567/too_short.js",
+		"/assets/abc/not_digits.js",
+		"/assets_en/abc/not_digits.js",
+		"/assets/12345",
+		"/assets_en/12345",
+		"/assets_jp/12345",
+		"",
+		"/",
+		"/assets/",
+		"/12345678",
+		"/other/path/without/version.js",
+		"/assets/12345/sub/67890/deep.png",
+	}
 
+	for _, tc := range testCases {
+		expected := reVersioned.MatchString(tc)
+		actual := isVersionedAssetPath(tc)
+		if expected != actual {
+			t.Errorf("isVersionedAssetPath(%q) = %v, expected %v", tc, actual, expected)
+		}
+	}
+}
+
+func TestIsVersionedAssetPathCombinatorial(t *testing.T) {
+	prefixes := []string{
+		"", "/", "/assets/", "/assets_en/", "/assets_jp/", "/other/", "/12345678/", "/1234567/",
+		"/assets", "/assets_en", "/assets_jp", "assets/", "assets_en/", "assets_jp/",
+		"/nested/assets/", "/nested/assets_en/", "/nested/assets_jp/",
+	}
+	midSegments := []string{
+		"", "1", "12", "1234567", "12345678", "123456789", "abc", "123abc", "abc123", "0",
+		"12345678/", "1234567/", "9999999999",
+	}
+	suffixes := []string{
+		"", "/", "/file.js", "/nested/path/sound.mp3", ".js", "/12345678/file.png",
+		"/0/file.png", "/a/b/c",
+	}
+
+	for _, p := range prefixes {
+		for _, m := range midSegments {
+			for _, s := range suffixes {
+				candidate := p + m + s
+				expected := reVersioned.MatchString(candidate)
+				actual := isVersionedAssetPath(candidate)
+				if expected != actual {
+					t.Fatalf("mismatch for candidate %q: regex=%v, func=%v", candidate, expected, actual)
+				}
+			}
+		}
+	}
+}
