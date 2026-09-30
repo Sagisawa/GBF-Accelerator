@@ -1578,7 +1578,7 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 		}
 
 		// Respond-First: Instant RAM cache write & non-blocking background disk persistence
-		savedItem, ok := s.cacheMgr.SaveRAMWithNamespace(ns, req.URL.Path, headersMap, data)
+		savedItem, ok := s.cacheMgr.SaveRAMValidatedWithNamespace(ns, req.URL.Path, headersMap, data)
 		if !ok || savedItem == nil {
 			return nil, fmt.Errorf("failed to store asset in cache")
 		}

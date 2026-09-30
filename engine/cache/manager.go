@@ -630,8 +630,10 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	}
 
 	// Store into RAM cache only when enabled.
+	// SLRU: Admitted to Probationary segment on first disk hit (cold access).
+	// A subsequent hit via Get() will promote it to Protected.
 	if m.ramEnabled.Load() {
-		m.ramCache.Set(ramKey, item)
+		m.ramCache.SetProbation(ramKey, item)
 	}
 	return item, "DISK"
 }
@@ -655,10 +657,19 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 		return nil, fmt.Errorf("invalid cache file: %s", filePath)
 	}
 
-	data, err := io.ReadAll(f)
+	mtimeNano := fi.ModTime().UnixNano()
+	size := fi.Size()
+
+	data, err := readDiskFile(f, size)
 	if err != nil || len(data) == 0 {
 		m.deleteDiskMeta(ramKey)
 		return nil, fmt.Errorf("failed to read cache file: %s", filePath)
+	}
+	if int64(len(data)) != size {
+		size = int64(len(data))
+		if fi2, err := f.Stat(); err == nil {
+			mtimeNano = fi2.ModTime().UnixNano()
+		}
 	}
 
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
@@ -671,9 +682,6 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 			return nil, fmt.Errorf("tampered JS quarantined: %s", filePath)
 		}
 	}
-
-	mtimeNano := fi.ModTime().UnixNano()
-	size := fi.Size()
 
 	// Read metadata: check in-memory metadata index first to avoid reading .ext from disk
 	extPath := filePath + ".ext"
@@ -726,7 +734,7 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 	}
 
 	if etag == "" {
-		etag = fmt.Sprintf("\"%x-%x\"", fi.ModTime().Unix(), len(data))
+		etag = fmt.Sprintf("\"%x-%x\"", mtimeNano/1e9, len(data))
 	}
 
 	// Check gzip signature
@@ -759,6 +767,31 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 		LastModified:    lastMod,
 		Size:            int64(len(data)),
 	}, nil
+}
+
+// readDiskFile reads the complete contents of f using a buffer preallocated
+// according to known file size, preserving byte-for-byte integrity and handling
+// edge cases such as files shrinking or growing between Stat and Read.
+func readDiskFile(f *os.File, size int64) ([]byte, error) {
+	if size <= 0 || size > 1<<30 {
+		return io.ReadAll(f)
+	}
+
+	data := make([]byte, 0, size+1)
+	for {
+		if len(data) >= cap(data) {
+			d := append(data[:cap(data)], 0)
+			data = d[:len(data)]
+		}
+		n, err := f.Read(data[len(data):cap(data)])
+		data = data[:len(data)+n]
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			return data, err
+		}
+	}
 }
 
 var fallbackTimestampRe = regexp.MustCompile(`^(assets(?:_(?:en|jp))?)/(\d+)/(.+)$`)
@@ -833,13 +866,16 @@ func getHeader(h map[string]string, key string) string {
 	return ""
 }
 
-func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte, isProbation bool) (*CacheItem, string, string, uint64, bool) {
+func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte, isProbation bool, validated bool) (*CacheItem, string, string, uint64, bool) {
 	m.persistMu.RLock()
 	defer m.persistMu.RUnlock()
 	generation := m.generation
 	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	if len(data) == 0 {
+		return nil, "", "", 0, false
+	}
 	ct := getHeader(headers, "content-type")
-	if !IsValidCacheContent(cleanKey, ct, data) {
+	if !validated && !IsValidCacheContent(cleanKey, ct, data) {
 		return nil, "", "", 0, false
 	}
 
@@ -890,12 +926,66 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 	return item, cleanKey, filePath, generation, true
 }
 
+// SaveRAM saves an asset into RAM (Protected segment) with mandatory IsValidCacheContent validation,
+// and enqueues asynchronous disk persistence.
 func (m *Manager) SaveRAM(urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
 	return m.SaveRAMWithNamespace("gbf", urlPath, headers, data)
 }
 
+// SaveRAMWithNamespace saves an asset into RAM (Protected segment) with mandatory IsValidCacheContent validation,
+// and enqueues asynchronous disk persistence.
 func (m *Manager) SaveRAMWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
-	item, cleanKey, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, false)
+	return m.saveRAMWithNamespaceAndValidation(ns, urlPath, headers, data, false, false)
+}
+
+// SaveRAMValidated saves a pre-validated asset into RAM (Protected segment) and enqueues disk persistence.
+// PRECONDITION: The caller MUST have already verified IsValidCacheContent(cleanKey, contentType, data).
+// Calling this with unvalidated data violates P0 Byte-for-Byte Integrity and cache safety standards.
+// For untrusted/unverified inputs, use SaveRAM or SaveRAMWithNamespace instead.
+func (m *Manager) SaveRAMValidated(urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	return m.SaveRAMValidatedWithNamespace("gbf", urlPath, headers, data)
+}
+
+// SaveRAMValidatedWithNamespace saves a pre-validated asset into RAM (Protected segment) and enqueues disk persistence.
+// PRECONDITION: The caller MUST have already verified IsValidCacheContent(cleanKey, contentType, data).
+// This is strictly intended for internal fast paths (such as proxy upstream fetch) where validation
+// has already been performed immediately prior to admission, avoiding redundant validation passes.
+// For untrusted/unverified inputs, use SaveRAM or SaveRAMWithNamespace instead.
+func (m *Manager) SaveRAMValidatedWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	return m.saveRAMWithNamespaceAndValidation(ns, urlPath, headers, data, false, true)
+}
+
+// SavePrefetch saves an asset into RAM (Probationary segment) with mandatory IsValidCacheContent validation,
+// and enqueues asynchronous disk persistence.
+func (m *Manager) SavePrefetch(urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	return m.SavePrefetchWithNamespace("gbf", urlPath, headers, data)
+}
+
+// SavePrefetchWithNamespace saves an asset into RAM (Probationary segment) with mandatory IsValidCacheContent validation,
+// and enqueues asynchronous disk persistence.
+func (m *Manager) SavePrefetchWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	return m.saveRAMWithNamespaceAndValidation(ns, urlPath, headers, data, true, false)
+}
+
+// SavePrefetchValidated saves a pre-validated asset into RAM (Probationary segment) and enqueues disk persistence.
+// PRECONDITION: The caller MUST have already verified IsValidCacheContent(cleanKey, contentType, data).
+// Calling this with unvalidated data violates P0 Byte-for-Byte Integrity and cache safety standards.
+// For untrusted/unverified inputs, use SavePrefetch or SavePrefetchWithNamespace instead.
+func (m *Manager) SavePrefetchValidated(urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	return m.SavePrefetchValidatedWithNamespace("gbf", urlPath, headers, data)
+}
+
+// SavePrefetchValidatedWithNamespace saves a pre-validated asset into RAM (Probationary segment) and enqueues disk persistence.
+// PRECONDITION: The caller MUST have already verified IsValidCacheContent(cleanKey, contentType, data).
+// This is strictly intended for internal fast paths (such as prefetch engine fetch) where validation
+// has already been performed immediately prior to admission, avoiding redundant validation passes.
+// For untrusted/unverified inputs, use SavePrefetch or SavePrefetchWithNamespace instead.
+func (m *Manager) SavePrefetchValidatedWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
+	return m.saveRAMWithNamespaceAndValidation(ns, urlPath, headers, data, true, true)
+}
+
+func (m *Manager) saveRAMWithNamespaceAndValidation(ns, urlPath string, headers map[string]string, data []byte, isProbation bool, validated bool) (*CacheItem, bool) {
+	item, cleanKey, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, isProbation, validated)
 	if !ok || item == nil {
 		return nil, false
 	}
@@ -924,39 +1014,16 @@ func (m *Manager) SaveRAMWithNamespace(ns, urlPath string, headers map[string]st
 	return item, true
 }
 
-func (m *Manager) SavePrefetchWithNamespace(ns, urlPath string, headers map[string]string, data []byte) (*CacheItem, bool) {
-	item, cleanKey, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, true)
-	if !ok || item == nil {
-		return nil, false
-	}
-
-	select {
-	case <-m.stopPersist:
-		return item, true
-	default:
-	}
-
-	select {
-	case m.persistQueue <- &persistTask{
-		ns:         ns,
-		cleanKey:   cleanKey,
-		filePath:   filePath,
-		headers:    headers,
-		data:       data,
-		generation: generation,
-	}:
-	default:
-	}
-
-	return item, true
-}
-
+// Save saves an asset into RAM and synchronously persists it to disk,
+// enforcing mandatory IsValidCacheContent validation.
 func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) bool {
 	return m.SaveWithNamespace("gbf", urlPath, headers, data)
 }
 
+// SaveWithNamespace saves an asset into RAM and synchronously persists it to disk,
+// enforcing mandatory IsValidCacheContent validation.
 func (m *Manager) SaveWithNamespace(ns, urlPath string, headers map[string]string, data []byte) bool {
-	item, _, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, false)
+	item, _, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, false, false)
 	if !ok || item == nil {
 		return false
 	}

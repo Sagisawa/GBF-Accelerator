@@ -4,6 +4,7 @@ import (
 	crand "crypto/rand"
 	"fmt"
 	mrand "math/rand/v2"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -208,9 +209,12 @@ func BenchmarkHotAssetContinuousAccess_WithColdPrefetchStream(b *testing.B) {
 	var hotHits atomic.Int64
 	var hotMisses atomic.Int64
 	stopCold := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
 
 	// Start background cold prefetch stream: continuously writes 256KB assets
 	go func() {
+		defer wg.Done()
 		coldPayload := makeFakePNG(256 * 1024) // 256KB large cold asset
 		idx := 0
 		for {
@@ -240,6 +244,7 @@ func BenchmarkHotAssetContinuousAccess_WithColdPrefetchStream(b *testing.B) {
 	}
 
 	close(stopCold)
+	wg.Wait()
 	total := hotHits.Load() + hotMisses.Load()
 	hitRate := float64(hotHits.Load()) / float64(total) * 100
 	b.Logf("Hot Asset RAM Hit Rate under Cold Stream: %.2f%% (%d hits / %d total)", hitRate, hotHits.Load(), total)

@@ -606,10 +606,10 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 		var ok bool
 		if pe.srv.cacheMgr.SingleFlight().Waiters(flightKey) > 0 {
 			// Foreground is actively waiting: admit directly to Protected segment
-			savedItem, ok = pe.srv.cacheMgr.SaveRAMWithNamespace(ns, item.path, headersMap, data)
+			savedItem, ok = pe.srv.cacheMgr.SaveRAMValidatedWithNamespace(ns, item.path, headersMap, data)
 		} else {
 			// Pure background prefetch: admit to Probationary segment to protect hot cache
-			savedItem, ok = pe.srv.cacheMgr.SavePrefetchWithNamespace(ns, item.path, headersMap, data)
+			savedItem, ok = pe.srv.cacheMgr.SavePrefetchValidatedWithNamespace(ns, item.path, headersMap, data)
 		}
 		if !ok || savedItem == nil {
 			return nil, fmt.Errorf("failed to save asset")
