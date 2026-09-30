@@ -22,11 +22,12 @@ import (
 )
 
 const (
-	CanonicalModuleSHA256   = "1a76f3f257233125698911a1e6ac48007df5ccd576a179d4466be9040d4c14a1"
+	CanonicalModuleSHA256   = "c9a0240b32bbd54499328936ee7041fd550f4e24e6211ef95976104db130bdf3"
 	CanonicalLicensesSHA256 = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
 	GitHubRepo              = "Sagisawa/GBF-Accelerator"
 	AssetsRepo              = "Sagisawa/GBF-Accelerator-Assets"
-	AssetsTag               = "v2.3.0"
+	AssetsTag               = "v2.4.0"
+	ToolchainAssetsTag      = "v2.3.0"
 )
 
 var (
@@ -135,30 +136,31 @@ func GetAndroidToolsDir() string {
 
 // GetDefaultComponentSpecs returns the authoritative component metadata.
 func GetDefaultComponentSpecs() []ComponentSpec {
-	baseReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + AssetsTag + "/"
+	moduleReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + AssetsTag + "/"
+	toolchainReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + ToolchainAssetsTag + "/"
 	return []ComponentSpec{
 		{
 			ID:          "lspatch",
 			FileName:    "lspatch.jar",
 			Size:        12106851,
 			SHA256:      CanonicalLSPatchSHA256,
-			URL:         baseReleaseURL + "lspatch.jar",
+			URL:         toolchainReleaseURL + "lspatch.jar",
 			Description: "LSPatch Portable 核心 (" + CanonicalLSPatchVersion + ")",
 		},
 		{
 			ID:          "module",
 			FileName:    "xposed-release.apk",
-			Size:        4833516,
+			Size:        4868772,
 			SHA256:      CanonicalModuleSHA256,
-			URL:         baseReleaseURL + "xposed-release.apk",
-			Description: "GBF-Accelerator Xposed Module (v2.3.0)",
+			URL:         moduleReleaseURL + "xposed-release.apk",
+			Description: "GBF-Accelerator Xposed Module (v2.4.0)",
 		},
 		{
 			ID:          "licenses",
 			FileName:    "THIRD_PARTY_LICENSES.md",
 			Size:        1800,
 			SHA256:      CanonicalLicensesSHA256,
-			URL:         baseReleaseURL + "THIRD_PARTY_LICENSES.md",
+			URL:         toolchainReleaseURL + "THIRD_PARTY_LICENSES.md",
 			Description: "第三方开源许可协议",
 		},
 	}
@@ -167,7 +169,7 @@ func GetDefaultComponentSpecs() []ComponentSpec {
 // GetFullEnvironmentSpecs returns the full closed-loop Android environment specification
 // including LSPatch, Xposed module, licenses, platform-tools (ADB), and portable JRE.
 func GetFullEnvironmentSpecs() []ComponentSpec {
-	baseReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + AssetsTag + "/"
+	toolchainReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + ToolchainAssetsTag + "/"
 	specs := GetDefaultComponentSpecs()
 
 	// Platform tools archive for current OS.
@@ -185,7 +187,7 @@ func GetFullEnvironmentSpecs() []ComponentSpec {
 		FileName:    ptFileName,
 		Size:        ptSize,
 		SHA256:      ptSHA256,
-		URL:         baseReleaseURL + ptFileName,
+		URL:         toolchainReleaseURL + ptFileName,
 		Description: "Android 平台调试工具 (ADB)",
 	})
 
@@ -195,7 +197,7 @@ func GetFullEnvironmentSpecs() []ComponentSpec {
 			FileName:    "jre-windows-x64.zip",
 			Size:        48000000,
 			SHA256:      "",
-			URL:         baseReleaseURL + "jre-windows-x64.zip",
+			URL:         toolchainReleaseURL + "jre-windows-x64.zip",
 			Description: "便携 Java 21+ 运行环境 (JBR / OpenJDK)",
 		})
 	} else if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
@@ -204,7 +206,7 @@ func GetFullEnvironmentSpecs() []ComponentSpec {
 			FileName:    "jre-macos-arm64.zip",
 			Size:        204381527,
 			SHA256:      "3b1ac55c9f7a1e730e9c89d75fbf984456e06048836d55f05a5ce25696833e5d",
-			URL:         baseReleaseURL + "jre-macos-arm64.zip",
+			URL:         toolchainReleaseURL + "jre-macos-arm64.zip",
 			Description: "便携 Java 21+ 运行环境 (Eclipse Temurin / OpenJDK)",
 		})
 	}

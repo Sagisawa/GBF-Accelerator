@@ -11,12 +11,18 @@
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
 
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
-> - **Windows**：下载 `GBF_Accelerator_v2.3.0_GUI.zip`，解压即用。
-> - **macOS**：下载 `GBF_Accelerator_v2.3.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Windows**：下载 `GBF_Accelerator_v2.4.0_GUI.zip`，解压即用。
+> - **macOS**：下载 `GBF_Accelerator_v2.4.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
 > - **Android**：支持 **Root（LSPosed）与免 Root** 两种使用方式。
 > - 各版本详细改动请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
+
+## v2.4.0 发布要点
+
+- **Android 已修补包自动还原原版与重新修补**：当用户上传、手动选择或通过 ADB 提取已被修补过的安装包（单包或 Split APK）时，自动识别 LSPatch Portable 特征，以流式安全机制从内嵌包还原原始 APK 并直接复用现有修补流水线重新注入最新模块。
+- **单层防嵌套与完整性校验**：解包过程具备单层解包限制，杜绝嵌套修补包风险；集成 Zip Slip 防御与 CRC-32 校验机制，失败自动清理临时文件。
+- **控制台状态与操作自适应**：Web 控制台新增已修补特征检测提示与原始版本号展示，主操作按钮自适应切换为【重新修补 / 升级核心】。
 
 ## v2.3.0 发布要点
 

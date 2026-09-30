@@ -47,7 +47,7 @@ func TestFindAdbPath(t *testing.T) {
 
 func TestPlatformToolsDownloadURL(t *testing.T) {
 	url := PlatformToolsDownloadURL()
-	expectedPrefix := fmt.Sprintf("https://github.com/%s/releases/download/%s/", AssetsRepo, AssetsTag)
+	expectedPrefix := fmt.Sprintf("https://github.com/%s/releases/download/%s/", AssetsRepo, ToolchainAssetsTag)
 	if !strings.HasPrefix(url, expectedPrefix) {
 		t.Errorf("unexpected primary URL: %s, expected prefix %s", url, expectedPrefix)
 	}

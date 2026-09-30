@@ -507,7 +507,7 @@ func UninstallFromDevice(ctx context.Context, adbPath, serial, packageName strin
 
 // PlatformToolsDownloadURL returns our project GitHub Release asset URL for the current OS.
 func PlatformToolsDownloadURL() string {
-	return fmt.Sprintf("https://github.com/%s/releases/download/%s/platform-tools-%s.zip", AssetsRepo, AssetsTag, runtime.GOOS)
+	return fmt.Sprintf("https://github.com/%s/releases/download/%s/platform-tools-%s.zip", AssetsRepo, ToolchainAssetsTag, runtime.GOOS)
 }
 
 // PlatformToolsGoogleFallbackURL returns Google's official mirror URL as secondary fallback.
