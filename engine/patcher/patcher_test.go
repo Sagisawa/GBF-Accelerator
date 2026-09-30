@@ -2,6 +2,7 @@ package patcher
 
 import (
 	"archive/zip"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -679,5 +680,84 @@ func TestCheckIsSystemWebView(t *testing.T) {
 	isWebView, _, unsupp = CheckIsSystemWebView([]string{cleanApk}, "com.custom.clean.browser")
 	if !isWebView || unsupp != "" {
 		t.Errorf("expected clean app to be identified as system webview, got %v (%s)", isWebView, unsupp)
+	}
+}
+
+func TestFindModuleApk_CanonicalPriority(t *testing.T) {
+	// Locate real canonical module APK in the repository
+	repoRoot := filepath.Join("..", "..")
+	realCanonicalPath := filepath.Join(repoRoot, "tools", "android", "xposed-release.apk")
+	realBytes, err := os.ReadFile(realCanonicalPath)
+	if err != nil {
+		t.Skipf("skipping test: canonical xposed-release.apk not found at %s", realCanonicalPath)
+	}
+
+	tempDir := t.TempDir()
+	toolsDir := filepath.Join(tempDir, "tools", "android")
+	_ = os.MkdirAll(toolsDir, 0755)
+
+	// 1. Write an outdated/stale file in toolsDir/xposed-release.apk (e.g. from v2.3.0)
+	staleApk := filepath.Join(toolsDir, "xposed-release.apk")
+	if err := os.WriteFile(staleApk, []byte("stale-module-v2.3.0"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Write the authoritative canonical v2.4.0 file in dev release tree
+	devDir := filepath.Join(tempDir, "android", "xposed", "build", "outputs", "apk", "release")
+	_ = os.MkdirAll(devDir, 0755)
+	canonicalApk := filepath.Join(devDir, "xposed-release.apk")
+	if err := os.WriteFile(canonicalApk, realBytes, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// FindModuleApk must strictly select the canonical file over the stale file
+	found, err := FindModuleApk("", tempDir)
+	if err != nil {
+		t.Fatalf("FindModuleApk failed: %v", err)
+	}
+
+	sha, err := ComputeFileSHA256(found)
+	if err != nil {
+		t.Fatalf("ComputeFileSHA256 failed: %v", err)
+	}
+	if !strings.EqualFold(sha, CanonicalModuleSHA256) {
+		t.Errorf("expected canonical SHA256 %s, got %s (selected wrong file: %s)", CanonicalModuleSHA256, sha, found)
+	}
+}
+
+func TestEnsureCanonicalModule_LocalMatch(t *testing.T) {
+	repoRoot := filepath.Join("..", "..")
+	realCanonicalPath := filepath.Join(repoRoot, "tools", "android", "xposed-release.apk")
+	realBytes, err := os.ReadFile(realCanonicalPath)
+	if err != nil {
+		t.Skipf("skipping test: canonical xposed-release.apk not found at %s", realCanonicalPath)
+	}
+
+	tempDir := t.TempDir()
+	toolsDir := filepath.Join(tempDir, "tools", "android")
+	_ = os.MkdirAll(toolsDir, 0755)
+
+	// Local stale file in toolsDir
+	staleApk := filepath.Join(toolsDir, "xposed-release.apk")
+	_ = os.WriteFile(staleApk, []byte("stale-v2.3.0"), 0644)
+
+	// Canonical file in exeDir
+	devDir := filepath.Join(tempDir, "android", "xposed", "build", "outputs", "apk", "release")
+	_ = os.MkdirAll(devDir, 0755)
+	canonicalApk := filepath.Join(devDir, "xposed-release.apk")
+	_ = os.WriteFile(canonicalApk, realBytes, 0644)
+
+	// EnsureCanonicalModule should replace the stale file in toolsDir with the canonical file
+	resultPath, err := EnsureCanonicalModule(context.Background(), toolsDir, tempDir, nil)
+	if err != nil {
+		t.Fatalf("EnsureCanonicalModule failed: %v", err)
+	}
+
+	sha, err := ComputeFileSHA256(resultPath)
+	if err != nil {
+		t.Fatalf("ComputeFileSHA256 failed: %v", err)
+	}
+	if !strings.EqualFold(sha, CanonicalModuleSHA256) {
+		t.Errorf("expected canonical SHA256 %s, got %s", CanonicalModuleSHA256, sha)
 	}
 }

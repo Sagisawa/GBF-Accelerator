@@ -1,6 +1,7 @@
 package patcher
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,14 +106,43 @@ func (p *Patcher) Run() (*BundleResult, error) {
 	}
 	p.logf("      - LSPatch Jar: %s (%s, SHA-256 verified)\n", lspatchJar, CanonicalLSPatchVersion)
 
-	moduleApk, err := FindModuleApk(p.opts.ModuleOverride, p.exeDir)
-	if err != nil {
-		return nil, err
+	var moduleApk string
+	if p.opts.ModuleOverride != "" {
+		mod, err := FindModuleApk(p.opts.ModuleOverride, p.exeDir)
+		if err != nil {
+			return nil, err
+		}
+		if err := ValidateModuleApk(mod); err != nil {
+			return nil, err
+		}
+		moduleApk = mod
+		p.logf("      - SkyLeapModule: %s (User override)\n", moduleApk)
+	} else {
+		// When no override is given, ensure we are using the latest canonical module
+		mod, err := EnsureCanonicalModule(context.Background(), GetAndroidToolsDir(), p.exeDir, func(msg string) {
+			p.logf("      [*] %s\n", msg)
+		})
+		if err != nil {
+			// If fetching latest failed (e.g. offline), fall back to existing local module if available
+			fallbackMod, fbErr := FindModuleApk("", p.exeDir)
+			if fbErr != nil {
+				return nil, fmt.Errorf("module APK not found and auto-download failed: %w", err)
+			}
+			moduleApk = fallbackMod
+			p.logf("      [!] Note: Could not fetch latest module (%v); falling back to existing local module: %s\n", err, moduleApk)
+		} else {
+			moduleApk = mod
+		}
+
+		if err := ValidateModuleApk(moduleApk); err != nil {
+			return nil, err
+		}
+		if sha, err := ComputeFileSHA256(moduleApk); err == nil && strings.EqualFold(sha, CanonicalModuleSHA256) {
+			p.logf("      - SkyLeapModule: %s (v%s, Canonical SHA-256 verified)\n", moduleApk, config.AppVersion)
+		} else {
+			p.logf("      - SkyLeapModule: %s\n", moduleApk)
+		}
 	}
-	if err := ValidateModuleApk(moduleApk); err != nil {
-		return nil, err
-	}
-	p.logf("      - SkyLeapModule: %s\n", moduleApk)
 
 	// 3. Inspect Input package
 	p.stage(2, "Inspecting input package...", 0.40)

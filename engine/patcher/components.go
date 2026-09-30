@@ -261,11 +261,24 @@ func CheckComponentsWithSpecs(toolsDir string, exeDir string, specs []ComponentS
 
 		var foundPath string
 		var foundFi os.FileInfo
-		for _, c := range candidates {
-			if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
-				foundPath = c
-				foundFi = fi
-				break
+		if spec.SHA256 != "" {
+			for _, c := range candidates {
+				if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+					if sha, err := ComputeFileSHA256(c); err == nil && strings.EqualFold(sha, spec.SHA256) {
+						foundPath = c
+						foundFi = fi
+						break
+					}
+				}
+			}
+		}
+		if foundPath == "" {
+			for _, c := range candidates {
+				if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+					foundPath = c
+					foundFi = fi
+					break
+				}
 			}
 		}
 
@@ -765,6 +778,121 @@ func FindOrFetchHostApp(ctx context.Context, toolsDir string, exeDir string) (st
 	}
 
 	return targetPath, nil
+}
+
+// FetchCanonicalModule downloads the authoritative xposed-release.apk from GitHub Assets release,
+// validates its cryptographic SHA-256 against CanonicalModuleSHA256, and atomically places it into toolsDir.
+func FetchCanonicalModule(ctx context.Context, toolsDir string) (string, error) {
+	if toolsDir == "" {
+		toolsDir = GetAndroidToolsDir()
+	}
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create tools directory: %w", err)
+	}
+
+	targetPath := filepath.Join(toolsDir, "xposed-release.apk")
+	tempPath := filepath.Join(toolsDir, "xposed-release.apk.download.tmp")
+	_ = os.Remove(tempPath)
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+
+	downloadURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/xposed-release.apk", AssetsRepo, AssetsTag)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build download request: %w", err)
+	}
+	req.Header.Set("User-Agent", "GBF-Accelerator/"+config.AppVersion)
+
+	client := buildDownloadHTTPClient(GetUpstreamProxy())
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download canonical module from %s: %w", downloadURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download canonical module: HTTP %d from %s", resp.StatusCode, downloadURL)
+	}
+
+	outF, err := os.OpenFile(tempPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+
+	hasher := sha256.New()
+	mw := io.MultiWriter(outF, hasher)
+
+	if _, err := io.Copy(mw, resp.Body); err != nil {
+		_ = outF.Close()
+		return "", fmt.Errorf("download of canonical module interrupted: %w", err)
+	}
+	_ = outF.Close()
+
+	actualSHA := hex.EncodeToString(hasher.Sum(nil))
+	if !strings.EqualFold(actualSHA, CanonicalModuleSHA256) {
+		return "", fmt.Errorf("canonical module hash mismatch: expected %s, got %s", CanonicalModuleSHA256, actualSHA)
+	}
+
+	_ = os.Remove(targetPath)
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		return "", fmt.Errorf("failed to finalize canonical module to %s: %w", targetPath, err)
+	}
+
+	return targetPath, nil
+}
+
+// EnsureCanonicalModule locates the Xposed module APK that matches CanonicalModuleSHA256.
+// If not found locally or if the local version is outdated/corrupted, it automatically
+// fetches the latest canonical module from GitHub Assets and updates toolsDir.
+func EnsureCanonicalModule(ctx context.Context, toolsDir string, exeDir string, logFn func(string)) (string, error) {
+	if toolsDir == "" {
+		toolsDir = GetAndroidToolsDir()
+	}
+
+	// 1. Check all local candidates for a match with CanonicalModuleSHA256
+	candidates := []string{
+		filepath.Join(toolsDir, "xposed-release.apk"),
+		filepath.Join(exeDir, "tools", "android", "xposed-release.apk"),
+		filepath.Join(exeDir, "xposed-release.apk"),
+		filepath.Join("tools", "android", "xposed-release.apk"),
+		filepath.Join("bin", "tools", "android", "xposed-release.apk"),
+		filepath.Join(exeDir, "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+		filepath.Join(exeDir, "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+		filepath.Join("android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
+	}
+
+	for _, cand := range candidates {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			if sha, err := ComputeFileSHA256(cand); err == nil && strings.EqualFold(sha, CanonicalModuleSHA256) {
+				targetPath := filepath.Join(toolsDir, "xposed-release.apk")
+				if cand != targetPath {
+					_ = os.MkdirAll(toolsDir, 0755)
+					_ = copyFile(cand, targetPath)
+					return targetPath, nil
+				}
+				return cand, nil
+			}
+		}
+	}
+
+	// 2. None matched the canonical hash -> local module is missing or outdated.
+	if logFn != nil {
+		logFn(fmt.Sprintf("检测到内嵌模块非最新版本 (需要 v%s, SHA: %.8s...)，正在自动下载最新官方模块...", AssetsTag, CanonicalModuleSHA256))
+	}
+
+	path, err := FetchCanonicalModule(ctx, toolsDir)
+	if err != nil {
+		return "", err
+	}
+
+	if logFn != nil {
+		logFn(fmt.Sprintf("已成功下载并校验最新 Xposed 内嵌模块 (v%s)", AssetsTag))
+	}
+
+	return path, nil
 }
 
 // InstallAllComponents downloads, validates, and sets up all components for the complete Android environment.

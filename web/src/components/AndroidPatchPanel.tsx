@@ -592,6 +592,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const isReady = Boolean(envStatus?.ready)
   const isRunning = Boolean(patchStatus?.running)
   const isCorrupted = Boolean(envStatus?.components_corrupted)
+  const isModuleOutdated = Boolean(envStatus?.can_auto_update_module || envStatus?.module_outdated)
   const isComponentsVerified = Boolean(envStatus?.components_verified)
   const isDownloadActive = Boolean(downloadProgress?.active || envStatus?.download?.active)
   const isEnvironmentReady = isReady && isComponentsVerified
@@ -1312,7 +1313,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           </div>
 
           <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2">
-            {!isComponentsVerified && (
+            {isModuleOutdated && (
+              <span className="text-[11px] text-sky-700 font-medium">
+                模块非最新版，内嵌时将自动下载并更新至最新版
+              </span>
+            )}
+            {!isComponentsVerified && !isModuleOutdated && (
               <span className="text-[11px] text-amber-700 font-medium">
                 {isCorrupted ? '组件损坏，需重新下载' : '需先下载并启用组件'}
               </span>

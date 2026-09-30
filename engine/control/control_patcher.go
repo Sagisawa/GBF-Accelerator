@@ -128,12 +128,26 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 	// 4. Probe SkyLeapModule APK
 	moduleFound := false
 	moduleVerified := false
+	moduleIsCanonical := false
+	moduleSha := ""
 	modulePath, moduleErr := patcher.FindModuleApk("", exeDir)
 	var moduleErrStr string
 	if moduleErr == nil {
 		moduleFound = true
 		if valErr := patcher.ValidateModuleApk(modulePath); valErr == nil {
-			moduleVerified = true
+			if sha, err := patcher.ComputeFileSHA256(modulePath); err == nil {
+				moduleSha = sha
+				if strings.EqualFold(sha, patcher.CanonicalModuleSHA256) {
+					moduleVerified = true
+					moduleIsCanonical = true
+				} else {
+					moduleVerified = false
+					moduleIsCanonical = false
+					moduleErrStr = fmt.Sprintf("模块版本过旧 (SHA: %.8s...，期望: %.8s...)，内嵌时将自动下载并更新至最新版本", sha, patcher.CanonicalModuleSHA256)
+				}
+			} else {
+				moduleVerified = true
+			}
 		} else {
 			moduleErrStr = valErr.Error()
 		}
@@ -148,7 +162,23 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 		adbErrStr = adbErr.Error()
 	}
 
-	ready := javaFound && componentsVerified
+	// Determine if the environment can auto-update the companion module during patch
+	canAutoUpdateModule := false
+	if !componentsVerified && javaFound && lspatchVerified {
+		onlyModuleUnverified := true
+		for _, st := range componentStatuses {
+			if st.ID != "module" && !st.Verified {
+				onlyModuleUnverified = false
+				break
+			}
+		}
+		if onlyModuleUnverified {
+			canAutoUpdateModule = true
+		}
+	}
+
+	ready := javaFound && (componentsVerified || canAutoUpdateModule)
+	componentsVerifiedEffective := componentsVerified || canAutoUpdateModule
 
 	var toolsDiskBytes int64
 	_ = filepath.Walk(toolsDir, func(p string, fi os.FileInfo, err error) error {
@@ -172,17 +202,20 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 	c.componentDlMu.Unlock()
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":                   true,
-		"ready":                ready,
-		"full_env_ready":       ready && adbFound,
-		"tools_disk_bytes":     toolsDiskBytes,
-		"backup_dir":           backupDir,
-		"components_installed": componentsInstalled,
-		"components_verified":  componentsVerified,
-		"components_corrupted": componentsCorrupted,
-		"components_error":     componentsErr,
-		"tools_dir":            toolsDir,
-		"components":           componentStatuses,
+		"ok":                          true,
+		"ready":                       ready,
+		"full_env_ready":              ready && adbFound,
+		"tools_disk_bytes":            toolsDiskBytes,
+		"backup_dir":                  backupDir,
+		"components_installed":         componentsInstalled,
+		"components_verified":          componentsVerifiedEffective,
+		"components_strictly_verified": componentsVerified,
+		"can_auto_update_module":       canAutoUpdateModule,
+		"module_outdated":              canAutoUpdateModule,
+		"components_corrupted":         componentsCorrupted && !canAutoUpdateModule,
+		"components_error":            componentsErr,
+		"tools_dir":                   toolsDir,
+		"components":                  componentStatuses,
 		"download": map[string]interface{}{
 			"active":           dlActive,
 			"current_file":     dlProg.CurrentFile,
@@ -218,10 +251,13 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 			"error":           lspatchErrStr,
 		},
 		"module": map[string]interface{}{
-			"found":    moduleFound,
-			"path":     modulePath,
-			"verified": moduleVerified,
-			"error":    moduleErrStr,
+			"found":           moduleFound,
+			"path":            modulePath,
+			"verified":        moduleVerified,
+			"is_canonical":    moduleIsCanonical,
+			"sha256":          moduleSha,
+			"expected_sha256": patcher.CanonicalModuleSHA256,
+			"error":           moduleErrStr,
 		},
 	})
 }
@@ -409,6 +445,11 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 
 	toolsDir := patcher.GetAndroidToolsDir()
 	exeDir := c.getExeDir()
+	patcher.SetUpstreamProxy(c.cfgMgr.GetEffectiveUpstreamProxy())
+
+	// Ensure canonical companion module is downloaded and up to date before checking components
+	_, _ = patcher.EnsureCanonicalModule(req.Context(), toolsDir, exeDir, nil)
+
 	_, allVerified, _, errStr := patcher.CheckComponents(toolsDir, exeDir)
 	if !allVerified {
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{

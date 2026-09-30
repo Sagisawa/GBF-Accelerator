@@ -249,25 +249,12 @@ func FindModuleApk(overridePath string, exeDir string) (string, error) {
 		filepath.Join(exeDir, "modules", "xposed-release.apk"),
 	}
 
-	for _, c := range productionCandidates {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
-			abs, _ := filepath.Abs(c)
-			return abs, nil
-		}
-	}
-
 	// 2. Source tree release artifact
 	devReleaseCandidates := []string{
+		filepath.Join(exeDir, "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
 		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
 		filepath.Join(exeDir, "..", "android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
 		filepath.Join("android", "xposed", "build", "outputs", "apk", "release", "xposed-release.apk"),
-	}
-
-	for _, c := range devReleaseCandidates {
-		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
-			abs, _ := filepath.Abs(c)
-			return abs, nil
-		}
 	}
 
 	// 3. Development debug fallback (only when release build is absent)
@@ -275,11 +262,40 @@ func FindModuleApk(overridePath string, exeDir string) (string, error) {
 		filepath.Join(exeDir, "tools", "android", "xposed-debug.apk"),
 		filepath.Join(exeDir, "xposed-debug.apk"),
 		filepath.Join(exeDir, "modules", "xposed-debug.apk"),
+		filepath.Join(exeDir, "android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
 		filepath.Join(exeDir, "..", "..", "android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
 		filepath.Join(exeDir, "..", "android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
 		filepath.Join("android", "xposed", "build", "outputs", "apk", "debug", "xposed-debug.apk"),
 	}
 
+	// Pass 1: Canonical match takes absolute priority across all candidates
+	allCandidates := append(append([]string{}, productionCandidates...), devReleaseCandidates...)
+	for _, c := range allCandidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			if sha, err := ComputeFileSHA256(c); err == nil && strings.EqualFold(sha, CanonicalModuleSHA256) {
+				abs, _ := filepath.Abs(c)
+				return abs, nil
+			}
+		}
+	}
+
+	// Pass 2: Production release candidates (fallback if no canonical match, e.g. custom or test mock)
+	for _, c := range productionCandidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			abs, _ := filepath.Abs(c)
+			return abs, nil
+		}
+	}
+
+	// Pass 3: Source tree release artifact
+	for _, c := range devReleaseCandidates {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			abs, _ := filepath.Abs(c)
+			return abs, nil
+		}
+	}
+
+	// Pass 4: Development debug fallback (only when release build is absent)
 	for _, c := range devDebugCandidates {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() && fi.Size() > 0 {
 			abs, _ := filepath.Abs(c)

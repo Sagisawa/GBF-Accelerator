@@ -203,6 +203,9 @@ export interface AndroidEnvStatus {
   backup_dir?: string;
   components_installed: boolean;
   components_verified: boolean;
+  components_strictly_verified?: boolean;
+  can_auto_update_module?: boolean;
+  module_outdated?: boolean;
   components_corrupted: boolean;
   components_error?: string;
   tools_dir: string;
