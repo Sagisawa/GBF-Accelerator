@@ -804,6 +804,13 @@ var tunnelBufferPool = sync.Pool{
 	},
 }
 
+var streamBufferPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 32*1024)
+		return &b
+	},
+}
+
 func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader io.Reader, target string) {
 	effProxy := s.GetEffectiveUpstreamProxy()
 
@@ -1360,6 +1367,10 @@ func isClientNotModified(req *http.Request, item *cache.CacheItem) bool {
 	return false
 }
 
+func isConditionalRequest(req *http.Request) bool {
+	return req.Header.Get("If-None-Match") != "" || req.Header.Get("If-Modified-Since") != ""
+}
+
 func (s *ProxyServer) sendNotModifiedResponse(w io.Writer, item *cache.CacheItem, urlPath string, reqClose bool) {
 	hdr := make(http.Header)
 	if item.ETag != "" {
@@ -1457,11 +1468,26 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 	defer s.stats.AddActiveFG(-1)
 
 	isHead := (req.Method == http.MethodHead)
+	isCond := isConditionalRequest(req)
 	ns, _ := NormalizeAssetNamespace(targetHost)
 
 	// 1. Cache Lookup (RAM first, then SSD)
 	cacheStart := time.Now()
-	item, hitSrc := s.cacheMgr.GetWithNamespace(ns, req.URL.Path)
+
+	var item *cache.CacheItem
+	var hitSrc string
+
+	if isHead || isCond {
+		// HEAD / conditional request can use metadata-only fast path
+		item, hitSrc = s.cacheMgr.GetMetadataWithNamespace(ns, req.URL.Path)
+		if item == nil {
+			item, hitSrc = s.cacheMgr.GetWithNamespace(ns, req.URL.Path)
+		}
+	} else {
+		// Standard GET: directly call GetWithNamespace() to preserve zero extra Stat/lookup for <=2MB items
+		item, hitSrc = s.cacheMgr.GetWithNamespace(ns, req.URL.Path)
+	}
+
 	if item != nil {
 		s.stats.CheckAndRecordPrefetchReused(cleanPath)
 		if hitSrc == "RAM" || hitSrc == "RAM-BOOST" {
@@ -1469,21 +1495,45 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 			// P2: Hot path optimization: lightweight atomic counters only for RAM hits
 		} else {
 			s.stats.IncDiskHit()
-			s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] HIT %dms -> %s (%d B)", time.Since(cacheStart).Milliseconds(), cleanPath, len(item.Data)))
+			s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] HIT %dms -> %s (%d B)", time.Since(cacheStart).Milliseconds(), cleanPath, item.Size))
 		}
 
-		// Conditional GET: 304 Not Modified check
+		// Conditional GET: 304 Not Modified check (0 字节缓存正文读取；仅访问必要的文件元数据/.ext)
 		if isClientNotModified(req, item) {
 			s.stats.Log("INFO", fmt.Sprintf("[%s] 304 %dms Not Modified -> %s", "CACHE-"+hitSrc, time.Since(cacheStart).Milliseconds(), cleanPath))
 			s.sendNotModifiedResponse(w, item, req.URL.Path, req.Close)
 			return !req.Close
 		}
 
-		// Cached asset (RAM or SSD): serialize straight from the CacheItem fields,
-		// skipping the per-hit http.Header construction of sendAssetResponse. The
-		// post-fetch response below intentionally keeps using sendAssetResponse.
-		s.sendCachedAssetResponseFast(w, item, isHead, req.URL.Path, req.Close)
-		return !req.Close
+		// HEAD request: serialize headers fast, zero body written (0 字节缓存正文读取；仅访问必要的文件元数据/.ext)
+		if isHead {
+			s.sendCachedAssetResponseFast(w, item, true, req.URL.Path, req.Close)
+			return !req.Close
+		}
+
+		// Disk Stream for verified large assets (> MaxDiskDirectReadSize)
+		if item.Size > cache.MaxDiskDirectReadSize && len(item.Data) == 0 {
+			if keepAlive, ok := s.sendCachedDiskAssetStream(w, item, ns, req.URL.Path, req.Close); ok {
+				return keepAlive
+			}
+			// Failed to open stream: cache was invalidated. Fall back to Cache Miss below.
+			s.stats.DiskHits.Add(-1)
+			s.stats.Log("WARN", fmt.Sprintf("[CACHE-STREAM] stream open failed for %s, falling back to cache miss", cleanPath))
+		} else if item.Data != nil {
+			// GET request: if body is already loaded (RAM hit or loaded disk item <=2MB), send fast
+			s.sendCachedAssetResponseFast(w, item, false, req.URL.Path, req.Close)
+			return !req.Close
+		} else {
+			// For <= 2MB item where Data was not loaded by GetMetadataWithNamespace,
+			// load the full item and send fast.
+			if fullItem, _ := s.cacheMgr.GetWithNamespace(ns, req.URL.Path); fullItem != nil && fullItem.Data != nil {
+				s.sendCachedAssetResponseFast(w, fullItem, false, req.URL.Path, req.Close)
+				return !req.Close
+			}
+			s.cacheMgr.Invalidate(ns, req.URL.Path)
+			s.stats.DiskHits.Add(-1)
+			s.stats.Log("WARN", fmt.Sprintf("[CACHE-DISK] read failed for %s, falling back to cache miss", cleanPath))
+		}
 	}
 
 	// 2. Cache Miss: Coalesce concurrent fetches using SingleFlight with normalized key
@@ -1911,6 +1961,13 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 		}
 		itemToSend := cachedItem
 		if !isHead && len(cachedItem.Data) == 0 && cachedItem.Size > 0 {
+			if cachedItem.Size > cache.MaxDiskDirectReadSize {
+				if keepAlive, ok := s.sendCachedDiskAssetStream(w, cachedItem, ns, req.URL.Path, req.Close); ok {
+					return keepAlive
+				}
+				writeHTTPResponse(w, http.StatusBadGateway, nil, nil, isHead, req.Close)
+				return !req.Close
+			}
 			data, err := s.cacheMgr.ReadDiskItemData(ns, req.URL.Path)
 			if err != nil {
 				s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: failed to read disk item for follower: %v", cleanPath, err))
@@ -2382,9 +2439,13 @@ func (s *ProxyServer) sendCachedAssetResponseFast(w io.Writer, item *cache.Cache
 	buf.WriteString(s.getCacheControlHeader(urlPath))
 	buf.WriteString("\r\n")
 
+	contentLen := item.Size
+	if len(item.Data) > 0 {
+		contentLen = int64(len(item.Data))
+	}
 	var numBuf [32]byte
 	buf.WriteString("Content-Length: ")
-	buf.Write(strconv.AppendInt(numBuf[:0], int64(len(item.Data)), 10))
+	buf.Write(strconv.AppendInt(numBuf[:0], contentLen, 10))
 	buf.WriteString("\r\n")
 	if reqClose {
 		buf.WriteString("Connection: close\r\n\r\n")
@@ -2393,6 +2454,81 @@ func (s *ProxyServer) sendCachedAssetResponseFast(w io.Writer, item *cache.Cache
 	}
 
 	writeResponseBody(w, buf, http.StatusOK, item.Data, isHead)
+}
+
+// sendCachedDiskAssetStream streams a large disk-cached asset directly to the client writer,
+// bypassing whole-file memory allocation.
+// Returns (keepAlive bool, ok bool):
+// - ok == true: response was handled (headers sent); keepAlive indicates if connection can stay open.
+// - ok == false: failed to open disk stream; cache was invalidated; caller should fall back to Cache Miss.
+func (s *ProxyServer) sendCachedDiskAssetStream(w io.Writer, item *cache.CacheItem, ns, urlPath string, reqClose bool) (keepAlive bool, ok bool) {
+	stream, size, err := s.cacheMgr.OpenDiskStream(ns, urlPath)
+	if err != nil {
+		s.stats.Log("WARN", fmt.Sprintf("[CACHE-STREAM] failed to open disk stream %s: %v", urlPath, err))
+		s.cacheMgr.Invalidate(ns, urlPath)
+		return false, false
+	}
+	defer stream.Close()
+
+	buf := responseBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= 128*1024 {
+			responseBufferPool.Put(buf)
+		}
+	}()
+
+	buf.WriteString("HTTP/1.1 200 OK\r\nDate: ")
+	var dateBuf [32]byte
+	buf.Write(time.Now().UTC().AppendFormat(dateBuf[:0], http.TimeFormat))
+	buf.WriteString("\r\n")
+
+	if item.ContentType != "" {
+		buf.WriteString("Content-Type: ")
+		buf.WriteString(item.ContentType)
+		buf.WriteString("\r\n")
+	}
+	if item.ETag != "" {
+		buf.WriteString("ETag: ")
+		buf.WriteString(item.ETag)
+		buf.WriteString("\r\n")
+	}
+	if item.LastModified != "" {
+		buf.WriteString("Last-Modified: ")
+		buf.WriteString(item.LastModified)
+		buf.WriteString("\r\n")
+	}
+	if item.ContentEncoding != "" {
+		buf.WriteString("Content-Encoding: ")
+		buf.WriteString(item.ContentEncoding)
+		buf.WriteString("\r\n")
+	}
+	buf.WriteString("Access-Control-Allow-Origin: *\r\n")
+	buf.WriteString("Cache-Control: ")
+	buf.WriteString(s.getCacheControlHeader(urlPath))
+	buf.WriteString("\r\n")
+
+	var numBuf [32]byte
+	buf.WriteString("Content-Length: ")
+	buf.Write(strconv.AppendInt(numBuf[:0], size, 10))
+	buf.WriteString("\r\n")
+	if reqClose {
+		buf.WriteString("Connection: close\r\n\r\n")
+	} else {
+		buf.WriteString("Connection: keep-alive\r\n\r\n")
+	}
+
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return false, true
+	}
+
+	copyBuf := streamBufferPool.Get().(*[]byte)
+	defer streamBufferPool.Put(copyBuf)
+
+	if _, err := io.CopyBuffer(w, stream, *copyBuf); err != nil {
+		return false, true
+	}
+	return !reqClose, true
 }
 
 func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, body []byte, isHead bool, reqClose bool) {
