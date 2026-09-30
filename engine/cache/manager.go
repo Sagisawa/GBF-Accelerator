@@ -18,22 +18,35 @@ import (
 	"time"
 )
 
-type cacheMetadata struct {
-	LastModified    string `json:"LastModified"`
-	ETag            string `json:"ETag"`
-	ContentEncoding string `json:"ce"`
-	ContentType     string `json:"ct"`
-	Version         int    `json:"v"`
+// MaxDiskDirectReadSize is the candidate threshold (2MB) for direct in-memory disk reads.
+// Assets <= MaxDiskDirectReadSize follow the existing full in-memory read path.
+// Verified assets > MaxDiskDirectReadSize are eligible for disk stream-through to avoid memory bloat.
+// Note: 2MB is a candidate threshold, to be validated by actual cache distribution and benchmarks.
+// Metrics such as >90% memory reduction or sub-millisecond TTFB are theoretical targets subject
+// to benchmark verification.
+const MaxDiskDirectReadSize = 2 * 1024 * 1024
+
+// diskMeta represents the persisted metadata stored in .ext files.
+// It maintains backward compatibility with Version 1 metadata schemas.
+type diskMeta struct {
+	LastModified      string `json:"LastModified,omitempty"`
+	ETag              string `json:"ETag,omitempty"`
+	AccessTime        int64  `json:"at,omitempty"`
+	ContentEncoding   string `json:"ce,omitempty"`
+	ContentType       string `json:"ct,omitempty"`
+	Version           int    `json:"v"`
+	// Verified indicates that the cache item has previously passed this project's
+	// cache content validation (IsValidCacheContent) and its physical file size and
+	// mtime have not changed since.
+	// NOTE: This represents operational validity within the project cache lifecycle;
+	// it is NOT a cryptographic proof of integrity or absolute tamper-resistance.
+	Verified          bool   `json:"verified,omitempty"`
+	Size              int64  `json:"size,omitempty"`
+	MTimeNano         int64  `json:"mtime,omitempty"`
+	LegacyContentType string `json:"ContentType,omitempty"`
 }
 
-type diskMeta struct {
-	LastModified    string `json:"LastModified,omitempty"`
-	ETag            string `json:"ETag,omitempty"`
-	AccessTime      int64  `json:"at,omitempty"`
-	ContentEncoding string `json:"ce,omitempty"`
-	ContentType     string `json:"ct,omitempty"`
-	Version         int    `json:"v"`
-}
+type cacheMetadata = diskMeta
 
 type persistTask struct {
 	ns         string
@@ -84,6 +97,20 @@ var mimeFallbacks = map[string]string{
 	".wasm":  "application/wasm",
 }
 
+func resolveContentType(ct, filePath string) string {
+	if ct != "" {
+		return ct
+	}
+	ext := strings.ToLower(filepath.Ext(filePath))
+	if fb, ok := mimeFallbacks[ext]; ok {
+		return fb
+	}
+	if t := mime.TypeByExtension(ext); t != "" {
+		return t
+	}
+	return "application/octet-stream"
+}
+
 const (
 	defaultPersistWorkers  = 4
 	missingCacheShardCount = 16
@@ -99,6 +126,7 @@ type diskMetaEntry struct {
 	lastModified    string
 	exists          bool
 	hasMeta         bool
+	verified        bool
 }
 
 type diskMetaShard struct {
@@ -134,6 +162,7 @@ func (m *Manager) recordDiskPresence(key string, mtimeNano int64, size int64) {
 			entry.contentEncoding = ""
 			entry.etag = ""
 			entry.lastModified = ""
+			entry.verified = false
 		}
 		entry.exists = true
 		entry.mtimeNano = mtimeNano
@@ -145,6 +174,7 @@ func (m *Manager) recordDiskPresence(key string, mtimeNano int64, size int64) {
 			size:      size,
 			exists:    true,
 			hasMeta:   false,
+			verified:  false,
 		}
 		if len(shard.items) > 4096 {
 			count := 0
@@ -192,6 +222,38 @@ func (m *Manager) clearDiskMeta() {
 		shard.items = make(map[string]diskMetaEntry)
 		shard.mu.Unlock()
 	}
+}
+
+func parseExtFile(metaBytes []byte) (diskMeta, bool) {
+	var meta diskMeta
+	if err := json.Unmarshal(metaBytes, &meta); err != nil || meta.Version != 1 {
+		return meta, false
+	}
+	if meta.ContentType == "" && meta.LegacyContentType != "" {
+		meta.ContentType = meta.LegacyContentType
+	}
+	return meta, true
+}
+
+func writeDiskExtFile(filePath string, meta diskMeta) error {
+	meta.Version = 1
+	metaBytes, err := json.Marshal(&meta)
+	if err != nil {
+		return err
+	}
+	extPath := filePath + ".ext"
+	pid := os.Getpid()
+	ts := time.Now().UnixNano()
+	seq := tmpFileSeq.Add(1)
+	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d.%d", extPath, pid, ts, seq)
+	if err := os.WriteFile(tmpExtPath, metaBytes, 0644); err != nil {
+		return err
+	}
+	if err := renameWithRetry(tmpExtPath, extPath, 3); err != nil {
+		_ = os.Remove(tmpExtPath)
+		return err
+	}
+	return nil
 }
 
 type missingCacheShard struct {
@@ -553,6 +615,153 @@ func (m *Manager) IsRAMProtected(ns, urlPath string) bool {
 	return m.ramCache.IsProtected(ramKey)
 }
 
+// loadDiskMetaFast retrieves disk metadata (size, mtime, ContentType, ContentEncoding, ETag, LastModified)
+// without reading the asset file body.
+// loadDiskMetaWithStat checks if an item has verified metadata matching the provided mtimeNano and size.
+// If verified, it returns a CacheItem with Data == nil and ok == true.
+func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano, size int64) (*CacheItem, bool) {
+	ramKey := makeRAMKey(ns, cleanKey)
+
+	// 1. Check in-memory metadata index
+	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.verified && meta.mtimeNano == mtimeNano && meta.size == size {
+		ct := resolveContentType(meta.contentType, filePath)
+		etag := meta.etag
+		if etag == "" {
+			etag = fmt.Sprintf("\"%x-%x\"", mtimeNano/1e9, size)
+		}
+		return &CacheItem{
+			Key:             ramKey,
+			ContentType:     ct,
+			ContentEncoding: meta.contentEncoding,
+			ETag:            etag,
+			LastModified:    meta.lastModified,
+			Size:            size,
+			Data:            nil,
+		}, true
+	}
+
+	// 2. Check .ext on disk
+	extPath := filePath + ".ext"
+	metaBytes, err := os.ReadFile(extPath)
+	if err != nil {
+		return nil, false
+	}
+
+	meta, ok := parseExtFile(metaBytes)
+	if !ok || !meta.Verified || meta.Size != size || meta.MTimeNano != mtimeNano {
+		return nil, false
+	}
+
+	contentType := resolveContentType(meta.ContentType, filePath)
+
+	etag := meta.ETag
+	if etag == "" {
+		etag = fmt.Sprintf("\"%x-%x\"", mtimeNano/1e9, size)
+	}
+
+	// Populate in-memory index for future fast lookups
+	m.setDiskMeta(ramKey, diskMetaEntry{
+		mtimeNano:       mtimeNano,
+		size:            size,
+		contentType:     contentType,
+		contentEncoding: meta.ContentEncoding,
+		etag:            etag,
+		lastModified:    meta.LastModified,
+		exists:          true,
+		hasMeta:         true,
+		verified:        true,
+	})
+
+	return &CacheItem{
+		Key:             ramKey,
+		ContentType:     contentType,
+		ContentEncoding: meta.ContentEncoding,
+		ETag:            etag,
+		LastModified:    meta.LastModified,
+		Size:            size,
+		Data:            nil,
+	}, true
+}
+
+// loadDiskMetaFast verifies disk cache metadata without reading the body.
+// It verifies that:
+// 1. The physical file exists, is not a directory, and has non-zero size.
+// 2. The file's size and mtime match either the in-memory verified metadata or the .ext file metadata.
+// 3. The cache item has been previously verified (Verified == true).
+// If verified, it returns a CacheItem with Data == nil and ok == true.
+// If unverified, changed, or missing, it returns nil, false.
+func (m *Manager) loadDiskMetaFast(ns, cleanKey, filePath string) (*CacheItem, bool) {
+	// Exclude special JS files that require runtime AST quarantine checking
+	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
+		return nil, false
+	}
+
+	fi, err := os.Stat(filePath)
+	if err != nil || fi.IsDir() || fi.Size() == 0 {
+		return nil, false
+	}
+
+	return m.loadDiskMetaWithStat(ns, cleanKey, filePath, fi.ModTime().UnixNano(), fi.Size())
+}
+
+// GetMetadataWithNamespace returns a CacheItem containing metadata (ContentType, ContentEncoding,
+// ETag, LastModified, Size) without reading the underlying file body into memory (Data is nil for disk hits).
+// It queries RAM-BOOST, RAM Cache, and verified disk cache metadata.
+// If the asset is not in RAM and has not been verified on disk, it returns nil to allow the caller
+// to fall back to the standard GetWithNamespace path.
+func (m *Manager) GetMetadataWithNamespace(ns, urlPath string) (*CacheItem, string) {
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
+	ramKey := makeRAMKey(ns, cleanKey)
+
+	// 1. Check Resident Pool if Boost is active
+	if m.residentPool != nil && m.residentPool.Enabled() {
+		if item, ok := m.residentPool.Get(ramKey); ok {
+			return item, "RAM-BOOST"
+		}
+	}
+
+	// 2. Check RAM Cache
+	if m.ramEnabled.Load() {
+		if item, ok := m.ramCache.Get(ramKey); ok {
+			return item, "RAM"
+		}
+	}
+
+	// Negative cache check
+	if m.isMissing(ramKey) {
+		return nil, ""
+	}
+
+	// 3. Check Disk Cache metadata fastpath
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
+	if !ok {
+		return nil, ""
+	}
+
+	if item, ok := m.loadDiskMetaFast(ns, cleanKey, filePath); ok {
+		return item, "DISK"
+	}
+
+	// Check fallback path for "gbf" namespace
+	if ns == "" || ns == "gbf" {
+		var altKey string
+		if !strings.HasPrefix(cleanKey, "assets") {
+			altKey = "assets/" + cleanKey
+		} else {
+			altKey = strings.TrimPrefix(cleanKey, "assets/")
+		}
+		if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
+			if item, ok := m.loadDiskMetaFast("gbf", altKey, altPath); ok {
+				item.Key = ramKey
+				return item, "DISK"
+			}
+		}
+	}
+
+	return nil, ""
+}
+
 func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 	return m.GetWithNamespace("gbf", urlPath)
 }
@@ -614,6 +823,7 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 						lastModified:    item2.LastModified,
 						exists:          true,
 						hasMeta:         true,
+						verified:        altMeta.verified,
 					})
 				} else {
 					m.markMissing(ramKey)
@@ -632,7 +842,8 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	// Store into RAM cache only when enabled.
 	// SLRU: Admitted to Probationary segment on first disk hit (cold access).
 	// A subsequent hit via Get() will promote it to Protected.
-	if m.ramEnabled.Load() {
+	// Stream Items (Data == nil && Size > 0) are strictly prohibited from entering SLRU.
+	if m.ramEnabled.Load() && item != nil && len(item.Data) > 0 && item.Size <= MaxDiskDirectReadSize {
 		m.ramCache.SetProbation(ramKey, item)
 	}
 	return item, "DISK"
@@ -660,6 +871,25 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 	mtimeNano := fi.ModTime().UnixNano()
 	size := fi.Size()
 
+	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
+		_ = f.Close()
+		if m.CheckAndQuarantineTamperedJS(filePath) {
+			m.deleteDiskMeta(ramKey)
+			if m.residentPool != nil {
+				m.residentPool.Delete(ramKey)
+			}
+			return nil, fmt.Errorf("tampered JS quarantined: %s", filePath)
+		}
+	}
+
+	// For verified large assets (> MaxDiskDirectReadSize), directly return stream item (Data=nil, Size=size)
+	// without allocating whole-file memory buffer or reading disk body.
+	if size > MaxDiskDirectReadSize {
+		if item, ok := m.loadDiskMetaWithStat(ns, cleanKey, filePath, mtimeNano, size); ok {
+			return item, nil
+		}
+	}
+
 	data, err := readDiskFile(f, size)
 	if err != nil || len(data) == 0 {
 		m.deleteDiskMeta(ramKey)
@@ -672,17 +902,6 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 		}
 	}
 
-	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
-		_ = f.Close()
-		if m.CheckAndQuarantineTamperedJS(filePath) {
-			m.deleteDiskMeta(ramKey)
-			if m.residentPool != nil {
-				m.residentPool.Delete(ramKey)
-			}
-			return nil, fmt.Errorf("tampered JS quarantined: %s", filePath)
-		}
-	}
-
 	// Read metadata: check in-memory metadata index first to avoid reading .ext from disk
 	extPath := filePath + ".ext"
 	contentType := ""
@@ -691,34 +910,29 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 	lastMod := ""
 
 	needsIndexSave := false
+	extVerified := false
 	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.mtimeNano == mtimeNano && meta.size == size {
 		contentType = meta.contentType
 		contentEncoding = meta.contentEncoding
 		etag = meta.etag
 		lastMod = meta.lastModified
+		extVerified = meta.verified
 	} else {
 		needsIndexSave = true
 		if metaBytes, err := os.ReadFile(extPath); err == nil {
-			var meta cacheMetadata
-			if err := json.Unmarshal(metaBytes, &meta); err == nil && meta.Version == 1 {
+			if meta, ok := parseExtFile(metaBytes); ok {
 				contentType = meta.ContentType
 				contentEncoding = meta.ContentEncoding
 				etag = meta.ETag
 				lastMod = meta.LastModified
-			}
-		}
-
-		if contentType == "" {
-			ext := strings.ToLower(filepath.Ext(filePath))
-			contentType = mimeFallbacks[ext]
-			if contentType == "" {
-				contentType = mime.TypeByExtension(ext)
-			}
-			if contentType == "" {
-				contentType = "application/octet-stream"
+				if meta.Verified && meta.Size == size && meta.MTimeNano == mtimeNano {
+					extVerified = true
+				}
 			}
 		}
 	}
+
+	contentType = resolveContentType(contentType, filePath)
 
 	if !IsValidCacheContent(cleanKey, contentType, data) {
 		m.deleteDiskMeta(ramKey)
@@ -734,7 +948,7 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 	}
 
 	if etag == "" {
-		etag = fmt.Sprintf("\"%x-%x\"", mtimeNano/1e9, len(data))
+		etag = fmt.Sprintf("\"%x-%x\"", mtimeNano/1e9, size)
 	}
 
 	// Check gzip signature
@@ -745,7 +959,7 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 		contentEncoding = ""
 	}
 
-	if needsIndexSave {
+	if needsIndexSave || !extVerified {
 		m.setDiskMeta(ramKey, diskMetaEntry{
 			mtimeNano:       mtimeNano,
 			size:            size,
@@ -755,7 +969,21 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 			lastModified:    lastMod,
 			exists:          true,
 			hasMeta:         true,
+			verified:        true,
 		})
+		if !extVerified {
+			_ = writeDiskExtFile(filePath, diskMeta{
+				LastModified:    lastMod,
+				ETag:            etag,
+				AccessTime:      time.Now().Unix(),
+				ContentEncoding: contentEncoding,
+				ContentType:     contentType,
+				Version:         1,
+				Verified:        true,
+				Size:            size,
+				MTimeNano:       mtimeNano,
+			})
+		}
 	}
 
 	return &CacheItem{
@@ -765,7 +993,7 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 		ContentEncoding: contentEncoding,
 		ETag:            etag,
 		LastModified:    lastMod,
-		Size:            int64(len(data)),
+		Size:            size,
 	}, nil
 }
 
@@ -1089,7 +1317,15 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 	}
 
 	// Write .ext
-	extPath := filePath + ".ext"
+	fi, err := os.Stat(filePath)
+	var mtimeNano, fileSize int64
+	if err == nil {
+		mtimeNano = fi.ModTime().UnixNano()
+		fileSize = fi.Size()
+	} else {
+		fileSize = int64(len(data))
+		mtimeNano = time.Now().UnixNano()
+	}
 	meta := diskMeta{
 		LastModified:    lastMod,
 		ETag:            etag,
@@ -1097,29 +1333,27 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 		ContentEncoding: ce,
 		ContentType:     ct,
 		Version:         1,
+		Verified:        true,
+		Size:            fileSize,
+		MTimeNano:       mtimeNano,
 	}
-	metaBytes, _ := json.Marshal(&meta)
-	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d.%d", extPath, pid, ts, seq)
-	if err := os.WriteFile(tmpExtPath, metaBytes, 0644); err == nil {
-		if err := renameWithRetry(tmpExtPath, extPath, 3); err != nil {
-			_ = os.Remove(tmpExtPath)
-		}
-	}
+	_ = writeDiskExtFile(filePath, meta)
 
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
 	if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
-		if fi, err := os.Stat(filePath); err == nil {
+		if fi != nil {
 			m.setDiskMeta(ramKey, diskMetaEntry{
-				mtimeNano:       fi.ModTime().UnixNano(),
-				size:            fi.Size(),
+				mtimeNano:       mtimeNano,
+				size:            fileSize,
 				contentType:     ct,
 				contentEncoding: ce,
 				etag:            etag,
 				lastModified:    lastMod,
 				exists:          true,
 				hasMeta:         true,
+				verified:        true,
 			})
 		}
 	}
@@ -1165,6 +1399,152 @@ func (m *Manager) ReadDiskItemData(ns, urlPath string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to resolve path for %s", urlPath)
 	}
 	return os.ReadFile(filePath)
+}
+
+// OpenDiskStream opens a file from the disk cache for streaming.
+// It verifies that the opened file's actual size and mtime match the previously verified metadata.
+// If size or mtime has changed after verification, the cache is treated as invalidated and an error is returned.
+// It handles namespace resolution and the "assets/" fallback for the "gbf" namespace.
+// The caller is responsible for closing the returned ReadCloser.
+func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, error) {
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
+
+	openFileWithFallback := func(k string) (*os.File, int64, error) {
+		p, ok := m.resolvePathWithNamespace(ns, k)
+		if !ok {
+			return nil, 0, fmt.Errorf("failed to resolve path: %s", k)
+		}
+		f, err := os.Open(p)
+		if err != nil {
+			return nil, 0, err
+		}
+		fi, err := f.Stat()
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			_ = f.Close()
+			if fi != nil && fi.Size() == 0 {
+				return nil, 0, fmt.Errorf("empty cache file: %s", p)
+			}
+			return nil, 0, fmt.Errorf("invalid cache file: %s", p)
+		}
+
+		actualSize := fi.Size()
+		actualMtime := fi.ModTime().UnixNano()
+
+		// Requirement 3: Check actual size + mtime against verified metadata.
+		// If inconsistent, treat as cache invalidation.
+		ramKey := makeRAMKey(ns, k)
+		matched := false
+		if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.verified {
+			if actualSize == meta.size && actualMtime == meta.mtimeNano {
+				matched = true
+			} else {
+				_ = f.Close()
+				m.deleteDiskMeta(ramKey)
+				return nil, 0, fmt.Errorf("cache file size/mtime modified after verification: %s (size %d vs %d, mtime %d vs %d)", p, actualSize, meta.size, actualMtime, meta.mtimeNano)
+			}
+		} else if metaBytes, err := os.ReadFile(p + ".ext"); err == nil {
+			if extMeta, ok := parseExtFile(metaBytes); ok && extMeta.Verified {
+				if actualSize == extMeta.Size && actualMtime == extMeta.MTimeNano {
+					matched = true
+					m.setDiskMeta(ramKey, diskMetaEntry{
+						mtimeNano:       actualMtime,
+						size:            actualSize,
+						contentType:     resolveContentType(extMeta.ContentType, p),
+						contentEncoding: extMeta.ContentEncoding,
+						etag:            extMeta.ETag,
+						lastModified:    extMeta.LastModified,
+						exists:          true,
+						hasMeta:         true,
+						verified:        true,
+					})
+				} else {
+					_ = f.Close()
+					m.deleteDiskMeta(ramKey)
+					return nil, 0, fmt.Errorf("cache file size/mtime mismatch with .ext metadata: %s (size %d vs %d, mtime %d vs %d)", p, actualSize, extMeta.Size, actualMtime, extMeta.MTimeNano)
+				}
+			}
+		}
+
+		if !matched && k != cleanKey {
+			origKey := makeRAMKey(ns, cleanKey)
+			if meta, ok := m.getDiskMeta(origKey); ok && meta.hasMeta && meta.verified {
+				if actualSize == meta.size && actualMtime == meta.mtimeNano {
+					matched = true
+				} else {
+					_ = f.Close()
+					m.deleteDiskMeta(origKey)
+					return nil, 0, fmt.Errorf("cache file size/mtime modified after verification: %s", p)
+				}
+			}
+		}
+
+		if !matched {
+			_ = f.Close()
+			return nil, 0, fmt.Errorf("cache file has no verified metadata: %s", p)
+		}
+
+		return f, actualSize, nil
+	}
+
+	f, size, err := openFileWithFallback(cleanKey)
+	if err == nil {
+		return f, size, nil
+	}
+
+	if ns == "" || ns == "gbf" {
+		var altKey string
+		if !strings.HasPrefix(cleanKey, "assets") {
+			altKey = "assets/" + cleanKey
+		} else {
+			altKey = strings.TrimPrefix(cleanKey, "assets/")
+		}
+		if altF, altSize, altErr := openFileWithFallback(altKey); altErr == nil {
+			return altF, altSize, nil
+		}
+	}
+	return nil, 0, err
+}
+
+// Invalidate removes an asset from memory cache and disk metadata, and deletes the cached file from disk.
+func (m *Manager) Invalidate(ns, urlPath string) {
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
+	ramKey := makeRAMKey(ns, cleanKey)
+
+	m.deleteDiskMeta(ramKey)
+	if m.residentPool != nil {
+		m.residentPool.Delete(ramKey)
+	}
+	if m.ramCache != nil {
+		m.ramCache.Delete(ramKey)
+	}
+
+	if p, ok := m.resolvePathWithNamespace(ns, cleanKey); ok {
+		_ = os.Remove(p)
+		_ = os.Remove(p + ".ext")
+	}
+
+	if ns == "" || ns == "gbf" {
+		var altKey string
+		if !strings.HasPrefix(cleanKey, "assets") {
+			altKey = "assets/" + cleanKey
+		} else {
+			altKey = strings.TrimPrefix(cleanKey, "assets/")
+		}
+		altRamKey := makeRAMKey("gbf", altKey)
+		m.deleteDiskMeta(altRamKey)
+		if m.residentPool != nil {
+			m.residentPool.Delete(altRamKey)
+		}
+		if m.ramCache != nil {
+			m.ramCache.Delete(altRamKey)
+		}
+		if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
+			_ = os.Remove(altPath)
+			_ = os.Remove(altPath + ".ext")
+		}
+	}
 }
 
 // CreateDiskTempFile creates a secure temporary file in the cache directory adjacent to the destination path.
@@ -1248,10 +1628,13 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 	ct := getHeader(headers, "content-type")
 
 	// Write .ext
-	pid := os.Getpid()
-	ts := time.Now().UnixNano()
-	seq := tmpFileSeq.Add(1)
-	extPath := filePath + ".ext"
+	fi, err := os.Stat(filePath)
+	var mtimeNano int64
+	if err == nil {
+		mtimeNano = fi.ModTime().UnixNano()
+	} else {
+		mtimeNano = time.Now().UnixNano()
+	}
 	meta := diskMeta{
 		LastModified:    lastMod,
 		ETag:            etag,
@@ -1259,23 +1642,20 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 		ContentEncoding: ce,
 		ContentType:     ct,
 		Version:         1,
+		Verified:        true,
+		Size:            totalSize,
+		MTimeNano:       mtimeNano,
 	}
-	metaBytes, _ := json.Marshal(&meta)
-	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d.%d", extPath, pid, ts, seq)
-	if err := os.WriteFile(tmpExtPath, metaBytes, 0644); err == nil {
-		if err := renameWithRetry(tmpExtPath, extPath, 3); err != nil {
-			_ = os.Remove(tmpExtPath)
-		}
-	}
+	_ = writeDiskExtFile(filePath, meta)
 
 	ramKey := makeRAMKey(ns, cleanKey)
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
 	if _, _, rKey, ok := extractNamespaceAndKey(base, filePath); ok {
-		if fi, err := os.Stat(filePath); err == nil {
+		if fi != nil {
 			m.setDiskMeta(rKey, diskMetaEntry{
-				mtimeNano:       fi.ModTime().UnixNano(),
+				mtimeNano:       mtimeNano,
 				size:            fi.Size(),
 				contentType:     ct,
 				contentEncoding: ce,
@@ -1283,6 +1663,7 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 				lastModified:    lastMod,
 				exists:          true,
 				hasMeta:         true,
+				verified:        true,
 			})
 		}
 	}

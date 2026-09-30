@@ -231,7 +231,7 @@ func (s *lruShard) isProtected(key string) bool {
 }
 
 func (s *lruShard) set(key string, item *CacheItem, isProtected bool) {
-	if item == nil {
+	if item == nil || (len(item.Data) == 0 && item.Size > 0) {
 		return
 	}
 	s.mu.Lock()

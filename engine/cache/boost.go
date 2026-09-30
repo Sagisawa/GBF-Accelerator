@@ -335,6 +335,20 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 				continue
 			}
 
+			// If the item was returned from the verified metadata fastpath (Data == nil),
+			// load the body into memory now so it can reside in RAM.
+			if len(item.Data) == 0 {
+				data, err := os.ReadFile(c.filePath)
+				if err != nil || int64(len(data)) != item.Size {
+					if acquireBytes > 0 {
+						m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+					}
+					invalidFiles++
+					continue
+				}
+				item.Data = data
+			}
+
 			// Adjust difference if file size on disk differs from actual bytes loaded
 			if item.Size != c.fileSize && m.ramBudget != nil {
 				actualDelta := item.Size - c.fileSize

@@ -514,46 +514,69 @@ func TestDiskRead_LargeImageAndAudio(t *testing.T) {
 	mgr := NewManager(tempDir, 32)
 	defer mgr.Close()
 
-	// 4MB Image
-	largeImgPayload := makeFakePNG(4 * 1024 * 1024)
-	imgPath := "/assets/img/sp/quest/scene/bg_4mb.png"
-	imgClean := "assets/img/sp/quest/scene/bg_4mb.png"
-	if !mgr.Save(imgPath, map[string]string{"content-type": "image/png"}, largeImgPayload) {
-		t.Fatal("failed to save 4MB image")
+	// 1.5MB Image (<= MaxDiskDirectReadSize): direct disk read into memory and probation admission
+	imgPayload := makeFakePNG(1536 * 1024)
+	imgPath := "/assets/img/sp/quest/scene/bg_1536k.png"
+	imgClean := "assets/img/sp/quest/scene/bg_1536k.png"
+	if !mgr.Save(imgPath, map[string]string{"content-type": "image/png"}, imgPayload) {
+		t.Fatal("failed to save 1.5MB image")
 	}
 
-	// 4MB Audio
-	largeAudioPayload := makeFakePNG(4 * 1024 * 1024) // fake binary data
-	audioPath := "/assets/sound/bgm/battle_theme_4mb.mp3"
-	audioClean := "assets/sound/bgm/battle_theme_4mb.mp3"
-	if !mgr.Save(audioPath, map[string]string{"content-type": "audio/mp3"}, largeAudioPayload) {
-		t.Fatal("failed to save 4MB audio")
+	// 1.5MB Audio (<= MaxDiskDirectReadSize)
+	audioPayload := makeFakePNG(1536 * 1024)
+	audioPath := "/assets/sound/bgm/battle_theme_1536k.mp3"
+	audioClean := "assets/sound/bgm/battle_theme_1536k.mp3"
+	if !mgr.Save(audioPath, map[string]string{"content-type": "audio/mp3"}, audioPayload) {
+		t.Fatal("failed to save 1.5MB audio")
+	}
+
+	// 4MB Image (> MaxDiskDirectReadSize): streaming candidate, Data=nil, no RAM admission
+	large4mbPayload := makeFakePNG(4 * 1024 * 1024)
+	large4mbPath := "/assets/img/sp/quest/scene/bg_4mb.png"
+	large4mbClean := "assets/img/sp/quest/scene/bg_4mb.png"
+	if !mgr.Save(large4mbPath, map[string]string{"content-type": "image/png"}, large4mbPayload) {
+		t.Fatal("failed to save 4MB image")
 	}
 
 	mgr.ClearRAM()
 
-	// Verify 4MB Image read from disk
+	// Verify 1.5MB Image read from disk
 	imgItem, src := mgr.Get(imgPath)
 	if imgItem == nil || src != "DISK" {
-		t.Fatalf("expected DISK hit for large image, got %s", src)
+		t.Fatalf("expected DISK hit for image, got %s", src)
 	}
-	if len(imgItem.Data) != len(largeImgPayload) || !bytes.Equal(imgItem.Data, largeImgPayload) {
-		t.Fatal("4MB image byte content mismatch")
+	if len(imgItem.Data) != len(imgPayload) || !bytes.Equal(imgItem.Data, imgPayload) {
+		t.Fatal("1.5MB image byte content mismatch")
 	}
 	if mgr.IsRAMProtected("gbf", imgClean) {
-		t.Fatal("large image should be in probation after 1st read")
+		t.Fatal("image should be in probation after 1st read, not protected")
 	}
 
-	// Verify 4MB Audio read from disk
+	// Verify 1.5MB Audio read from disk
 	audioItem, aSrc := mgr.Get(audioPath)
 	if audioItem == nil || aSrc != "DISK" {
-		t.Fatalf("expected DISK hit for large audio, got %s", aSrc)
+		t.Fatalf("expected DISK hit for audio, got %s", aSrc)
 	}
-	if len(audioItem.Data) != len(largeAudioPayload) || !bytes.Equal(audioItem.Data, largeAudioPayload) {
-		t.Fatal("4MB audio byte content mismatch")
+	if len(audioItem.Data) != len(audioPayload) || !bytes.Equal(audioItem.Data, audioPayload) {
+		t.Fatal("1.5MB audio byte content mismatch")
 	}
 	if mgr.IsRAMProtected("gbf", audioClean) {
-		t.Fatal("large audio should be in probation after 1st read")
+		t.Fatal("audio should be in probation after 1st read, not protected")
+	}
+
+	// Verify 4MB Image (>2MB): Data is nil, Size is 4MB, strictly not admitted to RAM
+	largeItem, lSrc := mgr.Get(large4mbPath)
+	if largeItem == nil || lSrc != "DISK" {
+		t.Fatalf("expected DISK hit for 4MB image, got %s", lSrc)
+	}
+	if largeItem.Data != nil {
+		t.Fatalf("expected Data == nil for >2MB asset, got %d bytes", len(largeItem.Data))
+	}
+	if largeItem.Size != int64(len(large4mbPayload)) {
+		t.Fatalf("expected Size == %d, got %d", len(large4mbPayload), largeItem.Size)
+	}
+	if mgr.IsRAMProtected("gbf", large4mbClean) {
+		t.Fatal("large 4MB stream item must not be admitted to RAM")
 	}
 }
 
