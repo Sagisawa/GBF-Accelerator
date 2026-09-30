@@ -123,3 +123,61 @@ func TestIsValidCacheContent(t *testing.T) {
 		t.Error("expected HTML error page for M4A to fail")
 	}
 }
+
+func TestCanEarlyStream(t *testing.T) {
+	// 1. Valid PNG chunk (at least 8 bytes)
+	validPngChunk := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	if !CanEarlyStream("/assets/img/hero.png", "image/png", validPngChunk) {
+		t.Error("expected valid PNG chunk to pass early stream check")
+	}
+
+	// 2. Corrupted PNG chunk (bad magic)
+	if CanEarlyStream("/assets/img/hero.png", "image/png", []byte("bad_png_magic_bytes")) {
+		t.Error("expected bad PNG magic bytes to fail early stream check")
+	}
+
+	// 3. HTML 502 error page returned with 200 status for PNG
+	htmlErr := []byte("<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head><body>502</body></html>")
+	if CanEarlyStream("/assets/img/hero.png", "image/png", htmlErr) {
+		t.Error("expected HTML error chunk to fail early stream check for PNG")
+	}
+
+	// 4. HTML error content-type rejection
+	if CanEarlyStream("/assets/js/bundle.js", "text/html", []byte("console.log('test');")) {
+		t.Error("expected text/html content-type to be rejected")
+	}
+
+	// 5. Valid JS script chunk
+	validJsChunk := []byte("var a = 1; window.Game = {};")
+	if !CanEarlyStream("/assets/js/bundle.js", "application/javascript", validJsChunk) {
+		t.Error("expected valid JS chunk to pass early stream check")
+	}
+
+	// 6. Valid gzip-compressed JS chunk
+	validGzipJs := gzipBytes([]byte("console.log('hello world from gzipped js bundle');"))
+	if !CanEarlyStream("/assets/js/bundle.js", "application/javascript", validGzipJs) {
+		t.Error("expected valid complete gzip JS to pass early stream check")
+	}
+
+	// 7. Gzipped HTML error page (should be rejected)
+	gzippedHtml := gzipBytes(htmlErr)
+	if CanEarlyStream("/assets/js/bundle.js", "application/javascript", gzippedHtml) {
+		t.Error("expected gzipped HTML error to be rejected by early stream check")
+	}
+
+	// 8. Truncated / malformed gzip chunk (conservative fallback: should return false)
+	truncatedGzip := []byte{0x1f, 0x8b, 0x08, 0x00}
+	if CanEarlyStream("/assets/js/bundle.js", "application/javascript", truncatedGzip) {
+		t.Error("expected truncated gzip chunk to return false for conservative fallback")
+	}
+
+	// 9. Zero-length chunk
+	if CanEarlyStream("/assets/img/hero.png", "image/png", nil) {
+		t.Error("expected empty chunk to return false")
+	}
+
+	// 10. Non-asset extension (e.g. custom file) passes early stream
+	if !CanEarlyStream("/unknown/resource.custom", "application/octet-stream", []byte("any_data")) {
+		t.Error("expected non-asset extension to pass")
+	}
+}
