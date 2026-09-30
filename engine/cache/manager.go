@@ -1127,6 +1127,187 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 	return true
 }
 
+// MaxRAMItemSize returns the maximum byte size of a single asset that can be admitted
+// into the RAM cache (specifically, a single SLRU shard capacity).
+// Assets exceeding this size will not fit into RAM cache and should be persisted
+// directly to disk cache.
+func (m *Manager) MaxRAMItemSize() int64 {
+	if m == nil || !m.ramEnabled.Load() || m.ramCache == nil {
+		return 0
+	}
+	maxBytes := m.ramCache.MaxBytes()
+	if maxBytes <= 0 {
+		return 16 * 1024 * 1024 // Default fallback: 16 MB
+	}
+	numShards := int64(m.ramCache.numShards)
+	if numShards <= 0 {
+		numShards = 1
+	}
+	shardMax := maxBytes / numShards
+	if shardMax <= 0 {
+		return 16 * 1024 * 1024
+	}
+	return shardMax
+}
+
+// ResolvePathWithNamespace returns the absolute disk cache path for an asset.
+func (m *Manager) ResolvePathWithNamespace(ns, urlPath string) (string, bool) {
+	clean := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
+	return m.resolvePathWithNamespace(ns, clean)
+}
+
+// ReadDiskItemData loads raw bytes from disk for the given namespace and URL path.
+func (m *Manager) ReadDiskItemData(ns, urlPath string) ([]byte, error) {
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
+	if !ok {
+		return nil, fmt.Errorf("failed to resolve path for %s", urlPath)
+	}
+	return os.ReadFile(filePath)
+}
+
+// CreateDiskTempFile creates a secure temporary file in the cache directory adjacent to the destination path.
+// The file is opened with O_CREATE|os.O_WRONLY|os.O_EXCL.
+// Returns the file handle, temporary path, cache generation, and error.
+func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint64, error) {
+	m.persistMu.RLock()
+	generation := m.generation
+	m.persistMu.RUnlock()
+
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
+	if !ok {
+		return nil, "", 0, fmt.Errorf("failed to resolve path for %s", urlPath)
+	}
+
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, "", 0, err
+	}
+
+	pid := os.Getpid()
+	ts := time.Now().UnixNano()
+	seq := tmpFileSeq.Add(1)
+	tmpDataPath := fmt.Sprintf("%s.tmp.%d.%d.%d", filePath, pid, ts, seq)
+
+	f, err := os.OpenFile(tmpDataPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0644)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	return f, tmpDataPath, generation, nil
+}
+
+// CommitDiskTempFile commits a completed temporary download file to the disk cache atomically.
+// It renames the temp file to the final path, writes the .ext metadata file, updates diskMeta,
+// and clears any negative cache entry.
+func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]string, tmpFilePath string, totalSize int64, generation uint64) (*CacheItem, bool) {
+	m.persistMu.RLock()
+	defer m.persistMu.RUnlock()
+	if generation != m.generation {
+		_ = os.Remove(tmpFilePath)
+		return nil, false
+	}
+
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
+	if !ok {
+		_ = os.Remove(tmpFilePath)
+		return nil, false
+	}
+
+	if err := renameWithRetry(tmpFilePath, filePath, 3); err != nil {
+		_ = os.Remove(tmpFilePath)
+		m.mu.RLock()
+		base := m.cacheBase
+		m.mu.RUnlock()
+		if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
+			m.deleteDiskMeta(ramKey)
+		}
+		return nil, false
+	}
+
+	ce := getHeader(headers, "content-encoding")
+	if ce == "gzip" {
+		var magic [2]byte
+		if f, err := os.Open(filePath); err == nil {
+			n, _ := io.ReadFull(f, magic[:])
+			_ = f.Close()
+			if n < 2 || magic[0] != 0x1f || magic[1] != 0x8b {
+				ce = ""
+			}
+		}
+	}
+	etag := getHeader(headers, "etag")
+	if etag == "" {
+		etag = fmt.Sprintf("\"%x-%x\"", time.Now().Unix(), totalSize)
+	}
+	lastMod := getHeader(headers, "last-modified")
+	ct := getHeader(headers, "content-type")
+
+	// Write .ext
+	pid := os.Getpid()
+	ts := time.Now().UnixNano()
+	seq := tmpFileSeq.Add(1)
+	extPath := filePath + ".ext"
+	meta := diskMeta{
+		LastModified:    lastMod,
+		ETag:            etag,
+		AccessTime:      time.Now().Unix(),
+		ContentEncoding: ce,
+		ContentType:     ct,
+		Version:         1,
+	}
+	metaBytes, _ := json.Marshal(&meta)
+	tmpExtPath := fmt.Sprintf("%s.tmp.%d.%d.%d", extPath, pid, ts, seq)
+	if err := os.WriteFile(tmpExtPath, metaBytes, 0644); err == nil {
+		if err := renameWithRetry(tmpExtPath, extPath, 3); err != nil {
+			_ = os.Remove(tmpExtPath)
+		}
+	}
+
+	ramKey := makeRAMKey(ns, cleanKey)
+	m.mu.RLock()
+	base := m.cacheBase
+	m.mu.RUnlock()
+	if _, _, rKey, ok := extractNamespaceAndKey(base, filePath); ok {
+		if fi, err := os.Stat(filePath); err == nil {
+			m.setDiskMeta(rKey, diskMetaEntry{
+				mtimeNano:       fi.ModTime().UnixNano(),
+				size:            fi.Size(),
+				contentType:     ct,
+				contentEncoding: ce,
+				etag:            etag,
+				lastModified:    lastMod,
+				exists:          true,
+				hasMeta:         true,
+			})
+		}
+	}
+
+	if m.residentPool != nil {
+		m.residentPool.Delete(ramKey)
+	}
+
+	shard := m.missingShard(ramKey)
+	shard.mu.Lock()
+	delete(shard.items, ramKey)
+	shard.mu.Unlock()
+
+	item := &CacheItem{
+		Key:             ramKey,
+		ContentType:     ct,
+		ContentEncoding: ce,
+		ETag:            etag,
+		LastModified:    lastMod,
+		Size:            totalSize,
+	}
+
+	return item, true
+}
+
 func (m *Manager) markMissing(ramKey string) {
 	shard := m.missingShard(ramKey)
 	shard.mu.Lock()

@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1493,6 +1495,9 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 		reqCtx = context.Background()
 	}
 
+	var leaderStreamed bool
+	var clientWriteFailed bool
+
 	res, err := s.cacheMgr.SingleFlight().DoContext(reqCtx, flightKey, func() (interface{}, error) {
 		upURL := fmt.Sprintf("https://%s%s", targetHost, req.URL.RequestURI())
 		upReq, err := http.NewRequestWithContext(context.Background(), "GET", upURL, nil)
@@ -1547,26 +1552,288 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 		}
 		defer resp.Body.Close()
 
-		data, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return nil, err
+		canStream := !isHead && req.Header.Get("If-None-Match") == "" && req.Header.Get("If-Modified-Since") == ""
+		const smallAssetThreshold = 16 * 1024 // 16 KB
+
+		// Case 1: Known small asset or non-streamable (HEAD / conditional): execute batch mode
+		if !canStream || (resp.ContentLength >= 0 && resp.ContentLength <= smallAssetThreshold) {
+			data, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return nil, err
+			}
+
+			ct := resp.Header.Get("Content-Type")
+			if !cache.IsValidCacheContent(cleanPath, ct, data) {
+				if fb, _ := s.cacheMgr.GetFallback(req.URL.Path); fb != nil {
+					return fb, nil
+				}
+				return nil, fmt.Errorf("invalid cache content")
+			}
+
+			etag := resp.Header.Get("ETag")
+			if etag == "" {
+				etag = resp.Header.Get("Etag")
+			}
+			headersMap := make(map[string]string)
+			for k, vv := range resp.Header {
+				if len(vv) > 0 {
+					headersMap[strings.ToLower(k)] = vv[0]
+				}
+			}
+			if etag != "" {
+				headersMap["etag"] = etag
+			}
+
+			savedItem, ok := s.cacheMgr.SaveRAMValidatedWithNamespace(ns, req.URL.Path, headersMap, data)
+			if !ok || savedItem == nil {
+				return nil, fmt.Errorf("failed to store asset in cache")
+			}
+
+			if s.prefetch != nil {
+				s.prefetch.MaybeEnqueueDiscovery(targetHost, req.URL.Path, data)
+			}
+			s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 %dms -> %s%s (%d B)", time.Since(fetchStart).Milliseconds(), targetHost, cleanPath, len(data)))
+			return savedItem, nil
 		}
 
+		// Read first chunk (up to 4KB) for early validation
+		initialBuf := make([]byte, 4096)
+		n, readErr := io.ReadFull(resp.Body, initialBuf)
+		if n == 0 && readErr != nil {
+			return nil, readErr
+		}
+		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
+			return nil, readErr
+		}
+		initialChunk := initialBuf[:n]
+
 		ct := resp.Header.Get("Content-Type")
-		if !cache.IsValidCacheContent(cleanPath, ct, data) {
-			// Upstream HTML error page (e.g. 502/503) or malformed content
-			if fb, _ := s.cacheMgr.GetFallback(req.URL.Path); fb != nil {
-				return fb, nil
+
+		// If the entire payload was <= 4KB (e.g. unknown Content-Length but small file)
+		if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+			if resp.ContentLength >= 0 && int64(n) != resp.ContentLength {
+				s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: upstream stream truncated during initial read: read %d, want %d", cleanPath, n, resp.ContentLength))
+				return nil, fmt.Errorf("upstream stream truncated during initial read: read %d, want %d: %w", n, resp.ContentLength, io.ErrUnexpectedEOF)
 			}
-			return nil, fmt.Errorf("invalid cache content")
+
+			if !cache.IsValidCacheContent(cleanPath, ct, initialChunk) {
+				if fb, _ := s.cacheMgr.GetFallback(req.URL.Path); fb != nil {
+					return fb, nil
+				}
+				return nil, fmt.Errorf("invalid cache content")
+			}
+
+			etag := resp.Header.Get("ETag")
+			if etag == "" {
+				etag = resp.Header.Get("Etag")
+			}
+			headersMap := make(map[string]string)
+			for k, vv := range resp.Header {
+				if len(vv) > 0 {
+					headersMap[strings.ToLower(k)] = vv[0]
+				}
+			}
+			if etag != "" {
+				headersMap["etag"] = etag
+			}
+
+			savedItem, ok := s.cacheMgr.SaveRAMValidatedWithNamespace(ns, req.URL.Path, headersMap, initialChunk)
+			if !ok || savedItem == nil {
+				return nil, fmt.Errorf("failed to store asset in cache")
+			}
+
+			if s.prefetch != nil {
+				s.prefetch.MaybeEnqueueDiscovery(targetHost, req.URL.Path, initialChunk)
+			}
+			s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 %dms -> %s%s (%d B)", time.Since(fetchStart).Milliseconds(), targetHost, cleanPath, len(initialChunk)))
+			return savedItem, nil
+		}
+
+		// Early fast-rejection check
+		if !cache.CanEarlyStream(cleanPath, ct, initialChunk) {
+			// Early check rejected (e.g. HTML error page or magic byte mismatch, or uncertain gzip):
+			// Conservative fallback: read the rest of the body in batch mode
+			rest, rErr := io.ReadAll(resp.Body)
+			if rErr != nil {
+				return nil, rErr
+			}
+			fullData := append(initialChunk, rest...)
+			if !cache.IsValidCacheContent(cleanPath, ct, fullData) {
+				if fb, _ := s.cacheMgr.GetFallback(req.URL.Path); fb != nil {
+					return fb, nil
+				}
+				return nil, fmt.Errorf("invalid cache content")
+			}
+
+			etag := resp.Header.Get("ETag")
+			if etag == "" {
+				etag = resp.Header.Get("Etag")
+			}
+			headersMap := make(map[string]string)
+			for k, vv := range resp.Header {
+				if len(vv) > 0 {
+					headersMap[strings.ToLower(k)] = vv[0]
+				}
+			}
+			if etag != "" {
+				headersMap["etag"] = etag
+			}
+
+			savedItem, ok := s.cacheMgr.SaveRAMValidatedWithNamespace(ns, req.URL.Path, headersMap, fullData)
+			if !ok || savedItem == nil {
+				return nil, fmt.Errorf("failed to store asset in cache")
+			}
+
+			if s.prefetch != nil {
+				s.prefetch.MaybeEnqueueDiscovery(targetHost, req.URL.Path, fullData)
+			}
+			s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 %dms -> %s%s (%d B)", time.Since(fetchStart).Milliseconds(), targetHost, cleanPath, len(fullData)))
+			return savedItem, nil
+		}
+
+		// Early check passed: Stream-Through to client starts!
+		leaderStreamed = true
+		if hErr := s.writeStreamResponseHeader(w, resp, req.URL.Path, req.Close); hErr != nil {
+			clientWriteFailed = true
+		}
+
+		sc := &streamClientWriter{
+			w:         w,
+			isChunked: (resp.ContentLength < 0),
+			failed:    clientWriteFailed,
+		}
+		if err := sc.WriteChunk(initialChunk); err != nil {
+			clientWriteFailed = true
+		}
+
+		maxRAMItemSize := s.cacheMgr.MaxRAMItemSize()
+		if maxRAMItemSize <= 0 {
+			maxRAMItemSize = 16 * 1024 * 1024
+		}
+
+		var tmpFile *os.File
+		var tmpPath string
+		var gen uint64
+		var isSpilledToDisk bool
+		var committed bool
+		var cacheDisabled bool
+		var memBuf *bytes.Buffer
+
+		disableCache := func(reason string, err error) {
+			if !cacheDisabled {
+				cacheDisabled = true
+				if err != nil {
+					s.stats.Log("WARN", fmt.Sprintf("[FETCH-CACHE] %s: %s: %v, abandoning cache", cleanPath, reason, err))
+				} else {
+					s.stats.Log("WARN", fmt.Sprintf("[FETCH-CACHE] %s: %s, abandoning cache", cleanPath, reason))
+				}
+				if tmpFile != nil {
+					_ = tmpFile.Close()
+					tmpFile = nil
+				}
+				if tmpPath != "" {
+					_ = os.Remove(tmpPath)
+					tmpPath = ""
+				}
+				memBuf = nil
+			}
+		}
+
+		defer func() {
+			if tmpFile != nil {
+				_ = tmpFile.Close()
+			}
+			if tmpPath != "" && !committed {
+				_ = os.Remove(tmpPath)
+			}
+		}()
+
+		if resp.ContentLength > maxRAMItemSize {
+			var tfErr error
+			tmpFile, tmpPath, gen, tfErr = s.cacheMgr.CreateDiskTempFile(ns, req.URL.Path)
+			if tfErr != nil {
+				disableCache("failed to create disk temp file", tfErr)
+			} else if _, wErr := tmpFile.Write(initialChunk); wErr != nil {
+				disableCache("failed to write initial chunk to disk temp file", wErr)
+			} else {
+				isSpilledToDisk = true
+			}
+		}
+
+		if !isSpilledToDisk && !cacheDisabled {
+			capHint := 64 * 1024
+			if resp.ContentLength > 0 && resp.ContentLength <= maxRAMItemSize && resp.ContentLength <= int64(math.MaxInt) {
+				capHint = int(resp.ContentLength)
+			}
+			memBuf = bytes.NewBuffer(make([]byte, 0, capHint))
+			memBuf.Write(initialChunk)
+		}
+
+		copyBuf := make([]byte, 32*1024)
+		var totalRead int64 = int64(len(initialChunk))
+
+		for {
+			nr, rErr := resp.Body.Read(copyBuf)
+			if nr > 0 {
+				chunk := copyBuf[:nr]
+				totalRead += int64(nr)
+
+				if err := sc.WriteChunk(chunk); err != nil {
+					clientWriteFailed = true
+				}
+
+				if !cacheDisabled {
+					if isSpilledToDisk {
+						if _, wErr := tmpFile.Write(chunk); wErr != nil {
+							disableCache("failed to write chunk to disk temp file", wErr)
+						}
+					} else {
+						if int64(memBuf.Len()+nr) > maxRAMItemSize {
+							var tfErr error
+							tmpFile, tmpPath, gen, tfErr = s.cacheMgr.CreateDiskTempFile(ns, req.URL.Path)
+							if tfErr != nil {
+								disableCache("failed to create disk temp file on spill", tfErr)
+							} else if _, wErr := tmpFile.Write(memBuf.Bytes()); wErr != nil {
+								disableCache("failed to write memory buffer to disk temp file on spill", wErr)
+							} else if _, wErr := tmpFile.Write(chunk); wErr != nil {
+								disableCache("failed to write chunk to disk temp file on spill", wErr)
+							} else {
+								memBuf = nil
+								isSpilledToDisk = true
+							}
+						} else {
+							memBuf.Write(chunk)
+						}
+					}
+				}
+			}
+
+			if rErr != nil {
+				if rErr == io.EOF {
+					break
+				}
+				s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: upstream stream truncated: %v", cleanPath, rErr))
+				return nil, rErr
+			}
+		}
+
+		if err := sc.Finish(); err != nil {
+			clientWriteFailed = true
+		}
+
+		if resp.ContentLength >= 0 && totalRead != resp.ContentLength {
+			s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: length mismatch: read %d, want %d", cleanPath, totalRead, resp.ContentLength))
+			return nil, fmt.Errorf("content length mismatch")
+		}
+
+		if cacheDisabled {
+			return nil, nil
 		}
 
 		etag := resp.Header.Get("ETag")
 		if etag == "" {
 			etag = resp.Header.Get("Etag")
 		}
-
-		// Persist to cache with lowercase header keys
 		headersMap := make(map[string]string)
 		for k, vv := range resp.Header {
 			if len(vv) > 0 {
@@ -1577,35 +1844,90 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 			headersMap["etag"] = etag
 		}
 
-		// Respond-First: Instant RAM cache write & non-blocking background disk persistence
-		savedItem, ok := s.cacheMgr.SaveRAMValidatedWithNamespace(ns, req.URL.Path, headersMap, data)
+		if isSpilledToDisk {
+			_ = tmpFile.Close()
+			tmpFile = nil
+
+			sampleSize := int64(64 * 1024)
+			if totalRead < sampleSize {
+				sampleSize = totalRead
+			}
+			sampleBuf := make([]byte, sampleSize)
+			sf, sfErr := os.Open(tmpPath)
+			if sfErr != nil {
+				disableCache("failed to open disk temp file for validation", sfErr)
+				return nil, nil
+			}
+			_, _ = io.ReadFull(sf, sampleBuf)
+			_ = sf.Close()
+
+			if !cache.IsValidCacheContent(cleanPath, ct, sampleBuf) {
+				disableCache("invalid cache content after disk stream", nil)
+				return nil, nil
+			}
+
+			savedItem, ok := s.cacheMgr.CommitDiskTempFile(ns, req.URL.Path, headersMap, tmpPath, totalRead, gen)
+			if !ok || savedItem == nil {
+				disableCache("failed to commit disk temp file to cache", nil)
+				return nil, nil
+			}
+			committed = true
+			s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET-DISK] 200 %dms -> %s%s (%d B)", time.Since(fetchStart).Milliseconds(), targetHost, cleanPath, totalRead))
+			return savedItem, nil
+		}
+
+		fullData := memBuf.Bytes()
+		if !cache.IsValidCacheContent(cleanPath, ct, fullData) {
+			disableCache("invalid cache content after stream", nil)
+			return nil, nil
+		}
+
+		savedItem, ok := s.cacheMgr.SaveRAMValidatedWithNamespace(ns, req.URL.Path, headersMap, fullData)
 		if !ok || savedItem == nil {
-			return nil, fmt.Errorf("failed to store asset in cache")
+			disableCache("failed to store asset in RAM cache", nil)
+			return nil, nil
 		}
 
 		if s.prefetch != nil {
-			s.prefetch.MaybeEnqueueDiscovery(targetHost, req.URL.Path, data)
+			s.prefetch.MaybeEnqueueDiscovery(targetHost, req.URL.Path, fullData)
 		}
-		s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 %dms -> %s%s (%d B)", time.Since(fetchStart).Milliseconds(), targetHost, cleanPath, len(data)))
-
+		s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET] 200 %dms -> %s%s (%d B)", time.Since(fetchStart).Milliseconds(), targetHost, cleanPath, len(fullData)))
 		return savedItem, nil
 	})
 
-	if err != nil || res == nil {
-		if reqCtx.Err() != nil {
+	if err != nil || (!leaderStreamed && res == nil) {
+		if reqCtx.Err() != nil || leaderStreamed {
 			return false
 		}
 		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, isHead, req.Close)
 		return !req.Close
 	}
 
-	cachedItem := res.(*cache.CacheItem)
-	if isClientNotModified(req, cachedItem) {
-		s.sendNotModifiedResponse(w, cachedItem, req.URL.Path, req.Close)
+	if !leaderStreamed {
+		cachedItem := res.(*cache.CacheItem)
+		if isClientNotModified(req, cachedItem) {
+			s.sendNotModifiedResponse(w, cachedItem, req.URL.Path, req.Close)
+			return !req.Close
+		}
+		itemToSend := cachedItem
+		if !isHead && len(cachedItem.Data) == 0 && cachedItem.Size > 0 {
+			data, err := s.cacheMgr.ReadDiskItemData(ns, req.URL.Path)
+			if err != nil {
+				s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: failed to read disk item for follower: %v", cleanPath, err))
+				writeHTTPResponse(w, http.StatusBadGateway, nil, nil, isHead, req.Close)
+				return !req.Close
+			}
+			itemCopy := *cachedItem
+			itemCopy.Data = data
+			itemToSend = &itemCopy
+		}
+		s.sendAssetResponse(w, 200, itemToSend, isHead, req.URL.Path, req.Close)
 		return !req.Close
 	}
 
-	s.sendAssetResponse(w, 200, cachedItem, isHead, req.URL.Path, req.Close)
+	if clientWriteFailed {
+		return false
+	}
 	return !req.Close
 }
 
@@ -1833,7 +2155,11 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 
 	if statusCode != http.StatusNoContent && statusCode != http.StatusNotModified && (statusCode < 100 || statusCode >= 200) {
 		buf.WriteString("Content-Length: ")
-		buf.Write(strconv.AppendInt(numBuf[:0], int64(len(body)), 10))
+		if isHead && len(body) == 0 && header != nil && header.Get("Content-Length") != "" {
+			buf.WriteString(header.Get("Content-Length"))
+		} else {
+			buf.Write(strconv.AppendInt(numBuf[:0], int64(len(body)), 10))
+		}
 		buf.WriteString("\r\n")
 	}
 	if reqClose {
@@ -1866,6 +2192,113 @@ func writeResponseBody(w io.Writer, buf *bytes.Buffer, statusCode int, body []by
 	}
 }
 
+type streamClientWriter struct {
+	w         io.Writer
+	isChunked bool
+	failed    bool
+}
+
+func (sc *streamClientWriter) WriteChunk(chunk []byte) error {
+	if sc.failed || len(chunk) == 0 {
+		return nil
+	}
+	var err error
+	if sc.isChunked {
+		var hexBuf [16]byte
+		h := strconv.AppendInt(hexBuf[:0], int64(len(chunk)), 16)
+		if _, err = sc.w.Write(h); err == nil {
+			if _, err = sc.w.Write([]byte("\r\n")); err == nil {
+				if _, err = sc.w.Write(chunk); err == nil {
+					_, err = sc.w.Write([]byte("\r\n"))
+				}
+			}
+		}
+	} else {
+		_, err = sc.w.Write(chunk)
+	}
+	if err != nil {
+		sc.failed = true
+	}
+	return err
+}
+
+func (sc *streamClientWriter) Finish() error {
+	if sc.failed {
+		return nil
+	}
+	if sc.isChunked {
+		_, err := sc.w.Write([]byte("0\r\n\r\n"))
+		if err != nil {
+			sc.failed = true
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *ProxyServer) writeStreamResponseHeader(w io.Writer, resp *http.Response, urlPath string, reqClose bool) error {
+	buf := responseBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= 128*1024 {
+			responseBufferPool.Put(buf)
+		}
+	}()
+
+	buf.WriteString("HTTP/1.1 200 OK\r\nDate: ")
+	var dateBuf [32]byte
+	buf.Write(time.Now().UTC().AppendFormat(dateBuf[:0], http.TimeFormat))
+	buf.WriteString("\r\n")
+
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		buf.WriteString("Content-Type: ")
+		buf.WriteString(ct)
+		buf.WriteString("\r\n")
+	}
+	etag := resp.Header.Get("ETag")
+	if etag == "" {
+		etag = resp.Header.Get("Etag")
+	}
+	if etag != "" {
+		buf.WriteString("ETag: ")
+		buf.WriteString(etag)
+		buf.WriteString("\r\n")
+	}
+	if lm := resp.Header.Get("Last-Modified"); lm != "" {
+		buf.WriteString("Last-Modified: ")
+		buf.WriteString(lm)
+		buf.WriteString("\r\n")
+	}
+	ce := resp.Header.Get("Content-Encoding")
+	if ce != "" {
+		buf.WriteString("Content-Encoding: ")
+		buf.WriteString(ce)
+		buf.WriteString("\r\n")
+	}
+	buf.WriteString("Access-Control-Allow-Origin: *\r\n")
+	buf.WriteString("Cache-Control: ")
+	buf.WriteString(s.getCacheControlHeader(urlPath))
+	buf.WriteString("\r\n")
+
+	if resp.ContentLength >= 0 {
+		var numBuf [32]byte
+		buf.WriteString("Content-Length: ")
+		buf.Write(strconv.AppendInt(numBuf[:0], resp.ContentLength, 10))
+		buf.WriteString("\r\n")
+	} else {
+		buf.WriteString("Transfer-Encoding: chunked\r\n")
+	}
+
+	if reqClose {
+		buf.WriteString("Connection: close\r\n\r\n")
+	} else {
+		buf.WriteString("Connection: keep-alive\r\n\r\n")
+	}
+
+	_, err := w.Write(buf.Bytes())
+	return err
+}
+
 func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.CacheItem, isHead bool, urlPath string, reqClose bool) {
 	hdr := make(http.Header)
 	if item.ContentType != "" {
@@ -1884,6 +2317,10 @@ func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.Cac
 
 	// P1: Safe browser cache policy - immutable ONLY for versioned assets
 	hdr.Set("Cache-Control", s.getCacheControlHeader(urlPath))
+
+	if isHead && len(item.Data) == 0 && item.Size > 0 {
+		hdr.Set("Content-Length", strconv.FormatInt(item.Size, 10))
+	}
 
 	writeHTTPResponse(w, status, hdr, item.Data, isHead, reqClose)
 }

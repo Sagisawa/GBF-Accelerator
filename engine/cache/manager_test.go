@@ -860,6 +860,78 @@ func TestLoadAndValidateDiskItem(t *testing.T) {
 	}
 }
 
+func TestDiskTempFileAndCommit(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	urlPath := "/assets/large/movie.mp4"
+	f, tmpPath, gen, err := mgr.CreateDiskTempFile("gbf", urlPath)
+	if err != nil {
+		t.Fatalf("CreateDiskTempFile failed: %v", err)
+	}
+
+	payload := []byte("large_binary_movie_stream_content_1234567890")
+	if _, err := f.Write(payload); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		t.Fatalf("failed to write to temp file: %v", err)
+	}
+	_ = f.Close()
+
+	headers := map[string]string{
+		"content-type": "video/mp4",
+		"etag":         `"movie-etag"`,
+	}
+	item, ok := mgr.CommitDiskTempFile("gbf", urlPath, headers, tmpPath, int64(len(payload)), gen)
+	if !ok || item == nil {
+		t.Fatalf("CommitDiskTempFile failed")
+	}
+
+	if item.Size != int64(len(payload)) || item.ContentType != "video/mp4" || item.ETag != `"movie-etag"` {
+		t.Errorf("unexpected committed item metadata: %+v", item)
+	}
+
+	// Verify temp file no longer exists
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Errorf("expected temp file to be moved, but still exists: %s", tmpPath)
+	}
+
+	// Verify file is readable via ReadDiskItemData
+	data, err := mgr.ReadDiskItemData("gbf", urlPath)
+	if err != nil {
+		t.Fatalf("ReadDiskItemData failed: %v", err)
+	}
+	if string(data) != string(payload) {
+		t.Errorf("payload mismatch: got %q, want %q", string(data), string(payload))
+	}
+
+	// Verify GetWithNamespace hits DISK
+	diskHit, src := mgr.GetWithNamespace("gbf", urlPath)
+	if diskHit == nil || src != "DISK" {
+		t.Fatalf("expected DISK hit, got item=%v, src=%s", diskHit, src)
+	}
+}
+
+func TestMaxRAMItemSize(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 256) // 256 MB
+	defer mgr.Close()
+
+	// 256 MB / 16 shards = 16 MB
+	maxItem := mgr.MaxRAMItemSize()
+	expected := int64(16 * 1024 * 1024)
+	if maxItem != expected {
+		t.Fatalf("expected max RAM item size %d, got %d", expected, maxItem)
+	}
+
+	// When RAM cache disabled
+	mgr.SetRAMEnabled(false)
+	if mgr.MaxRAMItemSize() != 0 {
+		t.Fatalf("expected 0 when RAM disabled, got %d", mgr.MaxRAMItemSize())
+	}
+}
+
 
 
 
