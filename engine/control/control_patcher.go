@@ -279,6 +279,9 @@ func (c *ControlServer) handleAndroidInspect(w http.ResponseWriter, req *http.Re
 		"engine_desc":             pkg.EngineDesc,
 		"unsupported_reason":      pkg.UnsupportedReason,
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
+		"is_already_patched":      pkg.IsAlreadyPatched,
+		"patch_type":              pkg.PatchType,
+		"original_version_name":   pkg.OriginalVersionName,
 	})
 }
 
@@ -356,6 +359,9 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 		"engine_desc":             pkg.EngineDesc,
 		"unsupported_reason":      pkg.UnsupportedReason,
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
+		"is_already_patched":      pkg.IsAlreadyPatched,
+		"patch_type":              pkg.PatchType,
+		"original_version_name":   pkg.OriginalVersionName,
 	})
 }
 
@@ -860,6 +866,9 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 		"engine_desc":             pkg.EngineDesc,
 		"unsupported_reason":      pkg.UnsupportedReason,
 		"suggested_clone_package": pkg.PackageName + ".accelerated",
+		"is_already_patched":      pkg.IsAlreadyPatched,
+		"patch_type":              pkg.PatchType,
+		"original_version_name":   pkg.OriginalVersionName,
 	})
 }
 

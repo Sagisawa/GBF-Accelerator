@@ -1219,6 +1219,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                       <span>通用系统 WebView 浏览器 (支持)</span>
                     </span>
                   )}
+                  {inspectedPkg.is_already_patched && (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 inline-flex items-center gap-1">
+                      <Zap className="w-3 h-3 text-amber-600" />
+                      <span>已内嵌 LSPatch 核心</span>
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-slate-600 flex items-center gap-2 flex-wrap">
                   <span>
@@ -1241,6 +1247,19 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 </button>
               </div>
             </div>
+
+            {/* Already Patched Note */}
+            {inspectedPkg.is_already_patched && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-bold">检测到已内嵌 LSPatch 核心</div>
+                  <div className="text-amber-800 text-[11px] leading-relaxed">
+                    检测到该安装包已包含 LSPatch 核心{inspectedPkg.original_version_name ? `（原始版本: v${inspectedPkg.original_version_name}）` : ''}。重新修补时会自动从安装包中还原未注入核心的原始 APK，然后重新注入最新版模块。
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Kernel Support Note */}
             {inspectedPkg.is_system_webview === false && (
@@ -1377,10 +1396,15 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     <Play className="w-4 h-4 fill-current opacity-60" />
                     <span>请先导入或选择安装包</span>
                   </>
+                ) : inspectedPkg.is_already_patched ? (
+                  <>
+                    <RefreshCw className="w-4 h-4" />
+                    <span>重新修补 / 升级核心</span>
+                  </>
                 ) : (
                   <>
                     <Play className="w-4 h-4 fill-current" />
-                    <span>开始制作全内置补丁</span>
+                    <span>开始制作修补</span>
                   </>
                 )}
               </button>

@@ -121,6 +121,24 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		return nil, fmt.Errorf("failed to inspect input: %w", err)
 	}
 
+	if pkgInfo.IsAlreadyPatched {
+		p.logf("      [+] Detected LSPatch Portable patched package\n")
+		p.logf("      [*] Extracting embedded original APK...\n")
+		unwrapDir := filepath.Join(workDir, "unwrapped_origin")
+		cleanPkgInfo, unwrapErr := UnwrapPatchedPackage(pkgInfo, unwrapDir)
+		if unwrapErr != nil {
+			p.logf("      [!] Failed to extract original APK: %v\n", unwrapErr)
+			return nil, fmt.Errorf("failed to unwrap already patched package: %w", unwrapErr)
+		}
+		if cleanPkgInfo.IsSplit {
+			p.logf("      [+] Restored clean original package (%d split files: base + %d splits)\n", cleanPkgInfo.TotalApks, len(cleanPkgInfo.SplitApkPaths))
+		} else {
+			p.logf("      [+] Restored clean original package (%s)\n", filepath.Base(cleanPkgInfo.BaseApkPath))
+		}
+		p.logf("      [+] Continuing with normal patch pipeline...\n")
+		pkgInfo = cleanPkgInfo
+	}
+
 	pkgLabel := pkgInfo.PackageName
 	if pkgLabel == "" {
 		pkgLabel = "unknown"

@@ -11,15 +11,18 @@ import (
 )
 
 type ApkPackageInfo struct {
-	IsSplit           bool     `json:"is_split"`
-	BaseApkPath       string   `json:"base_apk_path"`
-	SplitApkPaths     []string `json:"split_apk_paths"`
-	PackageName       string   `json:"package_name"`
-	VersionName       string   `json:"version_name"`
-	TotalApks         int      `json:"total_apks"`
-	IsSystemWebView   bool     `json:"is_system_webview"`
-	EngineDesc        string   `json:"engine_desc"`
-	UnsupportedReason string   `json:"unsupported_reason,omitempty"`
+	IsSplit             bool     `json:"is_split"`
+	BaseApkPath         string   `json:"base_apk_path"`
+	SplitApkPaths       []string `json:"split_apk_paths"`
+	PackageName         string   `json:"package_name"`
+	VersionName         string   `json:"version_name"`
+	TotalApks           int      `json:"total_apks"`
+	IsSystemWebView     bool     `json:"is_system_webview"`
+	EngineDesc          string   `json:"engine_desc"`
+	UnsupportedReason   string   `json:"unsupported_reason,omitempty"`
+	IsAlreadyPatched    bool     `json:"is_already_patched"`
+	PatchType           string   `json:"patch_type,omitempty"`
+	OriginalVersionName string   `json:"original_version_name,omitempty"`
 }
 
 var standaloneEngines = []struct {
@@ -98,13 +101,13 @@ func InspectInput(inputPath string, workDir string) (*ApkPackageInfo, error) {
 	}
 
 	if fi.IsDir() {
-		return inspectDirectory(inputPath)
+		return inspectDirectory(inputPath, workDir)
 	}
 
 	lowerExt := strings.ToLower(filepath.Ext(inputPath))
 	switch lowerExt {
 	case ".apk":
-		return inspectSingleApk(inputPath)
+		return inspectSingleApk(inputPath, workDir)
 	case ".apks", ".xapk", ".zip":
 		unpackedDir := filepath.Join(workDir, "unpacked_input")
 		if err := os.MkdirAll(unpackedDir, 0755); err != nil {
@@ -113,34 +116,106 @@ func InspectInput(inputPath string, workDir string) (*ApkPackageInfo, error) {
 		if err := unzipArchive(inputPath, unpackedDir); err != nil {
 			return nil, fmt.Errorf("failed to extract bundle %s: %w", filepath.Base(inputPath), err)
 		}
-		return inspectDirectory(unpackedDir)
+		return inspectDirectory(unpackedDir, workDir)
 	default:
 		return nil, fmt.Errorf("unsupported file format %q (expected .apk, .apks, .xapk, or directory)", lowerExt)
 	}
 }
 
-func inspectSingleApk(apkPath string) (*ApkPackageInfo, error) {
+func detectLSPatchFromApk(apkPath string, workDir string) (isPatched bool, patchType string, origPkg string, origVer string) {
+	zr, err := zip.OpenReader(apkPath)
+	if err != nil {
+		return false, "", "", ""
+	}
+	defer zr.Close()
+
+	hasOrigin := false
+	hasConfig := false
+	hasModules := false
+	hasLoader := false
+
+	for _, f := range zr.File {
+		cleanName := filepath.Clean(f.Name)
+		if strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) {
+			continue
+		}
+		switch {
+		case f.Name == "assets/lspatch/origin.apk":
+			hasOrigin = true
+		case f.Name == "assets/lspatch/config.json":
+			hasConfig = true
+		case strings.HasPrefix(f.Name, "assets/lspatch/modules/"):
+			hasModules = true
+		case f.Name == "assets/lspatch/loader.dex" || strings.HasPrefix(f.Name, "assets/lspatch/so/"):
+			hasLoader = true
+		}
+	}
+
+	if !hasOrigin {
+		return false, "", "", ""
+	}
+
+	targetWorkDir := workDir
+	shouldCleanupWorkDir := false
+	if strings.TrimSpace(targetWorkDir) == "" {
+		if t, err := os.MkdirTemp("", "gbf_inspect_origin_*"); err == nil {
+			targetWorkDir = t
+			shouldCleanupWorkDir = true
+		}
+	}
+	if shouldCleanupWorkDir {
+		defer os.RemoveAll(targetWorkDir)
+	}
+
+	if targetWorkDir != "" {
+		tempOrigin := filepath.Join(targetWorkDir, fmt.Sprintf("origin_probe_%d.apk", os.Getpid()))
+		if err := ExtractOriginFromApk(apkPath, tempOrigin); err == nil {
+			defer os.Remove(tempOrigin)
+			if manifest, mErr := parseApkManifestInfo(tempOrigin); mErr == nil && manifest != nil {
+				return true, "lspatch", manifest.PackageName, manifest.VersionName
+			}
+		}
+	}
+
+	if hasConfig || hasModules || hasLoader {
+		return true, "lspatch", "", ""
+	}
+
+	return false, "", "", ""
+}
+
+func inspectSingleApk(apkPath string, workDir string) (*ApkPackageInfo, error) {
 	pkg, ver, _, err := parseApkMetadata(apkPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse APK %s: %w", filepath.Base(apkPath), err)
 	}
 
-	isWebView, engineDesc, unsuppReason := CheckIsSystemWebView([]string{apkPath}, pkg)
+	isPatched, patchType, origPkg, origVer := detectLSPatchFromApk(apkPath, workDir)
+
+	effectivePkg := pkg
+	if isPatched && origPkg != "" {
+		effectivePkg = origPkg
+	}
+
+	isWebView, engineDesc, unsuppReason := CheckIsSystemWebView([]string{apkPath}, effectivePkg)
 
 	return &ApkPackageInfo{
-		IsSplit:           false,
-		BaseApkPath:       apkPath,
-		SplitApkPaths:     nil,
-		PackageName:       pkg,
-		VersionName:       ver,
-		TotalApks:         1,
-		IsSystemWebView:   isWebView,
-		EngineDesc:        engineDesc,
-		UnsupportedReason: unsuppReason,
+		IsSplit:             false,
+		BaseApkPath:         apkPath,
+		SplitApkPaths:       nil,
+		PackageName:         effectivePkg,
+		VersionName:         ver,
+		TotalApks:           1,
+		IsSystemWebView:     isWebView,
+		EngineDesc:          engineDesc,
+		UnsupportedReason:   unsuppReason,
+		IsAlreadyPatched:    isPatched,
+		PatchType:           patchType,
+		OriginalVersionName: origVer,
 	}, nil
 }
 
-func inspectDirectory(dirPath string) (*ApkPackageInfo, error) {
+func inspectDirectory(dirPath string, workDir string) (*ApkPackageInfo, error) {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read directory: %w", err)
@@ -158,7 +233,7 @@ func inspectDirectory(dirPath string) (*ApkPackageInfo, error) {
 	}
 
 	if len(apkFiles) == 1 {
-		return inspectSingleApk(apkFiles[0])
+		return inspectSingleApk(apkFiles[0], workDir)
 	}
 
 	// Multiple APKs: Identify base.apk vs splits
@@ -194,26 +269,44 @@ func inspectDirectory(dirPath string) (*ApkPackageInfo, error) {
 		splitApks = apkFiles[1:]
 	}
 
+	isPatched, patchType, origPkg, origVer := detectLSPatchFromApk(baseApk, workDir)
+	if !isPatched {
+		for _, sp := range splitApks {
+			if ip, pt, op, ov := detectLSPatchFromApk(sp, workDir); ip {
+				isPatched, patchType, origPkg, origVer = ip, pt, op, ov
+				break
+			}
+		}
+	}
+
+	effectivePkg := foundPackage
+	if isPatched && origPkg != "" {
+		effectivePkg = origPkg
+	}
+
 	allApks := append([]string{baseApk}, splitApks...)
-	isWebView, engineDesc, unsuppReason := CheckIsSystemWebView(allApks, foundPackage)
+	isWebView, engineDesc, unsuppReason := CheckIsSystemWebView(allApks, effectivePkg)
 
 	return &ApkPackageInfo{
-		IsSplit:           true,
-		BaseApkPath:       baseApk,
-		SplitApkPaths:     splitApks,
-		PackageName:       foundPackage,
-		VersionName:       foundVersion,
-		TotalApks:         len(apkFiles),
-		IsSystemWebView:   isWebView,
-		EngineDesc:        engineDesc,
-		UnsupportedReason: unsuppReason,
+		IsSplit:             true,
+		BaseApkPath:         baseApk,
+		SplitApkPaths:       splitApks,
+		PackageName:         effectivePkg,
+		VersionName:         foundVersion,
+		TotalApks:           len(apkFiles),
+		IsSystemWebView:     isWebView,
+		EngineDesc:          engineDesc,
+		UnsupportedReason:   unsuppReason,
+		IsAlreadyPatched:    isPatched,
+		PatchType:           patchType,
+		OriginalVersionName: origVer,
 	}, nil
 }
 
-func parseApkMetadata(apkPath string) (pkgName string, versionName string, isSplit bool, err error) {
+func parseApkManifestInfo(apkPath string) (*ManifestInfo, error) {
 	zr, err := zip.OpenReader(apkPath)
 	if err != nil {
-		return "", "", false, err
+		return nil, err
 	}
 	defer zr.Close()
 
@@ -226,25 +319,28 @@ func parseApkMetadata(apkPath string) (pkgName string, versionName string, isSpl
 	}
 
 	if manifestFile == nil {
-		return "", "", false, fmt.Errorf("AndroidManifest.xml not found in APK")
+		return nil, fmt.Errorf("AndroidManifest.xml not found in APK %s", filepath.Base(apkPath))
 	}
 
 	rc, err := manifestFile.Open()
 	if err != nil {
-		return "", "", false, err
+		return nil, err
 	}
 	defer rc.Close()
 
 	data, err := io.ReadAll(rc)
 	if err != nil {
-		return "", "", false, err
+		return nil, err
 	}
 
-	info, err := ParseManifest(data)
+	return ParseManifest(data)
+}
+
+func parseApkMetadata(apkPath string) (pkgName string, versionName string, isSplit bool, err error) {
+	info, err := parseApkManifestInfo(apkPath)
 	if err != nil {
 		return "", "", false, err
 	}
-
 	return info.PackageName, info.VersionName, info.IsSplit, nil
 }
 

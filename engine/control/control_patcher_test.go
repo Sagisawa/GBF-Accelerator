@@ -106,6 +106,39 @@ func TestControlAndroidInspect(t *testing.T) {
 	if wDir.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 Bad Request for directory, got %d", wDir.Code)
 	}
+
+	// 5. Inspect real sample base-patched.apk if present, verifying patch detection fields
+	basePatchedPath := filepath.Join("..", "..", "bin", "output_patched", "base-patched.apk")
+	if fi, err := os.Stat(basePatchedPath); err == nil && !fi.IsDir() {
+		absPath, _ := filepath.Abs(basePatchedPath)
+		reqValidBody, _ := json.Marshal(map[string]string{"file_path": absPath})
+		reqValid := httptest.NewRequest(http.MethodPost, "/api/android/inspect", bytes.NewBuffer(reqValidBody))
+		reqValid.Host = "127.0.0.1:8125"
+		wValid := httptest.NewRecorder()
+		ctrl.handleRoute(wValid, reqValid)
+		if wValid.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for valid patched apk, got %d: %s", wValid.Code, wValid.Body.String())
+		}
+		var inspectResp struct {
+			OK                  bool   `json:"ok"`
+			IsAlreadyPatched    bool   `json:"is_already_patched"`
+			PatchType           string `json:"patch_type"`
+			OriginalVersionName string `json:"original_version_name"`
+			PackageName         string `json:"package_name"`
+		}
+		if err := json.Unmarshal(wValid.Body.Bytes(), &inspectResp); err != nil {
+			t.Fatalf("failed to decode inspect response: %v", err)
+		}
+		if !inspectResp.OK {
+			t.Errorf("expected ok=true")
+		}
+		if !inspectResp.IsAlreadyPatched {
+			t.Errorf("expected is_already_patched=true for base-patched.apk")
+		}
+		if inspectResp.PatchType != "lspatch" {
+			t.Errorf("expected patch_type='lspatch', got %q", inspectResp.PatchType)
+		}
+	}
 }
 
 func TestControlAndroidUpload(t *testing.T) {

@@ -250,6 +250,9 @@ export interface AndroidPackageInspection {
   engine_desc?: string;
   unsupported_reason?: string;
   suggested_clone_package?: string;
+  is_already_patched?: boolean;
+  patch_type?: string;
+  original_version_name?: string;
   error?: string;
 }
 
