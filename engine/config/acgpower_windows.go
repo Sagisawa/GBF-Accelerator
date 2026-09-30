@@ -47,32 +47,7 @@ func autoDetectACGPowerCache() string {
 		}
 	}
 
-	// 2. Check base_dir parents and siblings
-	candidates := []string{
-		filepath.Join("cache", "gbf", "https"),
-		filepath.Join("..", "cache", "gbf", "https"),
-		filepath.Join("..", "..", "cache", "gbf", "https"),
-		filepath.Join("..", "acgpower"),
-		filepath.Join("..", "ACGPower"),
-	}
-	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exe)
-		candidates = append(candidates,
-			filepath.Join(exeDir, "cache", "gbf", "https"),
-			filepath.Join(exeDir, "..", "cache", "gbf", "https"),
-			filepath.Join(exeDir, "..", "acgpower"),
-			filepath.Join(exeDir, "..", "ACGPower"),
-		)
-	}
-
-	for _, cand := range candidates {
-		norm := NormalizeCacheDir(cand)
-		if fi, err := os.Stat(filepath.Join(norm, "assets")); err == nil && fi.IsDir() {
-			return norm
-		}
-	}
-
-	// 3. Dynamic system drives scan
+	// 2. Dynamic system drives scan (explicit ACGPower installations across drives)
 	var driveRoots []string
 	ret, _, _ := getLogicalDrivesProc.Call()
 	bitmask := uint32(ret)
@@ -108,6 +83,32 @@ func autoDetectACGPowerCache() string {
 					return norm
 				}
 			}
+		}
+	}
+
+	// 3. Portable and relative locations fallback
+	var candidates []string
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "..", "acgpower"),
+			filepath.Join(exeDir, "..", "ACGPower"),
+			filepath.Join(exeDir, "..", "cache", "gbf", "https"),
+			filepath.Join(exeDir, "cache", "gbf", "https"),
+		)
+	}
+	candidates = append(candidates,
+		filepath.Join("..", "acgpower"),
+		filepath.Join("..", "ACGPower"),
+		filepath.Join("..", "cache", "gbf", "https"),
+		filepath.Join("..", "..", "cache", "gbf", "https"),
+		filepath.Join("cache", "gbf", "https"),
+	)
+
+	for _, cand := range candidates {
+		norm := NormalizeCacheDir(cand)
+		if fi, err := os.Stat(filepath.Join(norm, "assets")); err == nil && fi.IsDir() {
+			return norm
 		}
 	}
 

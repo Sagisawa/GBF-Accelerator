@@ -258,3 +258,13 @@ func TestUpstreamFailoverConfigPersistsAndNormalizes(t *testing.T) {
 		t.Fatalf("persisted mismatch: got=%+v loaded=%+v", got, loaded)
 	}
 }
+
+func TestAutoDetectACGPowerCache_Smoke(t *testing.T) {
+	detected := AutoDetectACGPowerCache()
+	if detected != "" {
+		if fi, err := os.Stat(detected); err != nil || !fi.IsDir() {
+			t.Errorf("detected path %q is not a valid directory", detected)
+		}
+	}
+}
+
