@@ -8,7 +8,7 @@ GBF Accelerator 各版本的更新记录与 Release 说明。
 
 | 版本 | 发布日期 | 主要亮点 | 详细说明 |
 | :--- | :--- | :--- | :--- |
-| **v2.4.0** | 2026-10-01 | **Stream-Through 流式边下边传、缓存元数据索引与 Android 重新修补** | [v2.4.0 Notes](docs/releases/v2.4.0.md) |
+| **v2.4.0** | 2026-10-01 | **传输架构代际跃迁、Stream-Through 流式边下边传与 Android 重新修补** | [v2.4.0 Notes](docs/releases/v2.4.0.md) |
 | **v2.3.0** | 2026-09-29 | **全局 RAM 激进缓存加速、实时日志多词高亮与预取优化** | [v2.3.0 Notes](docs/releases/v2.3.0.md) |
 | **v2.2.0** | 2026-09-26 | **Android 客户端支持、分段缓存优化与高频请求调度** | [v2.2.0 Notes](docs/releases/v2.2.0.md) |
 | **v2.1.1** | 2026-09-23 | **Go 原生架构持续性能优化、RAM 缓存热路径零分配与游戏重复加载加速** | [v2.1.1 Notes](docs/releases/v2.1.1.md) |
