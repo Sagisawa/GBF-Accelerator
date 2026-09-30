@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -673,6 +674,9 @@ func TestSaveRAMValidated_GzipValidationIntegrity(t *testing.T) {
 }
 
 func TestDiskRead_WindowsRenameWhileOpen(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("skipping Windows-specific rename locking test on non-windows platform")
+	}
 	tempDir := t.TempDir()
 	dstPath := filepath.Join(tempDir, "target.dat")
 	tmpPath := filepath.Join(tempDir, "source.tmp")
