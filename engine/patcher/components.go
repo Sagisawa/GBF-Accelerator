@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	CanonicalModuleSHA256   = "c9a0240b32bbd54499328936ee7041fd550f4e24e6211ef95976104db130bdf3"
+	CanonicalModuleSHA256   = "2c21e5ebb424e0111bd71d5235677bc2935db7242112e18a7071a83a07f17e96"
 	CanonicalLicensesSHA256 = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
 	GitHubRepo              = "Sagisawa/GBF-Accelerator"
 	AssetsRepo              = "Sagisawa/GBF-Accelerator-Assets"

@@ -32,6 +32,8 @@ import java.util.zip.ZipInputStream
 object EmbeddedCoreManager {
 
     private const val TAG = "GBF-ACC-EmbeddedCore"
+    const val MODULE_VERSION = "2.4.0"
+    const val MODULE_VERSION_CODE = 3
     const val PROXY_PORT = 8124
     const val CONTROL_PORT = 8125
 
@@ -331,14 +333,25 @@ object EmbeddedCoreManager {
             }
         }
 
-        // 2. PackageManager lookup for module nativeLibraryDir
+        // 2. PackageManager lookup for module nativeLibraryDir (only if at least as new as current module)
         try {
             val pm = context.packageManager
-            val moduleInfo = pm.getApplicationInfo("com.sagisawa.gbfaccelerator.xposed", 0)
-            val moduleNativeFile = File(moduleInfo.nativeLibraryDir, "libgbfcore.so")
-            if (moduleNativeFile.exists() && moduleNativeFile.length() > 0) {
-                Log.i(TAG, "[GBF-ACC] Located libgbfcore.so via PackageManager: ${moduleNativeFile.absolutePath}")
-                return moduleNativeFile
+            val modulePkg = pm.getPackageInfo("com.sagisawa.gbfaccelerator.xposed", 0)
+            val installedVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                modulePkg.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                modulePkg.versionCode.toLong()
+            }
+            val appInfo = modulePkg.applicationInfo
+            if (installedVersionCode >= MODULE_VERSION_CODE && appInfo != null) {
+                val moduleNativeFile = File(appInfo.nativeLibraryDir, "libgbfcore.so")
+                if (moduleNativeFile.exists() && moduleNativeFile.length() > 0) {
+                    Log.i(TAG, "[GBF-ACC] Located libgbfcore.so via PackageManager: ${moduleNativeFile.absolutePath}")
+                    return moduleNativeFile
+                }
+            } else if (installedVersionCode < MODULE_VERSION_CODE) {
+                Log.w(TAG, "[GBF-ACC] Standalone module on device (versionCode=$installedVersionCode) is older than embedded module ($MODULE_VERSION_CODE); preferring embedded core.")
             }
         } catch (_: Throwable) {
         }
@@ -382,7 +395,9 @@ object EmbeddedCoreManager {
         for (dir in candidateDirs) {
             dir.mkdirs()
             val targetFile = File(dir, "libgbfcore.so")
-            if (targetFile.exists() && targetFile.length() >= 1000000L && targetFile.lastModified() >= appLastUpdate) {
+            val stampFile = File(dir, "libgbfcore.version")
+            val stampMatch = stampFile.exists() && stampFile.readText().trim() == MODULE_VERSION
+            if (targetFile.exists() && targetFile.length() >= 1000000L && stampMatch && targetFile.lastModified() >= appLastUpdate) {
                 targetFile.setExecutable(true, false)
                 Log.i(TAG, "[GBF-ACC] Using cached libgbfcore.so in: ${targetFile.absolutePath}")
                 return targetFile
@@ -392,10 +407,14 @@ object EmbeddedCoreManager {
             if (targetFile.exists()) {
                 targetFile.delete()
             }
+            if (stampFile.exists()) {
+                stampFile.delete()
+            }
 
             val extracted = extractCoreFromClassLoaderResource(targetFile)
             if (extracted != null && extracted.exists() && extracted.length() > 0) {
                 extracted.setLastModified(System.currentTimeMillis())
+                try { stampFile.writeText(MODULE_VERSION) } catch (_: Throwable) {}
                 Log.i(TAG, "[GBF-ACC] Extracted libgbfcore.so via ClassLoader resource to: ${extracted.absolutePath}")
                 return extracted
             }
@@ -425,6 +444,7 @@ object EmbeddedCoreManager {
             for (apkPath in apkSources.distinct()) {
                 val extracted = extractCoreFromApk(File(apkPath), targetFile)
                 if (extracted != null && extracted.exists() && extracted.length() > 0) {
+                    try { File(dir, "libgbfcore.version").writeText(MODULE_VERSION) } catch (_: Throwable) {}
                     return extracted
                 }
             }
