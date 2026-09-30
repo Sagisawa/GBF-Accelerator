@@ -206,6 +206,13 @@ function Build-Windows {
         Copy-Item -Path $LicensesSrc -Destination (Join-Path $ToolsAndroidRoot "THIRD_PARTY_LICENSES.md") -Force
     }
 
+    $BinToolsAndroid = Join-Path $BinDir "tools\android"
+    if (Test-Path $BinToolsAndroid) {
+        if (Test-Path $ModuleSrc) {
+            Copy-Item -Path $ModuleSrc -Destination (Join-Path $BinToolsAndroid "xposed-release.apk") -Force
+        }
+    }
+
     # Stage jre-windows-x64.zip as release asset if JBR / Java 21+ is available
     $JbrCandidates = @(
         "C:\Program Files\Android\Android Studio\jbr",
