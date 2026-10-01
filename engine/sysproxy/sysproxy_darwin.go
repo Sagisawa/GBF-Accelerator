@@ -9,10 +9,13 @@ import (
 	"strings"
 )
 
-var macOriginalSettings = make(map[string]struct {
-	url     string
-	enabled bool
-})
+var (
+	macOriginalSettings = make(map[string]struct {
+		url     string
+		enabled bool
+	})
+	macManagedServices = make(map[string]bool)
+)
 
 func parseServicesOrdered(output string) []string {
 	var svcs []string
@@ -137,6 +140,7 @@ func enablePACProxy(pacURL string) error {
 
 		url, enabled := macGetAutoProxyInfo(s)
 		if enabled && url != "" {
+			macManagedServices[s] = true
 			successCount++
 		}
 	}
@@ -155,15 +159,24 @@ func disablePACProxy(force bool) error {
 	svcs := macGetServicesOrdered()
 	var errs []string
 	for _, s := range svcs {
+		if !force && !macManagedServices[s] {
+			continue
+		}
+
 		currURL, _ := macGetAutoProxyInfo(s)
-		isOur := strings.EqualFold(strings.TrimSpace(currURL), strings.TrimSpace(managedPACURL))
+		var isOur bool
+		if managedPACURL != "" {
+			isOur = strings.EqualFold(strings.TrimSpace(currURL), strings.TrimSpace(managedPACURL))
+		} else {
+			isOur = strings.Contains(strings.ToLower(currURL), "/proxy.pac") &&
+				(strings.Contains(currURL, "127.0.0.1") || strings.Contains(currURL, "localhost"))
+		}
 
 		// Do not overwrite a service whose PAC was changed by another application
 		// after we mounted ours. With force=false, only our own PAC may be restored.
-		if !force && isManagingProxy && !isOur {
-			continue
-		}
-		if !force && !isManagingProxy && !isOur {
+		if !force && !isOur {
+			delete(macManagedServices, s)
+			delete(macOriginalSettings, s)
 			continue
 		}
 
@@ -188,6 +201,7 @@ func disablePACProxy(force bool) error {
 				errs = append(errs, fmt.Sprintf("%s disable PAC: %v", s, err))
 			}
 		}
+		delete(macManagedServices, s)
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("failed to restore PAC on some network services: %s", strings.Join(errs, " • "))

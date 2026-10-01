@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -207,22 +208,20 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		}
 		if err := os.MkdirAll(backupDir, 0755); err == nil {
 			safePkg := pkgLabel
-			if safePkg == "" || safePkg == "unknown" {
+			if !IsValidPackageName(safePkg) {
 				safePkg = "app"
 			}
-			safeVer := verLabel
-			if safeVer == "" || safeVer == "unknown" {
-				safeVer = "1.0"
-			}
-			safeVer = strings.ReplaceAll(safeVer, " ", "_")
+			safeVer := sanitizeVersionName(verLabel)
 			ts := time.Now().Format("20060102_150405")
 			origExt := filepath.Ext(p.opts.InputPath)
-			if origExt == "" {
+			if origExt == "" || strings.Contains(origExt, "/") || strings.Contains(origExt, "\\") || strings.Contains(origExt, "..") {
 				origExt = ".apk"
 			}
 			backupFileName := fmt.Sprintf("%s_v%s_%s_original%s", safePkg, safeVer, ts, origExt)
 			destBackup := filepath.Join(backupDir, backupFileName)
-			if fi, statErr := os.Stat(p.opts.InputPath); statErr == nil {
+			if !isPathContained(backupDir, destBackup) {
+				p.logf("      [!] Warning: Invalid backup path %s escapes backup directory, skipping backup\n", destBackup)
+			} else if fi, statErr := os.Stat(p.opts.InputPath); statErr == nil {
 				if !fi.IsDir() {
 					if copyErr := copyFile(p.opts.InputPath, destBackup); copyErr == nil {
 						backupPath = destBackup
@@ -230,10 +229,12 @@ func (p *Patcher) Run() (*BundleResult, error) {
 					}
 				} else {
 					destBackup = strings.TrimSuffix(destBackup, filepath.Ext(destBackup)) + ".apks"
-					allSplits := append([]string{pkgInfo.BaseApkPath}, pkgInfo.SplitApkPaths...)
-					if err := createApksArchive(allSplits, destBackup); err == nil {
-						backupPath = destBackup
-						p.logf("      [+] Original split packages backed up to: %s\n", backupPath)
+					if isPathContained(backupDir, destBackup) {
+						allSplits := append([]string{pkgInfo.BaseApkPath}, pkgInfo.SplitApkPaths...)
+						if err := createApksArchive(allSplits, destBackup); err == nil {
+							backupPath = destBackup
+							p.logf("      [+] Original split packages backed up to: %s\n", backupPath)
+						}
 					}
 				}
 			}
@@ -328,4 +329,53 @@ func printSummary(res *BundleResult) {
 	fmt.Println("-----------------------------------------------------------------")
 	fmt.Println("Next Step: Launch GBF-Accelerator Android, start Go Core, then launch SkyLeap.")
 	fmt.Println("=================================================================")
+}
+
+func sanitizeVersionName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "unknown") {
+		return "1.0"
+	}
+	var sb strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_' {
+			sb.WriteRune(r)
+		} else if r == ' ' {
+			sb.WriteByte('_')
+		}
+	}
+	res := sb.String()
+	res = strings.Trim(res, ".-_")
+	for strings.Contains(res, "..") {
+		res = strings.ReplaceAll(res, "..", ".")
+	}
+	if res == "" {
+		return "1.0"
+	}
+	return res
+}
+
+func isPathContained(baseDir, targetPath string) bool {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		absBase = filepath.Clean(baseDir)
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		absTarget = filepath.Clean(targetPath)
+	}
+	cleanBase := filepath.Clean(absBase)
+	cleanTarget := filepath.Clean(absTarget)
+	if runtime.GOOS == "windows" {
+		cleanBase = strings.ToLower(cleanBase)
+		cleanTarget = strings.ToLower(cleanTarget)
+	}
+	rel, err := filepath.Rel(cleanBase, cleanTarget)
+	if err != nil {
+		return false
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return false
+	}
+	return true
 }

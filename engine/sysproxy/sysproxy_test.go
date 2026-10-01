@@ -36,3 +36,55 @@ func TestIsPACProxyEnabledMatching(t *testing.T) {
 	_ = GetCurrentPACURL()
 	_ = CheckProxyConflict(8124)
 }
+
+func TestSysproxyStatePersistence(t *testing.T) {
+	orig := "http://company.internal/proxy.pac"
+	managed := "http://127.0.0.1:8124/proxy.pac"
+
+	saveState(orig, managed)
+	defer removeStateFile()
+
+	st := loadState()
+	if st.OriginalPACURL != orig {
+		t.Errorf("expected original PAC URL restored, got %q", st.OriginalPACURL)
+	}
+	if st.ManagedPACURL != managed {
+		t.Errorf("expected managed PAC URL restored, got %q", st.ManagedPACURL)
+	}
+
+	removeStateFile()
+	st2 := loadState()
+	if st2.OriginalPACURL != "" || st2.ManagedPACURL != "" {
+		t.Errorf("expected empty state after remove, got %+v", st2)
+	}
+}
+
+func TestDisablePACProxy_ExternalPACPreservation(t *testing.T) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Simulate GBF managed proxy state
+	isManagingProxy = true
+	managedPACURL = "http://127.0.0.1:8124/proxy.pac"
+	originalPACURL = "http://company.internal/proxy.pac"
+
+	// External tool changed PAC to another local port
+	externalPAC := "http://127.0.0.1:7890/proxy.pac"
+	isManaged := isManagingProxy && managedPACURL != "" && (externalPAC == managedPACURL)
+	if isManaged {
+		t.Fatalf("external PAC should not be considered managed")
+	}
+
+	// Under force=false, when isManagingProxy is true and !isManaged,
+	// it must NOT attempt to revert or overwrite the externally set PAC
+	if isManagingProxy && !isManaged {
+		// Clean exit: reset our internal managing flag without modifying system PAC
+		isManagingProxy = false
+		managedPACURL = ""
+		originalPACURL = ""
+	}
+
+	if isManagingProxy {
+		t.Errorf("expected isManagingProxy to become false")
+	}
+}

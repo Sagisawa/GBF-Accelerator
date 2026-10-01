@@ -69,10 +69,13 @@ func killProcessOnPort(port int) (bool, error) {
 			psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 			if psOut, err := psCmd.Output(); err == nil {
 				cmdLine := strings.ToLower(string(psOut))
-				for _, target := range []string{"gbf_proxy", "app_main", "gui_main", "gbfaccelerator", "gbf-proxy"} {
-					if strings.Contains(cmdLine, target) {
-						shouldKill = true
-						break
+				// Strictly require GBF association alongside known entrypoint to prevent killing unrelated python processes
+				if strings.Contains(cmdLine, "gbf") {
+					for _, target := range []string{"gbf_proxy", "app_main", "gui_main", "gbfaccelerator", "gbf-proxy", "proxy.py"} {
+						if strings.Contains(cmdLine, target) {
+							shouldKill = true
+							break
+						}
 					}
 				}
 			}

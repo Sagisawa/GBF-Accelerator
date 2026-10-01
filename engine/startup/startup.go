@@ -1,6 +1,9 @@
 package startup
 
-import "runtime"
+import (
+	"fmt"
+	"runtime"
+)
 
 const AppName = "GBF_Accelerator"
 
@@ -17,6 +20,9 @@ func IsStartupEnabled() bool {
 
 func SetStartupEnabled(enabled bool) error {
 	if !IsStartupSupported() {
+		if enabled {
+			return fmt.Errorf("auto-startup is not supported on %s", runtime.GOOS)
+		}
 		return nil
 	}
 	return setStartupEnabled(enabled)

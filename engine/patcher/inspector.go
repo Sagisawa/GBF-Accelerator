@@ -328,9 +328,12 @@ func parseApkManifestInfo(apkPath string) (*ManifestInfo, error) {
 	}
 	defer rc.Close()
 
-	data, err := io.ReadAll(rc)
+	data, err := io.ReadAll(io.LimitReader(rc, int64(MaxManifestSize)+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(data) > MaxManifestSize {
+		return nil, fmt.Errorf("AndroidManifest.xml in %s exceeds maximum size limit (%d bytes)", filepath.Base(apkPath), MaxManifestSize)
 	}
 
 	return ParseManifest(data)
@@ -380,6 +383,9 @@ func unzipArchive(srcZip, destDir string) error {
 			continue
 		}
 		targetPath := filepath.Join(destDir, cleanPath)
+		if !isPathContained(destDir, targetPath) {
+			continue
+		}
 
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(targetPath, 0755)
