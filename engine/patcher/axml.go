@@ -14,12 +14,20 @@ type ManifestInfo struct {
 	Strings     []string
 }
 
+const (
+	MaxManifestSize    = 10 * 1024 * 1024 // 10 MB maximum allowed AndroidManifest.xml
+	MaxStringPoolCount = 100000           // 100k maximum strings in AXML string pool
+)
+
 // ParseManifest parses an AndroidManifest.xml binary XML (AXML) buffer.
 // It extracts the string pool and precisely inspects the <manifest> element attributes
 // (package, versionName, split) according to the AXML binary specification.
 func ParseManifest(data []byte) (*ManifestInfo, error) {
 	if len(data) < 8 {
 		return nil, fmt.Errorf("data too short for AXML header")
+	}
+	if len(data) > MaxManifestSize {
+		return nil, fmt.Errorf("AXML data exceeds maximum size limit (%d bytes)", MaxManifestSize)
 	}
 	magic := binary.LittleEndian.Uint32(data[0:4])
 	if magic != 0x00080003 {
@@ -33,7 +41,7 @@ func ParseManifest(data []byte) (*ManifestInfo, error) {
 	for offset+8 <= len(data) {
 		chunkType := binary.LittleEndian.Uint32(data[offset : offset+4])
 		chunkSize := binary.LittleEndian.Uint32(data[offset+4 : offset+8])
-		if chunkSize < 8 || offset+int(chunkSize) > len(data) {
+		if chunkSize < 8 || uint64(offset)+uint64(chunkSize) > uint64(len(data)) {
 			break
 		}
 
@@ -62,7 +70,7 @@ func ParseManifest(data []byte) (*ManifestInfo, error) {
 	for offset+8 <= len(data) {
 		chunkType := binary.LittleEndian.Uint32(data[offset : offset+4])
 		chunkSize := binary.LittleEndian.Uint32(data[offset+4 : offset+8])
-		if chunkSize < 8 || offset+int(chunkSize) > len(data) {
+		if chunkSize < 8 || uint64(offset)+uint64(chunkSize) > uint64(len(data)) {
 			break
 		}
 
@@ -139,6 +147,23 @@ func parseStringPool(data []byte) ([]string, error) {
 	flags := binary.LittleEndian.Uint32(data[16:20])
 	stringsStart := binary.LittleEndian.Uint32(data[20:24])
 
+	if stringCount > MaxStringPoolCount {
+		return nil, fmt.Errorf("StringPool string count %d exceeds maximum limit %d", stringCount, MaxStringPoolCount)
+	}
+
+	// Offsets start at byte 28; each offset is 4 bytes. Ensure offsets fit within data.
+	if 28+uint64(stringCount)*4 > uint64(len(data)) {
+		return nil, fmt.Errorf("StringPool string count %d exceeds available data length", stringCount)
+	}
+	if stringCount > 0 {
+		if uint64(stringsStart) < 28+uint64(stringCount)*4 {
+			return nil, fmt.Errorf("StringPool string count %d overlaps strings start offset %d", stringCount, stringsStart)
+		}
+		if uint64(stringsStart) > uint64(len(data)) {
+			return nil, fmt.Errorf("StringPool strings start offset %d exceeds data length %d", stringsStart, len(data))
+		}
+	}
+
 	isUTF8 := (flags & (1 << 8)) != 0
 
 	offsets := make([]uint32, stringCount)
@@ -151,13 +176,11 @@ func parseStringPool(data []byte) ([]string, error) {
 	}
 
 	result := make([]string, 0, stringCount)
-	if int(stringsStart) > len(data) {
-		return nil, fmt.Errorf("invalid stringsStart offset")
-	}
 	strBlock := data[stringsStart:]
 
 	for _, off := range offsets {
 		if int(off) >= len(strBlock) {
+			result = append(result, "")
 			continue
 		}
 		sub := strBlock[off:]
@@ -182,10 +205,13 @@ func parseStringPool(data []byte) ([]string, error) {
 			}
 			if idx+u8len <= len(sub) {
 				result = append(result, string(sub[idx:idx+u8len]))
+			} else {
+				result = append(result, "")
 			}
 		} else {
 			// UTF-16LE
 			if len(sub) < 2 {
+				result = append(result, "")
 				continue
 			}
 			idx := 0
@@ -200,6 +226,15 @@ func parseStringPool(data []byte) ([]string, error) {
 				}
 			} else {
 				charCount = int(val)
+			}
+
+			// Strictly cap charCount to remaining buffer bytes to prevent out-of-memory panics
+			maxChars := (len(sub) - idx) / 2
+			if charCount > maxChars {
+				charCount = maxChars
+			}
+			if charCount < 0 {
+				charCount = 0
 			}
 
 			u16 := make([]uint16, 0, charCount)

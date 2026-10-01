@@ -67,18 +67,25 @@ func enablePACProxy(pacURL string) error {
 
 func disablePACProxy(force bool) error {
 	if originalPACURL != "" {
-		cmd := exec.Command("reg", "add", internetSettingsRegKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", originalPACURL, "/f")
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to restore AutoConfigURL: %w", err)
+		origLower := strings.ToLower(originalPACURL)
+		isOrigOur := strings.Contains(origLower, "/proxy.pac") && (strings.Contains(origLower, "127.0.0.1") || strings.Contains(origLower, "localhost"))
+		if !isOrigOur {
+			cmd := exec.Command("reg", "add", internetSettingsRegKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", originalPACURL, "/f")
+			cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to restore AutoConfigURL: %w", err)
+			}
+			originalPACURL = ""
+			notifyWinINet()
+			return nil
 		}
 		originalPACURL = ""
-	} else {
-		cmd := exec.Command("reg", "delete", internetSettingsRegKey, "/v", "AutoConfigURL", "/f")
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to remove AutoConfigURL: %w", err)
-		}
+	}
+
+	cmd := exec.Command("reg", "delete", internetSettingsRegKey, "/v", "AutoConfigURL", "/f")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to remove AutoConfigURL: %w", err)
 	}
 
 	notifyWinINet()

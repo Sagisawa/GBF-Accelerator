@@ -349,9 +349,12 @@ func ValidateModuleApk(apkPath string) error {
 	}
 	defer rc.Close()
 
-	data, err := io.ReadAll(rc)
+	data, err := io.ReadAll(io.LimitReader(rc, int64(MaxManifestSize)+1))
 	if err != nil {
 		return fmt.Errorf("failed to read AndroidManifest.xml from module APK: %w", err)
+	}
+	if len(data) > MaxManifestSize {
+		return fmt.Errorf("AndroidManifest.xml in module APK exceeds maximum size limit (%d bytes)", MaxManifestSize)
 	}
 
 	info, err := ParseManifest(data)
@@ -386,7 +389,6 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 		"-f", // force overwrite
 		"--target-sdk", "28",
 	}
-
 
 	if cfg.AppLabel != "" {
 		args = append(args, "--name", cfg.AppLabel)

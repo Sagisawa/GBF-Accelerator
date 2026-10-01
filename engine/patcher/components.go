@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,12 +23,14 @@ import (
 )
 
 const (
-	CanonicalModuleSHA256   = "2c21e5ebb424e0111bd71d5235677bc2935db7242112e18a7071a83a07f17e96"
-	CanonicalLicensesSHA256 = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
-	GitHubRepo              = "Sagisawa/GBF-Accelerator"
-	AssetsRepo              = "Sagisawa/GBF-Accelerator-Assets"
-	AssetsTag               = "v2.4.0"
-	ToolchainAssetsTag      = "v2.3.0"
+	CanonicalModuleSHA256               = "2c21e5ebb424e0111bd71d5235677bc2935db7242112e18a7071a83a07f17e96"
+	CanonicalLicensesSHA256             = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
+	CanonicalPlatformToolsWindowsSHA256 = "e79e5d613cda3912f8dbf77a1ec1b2eaf5de96d93b7fca0a88d9b97c4253ee25"
+	CanonicalJreWindowsSHA256           = "c7677f06a0a92f593d13c3640718efad034a2ae57bf6e35a813c40399d35a277"
+	GitHubRepo                          = "Sagisawa/GBF-Accelerator"
+	AssetsRepo                          = "Sagisawa/GBF-Accelerator-Assets"
+	AssetsTag                           = "v2.4.0"
+	ToolchainAssetsTag                  = "v2.3.0"
 )
 
 var (
@@ -173,14 +176,15 @@ func GetFullEnvironmentSpecs() []ComponentSpec {
 	specs := GetDefaultComponentSpecs()
 
 	// Platform tools archive for current OS.
-	// macOS is pinned to the exact verified v1.0.0 release asset; Windows keeps
-	// the existing loose archive check for backward compatibility.
 	ptFileName := fmt.Sprintf("platform-tools-%s.zip", runtime.GOOS)
 	ptSize := int64(5200000)
 	ptSHA256 := ""
 	if runtime.GOOS == "darwin" {
 		ptSize = 16110554
 		ptSHA256 = "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d"
+	} else if runtime.GOOS == "windows" {
+		ptSize = 2890617
+		ptSHA256 = CanonicalPlatformToolsWindowsSHA256
 	}
 	specs = append(specs, ComponentSpec{
 		ID:          "platform-tools",
@@ -195,8 +199,8 @@ func GetFullEnvironmentSpecs() []ComponentSpec {
 		specs = append(specs, ComponentSpec{
 			ID:          "jre",
 			FileName:    "jre-windows-x64.zip",
-			Size:        48000000,
-			SHA256:      "",
+			Size:        75796951,
+			SHA256:      CanonicalJreWindowsSHA256,
 			URL:         toolchainReleaseURL + "jre-windows-x64.zip",
 			Description: "便携 Java 21+ 运行环境 (JBR / OpenJDK)",
 		})
@@ -309,6 +313,10 @@ func CheckComponentsWithSpecs(toolsDir string, exeDir string, specs []ComponentS
 			st.Verified = false
 			st.Error = fmt.Sprintf("哈希校验不匹配: 期望 %s, 实际 %s", spec.SHA256, actualSHA)
 			errs = append(errs, fmt.Sprintf("%s 校验失败", spec.FileName))
+		} else if spec.SHA256 == "" {
+			st.Verified = false
+			st.Error = "缺少预设SHA-256校验和"
+			errs = append(errs, fmt.Sprintf("%s 缺少预设SHA-256校验和", spec.FileName))
 		} else {
 			st.Verified = true
 			verifiedCount++
@@ -403,14 +411,6 @@ func DownloadComponentsWithSpecs(
 					}
 					continue
 				}
-			} else if fi.Size() >= spec.Size/2 {
-				prog.DownloadedBytes += spec.Size
-				prog.Percent = float64(prog.DownloadedBytes) / float64(totalTargetBytes) * 100
-				downloadedMap[spec.ID] = "installed"
-				if progressFn != nil {
-					progressFn(prog)
-				}
-				continue
 			}
 		}
 
@@ -481,9 +481,13 @@ func DownloadComponentsWithSpecs(
 				}
 				for _, cand := range ptCandidates {
 					if cand != targetPath {
-						if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
-							localCandidate = cand
-							break
+						if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 0 {
+							if spec.SHA256 != "" {
+								if sha, err := ComputeFileSHA256(cand); err == nil && strings.EqualFold(sha, spec.SHA256) {
+									localCandidate = cand
+									break
+								}
+							}
 						}
 					}
 				}
@@ -496,9 +500,13 @@ func DownloadComponentsWithSpecs(
 				}
 				for _, cand := range jreCandidates {
 					if cand != targetPath {
-						if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
-							localCandidate = cand
-							break
+						if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 0 {
+							if spec.SHA256 != "" {
+								if sha, err := ComputeFileSHA256(cand); err == nil && strings.EqualFold(sha, spec.SHA256) {
+									localCandidate = cand
+									break
+								}
+							}
 						}
 					}
 				}
@@ -907,6 +915,8 @@ func InstallAllComponents(
 }
 
 // StopAdbSafely stops the ADB server process to allow clean uninstallation.
+// It strictly targets managed ADB instances inside toolsDir or exeDir, avoiding
+// terminating user or external system ADB daemons.
 func StopAdbSafely() {
 	toolsDir := GetAndroidToolsDir()
 	exeDir := ""
@@ -914,19 +924,62 @@ func StopAdbSafely() {
 		exeDir = filepath.Dir(exe)
 	}
 	if adbPath, err := FindAdb(toolsDir, exeDir); err == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, adbPath, "kill-server")
-		prepareCmd(cmd)
-		_ = cmd.Run()
+		if isPathContained(toolsDir, adbPath) || (exeDir != "" && isPathContained(exeDir, adbPath)) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, adbPath, "kill-server")
+			prepareCmd(cmd)
+			_ = cmd.Run()
+		}
 	}
 
 	if runtime.GOOS == "windows" {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "taskkill", "/F", "/IM", "adb.exe")
-		prepareCmd(cmd)
-		_ = cmd.Run()
+		stopManagedWindowsAdb(toolsDir, exeDir)
+	}
+}
+
+func stopManagedWindowsAdb(toolsDir, exeDir string) {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+		`Get-CimInstance Win32_Process -Filter "Name = 'adb.exe'" | Select-Object -Property ProcessId, ExecutablePath | ConvertTo-Json`)
+	prepareCmd(cmd)
+	out, err := cmd.Output()
+	if err != nil || len(out) == 0 {
+		return
+	}
+
+	type procInfo struct {
+		ProcessId      int    `json:"ProcessId"`
+		ExecutablePath string `json:"ExecutablePath"`
+	}
+
+	var procs []procInfo
+	trimmed := strings.TrimSpace(string(out))
+	if strings.HasPrefix(trimmed, "[") {
+		_ = json.Unmarshal([]byte(trimmed), &procs)
+	} else if strings.HasPrefix(trimmed, "{") {
+		var single procInfo
+		if err := json.Unmarshal([]byte(trimmed), &single); err == nil {
+			procs = append(procs, single)
+		}
+	}
+
+	for _, p := range procs {
+		if p.ProcessId <= 4 || p.ExecutablePath == "" {
+			continue
+		}
+		if isPathContained(toolsDir, p.ExecutablePath) || (exeDir != "" && isPathContained(exeDir, p.ExecutablePath)) {
+			kCtx, kCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			kCmd := exec.CommandContext(kCtx, "taskkill", "/F", "/PID", strconv.Itoa(p.ProcessId))
+			prepareCmd(kCmd)
+			_ = kCmd.Run()
+			kCancel()
+		}
 	}
 }
 
@@ -968,4 +1021,3 @@ func UninstallAllComponents() (int, int64, error) {
 
 	return totalFiles, totalBytes, nil
 }
-

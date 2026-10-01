@@ -231,12 +231,17 @@ func UnwrapPatchedPackage(info *ApkPackageInfo, workDir string) (*ApkPackageInfo
 	var finalSplitApks []string
 	for idx, sItem := range splitItems {
 		var splitFileName string
-		if sItem.manifest.SplitName != "" {
-			splitFileName = fmt.Sprintf("split_%s.apk", sItem.manifest.SplitName)
+		cleanSplit := sanitizeSplitName(sItem.manifest.SplitName)
+		if cleanSplit != "" {
+			splitFileName = fmt.Sprintf("split_%s.apk", cleanSplit)
 		} else {
 			splitFileName = fmt.Sprintf("split_%d.apk", idx)
 		}
 		destPath := filepath.Join(workDir, splitFileName)
+		if !isPathContained(workDir, destPath) {
+			_ = os.RemoveAll(workDir)
+			return nil, fmt.Errorf("split APK path escapes workDir: %s", splitFileName)
+		}
 		if err := os.Rename(sItem.stagedPath, destPath); err != nil {
 			if cErr := copyFile(sItem.stagedPath, destPath); cErr != nil {
 				_ = os.RemoveAll(workDir)
@@ -269,4 +274,20 @@ func UnwrapPatchedPackage(info *ApkPackageInfo, workDir string) (*ApkPackageInfo
 		PatchType:           "",
 		OriginalVersionName: baseVer,
 	}, nil
+}
+
+func sanitizeSplitName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var sb strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			sb.WriteRune(r)
+		} else if r == '.' {
+			sb.WriteRune('_')
+		}
+	}
+	return strings.Trim(sb.String(), "._-")
 }

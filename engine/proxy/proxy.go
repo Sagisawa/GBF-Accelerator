@@ -2704,8 +2704,7 @@ func isGBFDomain(host string) bool {
 		isDomainOrSubdomain(host, "granbluefantasy.com") ||
 		isDomainOrSubdomain(host, "gbf.game.mbga.jp") ||
 		isDomainOrSubdomain(host, "connect.mobage.jp") ||
-		isDomainOrSubdomain(host, "sp.mbga.jp") ||
-		host == "localhost" || host == "127.0.0.1"
+		isDomainOrSubdomain(host, "sp.mbga.jp")
 }
 
 func isExternalGBFDomain(host string) bool {

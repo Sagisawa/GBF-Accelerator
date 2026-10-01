@@ -212,3 +212,32 @@ func TestDownloadComponents_CancelContext(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckComponents_EmptySHA_NeverVerified(t *testing.T) {
+	tempDir := t.TempDir()
+	filePath := filepath.Join(tempDir, "test-tool.zip")
+	_ = os.WriteFile(filePath, []byte("some-arbitrary-binary-data"), 0644)
+
+	specs := []ComponentSpec{
+		{
+			ID:       "unverified-tool",
+			FileName: "test-tool.zip",
+			Size:     int64(len("some-arbitrary-binary-data")),
+			SHA256:   "", // Empty SHA256 must never be treated as verified!
+		},
+	}
+
+	installed, verified, statuses, _ := CheckComponentsWithSpecs(tempDir, "", specs)
+	if !installed {
+		t.Fatalf("expected installed=true")
+	}
+	if verified {
+		t.Fatalf("expected verified=false when spec.SHA256 is empty")
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 status, got %d", len(statuses))
+	}
+	if statuses[0].Verified {
+		t.Fatalf("component status must have Verified=false when SHA256 is empty")
+	}
+}

@@ -2,7 +2,7 @@
 title Install GBF CA Certificate
 cd /d "%~dp0"
 echo ========================================================
-echo   GBF Speed Proxy - Install Root CA Certificate
+echo   GBF Accelerator - Install Root CA Certificate
 echo ========================================================
 echo.
 echo [*] Installing Root CA to CurrentUser Trusted Store...

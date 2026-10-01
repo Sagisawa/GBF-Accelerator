@@ -1,10 +1,50 @@
 package sysproxy
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+
+	"gbf-proxy/config"
 )
+
+const stateFileName = ".sysproxy_state.json"
+
+type ProxyState struct {
+	OriginalPACURL string `json:"original_pac_url"`
+	ManagedPACURL  string `json:"managed_pac_url"`
+}
+
+func getStateFilePath() string {
+	return filepath.Join(config.GetBaseDir(), stateFileName)
+}
+
+func saveState(orig, managed string) {
+	st := ProxyState{
+		OriginalPACURL: orig,
+		ManagedPACURL:  managed,
+	}
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err == nil {
+		_ = os.WriteFile(getStateFilePath(), data, 0644)
+	}
+}
+
+func loadState() ProxyState {
+	var st ProxyState
+	data, err := os.ReadFile(getStateFilePath())
+	if err == nil {
+		_ = json.Unmarshal(data, &st)
+	}
+	return st
+}
+
+func removeStateFile() {
+	_ = os.Remove(getStateFilePath())
+}
 
 var (
 	mu              sync.Mutex
@@ -51,10 +91,17 @@ func EnablePACProxy(pacURL string) error {
 	if pacURL == "" {
 		pacURL = "http://127.0.0.1:8124/proxy.pac"
 	}
+	if originalPACURL == "" {
+		saved := loadState()
+		if saved.OriginalPACURL != "" {
+			originalPACURL = saved.OriginalPACURL
+		}
+	}
 	err := enablePACProxy(pacURL)
 	if err == nil {
 		isManagingProxy = true
 		managedPACURL = pacURL
+		saveState(originalPACURL, managedPACURL)
 	}
 	return err
 }
@@ -63,6 +110,17 @@ func EnablePACProxy(pacURL string) error {
 func DisablePACProxy(force bool) error {
 	mu.Lock()
 	defer mu.Unlock()
+
+	if !isManagingProxy {
+		saved := loadState()
+		if saved.ManagedPACURL != "" {
+			isManagingProxy = true
+			managedPACURL = saved.ManagedPACURL
+			if originalPACURL == "" {
+				originalPACURL = saved.OriginalPACURL
+			}
+		}
+	}
 
 	currentPAC := strings.TrimSpace(GetCurrentPACURL())
 	isManaged := isManagingProxy && managedPACURL != "" && strings.EqualFold(currentPAC, managedPACURL)
@@ -75,9 +133,11 @@ func DisablePACProxy(force bool) error {
 			isManagingProxy = false
 			managedPACURL = ""
 			originalPACURL = ""
+			removeStateFile()
 			return nil
 		}
 		if !isManagingProxy && !isOur {
+			removeStateFile()
 			return nil
 		}
 	}
@@ -86,6 +146,8 @@ func DisablePACProxy(force bool) error {
 	if err == nil {
 		isManagingProxy = false
 		managedPACURL = ""
+		originalPACURL = ""
+		removeStateFile()
 	}
 	return err
 }
@@ -95,7 +157,7 @@ func CleanupOnExit() {
 	mu.Lock()
 	managing := isManagingProxy
 	mu.Unlock()
-	if managing {
+	if managing || loadState().ManagedPACURL != "" {
 		_ = DisablePACProxy(false)
 	}
 }

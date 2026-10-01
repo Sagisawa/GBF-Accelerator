@@ -27,8 +27,6 @@ func TestProxyRoutingRules(t *testing.T) {
 		"gbf.game.mbga.jp",
 		"connect.mobage.jp",
 		"prd-game-a-granbluefantasy.akamaized.net",
-		"localhost",
-		"127.0.0.1",
 	}
 	for _, h := range gbfHosts {
 		if !isGBFDomain(h) {
@@ -40,6 +38,8 @@ func TestProxyRoutingRules(t *testing.T) {
 		"example.com",
 		"google.com",
 		"twitter.com",
+		"localhost",
+		"127.0.0.1",
 	}
 	for _, h := range nonGBFHosts {
 		if isGBFDomain(h) {

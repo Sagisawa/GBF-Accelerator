@@ -32,6 +32,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Shell syntax check
+        working-directory: .
+        run: bash -n install_ca.sh
+
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
