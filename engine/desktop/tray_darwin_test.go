@@ -98,3 +98,20 @@ func TestDarwinNSString(t *testing.T) {
 	str := nsString("")
 	_ = str
 }
+
+func TestDarwinTrayLifecycleSafeguards(t *testing.T) {
+	ctrl := &darwinMockController{running: true}
+	tray := NewTray(ctrl, ui.AppIconBytes)
+	dt := tray.(*DarwinTray)
+
+	// Update on inactive tray should be safe no-op
+	dt.Update()
+
+	// requestStop on inactive tray should be safe and idempotent
+	dt.requestStop()
+	dt.requestStop()
+
+	// cleanupOnMainThread on inactive tray should be safe and idempotent
+	dt.cleanupOnMainThread()
+	dt.cleanupOnMainThread()
+}

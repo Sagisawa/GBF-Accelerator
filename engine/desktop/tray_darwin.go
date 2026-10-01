@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -64,6 +65,7 @@ var (
 	selQuitAppAction     objc.SEL
 
 	menuHandlerClass objc.Class
+	menuHandlerErr   error
 	menuHandlerOnce  sync.Once
 
 	activeTray   *DarwinTray
@@ -130,7 +132,7 @@ func initSelectors() {
 	selQuitAppAction = objc.RegisterName("quitAppAction:")
 }
 
-func initMenuHandlerClass() {
+func initMenuHandlerClass() error {
 	menuHandlerOnce.Do(func() {
 		existing := objc.GetClass("GBFAcceleratorMenuHandler")
 		if existing != 0 {
@@ -173,11 +175,16 @@ func initMenuHandlerClass() {
 			methods,
 		)
 		if err != nil {
-			fmt.Printf("[*] Failed to register GBFAcceleratorMenuHandler: %v\n", err)
+			menuHandlerErr = fmt.Errorf("failed to register GBFAcceleratorMenuHandler: %w", err)
+			return
+		}
+		if cls == 0 {
+			menuHandlerErr = fmt.Errorf("registered GBFAcceleratorMenuHandler returned nil class")
 			return
 		}
 		menuHandlerClass = cls
 	})
+	return menuHandlerErr
 }
 
 // DarwinTray provides a native macOS Menu Bar status item with context menu.
@@ -213,56 +220,84 @@ func (t *DarwinTray) Start() error {
 		return err
 	}
 
-	activeTrayMu.Lock()
-	activeTray = t
-	activeTrayMu.Unlock()
-
-	initMenuHandlerClass()
+	if err := initMenuHandlerClass(); err != nil {
+		return fmt.Errorf("failed to initialize menu handler: %w", err)
+	}
 
 	clsApp := objc.ID(objc.GetClass("NSApplication"))
 	if clsApp == 0 {
 		return fmt.Errorf("NSApplication class not found")
 	}
-	t.app = clsApp.Send(selSharedApplication)
-	if t.app == 0 {
+	app := clsApp.Send(selSharedApplication)
+	if app == 0 {
 		return fmt.Errorf("sharedApplication returned nil")
 	}
 
 	// NSApplicationActivationPolicyAccessory = 1 (runs as menu bar item without Dock icon)
-	t.app.Send(selSetActivationPolicy, uintptr(1))
+	app.Send(selSetActivationPolicy, uintptr(1))
 
-	if menuHandlerClass != 0 {
-		hAlloc := objc.ID(menuHandlerClass).Send(selAlloc)
-		t.handler = hAlloc.Send(selInit)
+	hAlloc := objc.ID(menuHandlerClass).Send(selAlloc)
+	if hAlloc == 0 {
+		return fmt.Errorf("failed to allocate menu handler")
+	}
+	handler := hAlloc.Send(selInit)
+	if handler == 0 {
+		return fmt.Errorf("failed to initialize menu handler")
 	}
 
 	clsStatusBar := objc.ID(objc.GetClass("NSStatusBar"))
 	if clsStatusBar == 0 {
+		handler.Send(selRelease)
 		return fmt.Errorf("NSStatusBar class not found")
 	}
 	statusBar := clsStatusBar.Send(selSystemStatusBar)
 	if statusBar == 0 {
+		handler.Send(selRelease)
 		return fmt.Errorf("systemStatusBar returned nil")
 	}
 
 	// -1.0 = NSVariableStatusItemLength
-	t.statusItem = statusBar.Send(selStatusItemWithLength, float64(-1))
-	if t.statusItem == 0 {
+	statusItem := statusBar.Send(selStatusItemWithLength, float64(-1))
+	if statusItem == 0 {
+		handler.Send(selRelease)
 		return fmt.Errorf("statusItemWithLength returned nil")
 	}
-	t.statusItem.Send(selRetain)
+	statusItem.Send(selRetain)
 
-	btn := t.statusItem.Send(selButton)
+	t.mu.Lock()
+	t.app = app
+	t.handler = handler
+	t.statusItem = statusItem
+	t.mu.Unlock()
+
+	btn := statusItem.Send(selButton)
 	if btn != 0 {
 		t.setupButton(btn)
 	}
 
-	t.menu = t.buildMenu()
-	t.statusItem.Send(selSetMenu, t.menu)
+	menu := t.buildMenu()
+	if menu == 0 {
+		statusBar.Send(selRemoveStatusItem, statusItem)
+		statusItem.Send(selRelease)
+		handler.Send(selRelease)
+		t.mu.Lock()
+		t.app = 0
+		t.handler = 0
+		t.statusItem = 0
+		t.mu.Unlock()
+		return fmt.Errorf("failed to build NSMenu")
+	}
+
+	statusItem.Send(selSetMenu, menu)
 
 	t.mu.Lock()
+	t.menu = menu
 	t.active = true
 	t.mu.Unlock()
+
+	activeTrayMu.Lock()
+	activeTray = t
+	activeTrayMu.Unlock()
 
 	return nil
 }
@@ -281,6 +316,7 @@ func (t *DarwinTray) setupButton(btn objc.ID) {
 					if img != 0 {
 						btn.Send(selSetImage, img)
 						btn.Send(selSetImageScaling, uintptr(0)) // NSImageScaleProportionallyDown
+						img.Send(selRelease)                    // btn retains image; release local ownership
 						imgLoaded = true
 					}
 				}
@@ -373,43 +409,38 @@ func (t *DarwinTray) addMenuItem(menu objc.ID, title string, action objc.SEL, ta
 	}
 	item.Send(selSetEnabled, enabled)
 	menu.Send(selAddItem, item)
+	// NSMenu.addItem retains the item; release local alloc/init ownership to avoid leak
+	item.Send(selRelease)
 	return item
 }
 
 func (t *DarwinTray) Update() {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if !t.active || t.statusItem == 0 {
+		t.mu.Unlock()
 		return
 	}
+	oldMenu := t.menu
 	newMenu := t.buildMenu()
 	if newMenu != 0 {
 		t.menu = newMenu
 		t.statusItem.Send(selSetMenu, newMenu)
 	}
+	t.mu.Unlock()
+
+	// Release previous menu to avoid leaking Objective-C objects across updates
+	if oldMenu != 0 {
+		oldMenu.Send(selRelease)
+	}
 	t.updateTooltip()
 }
 
-func (t *DarwinTray) Stop() {
+// requestStop sends stop request and wakes up the main thread RunLoop safely from any goroutine.
+func (t *DarwinTray) requestStop() {
 	t.stopOnce.Do(func() {
 		t.mu.Lock()
-		active := t.active
-		t.active = false
-		item := t.statusItem
-		t.statusItem = 0
 		app := t.app
 		t.mu.Unlock()
-
-		if active && item != 0 {
-			clsStatusBar := objc.ID(objc.GetClass("NSStatusBar"))
-			if clsStatusBar != 0 {
-				statusBar := clsStatusBar.Send(selSystemStatusBar)
-				if statusBar != 0 {
-					statusBar.Send(selRemoveStatusItem, item)
-				}
-			}
-			item.Send(selRelease)
-		}
 
 		if app != 0 {
 			app.Send(selStop, uintptr(0))
@@ -424,18 +455,78 @@ func (t *DarwinTray) Stop() {
 				}
 			}
 		}
-
-		activeTrayMu.Lock()
-		if activeTray == t {
-			activeTray = nil
-		}
-		activeTrayMu.Unlock()
-
-		close(t.doneChan)
 	})
 }
 
+// cleanupOnMainThread performs status item unregistration and Objective-C releases on main thread.
+func (t *DarwinTray) cleanupOnMainThread() {
+	t.mu.Lock()
+	if !t.active {
+		t.mu.Unlock()
+		return
+	}
+	t.active = false
+	item := t.statusItem
+	t.statusItem = 0
+	menu := t.menu
+	t.menu = 0
+	handler := t.handler
+	t.handler = 0
+	t.mu.Unlock()
+
+	activeTrayMu.Lock()
+	if activeTray == t {
+		activeTray = nil
+	}
+	activeTrayMu.Unlock()
+
+	if item != 0 {
+		clsStatusBar := objc.ID(objc.GetClass("NSStatusBar"))
+		if clsStatusBar != 0 {
+			statusBar := clsStatusBar.Send(selSystemStatusBar)
+			if statusBar != 0 {
+				statusBar.Send(selRemoveStatusItem, item)
+			}
+		}
+		item.Send(selRelease)
+	}
+
+	if menu != 0 {
+		menu.Send(selRelease)
+	}
+
+	if handler != 0 {
+		handler.Send(selRelease)
+	}
+
+	select {
+	case <-t.doneChan:
+	default:
+		close(t.doneChan)
+	}
+}
+
+func (t *DarwinTray) Stop() {
+	t.requestStop()
+
+	t.mu.Lock()
+	active := t.active
+	t.mu.Unlock()
+	// If RunLoop was not running (e.g. in unit tests), perform cleanup directly
+	if active {
+		t.cleanupOnMainThread()
+		return
+	}
+
+	select {
+	case <-t.doneChan:
+	case <-time.After(2 * time.Second):
+	}
+}
+
 func (t *DarwinTray) RunLoop(sigCh <-chan os.Signal, quitChan <-chan struct{}) {
+	// Background monitor only notifies the RunLoop to wake and stop.
+	// It NEVER directly performs AppKit object destruction.
 	go func() {
 		select {
 		case <-sigCh:
@@ -445,12 +536,16 @@ func (t *DarwinTray) RunLoop(sigCh <-chan os.Signal, quitChan <-chan struct{}) {
 		case <-t.doneChan:
 			return
 		}
-		t.Stop()
+		t.requestStop()
 	}()
 
 	if t.app != 0 {
 		t.app.Send(selRun)
 	}
+
+	// Main thread resumes here after NSApp run loop exits.
+	// All UI and AppKit teardown happens strictly on the main OS thread.
+	t.cleanupOnMainThread()
 }
 
 func handleOpenConsole() {
@@ -491,7 +586,7 @@ func handleQuitApp() {
 	t := activeTray
 	activeTrayMu.Unlock()
 	if t != nil {
-		t.Stop()
+		t.requestStop()
 		if t.ctrl != nil {
 			go t.ctrl.Quit()
 		}
