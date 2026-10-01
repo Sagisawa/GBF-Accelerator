@@ -627,13 +627,6 @@ func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.R
 	}
 	host = strings.ToLower(strings.TrimRight(host, "."))
 
-	// Block telemetry tunnels immediately
-	if isTelemetryHost(host) {
-		writeHTTPResponse(conn, http.StatusForbidden, nil, nil, false, true)
-		s.stats.Log("BLOCK", fmt.Sprintf("Blocked telemetry tunnel: %s", target))
-		return
-	}
-
 	clientIP := "127.0.0.1"
 	if cAddr := conn.RemoteAddr(); cAddr != nil {
 		if ch, _, err := net.SplitHostPort(cAddr.String()); err == nil {
@@ -986,10 +979,6 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		reqPort = p
 	}
 	hostTrimmed := strings.Trim(host, "[]")
-	if isTelemetryHost(hostTrimmed) {
-		writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
-		return false
-	}
 
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
@@ -2574,25 +2563,6 @@ func isRetryableAPI(path string) bool {
 	return false
 }
 
-var telemetryPatterns = []string{
-	"smbeat.jp",
-	"smrtbeat.com",
-	"rcv.a-i-ad.com",
-	"datadoghq-browser-agent",
-	"datadoghq.com",
-	"spdmg-backend.i-mobile.co.jp",
-	"creativecdn.com",
-}
-
-func isTelemetryHost(host string) bool {
-	h := strings.ToLower(host)
-	for _, pat := range telemetryPatterns {
-		if strings.Contains(h, pat) {
-			return true
-		}
-	}
-	return false
-}
 
 func isConnectionDropError(err error) bool {
 	if err == nil {

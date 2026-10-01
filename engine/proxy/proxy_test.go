@@ -148,18 +148,7 @@ func TestProxyRoutingRules(t *testing.T) {
 		t.Error("ws.game.granbluefantasy.jp must NOT be in MITM isGBFDomain")
 	}
 
-	// 7. isTelemetryHost: ad & tracking domains must be blocked
-	telemetryHosts := []string{"smbeat.jp", "smrtbeat.com", "datadoghq.com", "rcv.a-i-ad.com"}
-	for _, th := range telemetryHosts {
-		if !isTelemetryHost(th) {
-			t.Errorf("%s must be detected as telemetry domain", th)
-		}
-	}
-	if isTelemetryHost("game.granbluefantasy.jp") {
-		t.Error("game.granbluefantasy.jp must NOT be marked as telemetry domain")
-	}
-
-	// 8. isGBFAkamaiHost & isGBFDomain: only legitimate GBF domains are MITM'd
+	// 7. isGBFAkamaiHost & isGBFDomain: only legitimate GBF domains are MITM'd
 	if !isGBFAkamaiHost("prd-game-a-granbluefantasy.akamaized.net") {
 		t.Error("prd-game-a-granbluefantasy.akamaized.net must be recognized as GBF Akamai host")
 	}
@@ -200,7 +189,7 @@ func TestProxyRoutingRules(t *testing.T) {
 		t.Error("game.granbluefantasy.jp must be recognized as GBF domain")
 	}
 
-	// 9. isStaticTarget vs dynamic APIs
+	// 8. isStaticTarget vs dynamic APIs
 	if !isStaticTarget("game.granbluefantasy.jp", "/sound/se/se_100.ogg") {
 		t.Error("/sound/se/se_100.ogg must be recognized as static")
 	}
