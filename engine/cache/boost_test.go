@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -384,4 +385,125 @@ func TestBoost_MemoryGuardStop(t *testing.T) {
 		t.Fatalf("expected 0 loaded files due to immediate memory guard halt, got %d", finalProgress.LoadedFiles)
 	}
 }
+
+func TestBoost_PrewarmLegitimateErrorHandlerNotSkipped(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_boost_errhandler_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+	mgr.SetAutoRepair(true)
+
+	// Seed legitimate official set-error-handler.js
+	jsDir := filepath.Join(tempDir, "assets", "app", "js")
+	_ = os.MkdirAll(jsDir, 0755)
+	jsPath := filepath.Join(jsDir, "set-error-handler.js")
+	legitJS := []byte("window.onerror=function(t,a){ t && alert(t); a && window.location.reload(); };")
+	if err := os.WriteFile(jsPath, legitJS, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(jsPath+".ext", []byte(`{"ContentType":"application/javascript","v":1}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed another regular asset (valid PNG)
+	pngPath := filepath.Join(jsDir, "test.png")
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRdata")
+	if err := os.WriteFile(pngPath, validPng, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pngPath+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run Boost Prewarm
+	finalProgress := mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
+	if finalProgress.State != BoostStateCompleted {
+		t.Fatalf("expected state %s, got %s", BoostStateCompleted, finalProgress.State)
+	}
+	if finalProgress.SkippedFiles != 0 {
+		t.Fatalf("expected 0 skipped files, got %d (legitimate set-error-handler.js must not be skipped)", finalProgress.SkippedFiles)
+	}
+	if finalProgress.LoadedFiles != 2 {
+		t.Fatalf("expected 2 loaded files, got %d", finalProgress.LoadedFiles)
+	}
+
+	// Verify GetWithNamespace hits RAM-BOOST for set-error-handler.js
+	item, src := mgr.GetWithNamespace("gbf", "assets/app/js/set-error-handler.js")
+	if item == nil || src != "RAM-BOOST" {
+		t.Fatalf("expected item from RAM-BOOST, got item=%v, src=%s", item, src)
+	}
+	if !bytes.Equal(item.Data, legitJS) {
+		t.Fatalf("item data mismatch: got %s, want %s", string(item.Data), string(legitJS))
+	}
+}
+
+func TestBoost_PrewarmTamperedErrorHandlerQuarantinedAndSkipped(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "gbf_boost_tampered_*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+	mgr.SetAutoRepair(true)
+
+	// Seed legitimate official set-error-handler.js
+	goodDir := filepath.Join(tempDir, "assets", "good")
+	_ = os.MkdirAll(goodDir, 0755)
+	goodPath := filepath.Join(goodDir, "set-error-handler.js")
+	legitJS := []byte("window.onerror=function(t,a){ t && alert(t); a && window.location.reload(); };")
+	if err := os.WriteFile(goodPath, legitJS, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goodPath+".ext", []byte(`{"ContentType":"application/javascript","v":1}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed tampered set-error-handler.js
+	badDir := filepath.Join(tempDir, "assets", "bad")
+	_ = os.MkdirAll(badDir, 0755)
+	badPath := filepath.Join(badDir, "set-error-handler.js")
+	tamperedJS := []byte("window.onerror=function(t,a){void 0}; console.log('error handler');")
+	if err := os.WriteFile(badPath, tamperedJS, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(badPath+".ext", []byte(`{"ContentType":"application/javascript","v":1}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	finalProgress := mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
+	if finalProgress.State != BoostStateCompleted {
+		t.Fatalf("expected state %s, got %s", BoostStateCompleted, finalProgress.State)
+	}
+	if finalProgress.SkippedFiles != 1 {
+		t.Fatalf("expected exactly 1 skipped file (the tampered one), got %d", finalProgress.SkippedFiles)
+	}
+	if finalProgress.LoadedFiles != 1 {
+		t.Fatalf("expected exactly 1 loaded file (the legitimate one), got %d", finalProgress.LoadedFiles)
+	}
+
+	// Verify the bad file is quarantined
+	if _, err := os.Stat(badPath); !os.IsNotExist(err) {
+		t.Fatal("tampered file must have been quarantined during boost prewarm")
+	}
+	matches, _ := filepath.Glob(filepath.Join(badDir, "set-error-handler.js.quarantine.*"))
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 quarantine backup file, found %d", len(matches))
+	}
+
+	// Verify the good file is in RAM-BOOST
+	item, src := mgr.GetWithNamespace("gbf", "assets/good/set-error-handler.js")
+	if item == nil || src != "RAM-BOOST" {
+		t.Fatalf("expected legitimate script from RAM-BOOST, got item=%v, src=%s", item, src)
+	}
+	if !bytes.Equal(item.Data, legitJS) {
+		t.Fatalf("legitimate script content mismatch")
+	}
+}
+
 

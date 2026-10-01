@@ -852,6 +852,16 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath string) (*CacheItem, error) {
 	ramKey := makeRAMKey(ns, cleanKey)
 
+	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
+		if m.CheckAndQuarantineTamperedJS(filePath) {
+			m.deleteDiskMeta(ramKey)
+			if m.residentPool != nil {
+				m.residentPool.Delete(ramKey)
+			}
+			return nil, fmt.Errorf("tampered JS quarantined: %s", filePath)
+		}
+	}
+
 	f, err := os.Open(filePath)
 	if err != nil {
 		m.deleteDiskMeta(ramKey)
@@ -870,17 +880,6 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 
 	mtimeNano := fi.ModTime().UnixNano()
 	size := fi.Size()
-
-	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
-		_ = f.Close()
-		if m.CheckAndQuarantineTamperedJS(filePath) {
-			m.deleteDiskMeta(ramKey)
-			if m.residentPool != nil {
-				m.residentPool.Delete(ramKey)
-			}
-			return nil, fmt.Errorf("tampered JS quarantined: %s", filePath)
-		}
-	}
 
 	// For verified large assets (> MaxDiskDirectReadSize), directly return stream item (Data=nil, Size=size)
 	// without allocating whole-file memory buffer or reading disk body.
