@@ -18,6 +18,7 @@ import (
 	"gbf-proxy/cache"
 	"gbf-proxy/cert"
 	"gbf-proxy/config"
+	"gbf-proxy/process"
 	"gbf-proxy/telemetry"
 )
 
@@ -784,6 +785,14 @@ func TestProxy_DiskCacheHit_LegacyUnverifiedLargeAsset_ConcurrentAccess(t *testi
 // large assets (>2MB) are served directly from RAM (RAMHits incremented, fast path),
 // and when Boost is disabled, the same asset falls back to Disk Stream (DiskHits incremented).
 func TestProxy_LargeAsset_BoostRAM_vs_DiskStream(t *testing.T) {
+	cleanupMem := cache.SetSystemMemoryProviderForTest(func() (process.MemoryInfo, error) {
+		return process.MemoryInfo{
+			TotalBytes:     32 * 1024 * 1024 * 1024,
+			AvailableBytes: 16 * 1024 * 1024 * 1024,
+		}, nil
+	})
+	defer cleanupMem()
+
 	tempDir := t.TempDir()
 	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
 	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))

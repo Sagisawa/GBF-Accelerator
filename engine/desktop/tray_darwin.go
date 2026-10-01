@@ -3,6 +3,7 @@
 package desktop
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"sync"
@@ -12,6 +13,19 @@ import (
 	"github.com/ebitengine/purego"
 	"github.com/ebitengine/purego/objc"
 )
+
+//go:embed icon_darwin.png
+var darwinIconBytes []byte
+
+type nsPoint struct {
+	X float64
+	Y float64
+}
+
+type nsSize struct {
+	Width  float64
+	Height float64
+}
 
 var (
 	appKitOnce   sync.Once
@@ -51,6 +65,10 @@ var (
 	selInitWithData               objc.SEL
 	selRun                        objc.SEL
 	selStop                       objc.SEL
+	selSetSize                    objc.SEL
+	selSetTemplate                objc.SEL
+	selPostEventAtStart           objc.SEL
+	selOtherEventWithType         objc.SEL
 
 	selOpenConsoleAction objc.SEL
 	selToggleProxyAction objc.SEL
@@ -116,6 +134,10 @@ func initSelectors() {
 	selInitWithData = objc.RegisterName("initWithData:")
 	selRun = objc.RegisterName("run")
 	selStop = objc.RegisterName("stop:")
+	selSetSize = objc.RegisterName("setSize:")
+	selSetTemplate = objc.RegisterName("setTemplate:")
+	selPostEventAtStart = objc.RegisterName("postEvent:atStart:")
+	selOtherEventWithType = objc.RegisterName("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:")
 
 	selOpenConsoleAction = objc.RegisterName("openConsoleAction:")
 	selToggleProxyAction = objc.RegisterName("toggleProxyAction:")
@@ -187,6 +209,7 @@ type DarwinTray struct {
 	menu       objc.ID
 	handler    objc.ID
 	active     bool
+	inRunLoop  bool
 	mu         sync.Mutex
 	stopOnce   sync.Once
 	doneChan   chan struct{}
@@ -295,16 +318,24 @@ func (t *DarwinTray) Start() error {
 
 func (t *DarwinTray) setupButton(btn objc.ID) {
 	var imgLoaded bool
-	if len(t.iconBytes) > 0 {
+	iconData := darwinIconBytes
+	if len(iconData) == 0 {
+		iconData = t.iconBytes
+	}
+	if len(iconData) > 0 {
 		clsData := objc.ID(objc.GetClass("NSData"))
 		if clsData != 0 {
-			data := clsData.Send(selDataWithBytesLength, uintptr(unsafe.Pointer(&t.iconBytes[0])), uintptr(len(t.iconBytes)))
+			data := clsData.Send(selDataWithBytesLength, uintptr(unsafe.Pointer(&iconData[0])), uintptr(len(iconData)))
 			if data != 0 {
 				clsImage := objc.ID(objc.GetClass("NSImage"))
 				if clsImage != 0 {
 					imgAlloc := clsImage.Send(selAlloc)
 					img := objc.ID(objc.Send[objc.ID](imgAlloc, selInitWithData, data))
 					if img != 0 {
+						img.Send(selSetSize, nsSize{Width: 18, Height: 18})
+						if selSetTemplate != 0 {
+							img.Send(selSetTemplate, true)
+						}
 						btn.Send(selSetImage, img)
 						btn.Send(selSetImageScaling, uintptr(0)) // NSImageScaleProportionallyDown
 						img.Send(selRelease)                    // btn retains image; release local ownership
@@ -323,10 +354,14 @@ func (t *DarwinTray) setupButton(btn objc.ID) {
 }
 
 func (t *DarwinTray) updateTooltip() {
-	if t.statusItem == 0 {
+	t.mu.Lock()
+	item := t.statusItem
+	active := t.active
+	t.mu.Unlock()
+	if !active || item == 0 {
 		return
 	}
-	btn := t.statusItem.Send(selButton)
+	btn := item.Send(selButton)
 	if btn == 0 {
 		return
 	}
@@ -395,6 +430,9 @@ func (t *DarwinTray) addMenuItem(menu objc.ID, title string, action objc.SEL, ta
 	if item == 0 {
 		return 0
 	}
+	if action != 0 {
+		item.Send(selSetAction, action)
+	}
 	if target != 0 {
 		item.Send(selSetTarget, target)
 	}
@@ -427,10 +465,17 @@ func (t *DarwinTray) Update() {
 }
 
 // requestStop sends stop request and wakes up the main thread RunLoop safely from any goroutine.
-// It relies exclusively on thread-safe CoreFoundation APIs (CFRunLoopStop / CFRunLoopWakeUp)
-// and never invokes AppKit / NSApplication methods from background goroutines.
 func (t *DarwinTray) requestStop() {
 	t.stopOnce.Do(func() {
+		t.mu.Lock()
+		app := t.app
+		t.mu.Unlock()
+
+		if app != 0 {
+			app.Send(selStop, uintptr(0))
+			postDummyEvent(app)
+		}
+
 		if cfRunLoopStop != nil && cfRunLoopGetMain != nil {
 			mainRL := cfRunLoopGetMain()
 			if mainRL != 0 {
@@ -441,6 +486,34 @@ func (t *DarwinTray) requestStop() {
 			}
 		}
 	})
+}
+
+func postDummyEvent(app objc.ID) bool {
+	clsEvent := objc.ID(objc.GetClass("NSEvent"))
+	if clsEvent == 0 || app == 0 {
+		return false
+	}
+	defer func() {
+		_ = recover()
+	}()
+	event := objc.ID(objc.Send[objc.ID](
+		clsEvent,
+		selOtherEventWithType,
+		uintptr(15), // NSEventTypeApplicationDefined
+		nsPoint{X: 0, Y: 0},
+		uintptr(0),
+		float64(0),
+		0,
+		uintptr(0),
+		int16(0),
+		0,
+		0,
+	))
+	if event != 0 {
+		app.Send(selPostEventAtStart, event, true)
+		return true
+	}
+	return false
 }
 
 // cleanupOnMainThread performs status item unregistration and Objective-C releases on main thread.
@@ -502,21 +575,35 @@ func (t *DarwinTray) Stop() {
 	t.requestStop()
 
 	t.mu.Lock()
+	inRunLoop := t.inRunLoop
 	active := t.active
 	t.mu.Unlock()
-	// If RunLoop was not running (e.g. in unit tests), perform cleanup directly
-	if active {
-		t.cleanupOnMainThread()
+
+	// If RunLoop was running on main thread, wait for it to complete main-thread cleanup
+	if inRunLoop {
+		select {
+		case <-t.doneChan:
+		case <-time.After(2 * time.Second):
+		}
 		return
 	}
 
-	select {
-	case <-t.doneChan:
-	case <-time.After(2 * time.Second):
+	// If RunLoop was not running (e.g. in unit tests or before RunLoop started), perform cleanup directly
+	if active {
+		t.cleanupOnMainThread()
 	}
 }
 
 func (t *DarwinTray) RunLoop(sigCh <-chan os.Signal, quitChan <-chan struct{}) {
+	t.mu.Lock()
+	t.inRunLoop = true
+	t.mu.Unlock()
+	defer func() {
+		t.mu.Lock()
+		t.inRunLoop = false
+		t.mu.Unlock()
+	}()
+
 	// Background monitor only notifies the RunLoop to wake and stop.
 	// It NEVER directly performs AppKit object destruction.
 	go func() {
@@ -586,8 +673,11 @@ func handleQuitApp() {
 }
 
 func nsString(str string) objc.ID {
+	if err := initAppKit(); err != nil {
+		return 0
+	}
 	cls := objc.ID(objc.GetClass("NSString"))
-	if cls == 0 {
+	if cls == 0 || selStringWithUTF8String == 0 {
 		return 0
 	}
 	if str == "" {

@@ -328,12 +328,12 @@ func main() {
 	}
 
 	consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", curCfg.ControlPort)
-	if runtime.GOOS != "darwin" && !*noGUI && !*headless && !*minimized {
-		if err := desktop.OpenBrowser(consoleURL); err != nil {
-			fmt.Printf("[*] Failed to open browser: %v\n", err)
+	if !*noGUI && !*headless && !*minimized {
+		if err := appCtrl.OpenAppWindow(consoleURL); err != nil {
+			fmt.Printf("[*] Failed to open app window: %v\n", err)
 		}
 	} else if *openBrowser {
-		_ = desktop.OpenBrowser(consoleURL)
+		_ = appCtrl.OpenAppWindow(consoleURL)
 	}
 
 	// 10. Wait for Shutdown Signals (OS signal or Tray quit)
