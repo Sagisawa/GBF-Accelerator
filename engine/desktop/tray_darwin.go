@@ -13,11 +13,6 @@ import (
 	"github.com/ebitengine/purego/objc"
 )
 
-type nsPoint struct {
-	X float64
-	Y float64
-}
-
 var (
 	appKitOnce   sync.Once
 	appKitErr    error
@@ -56,8 +51,6 @@ var (
 	selInitWithData               objc.SEL
 	selRun                        objc.SEL
 	selStop                       objc.SEL
-	selPostEventAtStart           objc.SEL
-	selOtherEventWithType         objc.SEL
 
 	selOpenConsoleAction objc.SEL
 	selToggleProxyAction objc.SEL
@@ -123,8 +116,6 @@ func initSelectors() {
 	selInitWithData = objc.RegisterName("initWithData:")
 	selRun = objc.RegisterName("run")
 	selStop = objc.RegisterName("stop:")
-	selPostEventAtStart = objc.RegisterName("postEvent:atStart:")
-	selOtherEventWithType = objc.RegisterName("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:")
 
 	selOpenConsoleAction = objc.RegisterName("openConsoleAction:")
 	selToggleProxyAction = objc.RegisterName("toggleProxyAction:")
@@ -436,16 +427,10 @@ func (t *DarwinTray) Update() {
 }
 
 // requestStop sends stop request and wakes up the main thread RunLoop safely from any goroutine.
+// It relies exclusively on thread-safe CoreFoundation APIs (CFRunLoopStop / CFRunLoopWakeUp)
+// and never invokes AppKit / NSApplication methods from background goroutines.
 func (t *DarwinTray) requestStop() {
 	t.stopOnce.Do(func() {
-		t.mu.Lock()
-		app := t.app
-		t.mu.Unlock()
-
-		if app != 0 {
-			app.Send(selStop, uintptr(0))
-			postDummyEvent(app)
-		}
 		if cfRunLoopStop != nil && cfRunLoopGetMain != nil {
 			mainRL := cfRunLoopGetMain()
 			if mainRL != 0 {
@@ -466,6 +451,8 @@ func (t *DarwinTray) cleanupOnMainThread() {
 		return
 	}
 	t.active = false
+	app := t.app
+	t.app = 0
 	item := t.statusItem
 	t.statusItem = 0
 	menu := t.menu
@@ -480,6 +467,7 @@ func (t *DarwinTray) cleanupOnMainThread() {
 	}
 	activeTrayMu.Unlock()
 
+	// All UI and AppKit teardown happens strictly on the main OS thread here.
 	if item != 0 {
 		clsStatusBar := objc.ID(objc.GetClass("NSStatusBar"))
 		if clsStatusBar != 0 {
@@ -497,6 +485,10 @@ func (t *DarwinTray) cleanupOnMainThread() {
 
 	if handler != 0 {
 		handler.Send(selRelease)
+	}
+
+	if app != 0 {
+		app.Send(selStop, uintptr(0))
 	}
 
 	select {
@@ -590,32 +582,6 @@ func handleQuitApp() {
 		if t.ctrl != nil {
 			go t.ctrl.Quit()
 		}
-	}
-}
-
-func postDummyEvent(app objc.ID) {
-	clsEvent := objc.ID(objc.GetClass("NSEvent"))
-	if clsEvent == 0 || app == 0 {
-		return
-	}
-	defer func() {
-		_ = recover()
-	}()
-	event := objc.ID(objc.Send[objc.ID](
-		clsEvent,
-		selOtherEventWithType,
-		uintptr(15), // NSEventTypeApplicationDefined
-		nsPoint{X: 0, Y: 0},
-		uintptr(0),
-		float64(0),
-		0,
-		uintptr(0),
-		int16(0),
-		0,
-		0,
-	))
-	if event != 0 {
-		app.Send(selPostEventAtStart, event, true)
 	}
 }
 
