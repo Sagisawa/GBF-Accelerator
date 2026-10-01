@@ -276,7 +276,8 @@ flowchart TD
   - 支持随 Windows 开机自启（默认关闭）。
 - **macOS 原生集成**：
   - 采用 Universal 2 双架构二进制打包，同时原生支持 Intel 与 Apple Silicon (M系列) Macs；
-  - 基于 Chromium App Mode 启动独立应用窗口，支持顶部状态栏常驻图标与上下文菜单；
+  - 顶部菜单栏（Menu Bar）原生常驻图标与上下文菜单（支持打开控制台、启停代理加速、查看端口状态、打开缓存目录、退出程序），启动时后台安静运行，不自动弹出多余浏览器窗口；
+  - 控制台支持通过 Chromium App Mode 挂载独立应用窗口，亦可随时通过菜单栏图标一键呼出；
   - 自动调用 `networksetup` 托管系统 PAC 代理，具备外部代理冲突检测；
   - 自动调用 `security add-trusted-cert` 信任用户登录钥匙串（Keychain）；
   - 控制台日志搜索原生支持 macOS 键位（`Cmd+G`）与按键自适应；
@@ -335,7 +336,7 @@ flowchart TD
 2. 解压并将 `GBF_Accelerator.app` 拖入系统的【应用程序】文件夹。
    > 💡 **Gatekeeper 提示**：首次打开若提示“无法验证开发者”或“已损坏”，请按住 Control 键并鼠标右键点击应用选择【打开】；或在终端执行 `xattr -cr /Applications/GBF_Accelerator.app` 解除系统隔离。
 3. 确保 Clash / Surge 等上游代理正常运行。
-4. 启动后程序会自动打开内嵌 Web 控制台，首次运行点击**【一键安装根证书】**，输入 Mac 密码或按触控 ID 允许信任钥匙串。**安装后请按 `Cmd + Q` 完全退出并重新打开浏览器**以重载证书库。
+4. 启动后程序后台运行并常驻顶部菜单栏（Menu Bar）。点击顶部图标选择【打开控制台】（首次运行可在控制台中点击**【一键安装根证书】**，输入 Mac 密码或按触控 ID 允许信任钥匙串）。**安装后请按 `Cmd + Q` 完全退出并重新打开浏览器**以重载证书库。
 5. 在浏览器扩展中新建 PAC 情景模式指向 `http://127.0.0.1:8124/proxy.pac`（或勾选系统 PAC），即可在 Safari 或 Chrome 中流畅游玩。
 
 #### Android 用户
