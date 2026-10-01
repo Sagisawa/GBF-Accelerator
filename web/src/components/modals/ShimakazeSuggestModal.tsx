@@ -75,11 +75,17 @@ export const ShimakazeSuggestModal: React.FC<ShimakazeSuggestModalProps> = ({
               <CheckCircle2 className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
               <span>适配 {clientName} 本地自签证书（放行证书）与链式代理转发</span>
             </div>
+            {!isAcgp && (
+              <div className="flex items-start gap-1.5">
+                <CheckCircle2 className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
+                <span>新版本架构兼容升级：支持开启岛风GO远程缓存体验更快加载</span>
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="text-[11px] text-slate-500">
-          注：此选项开启后也可随时在主界面的复选框中关闭。
+        <div className="text-[11px] text-slate-500 leading-relaxed">
+          注：若遇游戏版本更新拉取新素材报错或卡顿，可临时关闭“岛风GO远程缓存”；此选项开启后也可随时在主界面调整。
         </div>
 
         <div className="pt-2 flex justify-end gap-2 border-t border-slate-100">

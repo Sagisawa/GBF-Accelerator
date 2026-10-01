@@ -1711,8 +1711,13 @@ export const App: React.FC = () => {
                   </label>
 
                   {isShimakaze && (
-                    <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs">
-                      提示：已开启兼容优化模式，放行岛风GO / ACGPower 等本地自签证书并优化网络超时；若遇游戏维护更新后新素材显示异常，在主界面点击【清理缓存】即可。
+                    <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs space-y-1">
+                      <div>
+                        提示：已开启兼容优化模式，放行岛风GO / ACGPower 等本地自签证书并优化网络超时。
+                      </div>
+                      <div className="text-sky-800/95">
+                        新版本架构兼容升级，可以开启岛风GO远程缓存体验更快加载（若游戏版本更新拉取新素材时遇到报错或卡顿，可临时关闭“岛风GO远程缓存”）。
+                      </div>
                     </div>
                   )}
                 </div>
