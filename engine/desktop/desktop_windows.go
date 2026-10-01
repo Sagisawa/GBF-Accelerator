@@ -644,3 +644,12 @@ func ChooseFolder(prompt string) (string, error) {
 
 	return strings.TrimSpace(syscall.UTF16ToString(pathBuffer)), nil
 }
+
+func waitForShutdown(tray Tray, sigCh <-chan os.Signal, quitChan <-chan struct{}) {
+	select {
+	case <-sigCh:
+		fmt.Println("\n[*] Received shutdown signal...")
+	case <-quitChan:
+		fmt.Println("\n[*] Received desktop quit command...")
+	}
+}

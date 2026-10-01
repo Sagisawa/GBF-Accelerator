@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -60,4 +61,13 @@ func ChooseFolder(prompt string) (string, error) {
 		return "", nil
 	}
 	return "", fmt.Errorf("no supported dialog tool (zenity or kdialog) found")
+}
+
+func waitForShutdown(tray Tray, sigCh <-chan os.Signal, quitChan <-chan struct{}) {
+	select {
+	case <-sigCh:
+		fmt.Println("\n[*] Received shutdown signal...")
+	case <-quitChan:
+		fmt.Println("\n[*] Received desktop quit command...")
+	}
 }

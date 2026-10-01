@@ -70,3 +70,16 @@ func ChooseFolder(prompt string) (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+func waitForShutdown(tray Tray, sigCh <-chan os.Signal, quitChan <-chan struct{}) {
+	if dt, ok := tray.(*DarwinTray); ok && dt != nil && dt.IsActive() {
+		dt.RunLoop(sigCh, quitChan)
+		return
+	}
+	select {
+	case <-sigCh:
+		fmt.Println("\n[*] Received shutdown signal...")
+	case <-quitChan:
+		fmt.Println("\n[*] Received desktop quit command...")
+	}
+}

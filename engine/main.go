@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"syscall"
@@ -77,6 +78,7 @@ func (a *appController) Quit() {
 }
 
 func main() {
+	runtime.LockOSThread()
 	if handled, err := updater.HandleApplyArgs(os.Args); handled {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[UPDATE] %v\n", err)
@@ -327,23 +329,18 @@ func main() {
 
 	consoleURL := fmt.Sprintf("http://127.0.0.1:%d/", curCfg.ControlPort)
 	if !*noGUI && !*headless && !*minimized {
-		if err := desktop.OpenBrowser(consoleURL); err != nil {
-			fmt.Printf("[*] Failed to open browser: %v\n", err)
+		if err := appCtrl.OpenAppWindow(consoleURL); err != nil {
+			fmt.Printf("[*] Failed to open app window: %v\n", err)
 		}
 	} else if *openBrowser {
-		_ = desktop.OpenBrowser(consoleURL)
+		_ = appCtrl.OpenAppWindow(consoleURL)
 	}
 
 	// 10. Wait for Shutdown Signals (OS signal or Tray quit)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	select {
-	case <-sigCh:
-		fmt.Println("\n[*] Received shutdown signal...")
-	case <-quitChan:
-		fmt.Println("\n[*] Received desktop quit command...")
-	}
+	desktop.WaitForShutdown(tray, sigCh, quitChan)
 
 	fmt.Println("[*] Shutting down GBF Accelerator Go Core...")
 	sysproxy.CleanupOnExit()

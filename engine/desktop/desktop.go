@@ -74,4 +74,11 @@ func ShowInFolder(path string) error {
 	return showInFolderNative(cleanPath)
 }
 
+// WaitForShutdown blocks until an OS shutdown signal or desktop quit command is received.
+// On macOS with an active status bar tray, it drives the Cocoa event loop on the main thread.
+// On other platforms or in headless mode, it waits on the channels directly.
+func WaitForShutdown(tray Tray, sigCh <-chan os.Signal, quitChan <-chan struct{}) {
+	waitForShutdown(tray, sigCh, quitChan)
+}
+
 
