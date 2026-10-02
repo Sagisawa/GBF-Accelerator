@@ -3,7 +3,7 @@
 碧蓝幻想（Granblue Fantasy）高性能本地静态资源缓存与透明代理工具。
 
 [![Release](https://img.shields.io/github/v/release/Sagisawa/GBF-Accelerator?color=blue&logo=github)](https://github.com/Sagisawa/GBF-Accelerator/releases)
-[![Go](https://img.shields.io/badge/Go-1.21%2B-blue.svg?logo=go)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.27%2B-blue.svg?logo=go)](https://go.dev/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux%20(nogui)%20%7C%20Android-informational.svg)]()
 [![CI](https://github.com/Sagisawa/GBF-Accelerator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Sagisawa/GBF-Accelerator/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -368,7 +368,7 @@ flowchart TD
 ### 方式二：从源码运行
 
 #### 环境要求
-- **Go 1.21+**（推荐 1.22 / 1.23）
+- **Go 1.27+**（推荐 1.27.1）
 - Windows 10/11 或 macOS 12+ 或 Linux
 - **Node.js 18+**（可选，仅当需要重新构建 `web/` 前端 SPA 页面时需要）
 

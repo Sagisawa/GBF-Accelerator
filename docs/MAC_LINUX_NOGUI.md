@@ -28,7 +28,7 @@
 
 ## 2. 环境要求
 
-- **Go 1.21+**（推荐 1.22 / 1.23，源码编译时需要）
+- **Go 1.27+**（推荐 1.27.1，源码编译时需要）
 - **OpenSSL / libnss3 工具链**（仅 Linux 信任证书时需要 `certutil`，Debian/Ubuntu：`apt install libnss3-tools`）
 - **Git**（可选，仅从源码克隆时需要）
 - **网络访问**到 GitHub / Akamai CDN
