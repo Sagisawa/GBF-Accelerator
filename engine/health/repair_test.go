@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -132,10 +133,12 @@ func TestRepair_Requirement2_PACMismatch(t *testing.T) {
 	cfg := cfgMgr.Get()
 
 	// Mock probe to return mismatched PAC port
-	probeCalled := 0
+	var isRepaired atomic.Bool
 	checker.SetProbeFunc(func(ctx context.Context, url string) (int, []byte, error) {
-		probeCalled++
-		if probeCalled <= 2 {
+		if strings.HasSuffix(url, "/ca.crt") {
+			return 200, []byte("-----BEGIN CERTIFICATE-----\nMOCK\n-----END CERTIFICATE-----"), nil
+		}
+		if !isRepaired.Load() {
 			// First round: return mismatched PAC
 			return 200, []byte("PROXY 127.0.0.1:9999;"), nil
 		}
@@ -147,6 +150,8 @@ func TestRepair_Requirement2_PACMismatch(t *testing.T) {
 	if initCheck.CoreHealth.PAC.Code != "PAC_PORT_MISMATCH" {
 		t.Fatalf("expected PAC_PORT_MISMATCH, got %s", initCheck.CoreHealth.PAC.Code)
 	}
+
+	isRepaired.Store(true)
 
 	res, err := repairer.Repair(context.Background(), RepairRequest{Code: "PAC_PORT_MISMATCH"})
 	if err != nil {
