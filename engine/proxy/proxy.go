@@ -1210,6 +1210,9 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		return !req.Close
 	}
 	s.forwardDynamicResponse(conn, resp, respBytes, req.Method == http.MethodHead, req.Close)
+	if s.prefetch != nil && resp != nil && resp.StatusCode == http.StatusOK && len(respBytes) > 0 {
+		s.prefetch.MaybeEnqueueGameData(req, req.Host, respBytes)
+	}
 	elapsed := time.Since(startTime).Milliseconds()
 	if s.telemetryEnabled() {
 		s.stats.RecordProtocol(resp.Proto)
@@ -1459,6 +1462,16 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 	isHead := (req.Method == http.MethodHead)
 	isCond := isConditionalRequest(req)
 	ns, _ := NormalizeAssetNamespace(targetHost)
+	if s.prefetch != nil {
+		if isGBFAkamaiHost(targetHost) {
+			s.prefetch.RecordActiveGBFHost(targetHost)
+		}
+		if strings.HasPrefix(pathLower, "/assets_en/") {
+			s.prefetch.RecordActiveLangPrefix("/assets_en")
+		} else if strings.HasPrefix(pathLower, "/assets/") {
+			s.prefetch.RecordActiveLangPrefix("/assets")
+		}
+	}
 
 	// 1. Cache Lookup (RAM first, then SSD)
 	cacheStart := time.Now()
@@ -2133,6 +2146,9 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		return !req.Close
 	}
 	s.forwardDynamicResponse(w, resp, respBytes, req.Method == http.MethodHead, req.Close)
+	if s.prefetch != nil && resp != nil && resp.StatusCode == http.StatusOK && len(respBytes) > 0 {
+		s.prefetch.MaybeEnqueueGameData(req, targetHost, respBytes)
+	}
 	elapsed := time.Since(startTime).Milliseconds()
 	if s.telemetryEnabled() {
 		s.stats.RecordProtocol(resp.Proto)

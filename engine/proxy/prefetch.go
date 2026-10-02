@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gbf-proxy/cache"
@@ -26,11 +30,22 @@ var (
 // background asset warmup requests. It is deliberately constant (not rotated) to
 // comply with the P2 restraint principle: no UA rotation, no fingerprint spoofing.
 const prefetchUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome Safari"
+const defaultGBFHost = "prd-game-a-granbluefantasy.akamaized.net"
 
 type prefetchCandidate struct {
+	host       string
+	path       string
+	data       []byte
+	isGameData bool
+	reqMethod  string
+	xVersion   string
+	langPrefix string
+}
+
+type discoveredRef struct {
 	host string
 	path string
-	data []byte
+	prio int
 }
 
 type prefetchItem struct {
@@ -185,6 +200,8 @@ type PrefetchEngine struct {
 	stopChan          chan struct{}
 	stopOnce          sync.Once
 	deadFilter        *prefetchDeadFilter
+	activeGBFHost     atomic.Pointer[string]
+	activeLangPrefix  atomic.Pointer[string]
 }
 
 func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
@@ -200,9 +217,51 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 		stopChan:          make(chan struct{}),
 		deadFilter:        newPrefetchDeadFilter(defaultDeadFilterCap, defaultDeadFilterTTL),
 	}
+	defaultHost := defaultGBFHost
+	pe.activeGBFHost.Store(&defaultHost)
 	go pe.discoveryWorker()
 	go pe.fetchWorker()
 	return pe
+}
+
+func (pe *PrefetchEngine) RecordActiveGBFHost(host string) {
+	if pe == nil || host == "" {
+		return
+	}
+	if hp, _, err := net.SplitHostPort(host); err == nil {
+		host = hp
+	}
+	h := strings.ToLower(strings.TrimRight(host, "."))
+	if isGBFAkamaiNormalized(h) {
+		pe.activeGBFHost.Store(&h)
+	}
+}
+
+func (pe *PrefetchEngine) GetActiveGBFHost() string {
+	if pe != nil {
+		if p := pe.activeGBFHost.Load(); p != nil && *p != "" {
+			return *p
+		}
+	}
+	return defaultGBFHost
+}
+
+func (pe *PrefetchEngine) RecordActiveLangPrefix(prefix string) {
+	if pe == nil {
+		return
+	}
+	if prefix == "/assets_en" || prefix == "/assets" {
+		pe.activeLangPrefix.Store(&prefix)
+	}
+}
+
+func (pe *PrefetchEngine) GetActiveLangPrefix() string {
+	if pe != nil {
+		if p := pe.activeLangPrefix.Load(); p != nil && *p != "" {
+			return *p
+		}
+	}
+	return ""
 }
 
 func (pe *PrefetchEngine) Stop() {
@@ -317,6 +376,77 @@ func (pe *PrefetchEngine) MaybeEnqueueDiscovery(host, path string, data []byte) 
 	default:
 		// Queue full, drop without delaying foreground path
 	}
+}
+
+func (pe *PrefetchEngine) MaybeEnqueueGameData(req *http.Request, targetHost string, respBytes []byte) {
+	if pe == nil || req == nil || req.URL == nil || len(respBytes) < 2 || len(respBytes) > 2*1024*1024 {
+		return
+	}
+	if pe.srv == nil || pe.srv.cfgMgr == nil {
+		return
+	}
+	cfg := pe.srv.cfgMgr.Get()
+	if !cfg.EnablePrefetch {
+		return
+	}
+	if pe.IsStopped() {
+		return
+	}
+
+	if targetHost == "" {
+		targetHost = req.Host
+	}
+	if !isGBFDomain(targetHost) {
+		return
+	}
+
+	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
+	cleanPath = strings.TrimSuffix(cleanPath, "/")
+	if !isGameDataAPI(req.Method, cleanPath) {
+		return
+	}
+
+	langPrefix := pe.determineLangPrefix(req)
+	if langPrefix != "/assets" && langPrefix != "/assets_en" {
+		// If unable to reliably determine language directory, skip Game-Data Prefetch
+		return
+	}
+	host := pe.GetActiveGBFHost()
+	xVer := strings.TrimSpace(req.Header.Get("X-VERSION"))
+
+	cand := prefetchCandidate{
+		host:       host,
+		path:       cleanPath,
+		data:       respBytes,
+		isGameData: true,
+		reqMethod:  req.Method,
+		xVersion:   xVer,
+		langPrefix: langPrefix,
+	}
+
+	select {
+	case pe.discoveryCh <- cand:
+	default:
+		// Queue full, drop without delaying foreground path
+	}
+}
+
+func (pe *PrefetchEngine) determineLangPrefix(req *http.Request) string {
+	if req != nil {
+		for _, c := range req.Cookies() {
+			if c.Name == "language_type" {
+				val := strings.Trim(c.Value, "\"")
+				if val == "2" {
+					pe.RecordActiveLangPrefix("/assets_en")
+					return "/assets_en"
+				} else if val == "1" {
+					pe.RecordActiveLangPrefix("/assets")
+					return "/assets"
+				}
+			}
+		}
+	}
+	return pe.GetActiveLangPrefix()
 }
 
 func getPrefetchPriority(urlPath string) int {
@@ -442,6 +572,39 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 	return refs
 }
 
+func (pe *PrefetchEngine) dispatchDiscoveredRefs(refs []discoveredRef) {
+	if pe == nil || pe.srv == nil || pe.srv.cacheMgr == nil {
+		return
+	}
+	for _, r := range refs {
+		h, p, prio := r.host, r.path, r.prio
+		ns, _ := NormalizeAssetNamespace(h)
+		cleanP, _, _ := strings.Cut(p, "?")
+		if pe.srv.cacheMgr.HasCacheWithNamespace(ns, cleanP) {
+			continue
+		}
+		if pe.deadFilter != nil && pe.deadFilter.IsDead(h, cleanP) {
+			continue
+		}
+		key := h + cleanP
+		pe.inflightMu.Lock()
+		if _, ok := pe.inflight[key]; ok {
+			pe.inflightMu.Unlock()
+			continue
+		}
+		if len(pe.inflight) > 2000 {
+			pe.inflight = make(map[string]struct{})
+		}
+		pe.inflight[key] = struct{}{}
+		pe.inflightMu.Unlock()
+
+		if !pe.enqueueTask(prefetchItem{prio: prio, host: h, path: p}) {
+			// Queue full, drop and release inflight key
+			pe.removeInflight(key)
+		}
+	}
+}
+
 func (pe *PrefetchEngine) discoveryWorker() {
 	for {
 		select {
@@ -451,44 +614,28 @@ func (pe *PrefetchEngine) discoveryWorker() {
 			raw := cand.data
 			if len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
 				if gr, err := gzip.NewReader(bytes.NewReader(raw)); err == nil {
-					if decompressed, err := io.ReadAll(gr); err == nil {
+					if decompressed, err := io.ReadAll(io.LimitReader(gr, 2*1024*1024)); err == nil {
 						raw = decompressed
 					}
 					_ = gr.Close()
 				}
 			}
-			refs := pe.extractAssetRefs(cand.path, raw, cand.host)
 
+			if cand.isGameData {
+				cand.data = raw
+				refs := pe.extractGameDataRefs(cand)
+				pe.dispatchDiscoveredRefs(refs)
+				continue
+			}
+
+			refs := pe.extractAssetRefs(cand.path, raw, cand.host)
+			var discRefs []discoveredRef
 			for _, r := range refs {
 				h, p := r[0], r[1]
-				ns, _ := NormalizeAssetNamespace(h)
-				if pe.srv.cacheMgr.HasCacheWithNamespace(ns, p) {
-					continue
-				}
-				cleanP, _, _ := strings.Cut(p, "?")
-				if pe.deadFilter.IsDead(h, cleanP) {
-					continue
-				}
-				key := h + p
-				pe.inflightMu.Lock()
-				if _, ok := pe.inflight[key]; ok {
-					pe.inflightMu.Unlock()
-					continue
-				}
-				if len(pe.inflight) > 2000 {
-					pe.inflight = make(map[string]struct{})
-				}
-				pe.inflight[key] = struct{}{}
-				pe.inflightMu.Unlock()
-
-				// Asset references are matched by lowercase extensions/prefixes, so p is
-				// already normalized enough for priority checks; avoid another ToLower allocation.
 				prio := getPrefetchPriorityLower(p)
-				if !pe.enqueueTask(prefetchItem{prio: prio, host: h, path: p}) {
-					// Queue full, drop and release inflight key
-					pe.removeInflight(key)
-				}
+				discRefs = append(discRefs, discoveredRef{host: h, path: p, prio: prio})
 			}
+			pe.dispatchDiscoveredRefs(discRefs)
 		}
 	}
 }
@@ -637,4 +784,393 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 		case <-time.After(time.Duration(jitter) * time.Millisecond):
 		}
 	}
+}
+
+func isGameDataAPI(method, cleanPath string) bool {
+	cleanPath = strings.TrimSuffix(cleanPath, "/")
+	if method == http.MethodPost && cleanPath == "/rest/multiraid/start.json" {
+		return true
+	}
+	if method == http.MethodGet && isClearedQuestScenarioPath(cleanPath) {
+		return true
+	}
+	return false
+}
+
+func isClearedQuestScenarioPath(cleanPath string) bool {
+	cleanPath = strings.TrimSuffix(cleanPath, "/")
+	const prefix = "/rest/quest/cleared_quest_scenario/"
+	if !strings.HasPrefix(cleanPath, prefix) {
+		return false
+	}
+	rest := cleanPath[len(prefix):]
+	if strings.Contains(rest, "..") || strings.Contains(rest, "\\") {
+		return false
+	}
+	slashIdx := strings.IndexByte(rest, '/')
+	if slashIdx <= 0 || slashIdx == len(rest)-1 {
+		return false
+	}
+	second := rest[slashIdx+1:]
+	if strings.IndexByte(second, '/') != -1 {
+		return false
+	}
+	return true
+}
+
+func (pe *PrefetchEngine) extractGameDataRefs(cand prefetchCandidate) []discoveredRef {
+	cleanPath := strings.TrimSuffix(cand.path, "/")
+	if cand.reqMethod == http.MethodPost && cleanPath == "/rest/multiraid/start.json" {
+		return pe.extractMultiRaidRefs(cand)
+	}
+	if cand.reqMethod == http.MethodGet && isClearedQuestScenarioPath(cleanPath) {
+		return pe.extractClearedQuestRefs(cand)
+	}
+	return nil
+}
+
+func (pe *PrefetchEngine) extractMultiRaidRefs(cand prefetchCandidate) []discoveredRef {
+	langPrefix := cand.langPrefix
+	if langPrefix != "/assets" && langPrefix != "/assets_en" {
+		return nil
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(cand.data, &root); err != nil || root == nil {
+		return nil
+	}
+
+	var refs []discoveredRef
+	host := cand.host
+
+	// 1. CJS extraction: manifest and cjs scripts -> P1
+	ver := strings.TrimSpace(cand.xVersion)
+	if ver != "" && isDigitsOnly(ver) {
+		seenCJS := make(map[string]struct{})
+		addCJS := func(cjs string) {
+			cjs = strings.TrimSpace(cjs)
+			if !isValidCJSIdentifier(cjs) {
+				return
+			}
+			if _, ok := seenCJS[cjs]; ok {
+				return
+			}
+			seenCJS[cjs] = struct{}{}
+
+			manifestURL := fmt.Sprintf("%s/%s/js/model/manifest/%s.js", langPrefix, ver, cjs)
+			cjsURL := fmt.Sprintf("%s/%s/js/cjs/%s.js", langPrefix, ver, cjs)
+
+			refs = append(refs,
+				discoveredRef{host: host, path: manifestURL, prio: 1},
+				discoveredRef{host: host, path: cjsURL, prio: 1},
+			)
+		}
+
+		extractCJSFromParam := func(paramObj any) {
+			if paramObj == nil {
+				return
+			}
+			switch pv := paramObj.(type) {
+			case []any:
+				for _, item := range pv {
+					if itemMap, ok := item.(map[string]any); ok {
+						if cjsVal, ok := itemMap["cjs"].(string); ok {
+							addCJS(cjsVal)
+						}
+					}
+				}
+			case map[string]any:
+				if cjsVal, ok := pv["cjs"].(string); ok {
+					addCJS(cjsVal)
+				} else {
+					for _, item := range pv {
+						if itemMap, ok := item.(map[string]any); ok {
+							if cjsVal, ok := itemMap["cjs"].(string); ok {
+								addCJS(cjsVal)
+							}
+						}
+					}
+				}
+			}
+		}
+
+		if playerObj, ok := root["player"].(map[string]any); ok {
+			extractCJSFromParam(playerObj["param"])
+		} else if playerSlice, ok := root["player"].([]any); ok {
+			extractCJSFromParam(playerSlice)
+		}
+
+		if bossObj, ok := root["boss"].(map[string]any); ok {
+			extractCJSFromParam(bossObj["param"])
+		} else if bossSlice, ok := root["boss"].([]any); ok {
+			extractCJSFromParam(bossSlice)
+		}
+	}
+
+	// 2. Background image: strictly the first priority background -> P2
+	if bgPath := extractFirstBackgroundImage(root["background_image_object"], langPrefix); bgPath != "" {
+		refs = append(refs, discoveredRef{host: host, path: bgPath, prio: 2})
+	}
+
+	return refs
+}
+
+func extractFirstBackgroundImage(obj any, langPrefix string) string {
+	if obj == nil || (langPrefix != "/assets" && langPrefix != "/assets_en") {
+		return ""
+	}
+
+	tryExtractString := func(raw string) string {
+		raw = strings.TrimSpace(raw)
+		if raw == "" || len(raw) > 256 || strings.Contains(raw, "..") || strings.Contains(raw, "\\") || strings.Contains(raw, ":") {
+			return ""
+		}
+		if !isVisualImageExt(raw) {
+			return ""
+		}
+		return normalizeCDNImagePath(raw, langPrefix)
+	}
+
+	tryExtractMap := func(m map[string]any) string {
+		if m == nil {
+			return ""
+		}
+		for _, key := range []string{"image", "path", "url", "src", "bg", "0", "1"} {
+			if s, ok := m[key].(string); ok {
+				if path := tryExtractString(s); path != "" {
+					return path
+				}
+			}
+		}
+		return ""
+	}
+
+	switch v := obj.(type) {
+	case string:
+		return tryExtractString(v)
+	case []any:
+		for _, item := range v {
+			if item == nil {
+				continue
+			}
+			switch iv := item.(type) {
+			case string:
+				if path := tryExtractString(iv); path != "" {
+					return path
+				}
+			case map[string]any:
+				if path := tryExtractMap(iv); path != "" {
+					return path
+				}
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if path := tryExtractString(s); path != "" {
+				return path
+			}
+		}
+	case map[string]any:
+		return tryExtractMap(v)
+	}
+
+	return ""
+}
+
+func (pe *PrefetchEngine) extractClearedQuestRefs(cand prefetchCandidate) []discoveredRef {
+	langPrefix := cand.langPrefix
+	if langPrefix != "/assets" && langPrefix != "/assets_en" {
+		return nil
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(cand.data, &root); err != nil || root == nil {
+		return nil
+	}
+
+	var scenes []map[string]any
+	switch sl := root["scene_list"].(type) {
+	case []any:
+		for _, item := range sl {
+			if sm, ok := item.(map[string]any); ok && sm != nil {
+				scenes = append(scenes, sm)
+			}
+		}
+	case map[string]any:
+		var keys []string
+		for k := range sl {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if sm, ok := sl[k].(map[string]any); ok && sm != nil {
+				scenes = append(scenes, sm)
+			}
+		}
+	}
+
+	if len(scenes) == 0 {
+		return nil
+	}
+
+	host := cand.host
+	if len(scenes) > 5 {
+		scenes = scenes[:5]
+	}
+
+	var refs []discoveredRef
+	seen := make(map[string]struct{})
+
+	priorityKeys := []string{
+		"bg", "bg1", "bg2", "bg3",
+		"charcter1_big_image", "charcter2_big_image", "charcter3_big_image",
+		"character1_big_image", "character2_big_image", "character3_big_image",
+	}
+
+	extractVisualString := func(val any) string {
+		if val == nil {
+			return ""
+		}
+		var raw string
+		switch v := val.(type) {
+		case string:
+			raw = v
+		case map[string]any:
+			for _, k := range []string{"image", "path", "url", "src"} {
+				if s, ok := v[k].(string); ok && s != "" {
+					raw = s
+					break
+				}
+			}
+		}
+		raw = strings.TrimSpace(raw)
+		if raw == "" || len(raw) > 256 || strings.Contains(raw, "..") || strings.Contains(raw, "\\") || strings.Contains(raw, ":") {
+			return ""
+		}
+		if !isVisualImageExt(raw) {
+			return ""
+		}
+		return normalizeCDNImagePath(raw, langPrefix)
+	}
+
+	for _, scene := range scenes {
+		checkedKeys := make(map[string]struct{}, len(priorityKeys))
+		for _, key := range priorityKeys {
+			checkedKeys[key] = struct{}{}
+			val, ok := scene[key]
+			if !ok {
+				continue
+			}
+			cdnPath := extractVisualString(val)
+			if cdnPath == "" {
+				continue
+			}
+			if _, exists := seen[cdnPath]; !exists {
+				seen[cdnPath] = struct{}{}
+				refs = append(refs, discoveredRef{host: host, path: cdnPath, prio: 2})
+				if len(refs) >= 5 {
+					return refs
+				}
+			}
+		}
+
+		var otherKeys []string
+		for k := range scene {
+			if _, already := checkedKeys[k]; already {
+				continue
+			}
+			lowerK := strings.ToLower(k)
+			// Strictly exclude audio/bgm/sound/voice/se/music
+			if strings.HasPrefix(lowerK, "bgm") || strings.Contains(lowerK, "sound") || strings.Contains(lowerK, "voice") || strings.Contains(lowerK, "se") || strings.Contains(lowerK, "audio") || strings.Contains(lowerK, "music") {
+				continue
+			}
+			if (strings.HasPrefix(lowerK, "charcter") && strings.HasSuffix(lowerK, "_big_image")) ||
+				(strings.HasPrefix(lowerK, "character") && strings.HasSuffix(lowerK, "_big_image")) ||
+				strings.HasPrefix(lowerK, "bg") {
+				otherKeys = append(otherKeys, k)
+			}
+		}
+		sort.Strings(otherKeys)
+		for _, key := range otherKeys {
+			val, ok := scene[key]
+			if !ok {
+				continue
+			}
+			cdnPath := extractVisualString(val)
+			if cdnPath == "" {
+				continue
+			}
+			if _, exists := seen[cdnPath]; !exists {
+				seen[cdnPath] = struct{}{}
+				refs = append(refs, discoveredRef{host: host, path: cdnPath, prio: 2})
+				if len(refs) >= 5 {
+					return refs
+				}
+			}
+		}
+	}
+
+	return refs
+}
+
+func normalizeCDNImagePath(raw, langPrefix string) string {
+	clean, _, _ := strings.Cut(raw, "?")
+	clean = strings.TrimSpace(clean)
+	if strings.HasPrefix(clean, "/assets/") || strings.HasPrefix(clean, "/assets_en/") {
+		return clean
+	}
+	if strings.HasPrefix(clean, "assets/") {
+		return "/" + clean
+	}
+	if strings.HasPrefix(clean, "assets_en/") {
+		return "/" + clean
+	}
+	if langPrefix != "/assets" && langPrefix != "/assets_en" {
+		return ""
+	}
+	if strings.HasPrefix(clean, "/sp/") {
+		return langPrefix + "/img" + clean
+	}
+	if strings.HasPrefix(clean, "sp/") {
+		return langPrefix + "/img/" + clean
+	}
+	if strings.HasPrefix(clean, "/") {
+		return langPrefix + "/img" + clean
+	}
+	return langPrefix + "/img/" + clean
+}
+
+func isDigitsOnly(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidCJSIdentifier(s string) bool {
+	if len(s) == 0 || len(s) > 100 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func isVisualImageExt(p string) bool {
+	lower := strings.ToLower(p)
+	clean, _, _ := strings.Cut(lower, "?")
+	return strings.HasSuffix(clean, ".png") ||
+		strings.HasSuffix(clean, ".jpg") ||
+		strings.HasSuffix(clean, ".jpeg") ||
+		strings.HasSuffix(clean, ".webp") ||
+		strings.HasSuffix(clean, ".gif")
 }
