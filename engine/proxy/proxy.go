@@ -799,7 +799,7 @@ var tunnelBufferPool = sync.Pool{
 
 var streamBufferPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 32*1024)
+		b := make([]byte, 512*1024)
 		return &b
 	},
 }
@@ -2549,10 +2549,55 @@ func (s *ProxyServer) sendCachedDiskAssetStream(w io.Writer, item *cache.CacheIt
 	copyBuf := streamBufferPool.Get().(*[]byte)
 	defer streamBufferPool.Put(copyBuf)
 
-	if _, err := io.CopyBuffer(w, stream, *copyBuf); err != nil {
+	if _, err := copyStreamBuffer(w, stream, *copyBuf); err != nil {
 		return false, true
 	}
 	return !reqClose, true
+}
+
+var errInvalidWrite = errors.New("invalid write result")
+
+// copyStreamBuffer copies from src to dst using the supplied buffer,
+// intentionally performing an explicit Read->Write loop rather than delegating
+// to src.(io.WriterTo) or dst.(io.ReaderFrom). This ensures the pooled buffer size
+// is strictly used, avoiding *os.File's WriterTo optimization which would otherwise
+// fall back to OS-default chunk sizes.
+//
+// It preserves standard io.CopyBuffer semantics:
+// - Returns nil error on normal EOF
+// - Propagates Read errors and Write errors
+// - Detects short writes and returns io.ErrShortWrite
+// - Accumulates written bytes accurately
+// - Correctly handles Read returning nr > 0 alongside an error (processing data before returning error)
+func copyStreamBuffer(dst io.Writer, src io.Reader, buf []byte) (written int64, err error) {
+	for {
+		nr, er := src.Read(buf)
+		if nr > 0 {
+			nw, ew := dst.Write(buf[0:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = errInvalidWrite
+				}
+			}
+			written += int64(nw)
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
+		}
+	}
+	return written, err
 }
 
 func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, body []byte, isHead bool, reqClose bool) {
