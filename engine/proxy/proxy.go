@@ -1736,14 +1736,18 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 			clientWriteFailed = true
 		}
 
+		var dUpstream, dClient, dDisk time.Duration
+
 		sc := &streamClientWriter{
 			w:         w,
 			isChunked: (resp.ContentLength < 0),
 			failed:    clientWriteFailed,
 		}
+		tClientInit := time.Now()
 		if err := sc.WriteChunk(initialChunk); err != nil {
 			clientWriteFailed = true
 		}
+		dClient += time.Since(tClientInit)
 
 		maxRAMItemSize := s.cacheMgr.MaxRAMItemSize()
 		if maxRAMItemSize <= 0 {
@@ -1792,10 +1796,15 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 			tmpFile, tmpPath, gen, tfErr = s.cacheMgr.CreateDiskTempFile(ns, req.URL.Path)
 			if tfErr != nil {
 				disableCache("failed to create disk temp file", tfErr)
-			} else if _, wErr := tmpFile.Write(initialChunk); wErr != nil {
-				disableCache("failed to write initial chunk to disk temp file", wErr)
 			} else {
-				isSpilledToDisk = true
+				tDiskInit := time.Now()
+				_, wErr := tmpFile.Write(initialChunk)
+				dDisk += time.Since(tDiskInit)
+				if wErr != nil {
+					disableCache("failed to write initial chunk to disk temp file", wErr)
+				} else {
+					isSpilledToDisk = true
+				}
 			}
 		}
 
@@ -1808,22 +1817,32 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 			memBuf.Write(initialChunk)
 		}
 
-		copyBuf := make([]byte, 32*1024)
+		bufPtr := streamBufferPool.Get().(*[]byte)
+		defer streamBufferPool.Put(bufPtr)
+		copyBuf := *bufPtr
 		var totalRead int64 = int64(len(initialChunk))
 
 		for {
+			tRead := time.Now()
 			nr, rErr := resp.Body.Read(copyBuf)
+			dUpstream += time.Since(tRead)
+
 			if nr > 0 {
 				chunk := copyBuf[:nr]
 				totalRead += int64(nr)
 
+				tClient := time.Now()
 				if err := sc.WriteChunk(chunk); err != nil {
 					clientWriteFailed = true
 				}
+				dClient += time.Since(tClient)
 
 				if !cacheDisabled {
 					if isSpilledToDisk {
-						if _, wErr := tmpFile.Write(chunk); wErr != nil {
+						tDisk := time.Now()
+						_, wErr := tmpFile.Write(chunk)
+						dDisk += time.Since(tDisk)
+						if wErr != nil {
 							disableCache("failed to write chunk to disk temp file", wErr)
 						}
 					} else {
@@ -1832,13 +1851,22 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 							tmpFile, tmpPath, gen, tfErr = s.cacheMgr.CreateDiskTempFile(ns, req.URL.Path)
 							if tfErr != nil {
 								disableCache("failed to create disk temp file on spill", tfErr)
-							} else if _, wErr := tmpFile.Write(memBuf.Bytes()); wErr != nil {
-								disableCache("failed to write memory buffer to disk temp file on spill", wErr)
-							} else if _, wErr := tmpFile.Write(chunk); wErr != nil {
-								disableCache("failed to write chunk to disk temp file on spill", wErr)
 							} else {
-								memBuf = nil
-								isSpilledToDisk = true
+								tDisk := time.Now()
+								_, wErr1 := tmpFile.Write(memBuf.Bytes())
+								var wErr2 error
+								if wErr1 == nil {
+									_, wErr2 = tmpFile.Write(chunk)
+								}
+								dDisk += time.Since(tDisk)
+								if wErr1 != nil {
+									disableCache("failed to write memory buffer to disk temp file on spill", wErr1)
+								} else if wErr2 != nil {
+									disableCache("failed to write chunk to disk temp file on spill", wErr2)
+								} else {
+									memBuf = nil
+									isSpilledToDisk = true
+								}
 							}
 						} else {
 							memBuf.Write(chunk)
@@ -1856,9 +1884,11 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 			}
 		}
 
+		tFinish := time.Now()
 		if err := sc.Finish(); err != nil {
 			clientWriteFailed = true
 		}
+		dClient += time.Since(tFinish)
 
 		if resp.ContentLength >= 0 && totalRead != resp.ContentLength {
 			s.stats.Log("WARN", fmt.Sprintf("[FETCH-ERROR] %s: length mismatch: read %d, want %d", cleanPath, totalRead, resp.ContentLength))
@@ -1911,7 +1941,12 @@ func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, tar
 				return nil, nil
 			}
 			committed = true
-			s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET-DISK] 200 %dms -> %s%s (%d B)", time.Since(fetchStart).Milliseconds(), targetHost, cleanPath, totalRead))
+			s.stats.Log("INFO", fmt.Sprintf("[FETCH-ASSET-DISK] 200 %dms (net:%dms, cli:%dms, disk:%dms) -> %s%s (%d B)",
+				time.Since(fetchStart).Milliseconds(),
+				dUpstream.Milliseconds(),
+				dClient.Milliseconds(),
+				dDisk.Milliseconds(),
+				targetHost, cleanPath, totalRead))
 			return savedItem, nil
 		}
 

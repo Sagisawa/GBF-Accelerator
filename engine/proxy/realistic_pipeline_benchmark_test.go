@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -198,3 +199,97 @@ func BenchmarkHighConcurrency_RealRequests(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkStreamThrough_Network measures end-to-end latency, B/op, and allocs/op
+// of a cold asset (128KB > 16KB threshold) flowing through the Stream-Through pipeline.
+func BenchmarkStreamThrough_Network(b *testing.B) {
+	tempDir := b.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 128)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	payload := make([]byte, 128*1024)
+	copy(payload, []byte("var a = 1; "))
+	ts, client := newMockAssetServer(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("ETag", `"test-etag"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	})
+	defer ts.Close()
+
+	srv := &ProxyServer{
+		cfgMgr:   cfgMgr,
+		cacheMgr: cacheMgr,
+		stats:    stats,
+	}
+	setTestAssetClient(srv, client)
+
+	const benchHost = "prd-game-a-granbluefantasy.akamaized.net"
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		path := fmt.Sprintf("/assets/stream_miss_%d.js", i)
+		req, _ := http.NewRequest(http.MethodGet, "https://"+benchHost+path, nil)
+		req.RequestURI = path
+		req.Host = benchHost
+
+		var buf bytes.Buffer
+		srv.handleStaticAssetLower(&buf, req, benchHost, path)
+	}
+}
+
+// BenchmarkStreamBufferPool_AllocVsPool compares allocating 32KB on every request
+// vs acquiring from streamBufferPool, under sequential and high-concurrency conditions.
+func BenchmarkStreamBufferPool_AllocVsPool(b *testing.B) {
+	sample := make([]byte, 32*1024)
+	b.Run("Make_Sequential", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			var r io.Reader = bytes.NewReader(sample)
+			buf := make([]byte, 32*1024)
+			_, _ = r.Read(buf)
+		}
+	})
+
+	b.Run("Pool_Sequential", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			var r io.Reader = bytes.NewReader(sample)
+			p := streamBufferPool.Get().(*[]byte)
+			buf := *p
+			_, _ = r.Read(buf)
+			streamBufferPool.Put(p)
+		}
+	})
+
+	b.Run("Make_Parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				var r io.Reader = bytes.NewReader(sample)
+				buf := make([]byte, 32*1024)
+				_, _ = r.Read(buf)
+			}
+		})
+	})
+
+	b.Run("Pool_Parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				var r io.Reader = bytes.NewReader(sample)
+				p := streamBufferPool.Get().(*[]byte)
+				buf := *p
+				_, _ = r.Read(buf)
+				streamBufferPool.Put(p)
+			}
+		})
+	})
+}
+

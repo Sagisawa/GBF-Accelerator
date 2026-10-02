@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1174,6 +1175,73 @@ func TestStreamThrough_SingleFlight_MultipleFollowers_DiskSpill(t *testing.T) {
 		if !bytes.Equal(bodyF, payload) {
 			t.Fatalf("follower %d body mismatch: got %d, want %d", i, len(bodyF), len(payload))
 		}
+	}
+}
+
+// TestStreamThrough_DiskSpill_DurationTelemetryLog verifies that when an asset
+// spills to disk, the [FETCH-ASSET-DISK] log entry includes timing breakdown (net, cli, disk).
+func TestStreamThrough_DiskSpill_DurationTelemetryLog(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	// 1 MB RAM cache -> 64 KB per shard limit
+	cacheMgr := cache.NewManager(tempDir, 1)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	// 200 KB > 64 KB shard limit (triggers disk spill)
+	const totalSize = 200 * 1024
+	payload := make([]byte, totalSize)
+	copy(payload, []byte("\x89PNG\r\n\x1a\n"))
+
+	ts, client := newMockAssetServer(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("ETag", `"telemetry-etag"`)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload[:100*1024])
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(15 * time.Millisecond)
+		_, _ = w.Write(payload[100*1024:])
+	})
+	defer ts.Close()
+
+	srv := &ProxyServer{
+		cfgMgr:   cfgMgr,
+		cacheMgr: cacheMgr,
+		stats:    stats,
+	}
+	setTestAssetClient(srv, client)
+
+	host := "prd-game-a-granbluefantasy.akamaized.net"
+	path := "/assets/img/sp/telemetry_test.png"
+
+	req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	req.RequestURI = path
+	req.Host = host
+
+	var buf bytes.Buffer
+	srv.handleStaticAssetLower(&buf, req, host, path)
+
+	// Wait briefly for async log worker to deliver entry
+	time.Sleep(50 * time.Millisecond)
+
+	logs := stats.GetLogs()
+	var foundDiskLog bool
+	for _, l := range logs {
+		if strings.Contains(l.Msg, "[FETCH-ASSET-DISK]") {
+			foundDiskLog = true
+			if !strings.Contains(l.Msg, "net:") || !strings.Contains(l.Msg, "cli:") || !strings.Contains(l.Msg, "disk:") {
+				t.Fatalf("expected log to contain (net:Xms, cli:Yms, disk:Zms), got: %s", l.Msg)
+			}
+			t.Logf("Verified Telemetry Log: %s", l.Msg)
+			break
+		}
+	}
+	if !foundDiskLog {
+		t.Fatal("expected [FETCH-ASSET-DISK] log entry, but none was recorded")
 	}
 }
 
