@@ -897,13 +897,22 @@ func TestDiskTempFileAndCommit(t *testing.T) {
 		t.Errorf("expected temp file to be moved, but still exists: %s", tmpPath)
 	}
 
-	// Verify file is readable via ReadDiskItemData
+	// Verify file is readable via ReadDiskItemData (both direct and assets/ fallback)
 	data, err := mgr.ReadDiskItemData("gbf", urlPath)
 	if err != nil {
 		t.Fatalf("ReadDiskItemData failed: %v", err)
 	}
 	if string(data) != string(payload) {
 		t.Errorf("payload mismatch: got %q, want %q", string(data), string(payload))
+	}
+
+	// Verify fallback when path lacks "assets/" prefix
+	dataAlt, errAlt := mgr.ReadDiskItemData("gbf", "/large/movie.mp4")
+	if errAlt != nil {
+		t.Fatalf("ReadDiskItemData fallback failed: %v", errAlt)
+	}
+	if string(dataAlt) != string(payload) {
+		t.Errorf("fallback payload mismatch: got %q, want %q", string(dataAlt), string(payload))
 	}
 
 	// Verify GetWithNamespace hits DISK

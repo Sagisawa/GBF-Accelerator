@@ -185,8 +185,9 @@ func TestBoost_LargeFileAdmissionAndBudget(t *testing.T) {
 	_ = os.WriteFile(smallPath+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
 
 	// Large file: 3 MB (> MaxDiskDirectReadSize 2MB)
+	largePayload := makeFakePNG(3 * 1024 * 1024)
 	largePath := filepath.Join(assetsDir, "large.png")
-	_ = os.WriteFile(largePath, makeFakePNG(3*1024*1024), 0644)
+	_ = os.WriteFile(largePath, largePayload, 0644)
 	_ = os.WriteFile(largePath+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
 
 	// 1. With sufficient budget (64MB), both small and large files enter ResidentPool
@@ -217,21 +218,21 @@ func TestBoost_LargeFileAdmissionAndBudget(t *testing.T) {
 		t.Fatalf("expected RAM-BOOST hit with full data, got src=%s, dataLen=%d", srcBoost, len(itemBoost.Data))
 	}
 
-	// 2. When Boost is disabled, large file is NOT in RAM, and falls back to normal Disk Stream
+	// 2. When Boost is disabled, large file is NOT in RAM, and falls back to normal full disk read
 	mgr.ResidentPool().Disable(0)
 	mgr.ClearRAM()
 
-	items, bytes := mgr.ResidentPool().Stats()
-	if items != 0 || bytes != 0 {
-		t.Fatalf("expected 0 resident items/bytes after disable, got items=%d, bytes=%d", items, bytes)
+	items, totalBytes := mgr.ResidentPool().Stats()
+	if items != 0 || totalBytes != 0 {
+		t.Fatalf("expected 0 resident items/bytes after disable, got items=%d, bytes=%d", items, totalBytes)
 	}
 
 	itemNormal, srcNormal := mgr.GetWithNamespace("gbf", "assets/large.png")
 	if srcNormal != "DISK" || itemNormal == nil {
 		t.Fatalf("expected DISK hit in normal mode, got src=%s", srcNormal)
 	}
-	if itemNormal.Size != 3*1024*1024 || len(itemNormal.Data) != 0 {
-		t.Fatalf("expected normal mode large file to have Data==nil and Size=3MB for stream, got dataLen=%d, size=%d", len(itemNormal.Data), itemNormal.Size)
+	if itemNormal.Size != 3*1024*1024 || len(itemNormal.Data) != 3*1024*1024 || !bytes.Equal(itemNormal.Data, largePayload) {
+		t.Fatalf("expected normal mode large file to have full Data and Size=3MB matching payload, got dataLen=%d, size=%d", len(itemNormal.Data), itemNormal.Size)
 	}
 
 	// 3. When Budget is insufficient, large file stops with BoostStatePartial
@@ -530,7 +531,7 @@ func TestOpenDiskStream_Unverified_Rejected(t *testing.T) {
 // 1. Created >2MB old cache with .ext lacking Verified (or Verified=false)
 // 2. First Get must take legacy full-read path (Data != nil, len(Data) == size, full content)
 // 3. After successful validation, in-memory metadata and .ext are promoted to Verified=true
-// 4. Second Get returns Data == nil, Size > 2MB and enters Disk Stream
+// 4. Second Get returns full Data, Size > 2MB, byte-level matching payload, no RAM admission
 func TestDiskRead_LegacyLargeAsset_FirstFullReadThenStream(t *testing.T) {
 	tempDir := t.TempDir()
 	mgr := NewManager(tempDir, 16)
@@ -591,16 +592,19 @@ func TestDiskRead_LegacyLargeAsset_FirstFullReadThenStream(t *testing.T) {
 		t.Fatalf("expected .ext to be upgraded to verified: true with matching size and mtime, got: %+v", parsedMeta)
 	}
 
-	// 5. Second Get must return Data == nil, Size > 2MB and enter Stream
+	// 5. Second Get must return full Data, Size > 2MB and byte-level identical payload
 	item2, src2 := mgr.GetWithNamespace("gbf", "/"+cleanKey)
 	if item2 == nil || src2 != "DISK" {
 		t.Fatalf("expected DISK hit on second Get, got item=%v, src=%s", item2, src2)
 	}
-	if item2.Data != nil {
-		t.Fatalf("expected second Get to return Data == nil for verified stream item, got %d bytes", len(item2.Data))
+	if item2.Data == nil || len(item2.Data) != fileSize || !bytes.Equal(item2.Data, payload) {
+		t.Fatalf("expected second Get to return full Data (%d bytes), got %d bytes", fileSize, len(item2.Data))
 	}
 	if item2.Size != int64(fileSize) {
 		t.Fatalf("second Get size mismatch: got %d, want %d", item2.Size, fileSize)
+	}
+	if mgr.IsRAMProtected("gbf", cleanKey) {
+		t.Fatal("large asset must not enter RAM Protected segment")
 	}
 
 	// Verify OpenDiskStream succeeds on the promoted file
@@ -649,10 +653,13 @@ func TestDiskRead_LegacyLargeAsset_FirstFullReadThenStream(t *testing.T) {
 		t.Fatalf("expected .ext to be promoted to verified: true with matching size and mtime: %+v", parsedOmittedMeta)
 	}
 
-	// Second Get on file with omitted-verified .ext: stream item with Data == nil
+	// Second Get on file with omitted-verified .ext: returns full Data
 	itemOmitted2, _ := mgr.GetWithNamespace("gbf", "/"+cleanKeyOmitted)
-	if itemOmitted2 == nil || itemOmitted2.Data != nil || itemOmitted2.Size != int64(fileSize) {
-		t.Fatal("expected Data == nil stream item on second Get after promotion")
+	if itemOmitted2 == nil || itemOmitted2.Data == nil || len(itemOmitted2.Data) != fileSize || !bytes.Equal(itemOmitted2.Data, payload) || itemOmitted2.Size != int64(fileSize) {
+		t.Fatal("expected full Data on second Get after promotion for omitted-verified .ext")
+	}
+	if mgr.IsRAMProtected("gbf", cleanKeyOmitted) {
+		t.Fatal("large asset must not enter RAM Protected segment for omitted-verified .ext")
 	}
 
 	// 7. Test with no .ext file (simulating externally populated or missing .ext file)
@@ -666,10 +673,13 @@ func TestDiskRead_LegacyLargeAsset_FirstFullReadThenStream(t *testing.T) {
 		t.Fatal("expected full read on first Get for file with missing .ext")
 	}
 
-	// Second Get on file with no .ext: stream item with Data == nil
+	// Second Get on file with no .ext: returns full Data
 	itemNoExt2, _ := mgr.GetWithNamespace("gbf", "/"+cleanKeyNoExt)
-	if itemNoExt2 == nil || itemNoExt2.Data != nil || itemNoExt2.Size != int64(fileSize) {
-		t.Fatal("expected Data == nil stream item on second Get after promotion")
+	if itemNoExt2 == nil || itemNoExt2.Data == nil || len(itemNoExt2.Data) != fileSize || !bytes.Equal(itemNoExt2.Data, payload) || itemNoExt2.Size != int64(fileSize) {
+		t.Fatal("expected full Data on second Get after promotion for file with no .ext")
+	}
+	if mgr.IsRAMProtected("gbf", cleanKeyNoExt) {
+		t.Fatal("large asset must not enter RAM Protected segment for file with no .ext")
 	}
 }
 

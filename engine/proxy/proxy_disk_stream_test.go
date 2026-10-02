@@ -172,9 +172,75 @@ func TestProxy_DiskCacheHit_304_ZeroByteBody(t *testing.T) {
 	}
 }
 
-// TestProxy_DiskCacheHit_LargeAsset_StreamThrough tests that GET on a verified >2MB disk item
-// streams through directly from disk, delivering byte-for-byte identical content without SLRU bloat.
-func TestProxy_DiskCacheHit_LargeAsset_StreamThrough(t *testing.T) {
+// TestProxy_DiskCacheHit_ConditionalMismatch_FullReadFastResponse tests that a conditional GET
+// with mismatched ETag on a verified disk cache item loads full Data and returns 200 OK fast response.
+func TestProxy_DiskCacheHit_ConditionalMismatch_FullReadFastResponse(t *testing.T) {
+	srv, cacheMgr, _ := setupDiskStreamProxy(t)
+
+	targetHost := "prd-game-a-granbluefantasy.akamaized.net"
+	urlPath := "/assets/sound/bgm_cond_mismatch.mp3"
+	cleanKey := strings.TrimPrefix(urlPath, "/")
+
+	fileSize := int64(3 * 1024 * 1024)
+	payload := makeTestPayload(int(fileSize))
+
+	filePath, ok := cacheMgr.ResolvePathWithNamespace("gbf", cleanKey)
+	if !ok {
+		t.Fatal("failed to resolve path")
+	}
+	_ = os.MkdirAll(filepath.Dir(filePath), 0755)
+	_ = os.WriteFile(filePath, payload, 0644)
+	fi, _ := os.Stat(filePath)
+	extMeta := fmt.Sprintf(`{"ct":"audio/mpeg","ETag":"\"current-etag\"","LastModified":"Wed, 21 Oct 2026 07:28:00 GMT","v":1,"verified":true,"size":%d,"mtime":%d}`, fi.Size(), fi.ModTime().UnixNano())
+	_ = os.WriteFile(filePath+".ext", []byte(extMeta), 0644)
+
+	cacheMgr.ClearRAM()
+
+	// Send conditional GET with mismatched ETag
+	condReq, err := http.NewRequest(http.MethodGet, "https://"+targetHost+urlPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	condReq.RequestURI = urlPath
+	condReq.Header.Set("If-None-Match", `"outdated-etag"`)
+
+	var condBuf bytes.Buffer
+	keepAlive := srv.handleDecryptedRequest(&condBuf, condReq, targetHost)
+	if !keepAlive {
+		t.Error("expected keep-alive for 200 response on conditional mismatch")
+	}
+
+	rawOut := condBuf.String()
+	if !strings.HasPrefix(rawOut, "HTTP/1.1 200 OK\r\n") {
+		t.Fatalf("expected HTTP/1.1 200 OK, got:\n%s", rawOut)
+	}
+	cl := extractHeader(rawOut, "Content-Length")
+	if cl != strconv.FormatInt(fileSize, 10) {
+		t.Fatalf("expected Content-Length %d, got %q", fileSize, cl)
+	}
+
+	_, _, body := splitRawResponse(t, condBuf.Bytes())
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("body mismatch: got %d bytes, want %d bytes", len(body), len(payload))
+	}
+
+	// Verify Data is fully loaded in memory on disk cache hit
+	item, src := cacheMgr.GetWithNamespace("gbf", cleanKey)
+	if item == nil || src != "DISK" {
+		t.Fatalf("expected DISK hit, got src=%s", src)
+	}
+	if item.Data == nil || len(item.Data) != int(fileSize) || !bytes.Equal(item.Data, payload) {
+		t.Fatalf("expected full in-memory Data for disk cache hit, got %d bytes", len(item.Data))
+	}
+	if cacheMgr.IsRAMProtected("gbf", cleanKey) {
+		t.Fatal("large asset must not enter RAM Protected segment")
+	}
+}
+
+// TestProxy_DiskCacheHit_LargeAsset_FastPathFullData tests that GET on a verified >2MB disk item
+// loads the entire file into memory (Data != nil), returns HTTP 200 OK with byte-for-byte identical content
+// via sendCachedAssetResponseFast, and does not admit the large asset to RAM SLRU.
+func TestProxy_DiskCacheHit_LargeAsset_FastPathFullData(t *testing.T) {
 	srv, cacheMgr, _ := setupDiskStreamProxy(t)
 
 	targetHost := "prd-game-a-granbluefantasy.akamaized.net"
@@ -206,7 +272,7 @@ func TestProxy_DiskCacheHit_LargeAsset_StreamThrough(t *testing.T) {
 	var getBuf bytes.Buffer
 	keepAlive := srv.handleDecryptedRequest(&getBuf, getReq, targetHost)
 	if !keepAlive {
-		t.Error("expected keep-alive for 200 stream response")
+		t.Error("expected keep-alive for 200 fast response")
 	}
 
 	rawOut := getBuf.String()
@@ -222,12 +288,21 @@ func TestProxy_DiskCacheHit_LargeAsset_StreamThrough(t *testing.T) {
 	// Verify byte-for-byte stream integrity
 	_, _, body := splitRawResponse(t, getBuf.Bytes())
 	if !bytes.Equal(body, payload) {
-		t.Fatalf("streamed body mismatch: got %d bytes, want %d bytes", len(body), len(payload))
+		t.Fatalf("body mismatch: got %d bytes, want %d bytes", len(body), len(payload))
 	}
 
-	// RAM admission check: large stream item must NOT be admitted to SLRU
+	// Verify full Data is loaded in CacheItem on disk hit
+	item, src := cacheMgr.GetWithNamespace("gbf", cleanKey)
+	if item == nil || src != "DISK" {
+		t.Fatalf("expected DISK hit, got src=%s", src)
+	}
+	if item.Data == nil || len(item.Data) != int(fileSize) || !bytes.Equal(item.Data, payload) {
+		t.Fatalf("expected full in-memory Data for disk cache hit, got %d bytes", len(item.Data))
+	}
+
+	// RAM admission check: large item must NOT be admitted to SLRU
 	if cacheMgr.IsRAMProtected("gbf", cleanKey) {
-		t.Fatal("large stream item must not enter RAM Protected segment")
+		t.Fatal("large item must not enter RAM Protected segment")
 	}
 }
 
@@ -364,13 +439,14 @@ func (f *failingWriter) Write(p []byte) (n int, err error) {
 	return 0, fmt.Errorf("simulated network connection aborted")
 }
 
-// TestProxy_DiskStream_ClientDisconnect tests that client disconnection during disk stream
-// is handled gracefully without leaking resources or panicking.
-func TestProxy_DiskStream_ClientDisconnect(t *testing.T) {
+// TestProxy_DiskCacheHit_LargeAsset_FullReadFastResponse tests that GET on a verified >2MB disk item
+// loads the entire file into memory (Data != nil), returns HTTP 200 OK with byte-for-byte identical content
+// via sendCachedAssetResponseFast, and respects connection close semantics.
+func TestProxy_DiskCacheHit_LargeAsset_FullReadFastResponse(t *testing.T) {
 	srv, cacheMgr, _ := setupDiskStreamProxy(t)
 
 	targetHost := "prd-game-a-granbluefantasy.akamaized.net"
-	urlPath := "/assets/sound/disconnect_bgm.mp3"
+	urlPath := "/assets/sound/large_asset_full_read.mp3"
 	cleanKey := strings.TrimPrefix(urlPath, "/")
 
 	fileSize := int64(3 * 1024 * 1024)
@@ -383,18 +459,62 @@ func TestProxy_DiskStream_ClientDisconnect(t *testing.T) {
 	_ = os.MkdirAll(filepath.Dir(filePath), 0755)
 	_ = os.WriteFile(filePath, payload, 0644)
 	fi, _ := os.Stat(filePath)
-	extMeta := fmt.Sprintf(`{"ct":"audio/mpeg","ETag":"\"disconnect-etag\"","LastModified":"Wed, 21 Oct 2026 07:28:00 GMT","v":1,"verified":true,"size":%d,"mtime":%d}`, fi.Size(), fi.ModTime().UnixNano())
+	extMeta := fmt.Sprintf(`{"ct":"audio/mpeg","ETag":"\"large-etag\"","LastModified":"Wed, 21 Oct 2026 07:28:00 GMT","v":1,"verified":true,"size":%d,"mtime":%d}`, fi.Size(), fi.ModTime().UnixNano())
 	_ = os.WriteFile(filePath+".ext", []byte(extMeta), 0644)
 
 	cacheMgr.ClearRAM()
 
+	// 1. GET with keep-alive
 	req, _ := http.NewRequest(http.MethodGet, "https://"+targetHost+urlPath, nil)
 	req.RequestURI = urlPath
 
-	fw := &failingWriter{}
-	keepAlive := srv.handleDecryptedRequest(fw, req, targetHost)
-	if keepAlive {
-		t.Error("expected keepAlive to be false upon writer failure")
+	var getBuf bytes.Buffer
+	keepAlive := srv.handleDecryptedRequest(&getBuf, req, targetHost)
+	if !keepAlive {
+		t.Fatal("expected keepAlive to be true for GET request")
+	}
+
+	rawOut := getBuf.String()
+	if !strings.HasPrefix(rawOut, "HTTP/1.1 200 OK\r\n") {
+		t.Fatalf("expected HTTP/1.1 200 OK, got:\n%s", rawOut)
+	}
+
+	cl := extractHeader(rawOut, "Content-Length")
+	if cl != strconv.FormatInt(fileSize, 10) {
+		t.Fatalf("expected Content-Length %d, got %q", fileSize, cl)
+	}
+
+	_, _, body := splitRawResponse(t, getBuf.Bytes())
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("body mismatch: got %d bytes, want %d bytes", len(body), len(payload))
+	}
+
+	// 2. Verify Data is fully loaded in memory on disk cache hit
+	item, src := cacheMgr.GetWithNamespace("gbf", cleanKey)
+	if item == nil || src != "DISK" {
+		t.Fatalf("expected DISK hit, got src=%s", src)
+	}
+	if item.Data == nil || len(item.Data) != int(fileSize) || !bytes.Equal(item.Data, payload) {
+		t.Fatalf("expected full in-memory Data for disk cache hit, got %d bytes", len(item.Data))
+	}
+	if cacheMgr.IsRAMProtected("gbf", cleanKey) {
+		t.Fatal("large asset must not enter RAM Protected segment")
+	}
+
+	// 3. GET with req.Close = true
+	cacheMgr.ClearRAM()
+	reqClose, _ := http.NewRequest(http.MethodGet, "https://"+targetHost+urlPath, nil)
+	reqClose.RequestURI = urlPath
+	reqClose.Close = true
+
+	var closeBuf bytes.Buffer
+	keepAliveClose := srv.handleDecryptedRequest(&closeBuf, reqClose, targetHost)
+	if keepAliveClose {
+		t.Fatal("expected keepAlive to be false when req.Close is true")
+	}
+	connHdr := extractHeader(closeBuf.String(), "Connection")
+	if connHdr != "close" {
+		t.Fatalf("expected Connection: close, got %q", connHdr)
 	}
 }
 
@@ -452,8 +572,8 @@ func TestProxy_DiskStream_ConcurrentAccess(t *testing.T) {
 }
 
 // TestProxy_DiskStream_SingleFlightFollowerLargeAsset verifies that when a leader
-// fetches and commits a large asset (>2MB), waiting SingleFlight followers stream
-// the asset directly from disk without buffering the entire payload in heap memory.
+// fetches and commits a large asset (>2MB), waiting SingleFlight followers receive
+// the full payload via ReadDiskItemData, and subsequent requests hit disk cache with full Data.
 func TestProxy_DiskStream_SingleFlightFollowerLargeAsset(t *testing.T) {
 	tempDir := t.TempDir()
 	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
@@ -537,10 +657,35 @@ func TestProxy_DiskStream_SingleFlightFollowerLargeAsset(t *testing.T) {
 	if cacheMgr.IsRAMProtected("gbf", cleanKey) {
 		t.Fatal("large asset must not enter RAM Protected segment")
 	}
+
+	// Subsequent Request: verify subsequent Cache Hit loads full in-memory Data and responds fast
+	var thirdBuf bytes.Buffer
+	reqThird, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	reqThird.RequestURI = path
+	reqThird.Host = host
+	keepAliveThird := srv.handleStaticAssetLower(&thirdBuf, reqThird, host, path)
+	if !keepAliveThird {
+		t.Fatal("expected keepAlive true for 3rd request cache hit")
+	}
+	rawOutThird := thirdBuf.String()
+	if !strings.HasPrefix(rawOutThird, "HTTP/1.1 200 OK\r\n") {
+		t.Fatalf("expected 200 OK on 3rd request, got:\n%s", rawOutThird)
+	}
+	_, _, bodyThird := splitRawResponse(t, thirdBuf.Bytes())
+	if !bytes.Equal(bodyThird, payload) {
+		t.Fatalf("third request body mismatch: got %d bytes, want %d", len(bodyThird), len(payload))
+	}
+	itemThird, srcThird := cacheMgr.GetWithNamespace("gbf", cleanKey)
+	if itemThird == nil || srcThird != "DISK" {
+		t.Fatalf("expected DISK hit on 3rd request, got %s", srcThird)
+	}
+	if itemThird.Data == nil || len(itemThird.Data) != totalSize || !bytes.Equal(itemThird.Data, payload) {
+		t.Fatalf("expected full Data in CacheItem on disk hit, got %d bytes", len(itemThird.Data))
+	}
 }
 
-// TestProxy_DiskStream_OpenFailure_FallbackToCacheMiss verifies that when sendCachedDiskAssetStream
-// fails to open the cache file (e.g. file modified/corrupted), the proxy does NOT abort the connection,
+// TestProxy_DiskStream_OpenFailure_FallbackToCacheMiss verifies that when disk cache validation
+// fails (e.g. file modified/corrupted), the proxy does NOT abort the connection,
 // but instead invalidates the bad cache and falls back to Cache Miss / upstream fetch, returning 200 OK.
 func TestProxy_DiskStream_OpenFailure_FallbackToCacheMiss(t *testing.T) {
 	tempDir := t.TempDir()
@@ -627,7 +772,7 @@ func TestProxy_DiskStream_OpenFailure_FallbackToCacheMiss(t *testing.T) {
 // when an unverified >2MB legacy disk cache item is accessed via proxy:
 // 1. The first GET executes legacy full-read validation and serves the response via sendCachedAssetResponseFast.
 // 2. The item is promoted to Verified=true.
-// 3. The second GET uses disk streaming directly without memory buffer allocation.
+// 3. The second GET executes full disk read and serves via sendCachedAssetResponseFast with full Data.
 func TestProxy_DiskCacheHit_LegacyUnverifiedLargeAsset_FirstFullReadThenStream(t *testing.T) {
 	srv, cacheMgr, _ := setupDiskStreamProxy(t)
 
@@ -678,7 +823,7 @@ func TestProxy_DiskCacheHit_LegacyUnverifiedLargeAsset_FirstFullReadThenStream(t
 		t.Fatal("large asset must not enter RAM Protected segment")
 	}
 
-	// 2. Second GET request: now verified, serves via disk streaming
+	// 2. Second GET request: now verified, serves via full disk read and sendCachedAssetResponseFast
 	getReq2, err := http.NewRequest(http.MethodGet, "https://"+targetHost+urlPath, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -703,7 +848,19 @@ func TestProxy_DiskCacheHit_LegacyUnverifiedLargeAsset_FirstFullReadThenStream(t
 
 	_, _, body2 := splitRawResponse(t, buf2.Bytes())
 	if !bytes.Equal(body2, payload) {
-		t.Fatalf("second GET stream body mismatch: got %d bytes, want %d bytes", len(body2), len(payload))
+		t.Fatalf("second GET body mismatch: got %d bytes, want %d bytes", len(body2), len(payload))
+	}
+
+	// Verify CacheItem has full Data populated and RAM SLRU exclusion holds
+	item2, src2 := cacheMgr.GetWithNamespace("gbf", cleanKey)
+	if item2 == nil || src2 != "DISK" {
+		t.Fatalf("expected DISK hit on second GET, got %s", src2)
+	}
+	if item2.Data == nil || len(item2.Data) != int(fileSize) || !bytes.Equal(item2.Data, payload) {
+		t.Fatalf("expected full Data on second GET after promotion, got %d bytes", len(item2.Data))
+	}
+	if cacheMgr.IsRAMProtected("gbf", cleanKey) {
+		t.Fatal("large asset must not enter RAM Protected segment after promotion")
 	}
 }
 
@@ -779,11 +936,23 @@ func TestProxy_DiskCacheHit_LegacyUnverifiedLargeAsset_ConcurrentAccess(t *testi
 	if !strings.Contains(string(extBytes), `"verified":true`) {
 		t.Fatalf("expected updated .ext to contain verified:true, got: %s", string(extBytes))
 	}
+
+	// Verify CacheItem has full Data and RAM SLRU exclusion holds
+	item, src := cacheMgr.GetWithNamespace("gbf", cleanKey)
+	if item == nil || src != "DISK" {
+		t.Fatalf("expected DISK hit, got %s", src)
+	}
+	if item.Data == nil || len(item.Data) != int(fileSize) || !bytes.Equal(item.Data, payload) {
+		t.Fatalf("expected full Data, got %d bytes", len(item.Data))
+	}
+	if cacheMgr.IsRAMProtected("gbf", cleanKey) {
+		t.Fatal("large asset must not enter RAM Protected segment")
+	}
 }
 
 // TestProxy_LargeAsset_BoostRAM_vs_DiskStream tests that when Boost is active with sufficient budget,
 // large assets (>2MB) are served directly from RAM (RAMHits incremented, fast path),
-// and when Boost is disabled, the same asset falls back to Disk Stream (DiskHits incremented).
+// and when Boost is disabled, the same asset falls back to full disk read (DiskHits incremented).
 func TestProxy_LargeAsset_BoostRAM_vs_DiskStream(t *testing.T) {
 	cleanupMem := cache.SetSystemMemoryProviderForTest(func() (process.MemoryInfo, error) {
 		return process.MemoryInfo{
@@ -852,8 +1021,8 @@ func TestProxy_LargeAsset_BoostRAM_vs_DiskStream(t *testing.T) {
 	if respNormal.ContentLength != sizeBytes {
 		t.Fatalf("expected Content-Length %d, got %d", sizeBytes, respNormal.ContentLength)
 	}
-	if int64(len(bodyNormal)) != sizeBytes {
-		t.Fatalf("expected body len %d, got %d", sizeBytes, len(bodyNormal))
+	if int64(len(bodyNormal)) != sizeBytes || !bytes.Equal(bodyNormal, payload) {
+		t.Fatalf("expected body len %d matching payload, got %d", sizeBytes, len(bodyNormal))
 	}
 	if stats.DiskHits.Load() != 1 {
 		t.Fatalf("expected 1 DiskHit in normal mode, got %d", stats.DiskHits.Load())
@@ -886,14 +1055,14 @@ func TestProxy_LargeAsset_BoostRAM_vs_DiskStream(t *testing.T) {
 	if respBoost.ContentLength != sizeBytes {
 		t.Fatalf("expected Content-Length %d, got %d", sizeBytes, respBoost.ContentLength)
 	}
-	if int64(len(bodyBoost)) != sizeBytes {
-		t.Fatalf("expected body len %d, got %d", sizeBytes, len(bodyBoost))
+	if int64(len(bodyBoost)) != sizeBytes || !bytes.Equal(bodyBoost, payload) {
+		t.Fatalf("expected body len %d matching payload, got %d", sizeBytes, len(bodyBoost))
 	}
 	if stats.RAMHits.Load() != 1 {
 		t.Fatalf("expected 1 RAMHit in boost mode, got %d", stats.RAMHits.Load())
 	}
 
-	// 4. Disable Boost: must fall back to Disk Stream
+	// 4. Disable Boost: must fall back to full disk read
 	cacheMgr.ResidentPool().Disable(0)
 	cacheMgr.ClearRAM()
 
@@ -906,15 +1075,143 @@ func TestProxy_LargeAsset_BoostRAM_vs_DiskStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to parse fallback response: %v", err)
 	}
+	bodyFallback, _ := io.ReadAll(respFallback.Body)
 	respFallback.Body.Close()
 
 	if respFallback.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d", respFallback.StatusCode)
 	}
+	if int64(len(bodyFallback)) != sizeBytes || !bytes.Equal(bodyFallback, payload) {
+		t.Fatalf("expected body len %d matching payload, got %d", sizeBytes, len(bodyFallback))
+	}
 	if stats.DiskHits.Load() != 2 {
 		t.Fatalf("expected 2 DiskHits after fallback, got %d", stats.DiskHits.Load())
 	}
+
+	// Verify CacheItem has full Data and RAM SLRU exclusion holds
+	itemFallback, srcFallback := cacheMgr.GetWithNamespace("gbf", cleanKey)
+	if itemFallback == nil || srcFallback != "DISK" {
+		t.Fatalf("expected DISK hit after fallback, got %s", srcFallback)
+	}
+	if itemFallback.Data == nil || len(itemFallback.Data) != int(sizeBytes) || !bytes.Equal(itemFallback.Data, payload) {
+		t.Fatalf("expected full Data after fallback, got %d bytes", len(itemFallback.Data))
+	}
+	if cacheMgr.IsRAMProtected("gbf", cleanKey) {
+		t.Fatal("large asset must not enter RAM Protected segment")
+	}
 }
 
+// TestProxy_DiskCacheHit_vs_NetworkMiss_StreamThroughDichotomy verifies that:
+// 1. Network Cache Miss for a large asset (>2MB) executes Stream-Through (streaming from upstream while writing to disk).
+// 2. Subsequent Cache Hit for the same asset executes full in-memory disk read and sendCachedAssetResponseFast.
+// 3. Both responses deliver byte-for-byte identical content to the client.
+// 4. Large assets (>2MB) remain strictly excluded from RAM SLRU admission on disk hits.
+func TestProxy_DiskCacheHit_vs_NetworkMiss_StreamThroughDichotomy(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
 
+	const totalSize = 3 * 1024 * 1024
+	payload := makeTestPayload(totalSize)
 
+	var upstreamHits atomic.Int64
+	ts, client := newMockAssetServer(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("ETag", `"dichotomy-etag"`)
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	})
+	defer ts.Close()
+
+	srv := &ProxyServer{
+		cfgMgr:   cfgMgr,
+		cacheMgr: cacheMgr,
+		stats:    stats,
+	}
+	setTestAssetClient(srv, client)
+
+	const host = "prd-game-a-granbluefantasy.akamaized.net"
+	const path = "/assets/img/sp/dichotomy_test.png"
+	cleanKey := strings.TrimPrefix(path, "/")
+
+	// 1. First Request: Cache Miss -> Stream-Through from network to client and disk temp
+	req1, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	req1.RequestURI = path
+	req1.Host = host
+
+	var buf1 bytes.Buffer
+	keepAlive1 := srv.handleStaticAssetLower(&buf1, req1, host, path)
+	if !keepAlive1 {
+		t.Fatal("expected keepAlive to be true for stream-through network miss")
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected exactly 1 upstream hit on cache miss, got %d", upstreamHits.Load())
+	}
+	if stats.CacheMisses.Load() != 1 {
+		t.Fatalf("expected stats.CacheMisses == 1, got %d", stats.CacheMisses.Load())
+	}
+
+	_, _, body1 := splitRawResponse(t, buf1.Bytes())
+	if !bytes.Equal(body1, payload) {
+		t.Fatalf("cache miss stream-through body mismatch: got %d bytes, want %d", len(body1), len(payload))
+	}
+
+	// Verify asset was committed to disk
+	filePath, ok := cacheMgr.ResolvePathWithNamespace("gbf", cleanKey)
+	if !ok {
+		t.Fatalf("failed to resolve path on disk")
+	}
+	diskBytes, err := os.ReadFile(filePath)
+	if err != nil || !bytes.Equal(diskBytes, payload) {
+		t.Fatalf("disk content mismatch after stream-through commit")
+	}
+
+	// Clear RAM cache so subsequent request must hit disk cache
+	cacheMgr.ClearRAM()
+
+	// 2. Second Request: Disk Cache Hit -> Full in-memory read, sendCachedAssetResponseFast
+	req2, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	req2.RequestURI = path
+	req2.Host = host
+
+	var buf2 bytes.Buffer
+	keepAlive2 := srv.handleDecryptedRequest(&buf2, req2, host)
+	if !keepAlive2 {
+		t.Fatal("expected keepAlive to be true for disk cache hit fast response")
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected no new upstream hit on cache hit, got %d", upstreamHits.Load())
+	}
+	if stats.DiskHits.Load() != 1 {
+		t.Fatalf("expected stats.DiskHits == 1, got %d", stats.DiskHits.Load())
+	}
+
+	rawOut2 := buf2.String()
+	if !strings.HasPrefix(rawOut2, "HTTP/1.1 200 OK\r\n") {
+		t.Fatalf("expected HTTP/1.1 200 OK on disk hit, got:\n%s", rawOut2)
+	}
+
+	_, _, body2 := splitRawResponse(t, buf2.Bytes())
+	if !bytes.Equal(body2, payload) {
+		t.Fatalf("disk hit body mismatch: got %d bytes, want %d", len(body2), len(payload))
+	}
+
+	// 3. Verify CacheItem loaded from disk has full Data populated
+	item, src := cacheMgr.GetWithNamespace("gbf", cleanKey)
+	if item == nil || src != "DISK" {
+		t.Fatalf("expected DISK hit, got %s", src)
+	}
+	if item.Data == nil || len(item.Data) != len(payload) || !bytes.Equal(item.Data, payload) {
+		t.Fatalf("expected full Data in CacheItem on disk hit, got %d bytes", len(item.Data))
+	}
+
+	// 4. Verify RAM SLRU admission restriction: >2MB file must NOT enter RAM SLRU
+	if cacheMgr.IsRAMProtected("gbf", cleanKey) {
+		t.Fatal("large asset (>2MB) must not enter RAM Protected segment")
+	}
+}

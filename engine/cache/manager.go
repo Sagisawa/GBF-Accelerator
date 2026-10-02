@@ -18,12 +18,10 @@ import (
 	"time"
 )
 
-// MaxDiskDirectReadSize is the candidate threshold (2MB) for direct in-memory disk reads.
-// Assets <= MaxDiskDirectReadSize follow the existing full in-memory read path.
-// Verified assets > MaxDiskDirectReadSize are eligible for disk stream-through to avoid memory bloat.
-// Note: 2MB is a candidate threshold, to be validated by actual cache distribution and benchmarks.
-// Metrics such as >90% memory reduction or sub-millisecond TTFB are theoretical targets subject
-// to benchmark verification.
+// MaxDiskDirectReadSize is the threshold (2MB) for RAM SLRU admission on disk hits.
+// Disk cache hits of any size are read fully into memory for fast direct response,
+// but only assets <= MaxDiskDirectReadSize are admitted into the RAM SLRU probation segment
+// to protect RAM cache capacity from being dominated by large objects.
 const MaxDiskDirectReadSize = 2 * 1024 * 1024
 
 // diskMeta represents the persisted metadata stored in .ext files.
@@ -842,7 +840,8 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	// Store into RAM cache only when enabled.
 	// SLRU: Admitted to Probationary segment on first disk hit (cold access).
 	// A subsequent hit via Get() will promote it to Protected.
-	// Stream Items (Data == nil && Size > 0) are strictly prohibited from entering SLRU.
+	// Large objects (> MaxDiskDirectReadSize) are read fully into memory for client response
+	// but are strictly excluded from RAM SLRU admission to protect RAM cache capacity.
 	if m.ramEnabled.Load() && item != nil && len(item.Data) > 0 && item.Size <= MaxDiskDirectReadSize {
 		m.ramCache.SetProbation(ramKey, item)
 	}
@@ -880,14 +879,6 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 
 	mtimeNano := fi.ModTime().UnixNano()
 	size := fi.Size()
-
-	// For verified large assets (> MaxDiskDirectReadSize), directly return stream item (Data=nil, Size=size)
-	// without allocating whole-file memory buffer or reading disk body.
-	if size > MaxDiskDirectReadSize {
-		if item, ok := m.loadDiskMetaWithStat(ns, cleanKey, filePath, mtimeNano, size); ok {
-			return item, nil
-		}
-	}
 
 	data, err := readDiskFile(f, size)
 	if err != nil || len(data) == 0 {
@@ -1397,7 +1388,21 @@ func (m *Manager) ReadDiskItemData(ns, urlPath string) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("failed to resolve path for %s", urlPath)
 	}
-	return os.ReadFile(filePath)
+	data, err := os.ReadFile(filePath)
+	if err != nil && (ns == "" || ns == "gbf") {
+		var altKey string
+		if !strings.HasPrefix(cleanKey, "assets") {
+			altKey = "assets/" + cleanKey
+		} else {
+			altKey = strings.TrimPrefix(cleanKey, "assets/")
+		}
+		if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
+			if altData, altErr := os.ReadFile(altPath); altErr == nil {
+				return altData, nil
+			}
+		}
+	}
+	return data, err
 }
 
 // OpenDiskStream opens a file from the disk cache for streaming.

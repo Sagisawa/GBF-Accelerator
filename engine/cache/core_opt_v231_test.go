@@ -530,7 +530,7 @@ func TestDiskRead_LargeImageAndAudio(t *testing.T) {
 		t.Fatal("failed to save 1.5MB audio")
 	}
 
-	// 4MB Image (> MaxDiskDirectReadSize): streaming candidate, Data=nil, no RAM admission
+	// 4MB Image (> MaxDiskDirectReadSize): direct disk read into memory, full payload, no RAM admission
 	large4mbPayload := makeFakePNG(4 * 1024 * 1024)
 	large4mbPath := "/assets/img/sp/quest/scene/bg_4mb.png"
 	large4mbClean := "assets/img/sp/quest/scene/bg_4mb.png"
@@ -564,19 +564,24 @@ func TestDiskRead_LargeImageAndAudio(t *testing.T) {
 		t.Fatal("audio should be in probation after 1st read, not protected")
 	}
 
-	// Verify 4MB Image (>2MB): Data is nil, Size is 4MB, strictly not admitted to RAM
+	// Verify 4MB Image (>2MB): Data is fully loaded in memory, byte-identical, but strictly not admitted to RAM
 	largeItem, lSrc := mgr.Get(large4mbPath)
 	if largeItem == nil || lSrc != "DISK" {
 		t.Fatalf("expected DISK hit for 4MB image, got %s", lSrc)
 	}
-	if largeItem.Data != nil {
-		t.Fatalf("expected Data == nil for >2MB asset, got %d bytes", len(largeItem.Data))
+	if largeItem.Data == nil || len(largeItem.Data) != len(large4mbPayload) || !bytes.Equal(largeItem.Data, large4mbPayload) {
+		t.Fatalf("expected Data to match full payload (%d bytes), got %d bytes", len(large4mbPayload), len(largeItem.Data))
 	}
 	if largeItem.Size != int64(len(large4mbPayload)) {
 		t.Fatalf("expected Size == %d, got %d", len(large4mbPayload), largeItem.Size)
 	}
+	// Second access must still hit DISK and not be admitted to RAM
+	item2, src2 := mgr.Get(large4mbPath)
+	if item2 == nil || src2 != "DISK" {
+		t.Fatalf("expected DISK hit on second access for >2MB asset, got %s", src2)
+	}
 	if mgr.IsRAMProtected("gbf", large4mbClean) {
-		t.Fatal("large 4MB stream item must not be admitted to RAM")
+		t.Fatal("large 4MB item must not be admitted to RAM")
 	}
 }
 
