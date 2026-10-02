@@ -303,10 +303,11 @@ func FindModuleApk(overridePath string, exeDir string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("SkyLeap Xposed Module APK not found. Looked for:\n" +
-		"  - " + filepath.Join(exeDir, "xposed-release.apk") + " (production release artifact)\n" +
-		"  - android/xposed/build/outputs/apk/release/xposed-release.apk (source tree release)\n" +
-		"Please build the release module via `./gradlew :xposed:assembleRelease` or specify --module <path>")
+	return "", fmt.Errorf("SkyLeap Xposed Module APK not found. Looked for:\n"+
+		"  - %s (production release artifact)\n"+
+		"  - android/xposed/build/outputs/apk/release/xposed-release.apk (source tree release)\n"+
+		"Please build the release module via `./gradlew :xposed:assembleRelease` or specify --module <path>",
+		filepath.Join(exeDir, "xposed-release.apk"))
 }
 
 // ValidateModuleApk verifies that the specified APK is a valid standalone Xposed module
