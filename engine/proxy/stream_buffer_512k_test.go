@@ -311,6 +311,34 @@ func TestCopyStreamBuffer_ZeroAlloc(t *testing.T) {
 	}
 }
 
+func TestCopyStreamBuffer_EmptyBufferPanics(t *testing.T) {
+	src := bytes.NewReader([]byte("test"))
+	var dst bytes.Buffer
+
+	// Empty slice should panic
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on empty buffer, but did not panic")
+		}
+	}()
+	_, _ = copyStreamBuffer(&dst, src, []byte{})
+}
+
+func TestCopyStreamBuffer_NilBufferPanics(t *testing.T) {
+	src := bytes.NewReader([]byte("test"))
+	var dst bytes.Buffer
+
+	// Nil slice should panic
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic on nil buffer, but did not panic")
+		}
+	}()
+	_, _ = copyStreamBuffer(&dst, src, nil)
+}
+
 func TestStreamBufferPool_AllocationSize(t *testing.T) {
 	p := streamBufferPool.Get().(*[]byte)
 	defer streamBufferPool.Put(p)
@@ -355,6 +383,9 @@ func TestProxy_DiskStream_512K_ByteForByteIntegrity(t *testing.T) {
 	// 3.5 MB file (> 2MB MaxDiskDirectReadSize)
 	fileSize := int64(3500 * 1024)
 	payload := makeTestPayload(int(fileSize))
+	for i := 16; i < len(payload); i++ {
+		payload[i] = byte((i * 31) ^ (i >> 3))
+	}
 
 	filePath, ok := cacheMgr.ResolvePathWithNamespace("gbf", cleanKey)
 	if !ok {
@@ -519,13 +550,17 @@ func BenchmarkStreamThrough_512K_vs_32K(b *testing.B) {
 		defer streamBufferPool.Put(bufPtr)
 		copyBuf := *bufPtr
 
+		var r bytes.Reader
+		cr := &countingReader{r: &r}
+
 		b.ReportAllocs()
 		b.SetBytes(size)
 		b.ResetTimer()
 
 		var totalReads int64
 		for i := 0; i < b.N; i++ {
-			cr := &countingReader{r: bytes.NewReader(payload)}
+			r.Reset(payload)
+			cr.readCount.Store(0)
 			_, err := copyStreamBuffer(io.Discard, cr, copyBuf)
 			if err != nil {
 				b.Fatalf("unexpected error: %v", err)
@@ -538,13 +573,17 @@ func BenchmarkStreamThrough_512K_vs_32K(b *testing.B) {
 	b.Run("Buffer_32KB_Simulated", func(b *testing.B) {
 		buf32k := make([]byte, 32*1024)
 
+		var r bytes.Reader
+		cr := &countingReader{r: &r}
+
 		b.ReportAllocs()
 		b.SetBytes(size)
 		b.ResetTimer()
 
 		var totalReads int64
 		for i := 0; i < b.N; i++ {
-			cr := &countingReader{r: bytes.NewReader(payload)}
+			r.Reset(payload)
+			cr.readCount.Store(0)
 			_, err := copyStreamBuffer(io.Discard, cr, buf32k)
 			if err != nil {
 				b.Fatalf("unexpected error: %v", err)

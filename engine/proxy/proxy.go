@@ -2570,6 +2570,9 @@ var errInvalidWrite = errors.New("invalid write result")
 // - Accumulates written bytes accurately
 // - Correctly handles Read returning nr > 0 alongside an error (processing data before returning error)
 func copyStreamBuffer(dst io.Writer, src io.Reader, buf []byte) (written int64, err error) {
+	if len(buf) == 0 {
+		panic("empty buffer in copyStreamBuffer")
+	}
 	for {
 		nr, er := src.Read(buf)
 		if nr > 0 {
