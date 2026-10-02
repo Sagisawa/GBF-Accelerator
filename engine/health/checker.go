@@ -772,10 +772,11 @@ func (c *Checker) checkLANFirewall(cfg config.Config) (item HealthItem) {
 	}
 
 	lanIP := config.GetLANIP()
+	fwChecked := firewall.IsSupported() || c.firewallStatusFn != nil
 	details := map[string]interface{}{
 		"allow_lan":        true,
 		"lan_ip":           lanIP,
-		"firewall_checked": firewall.IsSupported(),
+		"firewall_checked": fwChecked,
 	}
 
 	if lanIP == "" {
@@ -805,7 +806,7 @@ func (c *Checker) checkLANFirewall(cfg config.Config) (item HealthItem) {
 		}
 	}
 
-	if firewall.IsSupported() {
+	if fwChecked {
 		statusFn := c.firewallStatusFn
 		if statusFn == nil {
 			statusFn = firewall.GetStatus
