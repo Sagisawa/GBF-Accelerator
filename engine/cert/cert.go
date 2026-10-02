@@ -153,7 +153,43 @@ func generateCA(certPath, keyPath string) (*x509.Certificate, *rsa.PrivateKey, [
 }
 
 func (m *Manager) GetCAPEM() []byte {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.caPEM
+}
+
+func (m *Manager) GetCertsDir() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.certsDir
+}
+
+// RegenerateCA forces regeneration of ca.crt and ca.key, resets internal state and invalidates cached leaf certs.
+func (m *Manager) RegenerateCA() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	certsDir := m.certsDir
+	if certsDir == "" {
+		certsDir = "certs"
+	}
+	if err := os.MkdirAll(certsDir, 0755); err != nil {
+		return fmt.Errorf("failed to create certs dir: %w", err)
+	}
+
+	caCertPath := filepath.Join(certsDir, "ca.crt")
+	caKeyPath := filepath.Join(certsDir, "ca.key")
+
+	caCert, caKey, caPEM, err := generateCA(caCertPath, caKeyPath)
+	if err != nil {
+		return fmt.Errorf("failed to regenerate Root CA: %w", err)
+	}
+
+	m.caCert = caCert
+	m.caKey = caKey
+	m.caPEM = caPEM
+	m.certCache = make(map[string]*tls.Certificate)
+	return nil
 }
 
 func (m *Manager) GetOrCreateCert(host string) (*tls.Certificate, error) {

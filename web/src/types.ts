@@ -344,3 +344,73 @@ export interface AdbListBrowsersResponse {
   error?: string;
 }
 
+export type HealthStatusLevel = 'ok' | 'warning' | 'error';
+
+export interface HealthItem {
+  name: string;
+  status: HealthStatusLevel;
+  code: string;
+  message: string;
+  details?: Record<string, any>;
+  repairable: boolean;
+  requires_confirmation?: boolean;
+  requires_elevation?: boolean;
+  action?: string;
+}
+
+export interface HealthSummary {
+  total_checks: number;
+  passed: number;
+  warnings: number;
+  errors: number;
+}
+
+export interface CoreHealthMap {
+  core: HealthItem;
+  control_plane: HealthItem;
+  data_plane: HealthItem;
+  pac: HealthItem;
+  root_ca: HealthItem;
+  cache: HealthItem;
+  config: HealthItem;
+  lan_firewall: HealthItem;
+}
+
+export interface RecentErrorLog {
+  time: string;
+  level: string;
+  msg: string;
+}
+
+export interface HealthRuntimeStatus {
+  upstream_route: Record<string, any>;
+  api_retries: number;
+  recent_errors: RecentErrorLog[];
+  traffic_metrics: Record<string, any>;
+}
+
+export interface HealthResponse {
+  status: HealthStatusLevel;
+  timestamp: string;
+  summary: HealthSummary;
+  core_health: CoreHealthMap;
+  runtime_status: HealthRuntimeStatus;
+}
+
+export interface RepairStepResult {
+  code: string;
+  action: string;
+  success: boolean;
+  skipped?: boolean;
+  status?: 'fixed' | 'failed' | 'skipped';
+  message: string;
+  error?: string;
+}
+
+export interface RepairResponse {
+  success: boolean;
+  message: string;
+  results: RepairStepResult[];
+  health: HealthResponse;
+}
+

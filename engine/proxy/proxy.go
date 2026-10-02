@@ -364,6 +364,9 @@ func (s *ProxyServer) Start() error {
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
+		if s.prefetch != nil {
+			s.prefetch.Stop()
+		}
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
@@ -443,6 +446,9 @@ func (s *ProxyServer) ListenerAddr() string {
 
 func (s *ProxyServer) Stop() {
 	s.mu.Lock()
+	if s.prefetch != nil {
+		s.prefetch.Stop()
+	}
 	if !s.running {
 		s.mu.Unlock()
 		return
@@ -452,9 +458,6 @@ func (s *ProxyServer) Stop() {
 	if s.listener != nil {
 		_ = s.listener.Close()
 		s.listener = nil
-	}
-	if s.prefetch != nil {
-		s.prefetch.Stop()
 	}
 	if api := s.apiClient.Load(); api != nil {
 		if tr, ok := api.Transport.(*http.Transport); ok {
@@ -490,6 +493,8 @@ func (s *ProxyServer) Stop() {
 }
 
 func (s *ProxyServer) PrefetchQueueLen() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.prefetch != nil {
 		return s.prefetch.QueueLen()
 	}
@@ -514,6 +519,18 @@ func (s *ProxyServer) WaitServeLoops(timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+// WaitPrefetchWorkers waits for background prefetch workers to exit within the specified timeout.
+// Returns true if workers exited before timeout, or false otherwise.
+func (s *ProxyServer) WaitPrefetchWorkers(timeout time.Duration) bool {
+	s.mu.RLock()
+	pe := s.prefetch
+	s.mu.RUnlock()
+	if pe == nil {
+		return true
+	}
+	return pe.WaitTimeout(timeout)
 }
 
 func (s *ProxyServer) trackConn(conn net.Conn) bool {

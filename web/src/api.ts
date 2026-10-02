@@ -14,9 +14,40 @@ import {
   AdbProbeAppResponse,
   AdbInstallResponse,
   AdbListBrowsersResponse,
+  HealthResponse,
+  RepairResponse,
 } from './types'
 
 const BASE = ''
+
+export async function fetchHealth(): Promise<HealthResponse> {
+  const res = await fetch(`${BASE}/api/health`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function repairHealth(params?: { code?: string; all?: boolean }): Promise<RepairResponse> {
+  const body: Record<string, any> = {}
+  if (params?.code) {
+    body.code = params.code
+  }
+  if (params?.all) {
+    body.all = true
+  }
+  const res = await fetch(`${BASE}/api/health/repair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => null)
+    if (data && data.message) {
+      throw new Error(data.message)
+    }
+    throw new Error(`HTTP ${res.status}`)
+  }
+  return res.json()
+}
 
 export async function fetchStatus(): Promise<RuntimeStatus> {
   const res = await fetch(`${BASE}/api/status`)

@@ -37,6 +37,7 @@ import { CaCertModal } from './components/modals/CaCertModal'
 import { UpdateModal } from './components/modals/UpdateModal'
 import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
 import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal'
+import { HealthCheckModal } from './components/modals/HealthCheckModal'
 import { AndroidPatchPanel } from './components/AndroidPatchPanel'
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
@@ -216,6 +217,7 @@ export const App: React.FC = () => {
   const [isShortcutsModalOpen, setIsShortcutsModalOpen] = useState<boolean>(false)
   const [isRoutingModalOpen, setIsRoutingModalOpen] = useState<boolean>(false)
   const [isLatencyModalOpen, setIsLatencyModalOpen] = useState<boolean>(false)
+  const [isHealthModalOpen, setIsHealthModalOpen] = useState<boolean>(false)
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false)
   const [isSlimModalOpen, setIsSlimModalOpen] = useState<boolean>(false)
   const [isBoostModalOpen, setIsBoostModalOpen] = useState<boolean>(false)
@@ -399,7 +401,7 @@ export const App: React.FC = () => {
             if (!data?.tag_name) return
             const latest = data.tag_name.replace(/^v/, '').trim()
             fetchStatus().then((cur) => {
-              const current = (cur?.version || '2.4.0').replace(/^v/, '').trim()
+              const current = (cur?.version || '2.4.1').replace(/^v/, '').trim()
               if (latest && isNewerVersion(latest, current)) {
                 setUpdateInfo({ available: true, version: latest })
               }
@@ -1007,6 +1009,7 @@ export const App: React.FC = () => {
     setIsShortcutsModalOpen(false)
     setIsRoutingModalOpen(false)
     setIsLatencyModalOpen(false)
+    setIsHealthModalOpen(false)
     setIsAuditModalOpen(false)
     setIsSlimModalOpen(false)
     setIsUpdateModalOpen(false)
@@ -1020,6 +1023,7 @@ export const App: React.FC = () => {
     isShortcutsModalOpen ||
     isRoutingModalOpen ||
     isLatencyModalOpen ||
+    isHealthModalOpen ||
     isAuditModalOpen ||
     isSlimModalOpen ||
     isUpdateModalOpen ||
@@ -1144,7 +1148,7 @@ export const App: React.FC = () => {
                     碧蓝幻想 GBF 加速器
                   </span>
                   <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                    v{status?.version || '2.4.0'}
+                    v{status?.version || '2.4.1'}
                   </span>
                   {updateInfo?.available && (
                     <button
@@ -1157,13 +1161,24 @@ export const App: React.FC = () => {
                     </button>
                   )}
                 </div>
-                <div className="flex items-center gap-2 mt-1.5">
+                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                   <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
                     <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
                     <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
                       {isRunning ? `运行中 (监听端口 ${currentListenPort})` : '已停止'}
                     </span>
                   </span>
+                  {isRunning && (
+                    <>
+                      <span className="text-slate-300">·</span>
+                      <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
+                        <span className="text-slate-400">已运行:</span>
+                        <span className="font-semibold text-slate-700">
+                          <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
+                        </span>
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -1257,40 +1272,44 @@ export const App: React.FC = () => {
                 <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
                   本地缓存目录（支持无缝复用 ACGPower 缓存）：
                 </label>
-                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-                  <input
-                    type="text"
-                    disabled={Boolean(loadingAction) || loadingBrowse}
-                    value={cacheDirInput}
-                    onChange={(e) => setCacheDirInput(e.target.value)}
-                    className="flex-1 min-w-[160px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleBrowseDir}
-                    disabled={loadingBrowse}
-                    aria-busy={loadingBrowse}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
-                  >
-                    {loadingBrowse ? '正在打开...' : '浏览...'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleOpenCacheFolder}
-                    disabled={loadingOpenFolder}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
-                  >
-                    {loadingOpenFolder ? '打开中...' : '打开目录'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDetectAcgp}
-                    disabled={Boolean(loadingAction)}
-                    aria-busy={isActionLoading('detect-acgp')}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
-                  >
-                    {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
-                  </button>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      disabled={Boolean(loadingAction) || loadingBrowse}
+                      value={cacheDirInput}
+                      onChange={(e) => setCacheDirInput(e.target.value)}
+                      className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleBrowseDir}
+                      disabled={loadingBrowse}
+                      aria-busy={loadingBrowse}
+                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
+                    >
+                      {loadingBrowse ? '正在打开...' : '浏览...'}
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleOpenCacheFolder}
+                      disabled={loadingOpenFolder}
+                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
+                    >
+                      {loadingOpenFolder ? '打开中...' : '打开目录'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDetectAcgp}
+                      disabled={Boolean(loadingAction)}
+                      aria-busy={isActionLoading('detect-acgp')}
+                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
+                    >
+                      {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1963,12 +1982,6 @@ export const App: React.FC = () => {
                 ENGINE TELEMETRY
               </span>
             </div>
-            <div className="flex items-center gap-2 text-xs sm:text-[13px] text-slate-500 font-mono">
-              <span className="text-slate-400">运行:</span>
-              <span className="text-slate-700 font-semibold">
-                <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
-              </span>
-            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-4">
@@ -2115,33 +2128,33 @@ export const App: React.FC = () => {
   </main>
 
       {/* 3. Fixed Bottom Action Dock (Footer) */}
-      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-4 sm:px-6 py-3 sm:py-3.5 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
-        <div className="max-w-5xl mx-auto flex items-center justify-center flex-wrap gap-2.5 sm:gap-3">
+      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-3 sm:px-4 py-2.5 sm:py-3 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
+        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[540px]:grid-cols-4 min-[840px]:grid-cols-8 gap-2">
           <button
             type="button"
             onClick={handleOpenCacheFolder}
             disabled={loadingOpenFolder}
-            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-2xs"
+            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
-            <span className="text-base">📁</span>
-            <span>{loadingOpenFolder ? '正在打开...' : '缓存目录'}</span>
+            <span className="text-base leading-none">📁</span>
+            <span>{loadingOpenFolder ? '打开中...' : '缓存目录'}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsClearModalOpen(true)}
-            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
-            <span className="text-base">🗑</span>
+            <span className="text-base leading-none">🗑</span>
             <span>清空缓存</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsRoutingModalOpen(true)}
-            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
-            <span className="text-base">🌐</span>
+            <span className="text-base leading-none">🌐</span>
             <span>分流说明</span>
           </button>
 
@@ -2149,36 +2162,45 @@ export const App: React.FC = () => {
             href="https://github.com/Sagisawa/GBF-Accelerator"
             target="_blank"
             rel="noreferrer"
-            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
-            <span className="text-base">⭐</span>
+            <span className="text-base leading-none">⭐</span>
             <span>GitHub</span>
           </a>
 
           <button
             type="button"
             onClick={() => setIsUpdateModalOpen(true)}
-            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
-            <span className="text-base">🔄</span>
+            <span className="text-base leading-none">🔄</span>
             <span>检查更新</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsLatencyModalOpen(true)}
-            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
-            <span className="text-base">📶</span>
+            <span className="text-base leading-none">📶</span>
             <span>延迟测试</span>
           </button>
 
           <button
             type="button"
-            onClick={openLogsWindow}
-            className="px-4 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-2 shadow-2xs"
+            onClick={() => setIsHealthModalOpen(true)}
+            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
-            <span className="text-base">📜</span>
+            <span className="text-base leading-none">🩺</span>
+            <span>运行自检</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={openLogsWindow}
+            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+          >
+            <span className="text-base leading-none">📜</span>
             <span>实时日志</span>
           </button>
         </div>
@@ -2250,6 +2272,11 @@ export const App: React.FC = () => {
         onToast={showToast}
       />
 
+      <HealthCheckModal
+        isOpen={isHealthModalOpen}
+        onClose={() => setIsHealthModalOpen(false)}
+      />
+
       <UpstreamSelectModal
         isOpen={isUpstreamSelectModalOpen}
         onClose={() => setIsUpstreamSelectModalOpen(false)}
@@ -2285,7 +2312,7 @@ export const App: React.FC = () => {
       <UpdateModal
         isOpen={isUpdateModalOpen}
         onClose={() => setIsUpdateModalOpen(false)}
-        currentVersion={status?.version || '2.4.0'}
+        currentVersion={status?.version || '2.4.1'}
       />
 
       <LiveLogsWindow

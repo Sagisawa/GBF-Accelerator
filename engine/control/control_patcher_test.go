@@ -18,7 +18,18 @@ import (
 	"gbf-proxy/telemetry"
 )
 
-func setupTestControlServer(t *testing.T) (*ControlServer, func()) {
+type testControlServer struct {
+	*ControlServer
+}
+
+func (s *testControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
+	if req.RemoteAddr == "" || req.RemoteAddr == "192.0.2.1:1234" {
+		req.RemoteAddr = "127.0.0.1:12345"
+	}
+	s.ControlServer.handleRoute(w, req)
+}
+
+func setupTestControlServer(t *testing.T) (*testControlServer, func()) {
 	t.Helper()
 	tempDir := t.TempDir()
 	cfgPath := filepath.Join(tempDir, "config.json")
@@ -30,7 +41,7 @@ func setupTestControlServer(t *testing.T) (*ControlServer, func()) {
 	cleanup := func() {
 		cacheMgr.Close()
 	}
-	return ctrl, cleanup
+	return &testControlServer{ControlServer: ctrl}, cleanup
 }
 
 func TestControlAndroidEnv(t *testing.T) {

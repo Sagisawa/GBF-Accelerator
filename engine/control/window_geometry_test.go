@@ -28,6 +28,7 @@ func TestControlServer_ApplyConfig_WindowGeometry(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/config/apply", bytes.NewReader(body))
 	req.Host = "127.0.0.1:8125"
+	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, req)
 
@@ -46,6 +47,7 @@ func TestControlServer_ApplyConfig_WindowGeometry(t *testing.T) {
 		bytes.NewReader([]byte(`{"window_width":399,"window_height":399,"window_maximized":false}`)),
 	)
 	invalidReq.Host = "127.0.0.1:8125"
+	invalidReq.RemoteAddr = "127.0.0.1:12345"
 	invalidW := httptest.NewRecorder()
 	ctrl.handleRoute(invalidW, invalidReq)
 

@@ -202,6 +202,7 @@ type PrefetchEngine struct {
 	deadFilter        *prefetchDeadFilter
 	activeGBFHost     atomic.Pointer[string]
 	activeLangPrefix  atomic.Pointer[string]
+	workersWg         sync.WaitGroup
 }
 
 func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
@@ -219,8 +220,15 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 	}
 	defaultHost := defaultGBFHost
 	pe.activeGBFHost.Store(&defaultHost)
-	go pe.discoveryWorker()
-	go pe.fetchWorker()
+	pe.workersWg.Add(2)
+	go func() {
+		defer pe.workersWg.Done()
+		pe.discoveryWorker()
+	}()
+	go func() {
+		defer pe.workersWg.Done()
+		pe.fetchWorker()
+	}()
 	return pe
 }
 
@@ -268,6 +276,27 @@ func (pe *PrefetchEngine) Stop() {
 	pe.stopOnce.Do(func() {
 		close(pe.stopChan)
 	})
+}
+
+// Wait waits for all background worker goroutines to exit.
+func (pe *PrefetchEngine) Wait() {
+	pe.workersWg.Wait()
+}
+
+// WaitTimeout waits for background workers to exit within the specified timeout.
+// It returns true if workers exited before timeout, or false otherwise.
+func (pe *PrefetchEngine) WaitTimeout(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		pe.workersWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 func (pe *PrefetchEngine) IsStopped() bool {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -24,6 +25,7 @@ import (
 	"gbf-proxy/config"
 	"gbf-proxy/desktop"
 	"gbf-proxy/firewall"
+	"gbf-proxy/health"
 	"gbf-proxy/patcher"
 	"gbf-proxy/process"
 	"gbf-proxy/proxy"
@@ -98,6 +100,8 @@ type ControlServer struct {
 	enablePACProxyFn   func(string) error
 	disablePACProxyFn  func(bool) error
 	setStartupEnabledFn func(bool) error
+
+	repairer *health.Repairer
 }
 
 func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cache.Manager, proxySrv *proxy.ProxyServer, stats *telemetry.Stats) *ControlServer {
@@ -122,7 +126,7 @@ func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *c
 		}
 	}
 
-	return &ControlServer{
+	ctrl := &ControlServer{
 		cfgMgr:              cfgMgr,
 		certMgr:             certMgr,
 		cacheMgr:            cacheMgr,
@@ -134,6 +138,16 @@ func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *c
 		disablePACProxyFn:   sysproxy.DisablePACProxy,
 		setStartupEnabledFn: startup.SetStartupEnabled,
 	}
+	checker := health.NewChecker(cfgMgr, certMgr, cacheMgr, proxySrv, stats, ctrl.ListenerAddr)
+	ctrl.repairer = health.NewRepairer(cfgMgr, certMgr, cacheMgr, proxySrv, stats, checker, ctrl.ReloadListener)
+	return ctrl
+}
+
+// SetRepairer allows overriding the health Repairer instance for testing.
+func (c *ControlServer) SetRepairer(r *health.Repairer) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.repairer = r
 }
 
 func (c *ControlServer) SetQuitFunc(fn func()) {
@@ -278,6 +292,25 @@ func isAllowedOrigin(origin string) bool {
 	return h == "127.0.0.1" || h == "localhost" || h == "::1"
 }
 
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	if strings.TrimSpace(remoteAddr) == "" {
+		return false
+	}
+	host := strings.TrimSpace(remoteAddr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4.Equal(net.IPv4(127, 0, 0, 1))
+	}
+	return ip.Equal(net.IPv6loopback)
+}
+
 func isAllowedControlHost(reqHost string, allowLAN bool) bool {
 	if reqHost == "" {
 		return false
@@ -300,6 +333,11 @@ func isAllowedControlHost(reqHost string, allowLAN bool) bool {
 }
 
 func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
+	if !isLoopbackRemoteAddr(req.RemoteAddr) {
+		http.Error(w, "Forbidden: Remote access denied", http.StatusForbidden)
+		return
+	}
+
 	if !isAllowedControlHost(req.Host, c.cfgMgr.Get().AllowLAN) {
 		http.Error(w, "Forbidden: Invalid Host header (DNS Rebinding Protection)", http.StatusForbidden)
 		return
@@ -334,6 +372,16 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 
 	path := req.URL.Path
 	switch path {
+	case "/api/health":
+		if req.Method == http.MethodGet {
+			c.handleHealth(w, req)
+			return
+		}
+	case "/api/health/repair":
+		if req.Method == http.MethodPost {
+			c.handleHealthRepair(w, req)
+			return
+		}
 	case "/api/status":
 		if req.Method == http.MethodGet {
 			c.handleStatus(w, req)
@@ -800,6 +848,58 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		},
 		"last_error": c.stats.LastError,
 	}
+}
+
+func (c *ControlServer) handleHealth(w http.ResponseWriter, req *http.Request) {
+	checker := health.NewChecker(
+		c.cfgMgr,
+		c.certMgr,
+		c.cacheMgr,
+		c.proxySrv,
+		c.stats,
+		c.ListenerAddr,
+	)
+	res := checker.Check(req.Context())
+	c.sendJSON(w, http.StatusOK, res)
+}
+
+func (c *ControlServer) handleHealthRepair(w http.ResponseWriter, req *http.Request) {
+	var repairReq health.RepairRequest
+	if req.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(req.Body, 64*1024))
+		if err == nil && len(body) > 0 {
+			_ = json.Unmarshal(body, &repairReq)
+		}
+	}
+
+	c.mu.Lock()
+	repairer := c.repairer
+	if repairer == nil {
+		checker := health.NewChecker(c.cfgMgr, c.certMgr, c.cacheMgr, c.proxySrv, c.stats, c.ListenerAddr)
+		repairer = health.NewRepairer(c.cfgMgr, c.certMgr, c.cacheMgr, c.proxySrv, c.stats, checker, c.ReloadListener)
+		c.repairer = repairer
+	}
+	c.mu.Unlock()
+
+	res, err := repairer.Repair(req.Context(), repairReq)
+	if err != nil {
+		if errors.Is(err, health.ErrRepairInProgress) {
+			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+				"ok":      false,
+				"error":   "repair_in_progress",
+				"message": "已有修复任务正在执行中，请勿重复提交",
+			})
+			return
+		}
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":      false,
+			"error":   err.Error(),
+			"message": "执行修复时发生异常",
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, res)
 }
 
 func (c *ControlServer) handleStatus(w http.ResponseWriter, req *http.Request) {

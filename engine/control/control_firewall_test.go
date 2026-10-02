@@ -25,6 +25,7 @@ func TestControlServerFirewallStatusUnsupportedOnNonWindows(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/firewall/status", nil)
 	req.Host = "127.0.0.1:8125"
+	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	ctrl.handleRoute(rec, req)
 

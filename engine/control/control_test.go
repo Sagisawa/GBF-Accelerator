@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,8 @@ import (
 	"gbf-proxy/cache"
 	"gbf-proxy/cert"
 	"gbf-proxy/config"
+	"gbf-proxy/firewall"
+	"gbf-proxy/health"
 	"gbf-proxy/proxy"
 	"gbf-proxy/telemetry"
 )
@@ -66,6 +69,7 @@ func TestControlCORSProtection(t *testing.T) {
 	// 1. Request with evil Origin must be blocked with 403 Forbidden
 	reqEvil := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	reqEvil.Host = "127.0.0.1:8125"
+	reqEvil.RemoteAddr = "127.0.0.1:12345"
 	reqEvil.Header.Set("Origin", "http://evil.com")
 	wEvil := httptest.NewRecorder()
 	ctrl.handleRoute(wEvil, reqEvil)
@@ -77,6 +81,7 @@ func TestControlCORSProtection(t *testing.T) {
 	// 2. Request with local Origin must be accepted with 200 OK and matching Access-Control-Allow-Origin
 	reqLocal := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	reqLocal.Host = "127.0.0.1:8125"
+	reqLocal.RemoteAddr = "127.0.0.1:12345"
 	reqLocal.Header.Set("Origin", "http://127.0.0.1:8125")
 	wLocal := httptest.NewRecorder()
 	ctrl.handleRoute(wLocal, reqLocal)
@@ -91,11 +96,105 @@ func TestControlCORSProtection(t *testing.T) {
 	// 3. Request without Origin (e.g. desktop CLI, curl) must succeed
 	reqDirect := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	reqDirect.Host = "127.0.0.1:8125"
+	reqDirect.RemoteAddr = "127.0.0.1:12345"
 	wDirect := httptest.NewRecorder()
 	ctrl.handleRoute(wDirect, reqDirect)
 
 	if wDirect.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK for direct request, got %d", wDirect.Code)
+	}
+}
+
+func TestControlRemoteAddrSecurity(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	tests := []struct {
+		name         string
+		remoteAddr   string
+		host         string
+		path         string
+		expectedCode int
+	}{
+		{
+			name:         "IPv4 Loopback allowed on /api/status",
+			remoteAddr:   "127.0.0.1:54321",
+			host:         "127.0.0.1:8125",
+			path:         "/api/status",
+			expectedCode: http.StatusOK,
+		},
+		{
+			name:         "IPv6 Loopback allowed on /api/status",
+			remoteAddr:   "[::1]:54321",
+			host:         "[::1]:8125",
+			path:         "/api/status",
+			expectedCode: http.StatusOK,
+		},
+		{
+			name:         "IPv4 Loopback allowed on /api/health",
+			remoteAddr:   "127.0.0.1:54321",
+			host:         "127.0.0.1:8125",
+			path:         "/api/health",
+			expectedCode: http.StatusOK,
+		},
+		{
+			name:         "IPv6 Loopback allowed on /api/health",
+			remoteAddr:   "[::1]:54321",
+			host:         "[::1]:8125",
+			path:         "/api/health",
+			expectedCode: http.StatusOK,
+		},
+		{
+			name:         "LAN RemoteAddr blocked with 403 on status",
+			remoteAddr:   "192.168.1.100:54321",
+			host:         "192.168.1.100:8125",
+			path:         "/api/status",
+			expectedCode: http.StatusForbidden,
+		},
+		{
+			name:         "LAN RemoteAddr blocked with 403 on health",
+			remoteAddr:   "192.168.1.100:54321",
+			host:         "192.168.1.100:8125",
+			path:         "/api/health",
+			expectedCode: http.StatusForbidden,
+		},
+		{
+			name:         "Host forged as 127.0.0.1 but RemoteAddr is LAN blocked with 403",
+			remoteAddr:   "192.168.1.50:54321",
+			host:         "127.0.0.1:8125",
+			path:         "/api/status",
+			expectedCode: http.StatusForbidden,
+		},
+		{
+			name:         "Host forged as 127.0.0.1 on repair API blocked with 403",
+			remoteAddr:   "192.168.1.50:54321",
+			host:         "127.0.0.1:8125",
+			path:         "/api/health/repair",
+			expectedCode: http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			method := http.MethodGet
+			if tc.path == "/api/health/repair" {
+				method = http.MethodPost
+			}
+			req := httptest.NewRequest(method, tc.path, nil)
+			req.Host = tc.host
+			req.RemoteAddr = tc.remoteAddr
+			w := httptest.NewRecorder()
+			ctrl.handleRoute(w, req)
+			if w.Code != tc.expectedCode {
+				t.Errorf("%s: expected HTTP %d, got %d (body: %s)", tc.name, tc.expectedCode, w.Code, w.Body.String())
+			}
+		})
 	}
 }
 
@@ -149,6 +248,7 @@ func TestControlDNSRebindingProtection(t *testing.T) {
 	for _, h := range blockedHosts {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		req.Host = h
+		req.RemoteAddr = "127.0.0.1:12345"
 		w := httptest.NewRecorder()
 		ctrl.handleRoute(w, req)
 		if w.Code != http.StatusForbidden {
@@ -167,6 +267,7 @@ func TestControlDNSRebindingProtection(t *testing.T) {
 	for _, h := range allowedHosts {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		req.Host = h
+		req.RemoteAddr = "127.0.0.1:12345"
 		w := httptest.NewRecorder()
 		ctrl.handleRoute(w, req)
 		if w.Code != http.StatusOK {
@@ -182,6 +283,7 @@ func TestControlDNSRebindingProtection(t *testing.T) {
 	if lanIP != "" {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		req.Host = lanIP + ":8125"
+		req.RemoteAddr = "127.0.0.1:12345"
 		w := httptest.NewRecorder()
 		ctrl.handleRoute(w, req)
 		if w.Code != http.StatusOK {
@@ -215,6 +317,7 @@ func TestControlApplyConfigAllFields(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/config/apply", strings.NewReader(patchJSON))
 	req.Host = "127.0.0.1:8125"
+	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, req)
 
@@ -273,6 +376,7 @@ func TestNewControlAPIs(t *testing.T) {
 			r = httptest.NewRequest(method, path, nil)
 		}
 		r.Host = "127.0.0.1:8125"
+		r.RemoteAddr = "127.0.0.1:12345"
 		w := httptest.NewRecorder()
 		ctrl.handleRoute(w, r)
 		return w
@@ -455,6 +559,7 @@ func TestControlProxyStartFailureAndSuccess(t *testing.T) {
 	// 1. Calling /api/proxy/start when port is occupied should fail with 500
 	req := httptest.NewRequest(http.MethodPost, "/api/proxy/start", nil)
 	req.Host = "127.0.0.1:8125"
+	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, req)
 
@@ -505,6 +610,7 @@ func TestControlProxyStartNilProxyServer(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/proxy/start", nil)
 	req.Host = "127.0.0.1:8125"
+	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, req)
 
@@ -867,6 +973,7 @@ func TestControlServer_AppQuit(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/app/quit", nil)
 	req.Host = "127.0.0.1:8125"
+	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, req)
 
@@ -1266,6 +1373,7 @@ func TestControlRejectsInvalidBackupUpstream(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/config/apply", strings.NewReader(`{"backup_upstream_proxy":"ftp://127.0.0.1:21"}`))
 	req.Host = "127.0.0.1:8125"
+	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, req)
 	if w.Code != http.StatusBadRequest {
@@ -1292,6 +1400,7 @@ func TestCertStatusDiagnostics(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodGet, "/api/cert/status", nil)
 	r.Host = "127.0.0.1:8125"
+	r.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, r)
 
@@ -1349,6 +1458,7 @@ func TestCertInstallErrorExposure(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodPost, "/api/cert/install", nil)
 	r.Host = "127.0.0.1:8125"
+	r.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, r)
 
@@ -1390,6 +1500,7 @@ func TestControlCacheBoostAndDisable(t *testing.T) {
 	// 1. Check initial stats
 	rStats := httptest.NewRequest(http.MethodGet, "/api/cache/stats", nil)
 	rStats.Host = "127.0.0.1:8125"
+	rStats.RemoteAddr = "127.0.0.1:12345"
 	wStats := httptest.NewRecorder()
 	ctrl.handleRoute(wStats, rStats)
 	if wStats.Code != http.StatusOK {
@@ -1404,6 +1515,7 @@ func TestControlCacheBoostAndDisable(t *testing.T) {
 	// 2. Trigger Boost
 	rBoost := httptest.NewRequest(http.MethodPost, "/api/cache/boost", nil)
 	rBoost.Host = "127.0.0.1:8125"
+	rBoost.RemoteAddr = "127.0.0.1:12345"
 	wBoost := httptest.NewRecorder()
 	ctrl.handleRoute(wBoost, rBoost)
 	if wBoost.Code != http.StatusOK {
@@ -1416,6 +1528,7 @@ func TestControlCacheBoostAndDisable(t *testing.T) {
 	// 3. Query task status
 	rTask := httptest.NewRequest(http.MethodGet, "/api/cache/task-status", nil)
 	rTask.Host = "127.0.0.1:8125"
+	rTask.RemoteAddr = "127.0.0.1:12345"
 	wTask := httptest.NewRecorder()
 	ctrl.handleRoute(wTask, rTask)
 	var taskBody map[string]interface{}
@@ -1427,6 +1540,7 @@ func TestControlCacheBoostAndDisable(t *testing.T) {
 	// 4. Disable Boost
 	rDisable := httptest.NewRequest(http.MethodPost, "/api/cache/boost/disable", nil)
 	rDisable.Host = "127.0.0.1:8125"
+	rDisable.RemoteAddr = "127.0.0.1:12345"
 	wDisable := httptest.NewRecorder()
 	ctrl.handleRoute(wDisable, rDisable)
 	if wDisable.Code != http.StatusOK {
@@ -1450,6 +1564,7 @@ func TestControl_StatusIncludesIsBoostingCache(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	r.Host = "127.0.0.1:8125"
+	r.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	ctrl.handleRoute(w, r)
 	if w.Code != http.StatusOK {
@@ -1483,6 +1598,7 @@ func TestControl_DisableDuringActiveBoostRace(t *testing.T) {
 	// Start Boost
 	rBoost := httptest.NewRequest(http.MethodPost, "/api/cache/boost", nil)
 	rBoost.Host = "127.0.0.1:8125"
+	rBoost.RemoteAddr = "127.0.0.1:12345"
 	wBoost := httptest.NewRecorder()
 	ctrl.handleRoute(wBoost, rBoost)
 	if wBoost.Code != http.StatusOK {
@@ -1492,6 +1608,7 @@ func TestControl_DisableDuringActiveBoostRace(t *testing.T) {
 	// Immediately Disable Boost while prewarm may still be in-flight
 	rDisable := httptest.NewRequest(http.MethodPost, "/api/cache/boost/disable", nil)
 	rDisable.Host = "127.0.0.1:8125"
+	rDisable.RemoteAddr = "127.0.0.1:12345"
 	wDisable := httptest.NewRecorder()
 	ctrl.handleRoute(wDisable, rDisable)
 	if wDisable.Code != http.StatusOK {
@@ -1504,6 +1621,7 @@ func TestControl_DisableDuringActiveBoostRace(t *testing.T) {
 	// Check cache stats - state must be disabled, NEVER overwritten by cancelled
 	rStats := httptest.NewRequest(http.MethodGet, "/api/cache/stats", nil)
 	rStats.Host = "127.0.0.1:8125"
+	rStats.RemoteAddr = "127.0.0.1:12345"
 	wStats := httptest.NewRecorder()
 	ctrl.handleRoute(wStats, rStats)
 	var statsBody map[string]interface{}
@@ -1530,6 +1648,7 @@ func TestControl_ClearAllDisablesBoost(t *testing.T) {
 	// Start and wait for Boost to complete
 	rBoost := httptest.NewRequest(http.MethodPost, "/api/cache/boost", nil)
 	rBoost.Host = "127.0.0.1:8125"
+	rBoost.RemoteAddr = "127.0.0.1:12345"
 	wBoost := httptest.NewRecorder()
 	ctrl.handleRoute(wBoost, rBoost)
 	time.Sleep(100 * time.Millisecond)
@@ -1537,6 +1656,7 @@ func TestControl_ClearAllDisablesBoost(t *testing.T) {
 	// ClearAll
 	rClear := httptest.NewRequest(http.MethodPost, "/api/cache/clear", nil)
 	rClear.Host = "127.0.0.1:8125"
+	rClear.RemoteAddr = "127.0.0.1:12345"
 	wClear := httptest.NewRecorder()
 	ctrl.handleRoute(wClear, rClear)
 	if wClear.Code != http.StatusOK {
@@ -1546,6 +1666,7 @@ func TestControl_ClearAllDisablesBoost(t *testing.T) {
 	// Verify stats: boost_state must be disabled
 	rStats := httptest.NewRequest(http.MethodGet, "/api/cache/stats", nil)
 	rStats.Host = "127.0.0.1:8125"
+	rStats.RemoteAddr = "127.0.0.1:12345"
 	wStats := httptest.NewRecorder()
 	ctrl.handleRoute(wStats, rStats)
 	var statsBody map[string]interface{}
@@ -1555,5 +1676,170 @@ func TestControl_ClearAllDisablesBoost(t *testing.T) {
 	}
 }
 
+func TestControlHealthEndpoint(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
 
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
 
+	r := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	r.Host = "127.0.0.1:8125"
+	r.RemoteAddr = "127.0.0.1:12345"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/health, got %d (body: %s)", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal /api/health response: %v", err)
+	}
+
+	if _, ok := resp["status"]; !ok {
+		t.Errorf("missing status in /api/health response")
+	}
+	if _, ok := resp["summary"]; !ok {
+		t.Errorf("missing summary in /api/health response")
+	}
+	coreHealth, ok := resp["core_health"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("core_health is not a map")
+	}
+	expectedKeys := []string{"core", "control_plane", "data_plane", "pac", "root_ca", "cache", "config", "lan_firewall"}
+	for _, k := range expectedKeys {
+		if _, exists := coreHealth[k]; !exists {
+			t.Errorf("missing subsystem %q in core_health", k)
+		}
+	}
+
+	summary, ok := resp["summary"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("summary is not a map")
+	}
+	if total, ok := summary["total_checks"].(float64); !ok || int(total) != 8 {
+		t.Errorf("expected summary.total_checks == 8, got %v", summary["total_checks"])
+	}
+	if _, ok := resp["runtime_status"]; !ok {
+		t.Errorf("missing runtime_status in /api/health response")
+	}
+}
+
+func TestControlHealthRepairEndpoint(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	// 1. GET /api/health/repair should not be handled (or return non-200)
+	rGet := httptest.NewRequest(http.MethodGet, "/api/health/repair", nil)
+	rGet.Host = "127.0.0.1:8125"
+	rGet.RemoteAddr = "127.0.0.1:12345"
+	wGet := httptest.NewRecorder()
+	ctrl.handleRoute(wGet, rGet)
+	if wGet.Code == http.StatusOK {
+		t.Fatalf("expected GET /api/health/repair to not return 200, got %d", wGet.Code)
+	}
+
+	// 2. POST /api/health/repair batch repair (all healthy)
+	rPost := httptest.NewRequest(http.MethodPost, "/api/health/repair", strings.NewReader(`{}`))
+	rPost.Host = "127.0.0.1:8125"
+	rPost.RemoteAddr = "127.0.0.1:12345"
+	rPost.Header.Set("Content-Type", "application/json")
+	wPost := httptest.NewRecorder()
+	ctrl.handleRoute(wPost, rPost)
+
+	if wPost.Code != http.StatusOK {
+		t.Fatalf("expected 200 from POST /api/health/repair, got %d (body: %s)", wPost.Code, wPost.Body.String())
+	}
+
+	var resp health.RepairResponse
+	if err := json.Unmarshal(wPost.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal /api/health/repair response: %v", err)
+	}
+	if resp.Health.Summary.TotalChecks == 0 {
+		t.Errorf("expected health response in repair output to have total_checks > 0")
+	}
+	if len(resp.Results) == 0 {
+		t.Errorf("expected batch repair to process detected issues, got 0 results")
+	}
+
+	// 3. POST /api/health/repair for unrepairable item (e.g. PORT_CONFIG_COLLISION)
+	rCollision := httptest.NewRequest(http.MethodPost, "/api/health/repair", strings.NewReader(`{"code":"PORT_CONFIG_COLLISION"}`))
+	rCollision.Host = "127.0.0.1:8125"
+	rCollision.RemoteAddr = "127.0.0.1:12345"
+	rCollision.Header.Set("Content-Type", "application/json")
+	wCollision := httptest.NewRecorder()
+	ctrl.handleRoute(wCollision, rCollision)
+
+	if wCollision.Code != http.StatusOK {
+		t.Fatalf("expected 200 from unrepairable item repair, got %d", wCollision.Code)
+	}
+	var collResp health.RepairResponse
+	if err := json.Unmarshal(wCollision.Body.Bytes(), &collResp); err != nil {
+		t.Fatalf("failed to unmarshal collision repair response: %v", err)
+	}
+	if collResp.Success {
+		t.Fatal("expected PORT_CONFIG_COLLISION repair to report success: false")
+	}
+	if len(collResp.Results) != 1 || collResp.Results[0].Success {
+		t.Fatalf("expected result step for PORT_CONFIG_COLLISION to fail, got %+v", collResp.Results)
+	}
+
+	// 4. Concurrency conflict (409)
+	checker := health.NewChecker(cfgMgr, nil, cacheMgr, nil, stats, ctrl.ListenerAddr)
+	customRepairer := health.NewRepairer(cfgMgr, nil, cacheMgr, nil, stats, checker, ctrl.ReloadListener)
+	customRepairer.SetFirewallStatusFunc(func(port int) (firewall.Status, error) {
+		return firewall.Status{Allowed: true}, nil
+	})
+	ctrl.SetRepairer(customRepairer)
+
+	startedFirst := make(chan struct{})
+	customRepairer.SetFirewallApplyFunc(func(port int) (string, error) {
+		close(startedFirst)
+		time.Sleep(150 * time.Millisecond)
+		return "", nil
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var code1, code2 int
+	go func() {
+		defer wg.Done()
+		r1 := httptest.NewRequest(http.MethodPost, "/api/health/repair", strings.NewReader(`{"code":"FIREWALL_RULE_MISSING"}`))
+		r1.Host = "127.0.0.1:8125"
+		r1.RemoteAddr = "127.0.0.1:12345"
+		w1 := httptest.NewRecorder()
+		ctrl.handleRoute(w1, r1)
+		code1 = w1.Code
+	}()
+
+	go func() {
+		defer wg.Done()
+		<-startedFirst
+		r2 := httptest.NewRequest(http.MethodPost, "/api/health/repair", strings.NewReader(`{"code":"DATA_PLANE_STOPPED"}`))
+		r2.Host = "127.0.0.1:8125"
+		r2.RemoteAddr = "127.0.0.1:12345"
+		w2 := httptest.NewRecorder()
+		ctrl.handleRoute(w2, r2)
+		code2 = w2.Code
+	}()
+
+	wg.Wait()
+
+	if code1 != http.StatusOK {
+		t.Fatalf("expected first repair request to return 200, got %d", code1)
+	}
+	if code2 != http.StatusConflict {
+		t.Fatalf("expected second concurrent repair request to return 409 Conflict, got %d", code2)
+	}
+}
