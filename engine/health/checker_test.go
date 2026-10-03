@@ -24,6 +24,7 @@ import (
 	"gbf-proxy/cert"
 	"gbf-proxy/config"
 	"gbf-proxy/proxy"
+	"gbf-proxy/sysproxy"
 	"gbf-proxy/telemetry"
 )
 
@@ -333,14 +334,15 @@ func TestChecker_CacheProbeCorruptGuardrail(t *testing.T) {
 func TestChecker_ConfigValidation(t *testing.T) {
 	checker := NewChecker(nil, nil, nil, nil, nil, nil)
 
-	// 1. Normal configuration
+	// 1. Normal configuration (AutoSystemProxy is false by default)
 	cfg := config.DefaultConfig()
+	cfg.AutoSystemProxy = false
 	item := checker.checkConfig(cfg)
 	if item.Status != StatusOk || item.Code != "CONFIG_OK" {
-		t.Fatalf("expected CONFIG_OK, got %s (%s)", item.Code, item.Status)
+		t.Fatalf("expected CONFIG_OK when AutoSystemProxy=false, got %s (%s)", item.Code, item.Status)
 	}
 
-	// 2. Port conflict (ListenPort == ControlPort)
+	// 2. Port conflict (ListenPort == ControlPort) with AutoSystemProxy=false
 	cfgConflict := cfg
 	cfgConflict.ControlPort = cfgConflict.ListenPort
 	itemConflict := checker.checkConfig(cfgConflict)
@@ -352,7 +354,7 @@ func TestChecker_ConfigValidation(t *testing.T) {
 		t.Errorf("PORT_CONFIG_COLLISION must NOT be auto-repairable")
 	}
 
-	// 3. Invalid port
+	// 3. Invalid port with AutoSystemProxy=false
 	cfgInvalid := cfg
 	cfgInvalid.ListenPort = -1
 	itemInvalid := checker.checkConfig(cfgInvalid)
@@ -360,12 +362,27 @@ func TestChecker_ConfigValidation(t *testing.T) {
 		t.Fatalf("expected PORT_INVALID, got %s (%s)", itemInvalid.Code, itemInvalid.Status)
 	}
 
-	// 4. Invalid control port
+	// 4. Invalid control port with AutoSystemProxy=false
 	cfgInvalidCtrl := cfg
 	cfgInvalidCtrl.ControlPort = 70000
 	itemInvalidCtrl := checker.checkConfig(cfgInvalidCtrl)
 	if itemInvalidCtrl.Status != StatusError || itemInvalidCtrl.Code != "PORT_INVALID" {
 		t.Fatalf("expected PORT_INVALID for control port 70000, got %s (%s)", itemInvalidCtrl.Code, itemInvalidCtrl.Status)
+	}
+
+	// 5. When AutoSystemProxy=true, verify conflict detection matches underlying system state
+	cfgAutoPac := cfg
+	cfgAutoPac.AutoSystemProxy = true
+	itemAutoPac := checker.checkConfig(cfgAutoPac)
+	envConflict := sysproxy.CheckProxyConflict(cfgAutoPac.ListenPort)
+	if envConflict != "" {
+		if itemAutoPac.Status != StatusWarning || itemAutoPac.Code != "SYSPROXY_CONFLICT" {
+			t.Fatalf("expected SYSPROXY_CONFLICT when AutoSystemProxy=true and system has conflict, got %s (%s)", itemAutoPac.Code, itemAutoPac.Status)
+		}
+	} else {
+		if itemAutoPac.Status != StatusOk || itemAutoPac.Code != "CONFIG_OK" {
+			t.Fatalf("expected CONFIG_OK when AutoSystemProxy=true and no conflict, got %s (%s)", itemAutoPac.Code, itemAutoPac.Status)
+		}
 	}
 }
 

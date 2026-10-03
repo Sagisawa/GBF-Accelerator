@@ -730,16 +730,18 @@ func (c *Checker) checkConfig(cfg config.Config) (item HealthItem) {
 		}
 	}
 
-	conflict := sysproxy.CheckProxyConflict(cfg.ListenPort)
-	details["sysproxy_conflict"] = conflict
-	if conflict != "" {
-		return HealthItem{
-			Name:       "系统网络配置与模式",
-			Status:     StatusWarning,
-			Code:       "SYSPROXY_CONFLICT",
-			Message:    fmt.Sprintf("系统代理与其他程序冲突: %s", conflict),
-			Details:    details,
-			Repairable: false, // Requires explicit user action
+	if cfg.AutoSystemProxy {
+		conflict := sysproxy.CheckProxyConflict(cfg.ListenPort)
+		details["sysproxy_conflict"] = conflict
+		if conflict != "" {
+			return HealthItem{
+				Name:       "系统网络配置与模式",
+				Status:     StatusWarning,
+				Code:       "SYSPROXY_CONFLICT",
+				Message:    fmt.Sprintf("系统代理与其他程序冲突: %s", conflict),
+				Details:    details,
+				Repairable: false, // Requires explicit user action
+			}
 		}
 	}
 

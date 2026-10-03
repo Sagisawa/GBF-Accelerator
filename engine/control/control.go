@@ -813,6 +813,11 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		effectiveUpstreamProxy = c.proxySrv.GetEffectiveUpstreamProxy()
 	}
 
+	var sysproxyConflict string
+	if cfg.AutoSystemProxy {
+		sysproxyConflict = sysproxy.CheckProxyConflict(cfg.ListenPort)
+	}
+
 	return map[string]interface{}{
 		"pid":                      os.Getpid(),
 		"version":                  config.AppVersion,
@@ -828,7 +833,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"allow_lan":                cfg.AllowLAN,
 		"lan_ip":                   lanIP,
 		"system_proxy_enabled":     sysproxy.IsPACProxyEnabled(cfg.ListenPort),
-		"system_proxy_conflict":    sysproxy.CheckProxyConflict(cfg.ListenPort),
+		"system_proxy_conflict":    sysproxyConflict,
 		"ca_installed":             caInstalled,
 		"ca_fingerprint":           caFingerprint,
 		"startup_enabled":          startup.IsStartupEnabled(),

@@ -24,6 +24,7 @@ import (
 	"gbf-proxy/firewall"
 	"gbf-proxy/health"
 	"gbf-proxy/proxy"
+	"gbf-proxy/sysproxy"
 	"gbf-proxy/telemetry"
 )
 
@@ -1575,6 +1576,55 @@ func TestControl_StatusIncludesIsBoostingCache(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
 	if _, exists := body["is_boosting_cache"]; !exists {
 		t.Fatalf("expected is_boosting_cache in /api/status response, but field was missing")
+	}
+}
+
+func TestControl_StatusSystemProxyConflict(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, telemetry.NewStats())
+
+	// 1. When AutoSystemProxy is false, system_proxy_conflict MUST be empty string
+	r1 := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	r1.Host = "127.0.0.1:8125"
+	r1.RemoteAddr = "127.0.0.1:12345"
+	w1 := httptest.NewRecorder()
+	ctrl.handleRoute(w1, r1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/status, got %d", w1.Code)
+	}
+	var body1 map[string]interface{}
+	_ = json.Unmarshal(w1.Body.Bytes(), &body1)
+	conflict1, _ := body1["system_proxy_conflict"].(string)
+	if conflict1 != "" {
+		t.Fatalf("expected empty system_proxy_conflict when AutoSystemProxy=false, got %q", conflict1)
+	}
+
+	// 2. When AutoSystemProxy is true, system_proxy_conflict must match sysproxy.CheckProxyConflict
+	candidate := cfgMgr.Get()
+	candidate.AutoSystemProxy = true
+	if err := cfgMgr.Commit(candidate); err != nil {
+		t.Fatalf("failed to commit AutoSystemProxy=true: %v", err)
+	}
+
+	r2 := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	r2.Host = "127.0.0.1:8125"
+	r2.RemoteAddr = "127.0.0.1:12345"
+	w2 := httptest.NewRecorder()
+	ctrl.handleRoute(w2, r2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /api/status, got %d", w2.Code)
+	}
+	var body2 map[string]interface{}
+	_ = json.Unmarshal(w2.Body.Bytes(), &body2)
+	conflict2, _ := body2["system_proxy_conflict"].(string)
+	expectedConflict := sysproxy.CheckProxyConflict(candidate.ListenPort)
+	if conflict2 != expectedConflict {
+		t.Fatalf("expected system_proxy_conflict %q, got %q", expectedConflict, conflict2)
 	}
 }
 
