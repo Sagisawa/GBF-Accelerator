@@ -1145,7 +1145,7 @@ export const App: React.FC = () => {
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-2.5 flex-wrap">
                   <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
-                    碧蓝幻想 GBF 加速器
+                    碧蓝幻想 GBF-Accelerator
                   </span>
                   <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
                     v{status?.version || '2.4.1'}
