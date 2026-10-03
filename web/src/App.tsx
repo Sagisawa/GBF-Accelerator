@@ -234,7 +234,9 @@ export const App: React.FC = () => {
   const [isTerminated, setIsTerminated] = useState<boolean>(false)
   const [activeTab, setActiveTab] = useState<'core' | 'android'>('core')
 
-  const isAndroid = status?.platform === 'android'
+  const isAndroid =
+    status?.platform === 'android' ||
+    (!status && typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent))
 
   // First-launch Root CA install guide (restores the v1.6 behavior): when the
   // runtime status first authoritatively reports the CA as not installed, auto
@@ -243,11 +245,11 @@ export const App: React.FC = () => {
   // re-prompt within the same launch.
   const caGuidePromptedRef = useRef(false)
   useEffect(() => {
-    if (shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
+    if (!isAndroid && shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
       caGuidePromptedRef.current = true
       setCaModalAction('install')
     }
-  }, [status])
+  }, [status, isAndroid])
 
   const handleQuitApp = async () => {
     setQuitting(true)
@@ -2275,15 +2277,17 @@ export const App: React.FC = () => {
         cacheStats={cacheStats}
       />
 
-      <CaCertModal
-        isOpen={caModalAction !== null}
-        onClose={() => setCaModalAction(null)}
-        isInstalled={isCaInstalled}
-        fingerprint={caFingerprint}
-        actionType={caModalAction || 'install'}
-        onRefresh={loadState}
-        onToast={showToast}
-      />
+      {!isAndroid && (
+        <CaCertModal
+          isOpen={caModalAction !== null}
+          onClose={() => setCaModalAction(null)}
+          isInstalled={isCaInstalled}
+          fingerprint={caFingerprint}
+          actionType={caModalAction || 'install'}
+          onRefresh={loadState}
+          onToast={showToast}
+        />
+      )}
 
       <HealthCheckModal
         isOpen={isHealthModalOpen}
