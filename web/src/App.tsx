@@ -234,6 +234,10 @@ export const App: React.FC = () => {
   const [isTerminated, setIsTerminated] = useState<boolean>(false)
   const [activeTab, setActiveTab] = useState<'core' | 'android'>('core')
 
+  const isAndroid =
+    status?.platform === 'android' ||
+    (!status && typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent))
+
   // First-launch Root CA install guide (restores the v1.6 behavior): when the
   // runtime status first authoritatively reports the CA as not installed, auto
   // open the cert guide modal exactly once per app launch. An already-trusted
@@ -241,11 +245,11 @@ export const App: React.FC = () => {
   // re-prompt within the same launch.
   const caGuidePromptedRef = useRef(false)
   useEffect(() => {
-    if (shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
+    if (!isAndroid && shouldAutoOpenCaGuide(status, caGuidePromptedRef.current)) {
       caGuidePromptedRef.current = true
       setCaModalAction('install')
     }
-  }, [status])
+  }, [status, isAndroid])
 
   const handleQuitApp = async () => {
     setQuitting(true)
@@ -283,14 +287,15 @@ export const App: React.FC = () => {
 
   // Android patch tooling is exposed only on the supported desktop hosts.
   const showAndroidPatch =
-    status?.platform === 'windows' ||
-    (status?.platform === 'darwin' && status?.arch === 'arm64')
+    !isAndroid &&
+    (status?.platform === 'windows' ||
+      (status?.platform === 'darwin' && status?.arch === 'arm64'))
 
   useEffect(() => {
-    if (!showAndroidPatch && activeTab === 'android') {
+    if ((!showAndroidPatch || isAndroid) && activeTab === 'android') {
       setActiveTab('core')
     }
-  }, [showAndroidPatch, activeTab])
+  }, [showAndroidPatch, isAndroid, activeTab])
 
   // Refresh data from API
   const loadState = useCallback(async () => {
@@ -1270,7 +1275,7 @@ export const App: React.FC = () => {
               {/* Local Cache Dir */}
               <div className="space-y-2">
                 <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
-                  本地缓存目录（支持无缝复用 ACGPower 缓存）：
+                  {isAndroid ? '本地缓存目录：' : '本地缓存目录（支持无缝复用 ACGPower 缓存）：'}
                 </label>
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
@@ -1281,35 +1286,39 @@ export const App: React.FC = () => {
                       onChange={(e) => setCacheDirInput(e.target.value)}
                       className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
                     />
-                    <button
-                      type="button"
-                      onClick={handleBrowseDir}
-                      disabled={loadingBrowse}
-                      aria-busy={loadingBrowse}
-                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
-                    >
-                      {loadingBrowse ? '正在打开...' : '浏览...'}
-                    </button>
+                    {!isAndroid && (
+                      <button
+                        type="button"
+                        onClick={handleBrowseDir}
+                        disabled={loadingBrowse}
+                        aria-busy={loadingBrowse}
+                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
+                      >
+                        {loadingBrowse ? '正在打开...' : '浏览...'}
+                      </button>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleOpenCacheFolder}
-                      disabled={loadingOpenFolder}
-                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
-                    >
-                      {loadingOpenFolder ? '打开中...' : '打开目录'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleDetectAcgp}
-                      disabled={Boolean(loadingAction)}
-                      aria-busy={isActionLoading('detect-acgp')}
-                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
-                    >
-                      {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
-                    </button>
-                  </div>
+                  {!isAndroid && (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleOpenCacheFolder}
+                        disabled={loadingOpenFolder}
+                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
+                      >
+                        {loadingOpenFolder ? '打开中...' : '打开目录'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleDetectAcgp}
+                        disabled={Boolean(loadingAction)}
+                        aria-busy={isActionLoading('detect-acgp')}
+                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
+                      >
+                        {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1432,21 +1441,24 @@ export const App: React.FC = () => {
                     <span>🩺</span>
                     <span>一键体检缓存</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsSlimModalOpen(true)}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                  >
-                    <span>🧹</span>
-                    <span>缓存安全瘦身</span>
-                  </button>
+                  {!isAndroid && (
+                    <button
+                      type="button"
+                      onClick={() => setIsSlimModalOpen(true)}
+                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <span>🧹</span>
+                      <span>缓存安全瘦身</span>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
           </div>
 
           {/* Card 2: Upstream Proxy & Network Routing */}
-          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
+          {!isAndroid && (
+            <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
@@ -1803,9 +1815,11 @@ export const App: React.FC = () => {
               </div>
             </div>
           </div>
+          )}
 
           {/* Card 3: HTTPS Root CA & System Integration */}
-          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
+          {!isAndroid && (
+            <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
@@ -1909,6 +1923,7 @@ export const App: React.FC = () => {
               </div>
             </div>
           </div>
+          )}
 
           {/* Card 4: Performance Acceleration & Asset Scheduling */}
           <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
@@ -2122,9 +2137,9 @@ export const App: React.FC = () => {
           </div>
         </div>
       </>
-    ) : (
+    ) : showAndroidPatch ? (
       <AndroidPatchPanel showToast={showToast} />
-    )}
+    ) : null}
   </main>
 
       {/* 3. Fixed Bottom Action Dock (Footer) */}
@@ -2262,15 +2277,17 @@ export const App: React.FC = () => {
         cacheStats={cacheStats}
       />
 
-      <CaCertModal
-        isOpen={caModalAction !== null}
-        onClose={() => setCaModalAction(null)}
-        isInstalled={isCaInstalled}
-        fingerprint={caFingerprint}
-        actionType={caModalAction || 'install'}
-        onRefresh={loadState}
-        onToast={showToast}
-      />
+      {!isAndroid && (
+        <CaCertModal
+          isOpen={caModalAction !== null}
+          onClose={() => setCaModalAction(null)}
+          isInstalled={isCaInstalled}
+          fingerprint={caFingerprint}
+          actionType={caModalAction || 'install'}
+          onRefresh={loadState}
+          onToast={showToast}
+        />
+      )}
 
       <HealthCheckModal
         isOpen={isHealthModalOpen}

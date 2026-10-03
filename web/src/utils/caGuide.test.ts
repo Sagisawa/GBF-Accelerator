@@ -42,4 +42,14 @@ describe('shouldAutoOpenCaGuide (first-launch Root CA guide)', () => {
     }
     expect(opens).toBe(1)
   })
+
+  it('does not trigger when running on android even if CA is not installed', () => {
+    expect(shouldAutoOpenCaGuide({ ca_installed: false, platform: 'android' }, false)).toBe(false)
+  })
+
+  it('triggers when running on other platforms if CA is not installed', () => {
+    expect(shouldAutoOpenCaGuide({ ca_installed: false, platform: 'windows' }, false)).toBe(true)
+    expect(shouldAutoOpenCaGuide({ ca_installed: false, platform: 'darwin' }, false)).toBe(true)
+    expect(shouldAutoOpenCaGuide({ ca_installed: false, platform: 'linux' }, false)).toBe(true)
+  })
 })
