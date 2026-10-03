@@ -301,5 +301,73 @@ func TestLRUCache_ConcurrentSetDeleteClear(t *testing.T) {
 	}
 }
 
+// TestLRUCache_ConcurrentSetMaxBytesAndReadWrite (H8):
+// Verifies thread safety and absence of data races when SetMaxBytes is called concurrently
+// alongside MaxBytes reads and shard Get/Set operations.
+func TestLRUCache_ConcurrentSetMaxBytesAndReadWrite(t *testing.T) {
+	cache := NewLRUCache(16 * 1024 * 1024)
 
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
 
+	// Goroutine 1 & 2: Concurrently resize cache limits
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			limits := []int64{8 * 1024 * 1024, 16 * 1024 * 1024, 32 * 1024 * 1024, 64 * 1024 * 1024}
+			idx := 0
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					cache.SetMaxBytes(limits[idx%len(limits)])
+					idx++
+					time.Sleep(1 * time.Millisecond)
+				}
+			}
+		}(i)
+	}
+
+	// Goroutine 3 & 4: Concurrently read MaxBytes
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					mb := cache.MaxBytes()
+					if mb <= 0 {
+						t.Errorf("expected positive MaxBytes, got %d", mb)
+					}
+				}
+			}
+		}()
+	}
+
+	// Goroutines 5-8: Concurrently perform Get and Set operations
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < 500; j++ {
+				key := fmt.Sprintf("key_%d_%d", workerID, j%50)
+				cache.Set(key, &CacheItem{
+					Key:  key,
+					Data: make([]byte, 1024),
+					Size: 1024,
+				})
+				cache.Get(key)
+			}
+		}(i)
+	}
+
+	// Let writes run
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}

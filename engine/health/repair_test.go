@@ -939,4 +939,57 @@ func TestRepair_DataPlaneFailure_SkipsCAEndpoint_And_DistinguishesFixedFailedSki
 	_ = hasSkipped
 }
 
+// 20. Verify that batch repair (all=true or empty code) never implicitly executes
+// actions requiring user confirmation (e.g. FIREWALL_RULE_MISSING, Root CA generation/installation).
+func TestRepair_BatchRepair_SkipsRequiresConfirmationItems(t *testing.T) {
+	repairer, cfgMgr, _, _, proxySrv, checker, _ := setupTestRepairer(t)
+	defer proxySrv.Stop()
 
+	// Enable LAN so firewall rule check is active
+	updateConfig(cfgMgr, func(c *config.Config) {
+		c.AllowLAN = true
+	})
+
+	var firewallApplyCalled atomic.Bool
+	repairer.SetFirewallApplyFunc(func(port int) (string, error) {
+		firewallApplyCalled.Store(true)
+		return "", nil
+	})
+	checker.SetFirewallStatusFunc(func(port int) (firewall.Status, error) {
+		return firewall.Status{Allowed: false}, nil
+	})
+
+	initCheck := checker.Check(context.Background())
+	if initCheck.CoreHealth.LANFirewall.Code != "FIREWALL_RULE_MISSING" {
+		t.Fatalf("expected FIREWALL_RULE_MISSING, got %s", initCheck.CoreHealth.LANFirewall.Code)
+	}
+	if !initCheck.CoreHealth.LANFirewall.RequiresConfirmation {
+		t.Fatalf("expected FIREWALL_RULE_MISSING to have RequiresConfirmation=true")
+	}
+
+	// 1. Run batch repair: must NOT apply firewall rule!
+	resBatch, err := repairer.Repair(context.Background(), RepairRequest{All: true})
+	if err != nil {
+		t.Fatalf("batch repair returned error: %v", err)
+	}
+	if firewallApplyCalled.Load() {
+		t.Fatalf("VIOLATION (H5): firewall apply was executed during batch repair without user confirmation!")
+	}
+	for _, step := range resBatch.Results {
+		if step.Code == "FIREWALL_RULE_MISSING" || step.Action == ActionApplyFirewallRule {
+			t.Fatalf("VIOLATION (H5): batch repair results contained FIREWALL_RULE_MISSING execution: %+v", step)
+		}
+	}
+
+	// 2. Targeted single repair: explicitly specifying code DOES execute
+	resSingle, err := repairer.Repair(context.Background(), RepairRequest{Code: "FIREWALL_RULE_MISSING"})
+	if err != nil {
+		t.Fatalf("single repair failed: %v", err)
+	}
+	if !firewallApplyCalled.Load() {
+		t.Fatalf("expected firewall apply to be executed when explicitly targeted by code")
+	}
+	if len(resSingle.Results) != 1 || resSingle.Results[0].Action != ActionApplyFirewallRule {
+		t.Fatalf("unexpected single repair results: %+v", resSingle.Results)
+	}
+}

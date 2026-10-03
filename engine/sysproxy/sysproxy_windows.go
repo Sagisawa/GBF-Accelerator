@@ -48,8 +48,7 @@ func getCurrentPACURL() string {
 
 func enablePACProxy(pacURL string) error {
 	current := getCurrentPACURL()
-	isOur := strings.Contains(strings.ToLower(current), "/proxy.pac") &&
-		(strings.Contains(current, "127.0.0.1") || strings.Contains(current, "localhost"))
+	isOur := (managedPACURL != "" && strings.EqualFold(current, managedPACURL)) || strings.EqualFold(current, pacURL)
 
 	if current != "" && !isOur && originalPACURL == "" {
 		originalPACURL = current
@@ -67,8 +66,7 @@ func enablePACProxy(pacURL string) error {
 
 func disablePACProxy(force bool) error {
 	if originalPACURL != "" {
-		origLower := strings.ToLower(originalPACURL)
-		isOrigOur := strings.Contains(origLower, "/proxy.pac") && (strings.Contains(origLower, "127.0.0.1") || strings.Contains(origLower, "localhost"))
+		isOrigOur := (managedPACURL != "" && strings.EqualFold(originalPACURL, managedPACURL))
 		if !isOrigOur {
 			cmd := exec.Command("reg", "add", internetSettingsRegKey, "/v", "AutoConfigURL", "/t", "REG_SZ", "/d", originalPACURL, "/f")
 			cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}

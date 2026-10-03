@@ -2,10 +2,10 @@ package updater
 
 import (
 	"archive/zip"
-	"encoding/json"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -87,8 +87,10 @@ func TestVerifyArchiveSHA256(t *testing.T) {
 	if err := verifyArchiveSHA256(path, "0000000000000000000000000000000000000000000000000000000000000000"); err == nil {
 		t.Fatal("expected checksum mismatch")
 	}
+	if err := verifyArchiveSHA256(path, ""); err == nil {
+		t.Fatal("expected empty checksum to be rejected")
+	}
 }
-
 
 func TestParseApplyArgsAndRestartArgs(t *testing.T) {
 	tempDir := t.TempDir()
@@ -127,5 +129,59 @@ func TestParseApplyArgsAndRestartArgs(t *testing.T) {
 	}
 	if _, err := os.Stat(argsPath); !os.IsNotExist(err) {
 		t.Fatalf("restart args file should be removed after parsing")
+	}
+
+	// Missing SHA256 flag must fail
+	_, errMissingSHA := parseApplyArgs([]string{
+		"helper.exe",
+		updateApplyFlag,
+		updateArchiveFlag, filepath.Join(tempDir, "update.zip"),
+		updateTargetFlag, filepath.Join(tempDir, "GBF_Accelerator.exe"),
+	})
+	if errMissingSHA == nil {
+		t.Fatal("expected error when SHA256 flag is missing")
+	}
+}
+
+func TestApplyWindowsExecutable_RestartFailure_RollbackRestoresOldVersion(t *testing.T) {
+	tempDir := t.TempDir()
+	targetPath := filepath.Join(tempDir, "GBF_Accelerator.exe")
+	origContent := []byte("ORIGINAL_OLD_VERSION_DATA_12345")
+	if err := os.WriteFile(targetPath, origContent, 0755); err != nil {
+		t.Fatalf("failed to create target file: %v", err)
+	}
+
+	// Create an archive containing an invalid non-runnable executable
+	archivePath := filepath.Join(tempDir, "update.zip")
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	w, err := zw.Create("GBF_Accelerator.exe")
+	if err != nil {
+		t.Fatalf("failed to create zip entry: %v", err)
+	}
+	// Write dummy text which is guaranteed to fail Windows execution with %1 is not a valid Win32 application
+	_, _ = w.Write([]byte("NOT_A_VALID_WIN32_PE_BINARY"))
+	_ = zw.Close()
+	if err := os.WriteFile(archivePath, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("failed to write archive: %v", err)
+	}
+
+	// Execute applyWindowsExecutable: restart must fail, and rollback must restore the original file
+	err = applyWindowsExecutable(archivePath, targetPath, nil)
+	if err == nil {
+		t.Fatalf("expected error from launching non-executable dummy file, got nil")
+	}
+
+	restoredContent, readErr := os.ReadFile(targetPath)
+	if readErr != nil {
+		t.Fatalf("failed to read restored target file: %v", readErr)
+	}
+	if !bytes.Equal(restoredContent, origContent) {
+		t.Fatalf("rollback did not restore original content; got %q, want %q", restoredContent, origContent)
+	}
+
+	backupPath := targetPath + ".update-backup"
+	if _, statErr := os.Stat(backupPath); !os.IsNotExist(statErr) {
+		t.Fatalf("backup file should be restored back or removed, but still exists: %v", backupPath)
 	}
 }

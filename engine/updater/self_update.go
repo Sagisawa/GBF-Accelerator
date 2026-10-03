@@ -157,8 +157,8 @@ func parseApplyArgs(args []string) (applyRequest, error) {
 			_ = os.Remove(args[i])
 		}
 	}
-	if req.ArchivePath == "" || req.TargetPath == "" {
-		return req, fmt.Errorf("更新参数不完整")
+	if req.ArchivePath == "" || req.TargetPath == "" || req.ExpectedSHA256 == "" {
+		return req, fmt.Errorf("更新参数不完整 (需提供 archive, target 及 sha256)")
 	}
 	return req, nil
 }
@@ -223,10 +223,12 @@ func applyWindowsExecutable(archivePath, targetPath string, restartArgs []string
 		return fmt.Errorf("替换新版程序失败，已尝试恢复旧版本: %w", err)
 	}
 
-	_ = os.Remove(backupPath)
 	if err := launchRestartTarget(targetPath, restartArgs); err != nil {
-		return fmt.Errorf("新版本已替换，但自动重启失败: %w", err)
+		_ = os.Remove(targetPath)
+		_ = os.Rename(backupPath, targetPath)
+		return fmt.Errorf("新版本已替换，但自动重启失败，已尝试恢复旧版本: %w", err)
 	}
+	_ = os.Remove(backupPath)
 	return nil
 }
 
@@ -268,10 +270,12 @@ func applyMacBundle(archivePath, targetExePath string, restartArgs []string) err
 		return fmt.Errorf("替换 macOS 应用失败，已尝试恢复旧版本: %w", err)
 	}
 
-	_ = os.RemoveAll(backupBundle)
 	if err := launchRestartTarget(targetExePath, restartArgs); err != nil {
-		return fmt.Errorf("新版本已替换，但自动重启失败: %w", err)
+		_ = os.RemoveAll(currentBundle)
+		_ = os.Rename(backupBundle, currentBundle)
+		return fmt.Errorf("新版本已替换，但自动重启失败，已尝试恢复旧版本: %w", err)
 	}
+	_ = os.RemoveAll(backupBundle)
 	return nil
 }
 
@@ -428,7 +432,7 @@ func macBundleRoot(targetExe string) (string, error) {
 func verifyArchiveSHA256(path, expected string) error {
 	expected = strings.ToLower(strings.TrimSpace(expected))
 	if expected == "" {
-		return nil
+		return fmt.Errorf("缺少预期的 SHA-256 校验值")
 	}
 	f, err := os.Open(path)
 	if err != nil {

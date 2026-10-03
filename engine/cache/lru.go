@@ -348,6 +348,7 @@ type LRUCache struct {
 	maxBytes   int64
 	numShards  int
 	totalBytes atomic.Int64
+	resizeMu   sync.Mutex
 }
 
 func fnv32(key string) uint32 {
@@ -367,9 +368,9 @@ func NewLRUCache(maxBytes int64) *LRUCache {
 
 	c := &LRUCache{
 		mask:      uint32(numShards - 1),
-		maxBytes:  maxBytes,
 		numShards: numShards,
 	}
+	atomic.StoreInt64(&c.maxBytes, maxBytes)
 
 	shards := make([]*lruShard, numShards)
 	perShard := maxBytes
@@ -394,7 +395,10 @@ func (c *LRUCache) getShard(key string) *lruShard {
 }
 
 func (c *LRUCache) SetMaxBytes(maxBytes int64) {
-	c.maxBytes = maxBytes
+	c.resizeMu.Lock()
+	defer c.resizeMu.Unlock()
+
+	atomic.StoreInt64(&c.maxBytes, maxBytes)
 	perShard := maxBytes
 	if c.numShards > 1 {
 		perShard = maxBytes / int64(c.numShards)
@@ -468,7 +472,7 @@ func (c *LRUCache) MaxBytes() int64 {
 	if c == nil {
 		return 0
 	}
-	return c.maxBytes
+	return atomic.LoadInt64(&c.maxBytes)
 }
 
 func (c *LRUCache) Stats() (int, int64) {

@@ -88,3 +88,23 @@ func TestDisablePACProxy_ExternalPACPreservation(t *testing.T) {
 		t.Errorf("expected isManagingProxy to become false")
 	}
 }
+
+func TestDisablePACProxy_UnmanagedExternalPAC_NotDeleted(t *testing.T) {
+	mu.Lock()
+	// Ensure we are in unmanaged state
+	isManagingProxy = false
+	managedPACURL = ""
+	originalPACURL = ""
+	removeStateFile()
+	mu.Unlock()
+
+	// Even if an external PAC (e.g. 127.0.0.1:8123/proxy.pac) exists on the machine,
+	// DisablePACProxy(false) when unmanaged must be an immediate no-op and return nil.
+	err := DisablePACProxy(false)
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if isManagingProxy {
+		t.Fatalf("expected isManagingProxy to remain false")
+	}
+}
