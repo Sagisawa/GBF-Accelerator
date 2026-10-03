@@ -10,8 +10,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1252,6 +1252,81 @@ func TestControlServer_ApplyConfig_SaveFail_NoRuntimeSideEffects(t *testing.T) {
 	}
 }
 
+func TestControlServer_PortChangeWithoutAutoSystemProxy_DoesNotDisablePAC(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	lC, _ := net.Listen("tcp", "127.0.0.1:0")
+	ctrlPort := lC.Addr().(*net.TCPAddr).Port
+	lC.Close()
+
+	lData, _ := net.Listen("tcp", "127.0.0.1:0")
+	dataPort := lData.Addr().(*net.TCPAddr).Port
+	lData.Close()
+
+	lNew, _ := net.Listen("tcp", "127.0.0.1:0")
+	newDataPort := lNew.Addr().(*net.TCPAddr).Port
+	lNew.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = dataPort
+		c.ControlPort = ctrlPort
+		c.AutoSystemProxy = false
+	})
+
+	stats := telemetry.NewStats()
+	cacheMgr := cache.NewManager(filepath.Join(tempDir, "cache"), 32)
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+
+	var disableCalled atomic.Bool
+	var enableCalled atomic.Bool
+	ctrl.enablePACProxyFn = func(url string) error {
+		enableCalled.Store(true)
+		return nil
+	}
+	ctrl.disablePACProxyFn = func(force bool) error {
+		disableCalled.Store(true)
+		return nil
+	}
+
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start ctrl: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// Apply port change with AutoSystemProxy = false
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", ctrlPort)
+	patchBody := map[string]interface{}{
+		"listen_port": newDataPort,
+	}
+	jsonBytes, _ := json.Marshal(patchBody)
+
+	req, _ := http.NewRequest(http.MethodPost, applyURL, bytes.NewReader(jsonBytes))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	if disableCalled.Load() {
+		t.Fatalf("VIOLATION (H1): disablePACProxyFn was called when AutoSystemProxy was never enabled!")
+	}
+	if enableCalled.Load() {
+		t.Fatalf("VIOLATION: enablePACProxyFn was called when AutoSystemProxy is false")
+	}
+}
+
 func TestControlServer_ReloadListener_SamePortNoOp(t *testing.T) {
 	tempDir := t.TempDir()
 	cfgPath := filepath.Join(tempDir, "config.json")
@@ -1362,7 +1437,6 @@ func TestHandleLatencyTestWithMockServer(t *testing.T) {
 		t.Errorf("expected ok=false for unreachable proxy, got %v", unreachRes)
 	}
 }
-
 
 func TestControlRejectsInvalidBackupUpstream(t *testing.T) {
 	d := t.TempDir()
@@ -1891,5 +1965,34 @@ func TestControlHealthRepairEndpoint(t *testing.T) {
 	}
 	if code2 != http.StatusConflict {
 		t.Fatalf("expected second concurrent repair request to return 409 Conflict, got %d", code2)
+	}
+}
+
+func TestControlServer_UpdateDownload_RejectsCustomURLAndDest(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	stats := telemetry.NewStats()
+	cacheMgr := cache.NewManager(filepath.Join(tempDir, "cache"), 32)
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	// 1. Custom URL is rejected with 400 Bad Request
+	req1 := httptest.NewRequest(http.MethodPost, "/api/update/download", strings.NewReader(`{"url":"http://evil.com/payload.zip"}`))
+	req1.Host = "127.0.0.1:8125"
+	req1.RemoteAddr = "127.0.0.1:12345"
+	w1 := httptest.NewRecorder()
+	ctrl.handleRoute(w1, req1)
+	if w1.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for custom url, got %d", w1.Code)
+	}
+
+	// 2. Custom dest path is rejected with 400 Bad Request
+	req2 := httptest.NewRequest(http.MethodPost, "/api/update/download", strings.NewReader(`{"dest":"C:\\Windows\\System32\\bad.dll"}`))
+	req2.Host = "127.0.0.1:8125"
+	req2.RemoteAddr = "127.0.0.1:12345"
+	w2 := httptest.NewRecorder()
+	ctrl.handleRoute(w2, req2)
+	if w2.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for custom dest, got %d", w2.Code)
 	}
 }

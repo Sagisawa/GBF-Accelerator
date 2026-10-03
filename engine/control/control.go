@@ -38,20 +38,20 @@ import (
 )
 
 type ControlServer struct {
-	cfgMgr     *config.Manager
-	certMgr    *cert.Manager
-	cacheMgr   *cache.Manager
-	proxySrv   *proxy.ProxyServer
-	stats      *telemetry.Stats
-	server     *http.Server
+	cfgMgr      *config.Manager
+	certMgr     *cert.Manager
+	cacheMgr    *cache.Manager
+	proxySrv    *proxy.ProxyServer
+	stats       *telemetry.Stats
+	server      *http.Server
 	listener    net.Listener
 	listenerGen uint64
 	mu          sync.RWMutex
 	applyMu     sync.Mutex
-	distDir    string
-	running    bool
-	closedChan chan struct{}
-	quitFunc   func()
+	distDir     string
+	running     bool
+	closedChan  chan struct{}
+	quitFunc    func()
 
 	// Background Cache Task state
 	cacheTaskMu     sync.Mutex
@@ -65,7 +65,6 @@ type ControlServer struct {
 	lastSlimResult  map[string]interface{}
 	lastBoostResult cache.BoostProgress
 	cacheCancelCh   chan struct{}
-
 
 	// Background Download state
 	dlMu       sync.Mutex
@@ -97,8 +96,8 @@ type ControlServer struct {
 	componentDlCancelFn context.CancelFunc
 
 	// Side-effect hooks for system proxy and startup registration (mockable in tests)
-	enablePACProxyFn   func(string) error
-	disablePACProxyFn  func(bool) error
+	enablePACProxyFn    func(string) error
+	disablePACProxyFn   func(bool) error
 	setStartupEnabledFn func(bool) error
 
 	repairer *health.Repairer
@@ -823,7 +822,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"version":                  config.AppVersion,
 		"engine":                   "go",
 		"platform":                 runtime.GOOS,
-		"arch":                      runtime.GOARCH,
+		"arch":                     runtime.GOARCH,
 		"proxy_running":            proxyRunning,
 		"listen_host":              c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":              cfg.ListenPort,
@@ -948,16 +947,16 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		candidate.ControlPort = int(val)
 	}
 	if val, ok := patch["upstream_proxy"].(string); ok {
-			candidate.UpstreamProxy = strings.TrimSpace(val)
+		candidate.UpstreamProxy = strings.TrimSpace(val)
 	}
 
 	if val, ok := patch["backup_upstream_proxy"].(string); ok {
-			backup := strings.TrimSpace(val)
-			if backup != "" && !isSupportedBackupProxyURL(backup) {
-				c.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid backup_upstream_proxy"})
-				return
-			}
-			candidate.BackupUpstreamProxy = backup
+		backup := strings.TrimSpace(val)
+		if backup != "" && !isSupportedBackupProxyURL(backup) {
+			c.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid backup_upstream_proxy"})
+			return
+		}
+		candidate.BackupUpstreamProxy = backup
 	}
 	if val, ok := patch["enable_upstream_failover"].(bool); ok {
 		candidate.EnableUpstreamFailover = val
@@ -1115,7 +1114,7 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 			var err error
 			if oldCandidate.AutoSystemProxy {
 				err = c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", oldCandidate.ListenPort))
-			} else {
+			} else if candidate.AutoSystemProxy {
 				err = c.disablePACProxyFn(false)
 			}
 			if err != nil {
@@ -1182,7 +1181,7 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		var err error
 		if candidate.AutoSystemProxy {
 			err = c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", candidate.ListenPort))
-		} else {
+		} else if oldCandidate.AutoSystemProxy {
 			err = c.disablePACProxyFn(false)
 		}
 		if err != nil {
@@ -1612,13 +1611,13 @@ func (c *ControlServer) handleDetectUpstream(w http.ResponseWriter, req *http.Re
 func (c *ControlServer) handleUpstreamStatus(w http.ResponseWriter, req *http.Request) {
 	if c.proxySrv == nil {
 		c.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"ok": true,
+			"ok":     true,
 			"status": proxy.UpstreamRuntimeStatus{Active: "primary"},
 		})
 		return
 	}
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok": true,
+		"ok":     true,
 		"status": c.proxySrv.GetUpstreamStatus(),
 	})
 }
@@ -1790,48 +1789,51 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 
 	var reqBody map[string]string
 	_ = json.NewDecoder(req.Body).Decode(&reqBody)
-	downloadURL := strings.TrimSpace(reqBody["url"])
-	destPath := strings.TrimSpace(reqBody["dest"])
-	expectedSHA256 := strings.TrimSpace(reqBody["sha256"])
-	releaseVersion := strings.TrimSpace(reqBody["version"])
-	managedDownload := false
-
-	if downloadURL == "" {
-		proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
-		info := updater.CheckForUpdate(proxyURL, 8*time.Second, config.AppVersion)
-		if info.DownloadURL == "" {
-			c.dlMu.Unlock()
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok":    false,
-				"error": "未能获取到可用的下载地址",
-			})
-			return
-		}
-		if !info.HasUpdate {
-			c.dlMu.Unlock()
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok":    false,
-				"error": "当前已经是最新版本，无需下载",
-			})
-			return
-		}
-		downloadURL = info.DownloadURL
-		if expectedSHA256 == "" {
-			expectedSHA256 = info.SHA256
-		}
-		if releaseVersion == "" {
-			releaseVersion = info.LatestVersion
-		}
-		if strings.TrimSpace(expectedSHA256) == "" {
-			c.dlMu.Unlock()
-			c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
-				"ok":    false,
-				"error": "该 Release 缺少 SHA-256 校验值，已阻止自动更新下载",
-			})
-			return
-		}
-		managedDownload = true
+	customURL := strings.TrimSpace(reqBody["url"])
+	customDest := strings.TrimSpace(reqBody["dest"])
+	if customURL != "" || customDest != "" {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "仅支持官方 Release 自动更新，不允许指定自定义下载地址或目标路径",
+		})
+		return
 	}
+
+	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
+	info := updater.CheckForUpdate(proxyURL, 8*time.Second, config.AppVersion)
+	if info.DownloadURL == "" {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "未能获取到可用的下载地址",
+		})
+		return
+	}
+	if !info.HasUpdate {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "当前已经是最新版本，无需下载",
+		})
+		return
+	}
+	downloadURL := info.DownloadURL
+	expectedSHA256 := info.SHA256
+	releaseVersion := info.LatestVersion
+	destPath := ""
+	if reqVersion := strings.TrimSpace(reqBody["version"]); reqVersion != "" {
+		releaseVersion = reqVersion
+	}
+	if strings.TrimSpace(expectedSHA256) == "" {
+		c.dlMu.Unlock()
+		c.sendJSON(w, http.StatusPreconditionFailed, map[string]interface{}{
+			"ok":    false,
+			"error": "该 Release 缺少 SHA-256 校验值，已阻止自动更新下载",
+		})
+		return
+	}
+	managedDownload := true
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.dlActive = true
@@ -1846,8 +1848,6 @@ func (c *ControlServer) handleUpdateDownload(w http.ResponseWriter, req *http.Re
 	c.dlManaged = managedDownload
 	c.dlCancelFn = cancel
 	c.dlMu.Unlock()
-
-	proxyURL := c.cfgMgr.GetEffectiveUpstreamProxy()
 
 	go func() {
 		finalPath, err := updater.DownloadReleaseAsset(
@@ -2014,7 +2014,6 @@ func (c *ControlServer) handleUpdateOpenFolder(w http.ResponseWriter, req *http.
 		"path": target,
 	})
 }
-
 
 func (c *ControlServer) handleFirewallStatus(w http.ResponseWriter, req *http.Request) {
 	cfg := c.cfgMgr.Get()

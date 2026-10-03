@@ -100,7 +100,7 @@ var ServerRepairMap = map[string]ActionDesc{
 	// Windows Firewall (Priority 30)
 	"FIREWALL_RULE_MISSING": {
 		Repairable:           true,
-		RequiresConfirmation: false,
+		RequiresConfirmation: true,
 		RequiresElevation:    true,
 		Action:               ActionApplyFirewallRule,
 		Priority:             30,
@@ -186,24 +186,24 @@ var ServerRepairMap = map[string]ActionDesc{
 
 	// Explicitly non-repairable items (guarded)
 	"PORT_CONFIG_COLLISION":          {Repairable: false},
-	"CONFIG_PORT_COLLISION":        {Repairable: false},
-	"PORT_INVALID":                 {Repairable: false},
-	"CONFIG_PORT_INVALID":          {Repairable: false},
-	"LAN_IP_NOT_FOUND":             {Repairable: false},
-	"LAN_NO_IP":                    {Repairable: false},
-	"LAN_DISABLED":                 {Repairable: false},
-	"CACHE_DIR_NOT_WRITABLE":       {Repairable: false},
-	"CACHE_WRITE_DENIED":           {Repairable: false},
-	"CACHE_DIR_ERROR":              {Repairable: false},
-	"CACHE_PATH_NOT_DIR":           {Repairable: false},
-	"CACHE_PROBE_CORRUPT":          {Repairable: false},
-	"CACHE_DIR_NOT_CONFIGURED":     {Repairable: false},
-	"CA_NOT_CONFIGURED":            {Repairable: false},
-	"CORE_VERSION_INVALID":         {Repairable: false},
+	"CONFIG_PORT_COLLISION":          {Repairable: false},
+	"PORT_INVALID":                   {Repairable: false},
+	"CONFIG_PORT_INVALID":            {Repairable: false},
+	"LAN_IP_NOT_FOUND":               {Repairable: false},
+	"LAN_NO_IP":                      {Repairable: false},
+	"LAN_DISABLED":                   {Repairable: false},
+	"CACHE_DIR_NOT_WRITABLE":         {Repairable: false},
+	"CACHE_WRITE_DENIED":             {Repairable: false},
+	"CACHE_DIR_ERROR":                {Repairable: false},
+	"CACHE_PATH_NOT_DIR":             {Repairable: false},
+	"CACHE_PROBE_CORRUPT":            {Repairable: false},
+	"CACHE_DIR_NOT_CONFIGURED":       {Repairable: false},
+	"CA_NOT_CONFIGURED":              {Repairable: false},
+	"CORE_VERSION_INVALID":           {Repairable: false},
 	"CONTROL_PLANE_LISTENER_MISSING": {Repairable: false},
-	"CONTROL_PLANE_INVALID_ADDR":    {Repairable: false},
-	"CONTROL_PLANE_PORT_MISMATCH":   {Repairable: false},
-	"SYSPROXY_CONFLICT":            {Repairable: false},
+	"CONTROL_PLANE_INVALID_ADDR":     {Repairable: false},
+	"CONTROL_PLANE_PORT_MISMATCH":    {Repairable: false},
+	"SYSPROXY_CONFLICT":              {Repairable: false},
 }
 
 // GetActionDesc returns the authoritative ActionDesc for a diagnostic code.
@@ -216,12 +216,12 @@ func GetActionDesc(code string) ActionDesc {
 
 // Repairer coordinates executing safe, automated repairs for diagnosed health issues.
 type Repairer struct {
-	cfgMgr        *config.Manager
-	certMgr       *cert.Manager
-	cacheMgr      *cache.Manager
-	proxySrv      *proxy.ProxyServer
-	stats         *telemetry.Stats
-	checker       *Checker
+	cfgMgr         *config.Manager
+	certMgr        *cert.Manager
+	cacheMgr       *cache.Manager
+	proxySrv       *proxy.ProxyServer
+	stats          *telemetry.Stats
+	checker        *Checker
 	controlReload  func(port int) error
 	firewallApply  func(port int) (string, error)
 	firewallStatus func(port int) (firewall.Status, error)
@@ -340,6 +340,10 @@ func (r *Repairer) Repair(ctx context.Context, req RepairRequest) (*RepairRespon
 	}
 
 	var itemsToRepair []HealthItem
+	var results []RepairStepResult
+	successCount := 0
+	failCount := 0
+	skipCount := 0
 
 	requestedCode := strings.TrimSpace(req.Code)
 	if requestedCode != "" && !strings.EqualFold(requestedCode, "all") {
@@ -363,11 +367,13 @@ func (r *Repairer) Repair(ctx context.Context, req RepairRequest) (*RepairRespon
 
 		itemsToRepair = append(itemsToRepair, HealthItem{Code: normCode})
 	} else {
-		// Batch repair: collect all repairable items currently unhealthy
+		// Batch repair: collect repairable items that do NOT require explicit user confirmation.
+		// System-level side-effecting actions (Root CA, Firewall, Control plane loopback) must
+		// never be executed implicitly via batch repair.
 		for _, it := range items {
 			if it.Status != StatusOk {
 				desc := GetActionDesc(it.Code)
-				if desc.Repairable {
+				if desc.Repairable && !desc.RequiresConfirmation {
 					itemsToRepair = append(itemsToRepair, it)
 				}
 			}
@@ -382,16 +388,11 @@ func (r *Repairer) Repair(ctx context.Context, req RepairRequest) (*RepairRespon
 	if len(itemsToRepair) == 0 {
 		return &RepairResponse{
 			Success: true,
-			Message: "所有受检项均正常，无需修复",
+			Message: "所有受检项均正常或需单独确认，无需执行批量自动修复",
 			Results: []RepairStepResult{},
 			Health:  initialHealth,
 		}, nil
 	}
-
-	var results []RepairStepResult
-	successCount := 0
-	failCount := 0
-	skipCount := 0
 
 	dataPlaneFailed := false
 	dataPlaneRepaired := false

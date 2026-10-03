@@ -69,7 +69,7 @@ GBF Accelerator 各版本的更新记录与 Release 说明。
 ### ⚡ Stream-Through 流式缓存传输与元数据索引
 - **Cache Miss Stream-Through（冷请求流式交付）**：未命中缓存时数据随到随传，首字节响应时间（TTFB）不再受大素材体积制约。
 - **分级缓冲策略（Tiered Buffering）**：小文件批量处理、中文件内存流式、超大文件临时文件承载，避免单次大请求瞬时内存激增。
-- **Verified Large-Asset Direct Streaming**：已验大体积磁盘缓存直读，避免将整文件载入 RAM。
+- **Verified Large-Asset Direct Streaming**：已验大体积磁盘缓存直接响应与 SLRU 内存预算隔离，优先保障首包低延迟。
 - **Disk Metadata Index（内存元数据索引）**：磁盘元数据常驻内存索引，消除 stat 探测与重复 I/O，HEAD 与 304 快速短路返回。
 - **SLRU 准入治理与并发优化**：大体积资源免进普通 SLRU，优化高并发锁竞争与 GC 对象分配。
 

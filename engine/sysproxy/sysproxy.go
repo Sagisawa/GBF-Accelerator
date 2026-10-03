@@ -124,7 +124,6 @@ func DisablePACProxy(force bool) error {
 
 	currentPAC := strings.TrimSpace(GetCurrentPACURL())
 	isManaged := isManagingProxy && managedPACURL != "" && strings.EqualFold(currentPAC, managedPACURL)
-	isOur := IsPACProxyEnabled(0)
 
 	// Never overwrite a PAC that was changed by another application/user after
 	// we mounted ours. Only force=true may override an externally changed PAC.
@@ -136,7 +135,7 @@ func DisablePACProxy(force bool) error {
 			removeStateFile()
 			return nil
 		}
-		if !isManagingProxy && !isOur {
+		if !isManagingProxy {
 			removeStateFile()
 			return nil
 		}

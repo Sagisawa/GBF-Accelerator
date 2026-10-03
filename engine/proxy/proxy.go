@@ -44,12 +44,18 @@ type upstreamClients struct {
 }
 
 func (u *upstreamClients) closeIdle() {
-	if u == nil { return }
+	if u == nil {
+		return
+	}
 	if u.api != nil {
-		if tr, ok := u.api.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
+		if tr, ok := u.api.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
 	}
 	if u.asset != nil {
-		if tr, ok := u.asset.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
+		if tr, ok := u.asset.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
 	}
 }
 
@@ -100,21 +106,37 @@ func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
 				proxyFunc = http.ProxyURL(u)
 			case "socks5", "socks5h":
 				ph, pp := u.Hostname(), u.Port()
-				if pp == "" { pp = "1080" }
+				if pp == "" {
+					pp = "1080"
+				}
 				pa := net.JoinHostPort(ph, pp)
 				user, pass := "", ""
-				if u.User != nil { user = u.User.Username(); pass, _ = u.User.Password() }
+				if u.User != nil {
+					user = u.User.Username()
+					pass, _ = u.User.Password()
+				}
 				dialFunc = func(ctx context.Context, network, target string) (net.Conn, error) {
 					t := 10 * time.Second
 					if d, ok := ctx.Deadline(); ok {
 						r := time.Until(d)
-						if r <= 0 { return nil, ctx.Err() }
-						if r < t { t = r }
+						if r <= 0 {
+							return nil, ctx.Err()
+						}
+						if r < t {
+							t = r
+						}
 					}
-					if err := ctx.Err(); err != nil { return nil, err }
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
 					conn, err := dialSOCKS5(pa, target, user, pass, t)
-					if err != nil { return nil, err }
-					if err := ctx.Err(); err != nil { _ = conn.Close(); return nil, err }
+					if err != nil {
+						return nil, err
+					}
+					if err := ctx.Err(); err != nil {
+						_ = conn.Close()
+						return nil, err
+					}
 					return conn, nil
 				}
 			}
@@ -122,25 +144,33 @@ func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
 	}
 
 	apiMaxConn, apiMaxIdle := c.APIMaxConnections, c.APIMaxKeepalive
-	if apiMaxConn <= 0 { apiMaxConn = 16 }
-	if apiMaxIdle <= 0 { apiMaxIdle = 4 }
+	if apiMaxConn <= 0 {
+		apiMaxConn = 16
+	}
+	if apiMaxIdle <= 0 {
+		apiMaxIdle = 4
+	}
 	assetMaxConn, assetMaxIdle := c.AssetMaxConnections, c.AssetMaxKeepalive
-	if assetMaxConn <= 0 { assetMaxConn = 32 }
-	if assetMaxIdle <= 0 { assetMaxIdle = 16 }
+	if assetMaxConn <= 0 {
+		assetMaxConn = 32
+	}
+	if assetMaxIdle <= 0 {
+		assetMaxIdle = 16
+	}
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 15 * time.Second}
 
 	apiTr := &http.Transport{
 		Proxy: proxyFunc, DialContext: dialer.DialContext,
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode},
 		MaxConnsPerHost: apiMaxConn, MaxIdleConns: apiMaxConn, MaxIdleConnsPerHost: apiMaxIdle,
-		IdleConnTimeout: time.Duration(c.APIKeepaliveExpiry * float64(time.Second)),
+		IdleConnTimeout:   time.Duration(c.APIKeepaliveExpiry * float64(time.Second)),
 		ForceAttemptHTTP2: false, DisableCompression: true,
 	}
 	assetTr := &http.Transport{
 		Proxy: proxyFunc, DialContext: dialer.DialContext,
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode},
 		MaxConnsPerHost: assetMaxConn, MaxIdleConns: assetMaxConn, MaxIdleConnsPerHost: assetMaxIdle,
-		IdleConnTimeout: time.Duration(c.AssetKeepaliveExpiry * float64(time.Second)),
+		IdleConnTimeout:   time.Duration(c.AssetKeepaliveExpiry * float64(time.Second)),
 		ForceAttemptHTTP2: true, DisableCompression: true,
 	}
 	if dialFunc != nil {
@@ -169,13 +199,19 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	oldPrimary, oldBackup := s.primaryClient.Load(), s.backupClient.Load()
 
 	primaryProxy := c.GetEffectiveUpstreamProxy()
-	if c.DirectMode { primaryProxy = "" }
+	if c.DirectMode {
+		primaryProxy = ""
+	}
 	backupProxy := strings.TrimSpace(c.BackupUpstreamProxy)
-	if c.DirectMode || !isSupportedFailoverProxy(backupProxy) { backupProxy = "" }
+	if c.DirectMode || !isSupportedFailoverProxy(backupProxy) {
+		backupProxy = ""
+	}
 
 	newPrimary := buildUpstreamClients(c, primaryProxy)
 	var newBackup *upstreamClients
-	if backupProxy != "" { newBackup = buildUpstreamClients(c, backupProxy) }
+	if backupProxy != "" {
+		newBackup = buildUpstreamClients(c, backupProxy)
+	}
 
 	s.primaryClient.Store(newPrimary)
 	s.backupClient.Store(newBackup)
@@ -188,16 +224,26 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	)
 	s.activateRouteLocked(s.failover.activeRoute())
 
-	if oldPrimary != nil { oldPrimary.closeIdle() }
-	if oldBackup != nil && oldBackup != newBackup { oldBackup.closeIdle() }
+	if oldPrimary != nil {
+		oldPrimary.closeIdle()
+	}
+	if oldBackup != nil && oldBackup != newBackup {
+		oldBackup.closeIdle()
+	}
 }
 
 func isSupportedFailoverProxy(raw string) bool {
 	raw = strings.TrimSpace(raw)
-	if strings.EqualFold(raw, "direct") { return true }
-	if raw == "" { return false }
+	if strings.EqualFold(raw, "direct") {
+		return true
+	}
+	if raw == "" {
+		return false
+	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" { return false }
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https", "socks5", "socks5h":
 		return true
@@ -216,8 +262,12 @@ func (s *ProxyServer) activateRouteLocked(route failoverRoute) {
 			route = failoverRoutePrimary
 		}
 	}
-	if route == failoverRoutePrimary && pair != nil { activeProxy = pair.proxy }
-	if pair == nil { return }
+	if route == failoverRoutePrimary && pair != nil {
+		activeProxy = pair.proxy
+	}
+	if pair == nil {
+		return
+	}
 	s.apiClient.Store(pair.api)
 	s.assetClient.Store(pair.asset)
 	v := activeProxy
@@ -231,18 +281,24 @@ func (s *ProxyServer) activateRoute(route failoverRoute) {
 	newAPI, newAsset := s.apiClient.Load(), s.assetClient.Load()
 	s.mu.Unlock()
 	if oldAPI != nil && oldAPI != newAPI {
-		if tr, ok := oldAPI.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
+		if tr, ok := oldAPI.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
 	}
 	if oldAsset != nil && oldAsset != newAsset {
-		if tr, ok := oldAsset.Transport.(*http.Transport); ok { tr.CloseIdleConnections() }
+		if tr, ok := oldAsset.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
 	}
 }
 
 func (s *ProxyServer) getRouteForRequest(method string) (failoverRoute, bool) {
-	if s.failover == nil { return failoverRoutePrimary, false }
+	if s.failover == nil {
+		return failoverRoutePrimary, false
+	}
 	return s.failover.routeForRequest(method == http.MethodGet || method == http.MethodHead, time.Now())
 }
-func (s *ProxyServer) getAPIClient() *http.Client { return s.apiClient.Load() }
+func (s *ProxyServer) getAPIClient() *http.Client   { return s.apiClient.Load() }
 func (s *ProxyServer) getAssetClient() *http.Client { return s.assetClient.Load() }
 func (s *ProxyServer) getAPIClientForRequest(method string) (*http.Client, failoverRoute, bool) {
 	r, trial := s.getRouteForRequest(method)
@@ -254,11 +310,18 @@ func (s *ProxyServer) getAPIClientForRequest(method string) (*http.Client, failo
 	return s.apiClient.Load(), r, trial
 }
 func (s *ProxyServer) observeUpstream(r failoverRoute, trial bool, elapsed time.Duration, err error) {
-	if s.failover == nil { return }
-	if tr := s.failover.observe(r, trial, elapsed, err, time.Now()); tr != nil { s.activateRoute(tr.to); s.logFailoverTransition(tr) }
+	if s.failover == nil {
+		return
+	}
+	if tr := s.failover.observe(r, trial, elapsed, err, time.Now()); tr != nil {
+		s.activateRoute(tr.to)
+		s.logFailoverTransition(tr)
+	}
 }
 func (s *ProxyServer) logFailoverTransition(t *failoverTransition) {
-	if t != nil && s.stats != nil { s.stats.Log("INFO", fmt.Sprintf("[UPSTREAM] %s -> %s (%s)", t.from.String(), t.to.String(), t.reason)) }
+	if t != nil && s.stats != nil {
+		s.stats.Log("INFO", fmt.Sprintf("[UPSTREAM] %s -> %s (%s)", t.from.String(), t.to.String(), t.reason))
+	}
 }
 
 type inFlightTracker struct {
@@ -286,7 +349,9 @@ func (s *ProxyServer) startInFlightWatch(route failoverRoute, trial bool) *inFli
 }
 
 func (s *ProxyServer) observeInFlightTimeout(route failoverRoute, trial bool) {
-	if s.failover == nil { return }
+	if s.failover == nil {
+		return
+	}
 	if tr := s.failover.observeInFlightTimeout(route, trial, time.Now()); tr != nil {
 		s.activateRoute(tr.to)
 		s.logFailoverTransition(tr)
@@ -318,9 +383,16 @@ func (s *ProxyServer) finishInFlightWatch(tracker *inFlightTracker, route failov
 		s.observeUpstream(route, trial, elapsed, err)
 	}
 }
-func (s *ProxyServer) GetEffectiveUpstreamProxy() string { if p:=s.upstreamProxy.Load(); p!=nil { return *p }; return "" }
+func (s *ProxyServer) GetEffectiveUpstreamProxy() string {
+	if p := s.upstreamProxy.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
 func (s *ProxyServer) GetUpstreamStatus() UpstreamRuntimeStatus {
-	if s.failover == nil { return UpstreamRuntimeStatus{Active:"primary"} }
+	if s.failover == nil {
+		return UpstreamRuntimeStatus{Active: "primary"}
+	}
 	return s.failover.status()
 }
 
@@ -349,7 +421,6 @@ func (s *ProxyServer) tracedRequestWithCallback(req *http.Request, onGotConn fun
 	}
 	return req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 }
-
 
 func (s *ProxyServer) Start() error {
 	s.mu.Lock()
@@ -402,8 +473,36 @@ func (s *ProxyServer) ReloadListener(newHost string, newPort int) error {
 
 	oldLn := s.listener
 	var oldAddr string
+	var oldPort int
 	if oldLn != nil {
 		oldAddr = oldLn.Addr().String()
+		if _, pStr, err := net.SplitHostPort(oldAddr); err == nil {
+			oldPort, _ = strconv.Atoi(pStr)
+		}
+	}
+
+	// AGENTS.md P0.2:
+	// 不同端口: Listen new -> 成功 -> retire old 缩短中断。
+	// 同端口变更: 串行 Close old -> Listen new -> (成功 switch gen / 失败 rollback old)。
+	if oldLn != nil && oldAddr != "" && oldPort != newPort {
+		newLn, err := net.Listen("tcp", newAddr)
+		if err != nil {
+			// New listener failed to bind. Old listener is untouched and continues serving.
+			return fmt.Errorf("failed to listen on %s: %w", newAddr, err)
+		}
+
+		_ = oldLn.Close()
+		s.listener = newLn
+		s.listenerGen++
+		s.serveLoopWg.Add(1)
+		go s.serveLoop(newLn, s.listenerGen)
+		if s.stats != nil {
+			s.stats.Log("INFO", fmt.Sprintf("[PROXY] 监听地址已动态重载至: %s (generation: %d)", newAddr, s.listenerGen))
+		}
+		return nil
+	}
+
+	if oldLn != nil {
 		_ = oldLn.Close()
 	}
 
@@ -418,7 +517,11 @@ func (s *ProxyServer) ReloadListener(newHost string, newPort int) error {
 				go s.serveLoop(rollbackLn, s.listenerGen)
 				return fmt.Errorf("failed to listen on %s: %w (rolled back to %s)", newAddr, err, oldAddr)
 			} else {
+				// Double failure (H6): both new bind and rollback failed.
+				// Set listener=nil, running=false, listenerGen++ so serveLoop exits cleanly.
 				s.listener = nil
+				s.running = false
+				s.listenerGen++
 				return fmt.Errorf("failed to listen on %s: %v (rollback to %s failed: %v)", newAddr, err, oldAddr, rErr)
 			}
 		}
@@ -1208,8 +1311,13 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		if isGet {
 			s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, fetchErr)
 		}
-		if fetchErr == nil { break }
-		if attempt+1 < maxAttempts && isConnectionDropError(fetchErr) { s.stats.IncAPIRetry(); continue }
+		if fetchErr == nil {
+			break
+		}
+		if attempt+1 < maxAttempts && isConnectionDropError(fetchErr) {
+			s.stats.IncAPIRetry()
+			continue
+		}
 		break
 	}
 	if fetchErr != nil || resp == nil {
@@ -2498,7 +2606,6 @@ func (s *ProxyServer) sendCachedAssetResponseFast(w io.Writer, item *cache.Cache
 	writeResponseBody(w, buf, http.StatusOK, item.Data, isHead)
 }
 
-
 var errInvalidWrite = errors.New("invalid write result")
 
 // copyStreamBuffer copies from src to dst using the supplied buffer,
@@ -2589,7 +2696,6 @@ func isRetryableAPI(path string) bool {
 	}
 	return false
 }
-
 
 func isConnectionDropError(err error) bool {
 	if err == nil {

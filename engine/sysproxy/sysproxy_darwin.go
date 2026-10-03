@@ -113,8 +113,7 @@ func enablePACProxy(pacURL string) error {
 
 	for _, s := range svcs {
 		currURL, currEn := macGetAutoProxyInfo(s)
-		isOur := strings.Contains(strings.ToLower(currURL), "/proxy.pac") &&
-			(strings.Contains(currURL, "127.0.0.1") || strings.Contains(currURL, "localhost"))
+		isOur := (managedPACURL != "" && strings.EqualFold(currURL, managedPACURL)) || strings.EqualFold(currURL, pacURL)
 
 		if !isOur && (currURL != "" || currEn) {
 			if _, exists := macOriginalSettings[s]; !exists {
