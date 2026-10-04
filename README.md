@@ -52,7 +52,7 @@ flowchart TD
     subgraph AssetChannel ["⚡ 静态素材通道 (*.akamaized.net)"]
         RAMCheck{"RAM 内存缓存<br/>(SLRU / RAM Boost 0ms)"}
         DiskMeta{"Disk Metadata Index<br/>(常驻内存索引 · 304 快速短路)"}
-        DiskCheck{"SSD 磁盘缓存<br/>(1~3ms / 大文件流式直读)"}
+        DiskCheck{"SSD 磁盘缓存<br/>(1~3ms)"}
         SingleFlight["SingleFlight 并发合并<br/>(分片防击穿 · 前后台在途调度)"]
         AssetClient["asset_client<br/>(HTTP/2 多路复用连接池)"]
 
@@ -130,7 +130,7 @@ flowchart TD
    │
    ├─ [静态素材通道 (Asset Channel: *.akamaized.net)]
    │    1. 内存查找 (RAM Cache: SLRU 保护段 / RAM Boost 常驻池 0ms)
-   │         └─ 未命中 ──► 内存元数据索引 (Disk Metadata Index) ──► 磁盘查找 (SSD 1~3ms / 大文件直读流)
+   │         └─ 未命中 ──► 内存元数据索引 (Disk Metadata Index) ──► 磁盘查找 (SSD 1~3ms)
    │    2. 快速短路 ──────► HEAD / 304 条件协商 (ETag / If-Modified-Since) ──► 直接交付 (零磁盘读取)
    │    3. 缓存未命中 ────► SingleFlight 并发请求合并 (分片哈希防击穿 · 前后台在途合并)
    │         └─► asset_client (HTTP/2 多路复用连接池) 回源拉取
@@ -203,9 +203,9 @@ flowchart TD
   - 小型资源沿用高效批量处理；
   - 中等体积资源采用内存流式管道传输；
   - 超大体积资源按需借助安全临时文件承载，有效避免单次大文件并发请求引发瞬时内存峰值与 OOM。
-- **Verified Large-Asset Direct Streaming (已验大文件流式直读)**：
-  - 对已完成完整性校验的本地磁盘大体积素材，跳过全量读入 RAM 的冗余步骤，直接以流式读取交付浏览器；
-  - 大幅降低高并发大文件请求下的内存拷贝、锁争用与 Go 运行时 GC 停顿压力。
+- **大文件磁盘快速直读与 RAM 准入隔离**：
+  - 对大体积素材（> 2MB）直接从磁盘全量读取并通过快速通道交付浏览器，严格排除于 RAM SLRU 准入之外，避免突发大文件挤占常驻热点资源内存；
+  - 配合 Disk Metadata Index 常驻内存索引，消除二次磁盘元数据检索开销。
 - **动态 API / 静态素材双通道物理隔离**：
   - **动态 API 通道 (`api_client`)**：为 `game.granbluefantasy.jp` 专设独立 HTTP/1.1 连接池，保持长连接复用，避免连接反复握手延迟。
   - **静态素材通道 (`asset_client`)**：针对 Akamai CDN 启用 HTTP/2 多路复用，通过单条链路并发拉取多路素材切片。
@@ -630,7 +630,7 @@ go vet ./...
 | `go vet ./...` | **PASS** | 静态代码分析与语法合规检查通过，零告警 |
 | Stream-Through 流式传输测试 | **PASS** | 验证冷请求边下边传、首字节即时推送、前台响应与后台落盘解耦 |
 | 分级流式缓冲与内存控制 | **PASS** | 验证小体积批量、中体积内存流式管道与超大体积临时文件安全承载，抑制突发内存峰值 |
-| Verified 大文件直读回归 | **PASS** | 验证已验磁盘大文件零 RAM 拷贝流式直出及文件异常安全回退 Cache Miss |
+| 大文件磁盘直读与准入控制回归 | **PASS** | 验证磁盘大体积素材全量读取快速交付、严格排除 RAM 准入及文件异常安全回退 |
 | Disk Metadata Index 内存索引 | **PASS** | 验证元数据常驻内存索引，消除二次磁盘读取，HEAD 与 304 快速短路响应 |
 | DeadFilter 404/410 过滤回归 | **PASS** | 验证死链素材抑制、查表零内存分配（`0 allocs/op`）及前台真实请求 100% 穿透不受阻 |
 | SLRU 缓存准入与淘汰回归 | **PASS** | 验证前台直入保护段、后台预载首进试用段、防止热点素材被挤占 |
