@@ -185,3 +185,57 @@ func TestApplyWindowsExecutable_RestartFailure_RollbackRestoresOldVersion(t *tes
 		t.Fatalf("backup file should be restored back or removed, but still exists: %v", backupPath)
 	}
 }
+
+func TestPrepareRestartArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{
+			name: "empty args adds minimized",
+			in:   nil,
+			want: []string{"-minimized"},
+		},
+		{
+			name: "preserves general flags and appends minimized",
+			in:   []string{"-proxy-port", "8124", "-cache-dir", "C:\\cache"},
+			want: []string{"-proxy-port", "8124", "-cache-dir", "C:\\cache", "-minimized"},
+		},
+		{
+			name: "strips open-browser flag variants",
+			in:   []string{"-open-browser", "-proxy-port", "8124", "--open-browser=true"},
+			want: []string{"-proxy-port", "8124", "-minimized"},
+		},
+		{
+			name: "does not duplicate existing minimized flag",
+			in:   []string{"--minimized", "-proxy-port", "8124"},
+			want: []string{"--minimized", "-proxy-port", "8124"},
+		},
+		{
+			name: "replaces explicit minimized false with minimized",
+			in:   []string{"-minimized=false", "-proxy-port", "8124"},
+			want: []string{"-proxy-port", "8124", "-minimized"},
+		},
+		{
+			name: "preserves explicit minimized true",
+			in:   []string{"-minimized=true", "-proxy-port", "8124"},
+			want: []string{"-minimized=true", "-proxy-port", "8124"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := PrepareRestartArgs(tc.in)
+			if len(got) != len(tc.want) {
+				t.Fatalf("PrepareRestartArgs(%v) returned len %d, want len %d (%v)", tc.in, len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("PrepareRestartArgs(%v)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+

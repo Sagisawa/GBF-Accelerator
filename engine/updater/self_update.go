@@ -60,6 +60,7 @@ func LaunchSelfUpdater(archivePath, expectedSHA256, version string, restartArgs 
 		return err
 	}
 
+	restartArgs = PrepareRestartArgs(restartArgs)
 	argsPath, err := writeRestartArgs(restartArgs)
 	if err != nil {
 		_ = os.Remove(helperPath)
@@ -562,3 +563,76 @@ func CleanupStaleHelpers() {
 		_ = os.Remove(filepath.Join(os.TempDir(), name))
 	}
 }
+
+// PrepareRestartArgs cleans and prepares arguments for restarting the process after an update.
+// It suppresses auto-launching duplicate browser or app windows by stripping -open-browser
+// and ensuring -minimized is set, while preserving all other configuration flags.
+func PrepareRestartArgs(rawArgs []string) []string {
+	var cleaned []string
+	hasMinimized := false
+
+	for _, arg := range rawArgs {
+		trimmed := strings.TrimSpace(arg)
+		// Strip -open-browser, --open-browser, and -open-browser=true/false
+		if isFlagMatch(trimmed, "open-browser") {
+			continue
+		}
+		// If minimized is explicitly set to false (e.g. -minimized=false), strip it so we can enforce minimized.
+		if isExplicitlyFalseFlag(trimmed, "minimized") {
+			continue
+		}
+		if isExplicitlyTrueOrPresentFlag(trimmed, "minimized") {
+			hasMinimized = true
+		}
+		cleaned = append(cleaned, arg)
+	}
+
+	if !hasMinimized {
+		cleaned = append(cleaned, "-minimized")
+	}
+	return cleaned
+}
+
+func isFlagMatch(arg, flagName string) bool {
+	if arg == "-"+flagName || arg == "--"+flagName {
+		return true
+	}
+	if strings.HasPrefix(arg, "-"+flagName+"=") || strings.HasPrefix(arg, "--"+flagName+"=") {
+		return true
+	}
+	return false
+}
+
+func isExplicitlyFalseFlag(arg, flagName string) bool {
+	prefix1 := "-" + flagName + "="
+	prefix2 := "--" + flagName + "="
+	var val string
+	if strings.HasPrefix(arg, prefix1) {
+		val = arg[len(prefix1):]
+	} else if strings.HasPrefix(arg, prefix2) {
+		val = arg[len(prefix2):]
+	} else {
+		return false
+	}
+	val = strings.ToLower(strings.TrimSpace(val))
+	return val == "0" || val == "f" || val == "false"
+}
+
+func isExplicitlyTrueOrPresentFlag(arg, flagName string) bool {
+	if arg == "-"+flagName || arg == "--"+flagName {
+		return true
+	}
+	prefix1 := "-" + flagName + "="
+	prefix2 := "--" + flagName + "="
+	var val string
+	if strings.HasPrefix(arg, prefix1) {
+		val = arg[len(prefix1):]
+	} else if strings.HasPrefix(arg, prefix2) {
+		val = arg[len(prefix2):]
+	} else {
+		return false
+	}
+	val = strings.ToLower(strings.TrimSpace(val))
+	return val == "1" || val == "t" || val == "true" || val == "yes"
+}
+

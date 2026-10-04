@@ -1929,7 +1929,7 @@ func (c *ControlServer) handleUpdateApply(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	restartArgs := append([]string(nil), os.Args[1:]...)
+	restartArgs := updater.PrepareRestartArgs(os.Args[1:])
 	if err := updater.LaunchSelfUpdater(archivePath, sha256, version, restartArgs); err != nil {
 		c.dlMu.Lock()
 		c.dlApplying = false
