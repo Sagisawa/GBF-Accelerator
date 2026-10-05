@@ -464,6 +464,10 @@ func (t *DarwinTray) Update() {
 	t.updateTooltip()
 }
 
+func (t *DarwinTray) ShowNotification(title, message string) {
+	// Safe no-op on macOS
+}
+
 // requestStop sends stop request and wakes up the main thread RunLoop safely from any goroutine.
 func (t *DarwinTray) requestStop() {
 	t.stopOnce.Do(func() {

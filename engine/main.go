@@ -77,6 +77,41 @@ func (a *appController) Quit() {
 	})
 }
 
+type failoverNotifier struct {
+	mu             sync.Mutex
+	tray           desktop.Tray
+	pendingTitle   string
+	pendingMessage string
+}
+
+func (n *failoverNotifier) SetTray(tray desktop.Tray) {
+	n.mu.Lock()
+	n.tray = tray
+	title := n.pendingTitle
+	msg := n.pendingMessage
+	n.pendingTitle = ""
+	n.pendingMessage = ""
+	n.mu.Unlock()
+
+	if tray != nil && title != "" {
+		tray.ShowNotification(title, msg)
+	}
+}
+
+func (n *failoverNotifier) Notify(title, message string) {
+	n.mu.Lock()
+	tray := n.tray
+	if tray == nil {
+		n.pendingTitle = title
+		n.pendingMessage = message
+		n.mu.Unlock()
+		return
+	}
+	n.mu.Unlock()
+
+	tray.ShowNotification(title, message)
+}
+
 func main() {
 	runtime.LockOSThread()
 	if handled, err := updater.HandleApplyArgs(os.Args); handled {
@@ -269,6 +304,9 @@ func main() {
 
 	// 6. Initialize Core Proxy
 	proxySrv := proxy.NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	notifier := &failoverNotifier{}
+	proxySrv.SetFailoverNotifyFunc(notifier.Notify)
+
 	if err := proxySrv.Start(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[-] Failed to start Proxy Server: %v\n", err)
 		os.Exit(1)
@@ -323,6 +361,7 @@ func main() {
 		if err := tray.Start(); err != nil {
 			fmt.Printf("[*] Desktop tray not available in current session: %v\n", err)
 		} else {
+			notifier.SetTray(tray)
 			defer tray.Stop()
 		}
 	}

@@ -28,6 +28,7 @@ type Tray interface {
 	Start() error
 	Update()
 	Stop()
+	ShowNotification(title, message string)
 }
 
 // OpenAppWindow opens the specified URL in a dedicated standalone application window without browser chrome.

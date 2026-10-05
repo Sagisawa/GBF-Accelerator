@@ -59,6 +59,9 @@ const (
 	nifMessage = 0x00000001
 	nifIcon    = 0x00000002
 	nifTip     = 0x00000004
+	nifInfo    = 0x00000010
+
+	niifInfo   = 0x00000001
 
 	mfString    = 0x00000000
 	mfGrayed    = 0x00000001
@@ -227,12 +230,15 @@ func (t *WindowsTray) runLoop() {
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
 	}
 
-	// Cleanup on exit: remove tray icon and release resources
+	// Cleanup on exit: remove tray icon and release resources under mutex protection
+	t.mu.Lock()
 	procShell_NotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&t.nid)))
 	if t.hIcon != 0 {
 		procDestroyIcon.Call(t.hIcon)
 		t.hIcon = 0
 	}
+	t.hwnd = 0
+	t.mu.Unlock()
 
 	activeTrayMu.Lock()
 	if activeTray == t {
@@ -324,6 +330,40 @@ func (t *WindowsTray) Update() {
 	procShell_NotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&t.nid)))
 }
 
+func (t *WindowsTray) ShowNotification(title, message string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.hwnd == 0 {
+		return
+	}
+
+	nid := t.nid
+	nid.uFlags = t.nid.uFlags | nifInfo
+	nid.dwInfoFlags = niifInfo
+
+	titleUTF16, _ := syscall.UTF16FromString(title)
+	for i := range nid.szInfoTitle {
+		if i < len(titleUTF16) && i < 63 {
+			nid.szInfoTitle[i] = titleUTF16[i]
+		} else {
+			nid.szInfoTitle[i] = 0
+		}
+	}
+	nid.szInfoTitle[63] = 0
+
+	msgUTF16, _ := syscall.UTF16FromString(message)
+	for i := range nid.szInfo {
+		if i < len(msgUTF16) && i < 255 {
+			nid.szInfo[i] = msgUTF16[i]
+		} else {
+			nid.szInfo[i] = 0
+		}
+	}
+	nid.szInfo[255] = 0
+
+	procShell_NotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
+}
+
 func (t *WindowsTray) Stop() {
 	t.stopOnce.Do(func() {
 		t.mu.Lock()
@@ -353,7 +393,9 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 
 	if wmTaskbarCreated != 0 && uMsg == wmTaskbarCreated {
 		t.mu.Lock()
-		procShell_NotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&t.nid)))
+		if t.hwnd != 0 {
+			procShell_NotifyIconW.Call(nimAdd, uintptr(unsafe.Pointer(&t.nid)))
+		}
 		t.mu.Unlock()
 		return 0
 	}

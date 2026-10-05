@@ -77,9 +77,17 @@ type ProxyServer struct {
 	backupClient  atomic.Pointer[upstreamClients]
 	upstreamProxy atomic.Pointer[string]
 	failover      *failoverManager
+	failoverNotifyFn func(title, message string)
+	notifyMu         sync.Mutex
+	lastNotifyAt     time.Time
 	running       bool
 	closedChan    chan struct{}
 }
+
+const (
+	FailoverNotifyTitle   = "GBF-Accelerator 线路切换"
+	FailoverNotifyMessage = "检测到主上游连接故障，已自动切换至备用上游。当前页面如出现加载或通信异常，请按 F5 刷新。"
+)
 
 func NewProxyServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cache.Manager, stats *telemetry.Stats) *ProxyServer {
 	s := &ProxyServer{
@@ -309,13 +317,51 @@ func (s *ProxyServer) getAPIClientForRequest(method string) (*http.Client, failo
 	}
 	return s.apiClient.Load(), r, trial
 }
+
+func (s *ProxyServer) SetFailoverNotifyFunc(fn func(title, message string)) {
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	s.failoverNotifyFn = fn
+}
+
+func (s *ProxyServer) handleFailoverTransition(tr *failoverTransition) {
+	if tr == nil {
+		return
+	}
+	s.activateRoute(tr.to)
+	s.logFailoverTransition(tr)
+	s.notifyFailoverTransition(tr)
+}
+
+func (s *ProxyServer) notifyFailoverTransition(tr *failoverTransition) {
+	if tr == nil || tr.from != failoverRoutePrimary || tr.to != failoverRouteBackup {
+		return
+	}
+	if s.cfgMgr != nil && !s.cfgMgr.Get().UpstreamFailoverNotification {
+		return
+	}
+
+	s.notifyMu.Lock()
+	now := time.Now()
+	if !s.lastNotifyAt.IsZero() && now.Sub(s.lastNotifyAt) < 60*time.Second {
+		s.notifyMu.Unlock()
+		return
+	}
+	s.lastNotifyAt = now
+	fn := s.failoverNotifyFn
+	s.notifyMu.Unlock()
+
+	if fn != nil {
+		go fn(FailoverNotifyTitle, FailoverNotifyMessage)
+	}
+}
+
 func (s *ProxyServer) observeUpstream(r failoverRoute, trial bool, elapsed time.Duration, err error) {
 	if s.failover == nil {
 		return
 	}
 	if tr := s.failover.observe(r, trial, elapsed, err, time.Now()); tr != nil {
-		s.activateRoute(tr.to)
-		s.logFailoverTransition(tr)
+		s.handleFailoverTransition(tr)
 	}
 }
 func (s *ProxyServer) logFailoverTransition(t *failoverTransition) {
@@ -353,8 +399,7 @@ func (s *ProxyServer) observeInFlightTimeout(route failoverRoute, trial bool) {
 		return
 	}
 	if tr := s.failover.observeInFlightTimeout(route, trial, time.Now()); tr != nil {
-		s.activateRoute(tr.to)
-		s.logFailoverTransition(tr)
+		s.handleFailoverTransition(tr)
 	}
 }
 
