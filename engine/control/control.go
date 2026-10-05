@@ -973,6 +973,9 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if val, ok := patch["upstream_failover_auto_recover"].(bool); ok {
 		candidate.UpstreamFailoverAutoRecover = val
 	}
+	if val, ok := patch["upstream_failover_notification"].(bool); ok {
+		candidate.UpstreamFailoverNotification = val
+	}
 	if val, ok := patch["direct_mode"].(bool); ok {
 		candidate.DirectMode = val
 	}

@@ -28,6 +28,7 @@ type Config struct {
 	UpstreamFailoverConsecutiveFailures int `json:"upstream_failover_consecutive_failures"`
 	UpstreamFailoverCooldownSeconds int `json:"upstream_failover_cooldown_seconds"`
 	UpstreamFailoverAutoRecover bool    `json:"upstream_failover_auto_recover"`
+	UpstreamFailoverNotification bool   `json:"upstream_failover_notification"`
 	DirectMode           bool    `json:"direct_mode"`
 	CacheDir             string  `json:"cache_dir"`
 	CleanZombies         bool    `json:"clean_zombies"`
@@ -77,6 +78,7 @@ func DefaultConfig() Config {
 		UpstreamFailoverConsecutiveFailures: 3,
 		UpstreamFailoverCooldownSeconds: 60,
 		UpstreamFailoverAutoRecover: true,
+		UpstreamFailoverNotification: true,
 		DirectMode:           false,
 		CacheDir:             filepath.Join("cache", "gbf", "https"),
 		CleanZombies:         true,
@@ -219,6 +221,7 @@ func (m *Manager) Load(cfgPath string) error {
 	if _, ok := present["upstream_failover_consecutive_failures"]; ok { m.cfg.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(loaded.UpstreamFailoverConsecutiveFailures) }
 	if _, ok := present["upstream_failover_cooldown_seconds"]; ok { m.cfg.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(loaded.UpstreamFailoverCooldownSeconds) }
 	if _, ok := present["upstream_failover_auto_recover"]; ok { m.cfg.UpstreamFailoverAutoRecover = loaded.UpstreamFailoverAutoRecover }
+	if _, ok := present["upstream_failover_notification"]; ok { m.cfg.UpstreamFailoverNotification = loaded.UpstreamFailoverNotification }
 	if _, ok := present["direct_mode"]; ok {
 		m.cfg.DirectMode = loaded.DirectMode
 	}

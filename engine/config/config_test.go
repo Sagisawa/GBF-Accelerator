@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -265,6 +266,111 @@ func TestAutoDetectACGPowerCache_Smoke(t *testing.T) {
 		if fi, err := os.Stat(detected); err != nil || !fi.IsDir() {
 			t.Errorf("detected path %q is not a valid directory", detected)
 		}
+	}
+}
+
+func TestConfig_UpstreamFailoverNotification_DefaultTrue(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.UpstreamFailoverNotification {
+		t.Fatalf("expected DefaultConfig().UpstreamFailoverNotification to be true, got %v", cfg.UpstreamFailoverNotification)
+	}
+
+	mgr := NewManager("")
+	if !mgr.Get().UpstreamFailoverNotification {
+		t.Fatalf("expected NewManager(\"\").Get().UpstreamFailoverNotification to be true, got %v", mgr.Get().UpstreamFailoverNotification)
+	}
+}
+
+func TestConfig_UpstreamFailoverNotification_OldConfigMissingField(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "gbf_old_config_*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	_ = tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	// Old config with no upstream_failover_notification key
+	oldJSON := `{
+		"listen_port": 8124,
+		"upstream_proxy": "auto",
+		"enable_upstream_failover": true
+	}`
+	if err := os.WriteFile(tmpFile.Name(), []byte(oldJSON), 0644); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+
+	mgr := NewManager(tmpFile.Name())
+	cfg := mgr.Get()
+	if !cfg.UpstreamFailoverNotification {
+		t.Fatalf("expected UpstreamFailoverNotification to remain default true when missing in file, got %v", cfg.UpstreamFailoverNotification)
+	}
+}
+
+func TestConfig_UpstreamFailoverNotification_JSONRoundtrip(t *testing.T) {
+	for _, val := range []bool{true, false} {
+		cfg := DefaultConfig()
+		cfg.UpstreamFailoverNotification = val
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("json.Marshal failed: %v", err)
+		}
+
+		var decoded Config
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("json.Unmarshal failed: %v", err)
+		}
+		if decoded.UpstreamFailoverNotification != val {
+			t.Fatalf("expected %v after roundtrip, got %v", val, decoded.UpstreamFailoverNotification)
+		}
+	}
+}
+
+func TestConfig_UpstreamFailoverNotification_CommitSave(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "gbf_notify_commit_*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	_ = tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	mgr := NewManager(tmpFile.Name())
+	cand := mgr.Candidate()
+	cand.UpstreamFailoverNotification = false
+
+	if err := mgr.Commit(cand); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	if mgr.Get().UpstreamFailoverNotification != false {
+		t.Fatalf("expected in-memory config to be false, got %v", mgr.Get().UpstreamFailoverNotification)
+	}
+
+	// Read from disk again to verify persistence
+	mgr2 := NewManager(tmpFile.Name())
+	if mgr2.Get().UpstreamFailoverNotification != false {
+		t.Fatalf("expected reloaded config to be false, got %v", mgr2.Get().UpstreamFailoverNotification)
+	}
+}
+
+func TestConfig_UpstreamFailoverNotification_SaveFailureRollback(t *testing.T) {
+	// Create read-only path to force save failure
+	mgr := NewManager("")
+	mgr.path = filepath.Join(t.TempDir(), "nonexistent_dir", "forbidden", "config.json")
+	oldCfg := mgr.Get()
+	if !oldCfg.UpstreamFailoverNotification {
+		t.Fatalf("expected initial config notification to be true")
+	}
+
+	cand := mgr.Candidate()
+	cand.UpstreamFailoverNotification = false
+
+	err := mgr.Commit(cand)
+	if err == nil {
+		t.Fatalf("expected Commit to fail on unwritable path")
+	}
+
+	if !mgr.Get().UpstreamFailoverNotification {
+		t.Fatalf("expected config to be rolled back to true after save failure, got false")
 	}
 }
 

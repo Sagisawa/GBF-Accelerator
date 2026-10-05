@@ -187,6 +187,7 @@ export const App: React.FC = () => {
   const [failoverConsecutiveInput, setFailoverConsecutiveInput] = useState<string>('3')
   const [failoverCooldownInput, setFailoverCooldownInput] = useState<string>('60')
   const [failoverAutoRecoverInput, setFailoverAutoRecoverInput] = useState<boolean>(true)
+  const [failoverNotificationInput, setFailoverNotificationInput] = useState<boolean>(true)
   const [portInput, setPortInput] = useState<string>('8124')
   const [ramMbInput, setRamMbInput] = useState<string>('256')
 
@@ -318,6 +319,7 @@ export const App: React.FC = () => {
         setFailoverConsecutiveInput(String(c.value.upstream_failover_consecutive_failures ?? 3))
         setFailoverCooldownInput(String(c.value.upstream_failover_cooldown_seconds ?? 60))
         setFailoverAutoRecoverInput(Boolean(c.value.upstream_failover_auto_recover ?? true))
+        setFailoverNotificationInput(Boolean(c.value.upstream_failover_notification ?? true))
         if (c.value.listen_port) setPortInput(String(c.value.listen_port))
         if (c.value.ram_cache_max_mb) setRamMbInput(String(c.value.ram_cache_max_mb))
       }
@@ -737,6 +739,7 @@ export const App: React.FC = () => {
           upstream_failover_consecutive_failures: consecutive,
           upstream_failover_cooldown_seconds: cooldown,
           upstream_failover_auto_recover: failoverAutoRecoverInput,
+          upstream_failover_notification: failoverNotificationInput,
         })
         setConfig((prev) => ({
           ...prev,
@@ -746,6 +749,7 @@ export const App: React.FC = () => {
           upstream_failover_consecutive_failures: consecutive,
           upstream_failover_cooldown_seconds: cooldown,
           upstream_failover_auto_recover: failoverAutoRecoverInput,
+          upstream_failover_notification: failoverNotificationInput,
         }))
         showToast(
           failoverEnabledInput
@@ -1649,16 +1653,31 @@ export const App: React.FC = () => {
                     </div>
 
                     <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
-                      <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={failoverAutoRecoverInput}
-                          onChange={(e) => setFailoverAutoRecoverInput(e.target.checked)}
-                          disabled={Boolean(loadingAction)}
-                          className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                        />
-                        <span>冷却后自动尝试切回主上游</span>
-                      </label>
+                      <div className="flex flex-col gap-1.5">
+                        <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={failoverAutoRecoverInput}
+                            onChange={(e) => setFailoverAutoRecoverInput(e.target.checked)}
+                            disabled={Boolean(loadingAction)}
+                            className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                          />
+                          <span>冷却后自动尝试切回主上游</span>
+                        </label>
+
+                        {status?.platform === 'windows' && (
+                          <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={failoverNotificationInput}
+                              onChange={(e) => setFailoverNotificationInput(e.target.checked)}
+                              disabled={Boolean(loadingAction)}
+                              className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                            />
+                            <span>切换到备用上游时弹出系统通知</span>
+                          </label>
+                        )}
+                      </div>
 
                       <button
                         type="button"

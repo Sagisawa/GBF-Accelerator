@@ -18,3 +18,5 @@ func (t *OtherTray) Start() error {
 func (t *OtherTray) Update() {}
 
 func (t *OtherTray) Stop() {}
+
+func (t *OtherTray) ShowNotification(title, message string) {}

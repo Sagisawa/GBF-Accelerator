@@ -1996,3 +1996,58 @@ func TestControlServer_UpdateDownload_RejectsCustomURLAndDest(t *testing.T) {
 		t.Fatalf("expected 400 Bad Request for custom dest, got %d", w2.Code)
 	}
 }
+
+func TestControlServer_ConfigFailoverNotification(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	stats := telemetry.NewStats()
+	cacheMgr := cache.NewManager(filepath.Join(tempDir, "cache"), 32)
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	// 1. GET /api/config: verify upstream_failover_notification is present and true by default
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	reqGet.Host = "127.0.0.1:8125"
+	reqGet.RemoteAddr = "127.0.0.1:12345"
+	wGet := httptest.NewRecorder()
+	ctrl.handleRoute(wGet, reqGet)
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/config, got %d", wGet.Code)
+	}
+	var resGet struct {
+		OK     bool          `json:"ok"`
+		Config config.Config `json:"config"`
+	}
+	if err := json.Unmarshal(wGet.Body.Bytes(), &resGet); err != nil {
+		t.Fatalf("failed to decode /api/config: %v", err)
+	}
+	if !resGet.Config.UpstreamFailoverNotification {
+		t.Fatalf("expected default UpstreamFailoverNotification to be true, got %v", resGet.Config.UpstreamFailoverNotification)
+	}
+
+	// 2. POST /api/config/apply: set upstream_failover_notification = false
+	reqApply := httptest.NewRequest(http.MethodPost, "/api/config/apply", strings.NewReader(`{"upstream_failover_notification": false}`))
+	reqApply.Host = "127.0.0.1:8125"
+	reqApply.RemoteAddr = "127.0.0.1:12345"
+	wApply := httptest.NewRecorder()
+	ctrl.handleRoute(wApply, reqApply)
+	if wApply.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/config/apply, got %d: %s", wApply.Code, wApply.Body.String())
+	}
+	if cfgMgr.Get().UpstreamFailoverNotification != false {
+		t.Fatalf("expected cfgMgr config to be updated to false, got %v", cfgMgr.Get().UpstreamFailoverNotification)
+	}
+
+	// 3. POST /api/config/apply: restore upstream_failover_notification = true
+	reqApply2 := httptest.NewRequest(http.MethodPost, "/api/config/apply", strings.NewReader(`{"upstream_failover_notification": true}`))
+	reqApply2.Host = "127.0.0.1:8125"
+	reqApply2.RemoteAddr = "127.0.0.1:12345"
+	wApply2 := httptest.NewRecorder()
+	ctrl.handleRoute(wApply2, reqApply2)
+	if wApply2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/config/apply, got %d", wApply2.Code)
+	}
+	if cfgMgr.Get().UpstreamFailoverNotification != true {
+		t.Fatalf("expected cfgMgr config to be updated to true, got %v", cfgMgr.Get().UpstreamFailoverNotification)
+	}
+}
