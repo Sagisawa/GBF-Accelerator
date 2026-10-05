@@ -1,0 +1,588 @@
+{
+  "activeProfileId": "InternalProfile_SmartRules",
+  "defaultProxyServerId": "jypm3mu0ks4tu",
+  "firstEverInstallNotified": true,
+  "options": {
+    "deleteRuleWhenDisabledFromPopup": false,
+    "detectRequestFailures": true,
+    "displayAppliedProxyOnBadge": true,
+    "displayFailedOnBadge": true,
+    "displayMatchedRuleOnBadge": true,
+    "enableShortcuts": true,
+    "proxyPerOrigin": true,
+    "refreshTabOnConfigChanges": false,
+    "shortcutNotification": true,
+    "syncActiveProfile": true,
+    "syncActiveProxy": true,
+    "syncSettings": false,
+    "syncWebDavBackupFilename": "",
+    "syncWebDavServerEnabled": false,
+    "syncWebDavServerPassword": "",
+    "syncWebDavServerUrl": "",
+    "syncWebDavServerUser": "",
+    "themeType": 0,
+    "themesDark": "themes-cosmo-dark"
+  },
+  "product": "SmartProxy",
+  "proxyProfiles": [
+    {
+      "enabled": true,
+      "proxyRules": [],
+      "rulesSubscriptions": [],
+      "profileId": "InternalProfile_Direct",
+      "profileName": "直连 (无代理)",
+      "profileProxyServerId": null,
+      "profileType": 0,
+      "profileTypeConfig": {
+        "builtin": true,
+        "editable": false,
+        "selectable": true,
+        "supportsSubscriptions": false,
+        "supportsProfileProxy": false,
+        "customProxyPerRule": false,
+        "canBeDisabled": false,
+        "supportsRuleActionWhitelist": false,
+        "defaultRuleActionIsWhitelist": null
+      }
+    },
+    {
+      "enabled": true,
+      "proxyRules": [
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "granbluefantasy.jp",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 615902478,
+          "rulePattern": "*.granbluefantasy.jp/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "granbluefantasy.com",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 3249661,
+          "rulePattern": "*.granbluefantasy.com/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "granbluefantasy.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 809801356,
+          "rulePattern": "*.granbluefantasy.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a-granbluefantasy.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 516412825643193,
+          "rulePattern": "*.prd-game-a-granbluefantasy.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a1-granbluefantasy.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 9415925129969548,
+          "rulePattern": "*.prd-game-a1-granbluefantasy.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a2-granbluefantasy.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 7853717836253,
+          "rulePattern": "*.prd-game-a2-granbluefantasy.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a3-granbluefantasy.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 97038971134,
+          "rulePattern": "*.prd-game-a3-granbluefantasy.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a4-granbluefantasy.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 9819012689204576,
+          "rulePattern": "*.prd-game-a4-granbluefantasy.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a5-granbluefantasy.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 326637448713033,
+          "rulePattern": "*.prd-game-a5-granbluefantasy.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "gbf.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 771846237942701,
+          "rulePattern": "*.gbf.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "mbga.jp",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 76266939709,
+          "rulePattern": "*.mbga.jp/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "mobage.jp",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 8820461937210,
+          "rulePattern": "*.mobage.jp/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a-granbluefantasy-steam.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 3007202517841687,
+          "rulePattern": "*.prd-game-a-granbluefantasy-steam.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a1-granbluefantasy-steam.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 27978962069,
+          "rulePattern": "*.prd-game-a1-granbluefantasy-steam.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a2-granbluefantasy-steam.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 1328846863489,
+          "rulePattern": "*.prd-game-a2-granbluefantasy-steam.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a3-granbluefantasy-steam.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 1488315584,
+          "rulePattern": "*.prd-game-a3-granbluefantasy-steam.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a4-granbluefantasy-steam.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 757982427,
+          "rulePattern": "*.prd-game-a4-granbluefantasy-steam.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        },
+        {
+          "autoGeneratePattern": true,
+          "enabled": true,
+          "hostName": "prd-game-a5-granbluefantasy-steam.akamaized.net",
+          "noProxyPerOrigin": false,
+          "proxy": {
+            "host": "127.0.0.1",
+            "id": "jypm3mu0ks4tu",
+            "name": "GbfA",
+            "order": 1,
+            "password": "",
+            "port": "8124",
+            "protocol": "HTTP",
+            "proxyDNS": true,
+            "username": ""
+          },
+          "proxyServerId": "jypm3mu0ks4tu",
+          "ruleId": 27487,
+          "rulePattern": "*.prd-game-a5-granbluefantasy-steam.akamaized.net/*",
+          "ruleType": 0,
+          "whiteList": false
+        }
+      ],
+      "rulesSubscriptions": [],
+      "profileId": "InternalProfile_SmartRules",
+      "profileName": "自动切换",
+      "profileProxyServerId": "",
+      "profileType": 2,
+      "profileTypeConfig": {
+        "builtin": true,
+        "editable": true,
+        "selectable": true,
+        "supportsSubscriptions": true,
+        "supportsProfileProxy": true,
+        "customProxyPerRule": true,
+        "canBeDisabled": true,
+        "supportsRuleActionWhitelist": true,
+        "defaultRuleActionIsWhitelist": false
+      }
+    },
+    {
+      "enabled": true,
+      "proxyRules": [
+        {
+          "enabled": true,
+          "hostName": "localhost",
+          "noProxyPerOrigin": false,
+          "proxy": null,
+          "ruleId": -10,
+          "ruleSearch": "localhost",
+          "ruleType": 5,
+          "whiteList": true
+        },
+        {
+          "enabled": true,
+          "hostName": "127.0.0.1",
+          "noProxyPerOrigin": false,
+          "proxy": null,
+          "ruleId": -11,
+          "ruleSearch": "127.0.0.1",
+          "ruleType": 5,
+          "whiteList": true
+        },
+        {
+          "enabled": true,
+          "hostName": "[::1]",
+          "noProxyPerOrigin": false,
+          "proxy": null,
+          "ruleId": -14,
+          "ruleSearch": "[::1]",
+          "ruleType": 5,
+          "whiteList": true
+        }
+      ],
+      "rulesSubscriptions": [],
+      "profileId": "InternalProfile_AlwaysEnabled",
+      "profileName": "始终开启",
+      "profileProxyServerId": null,
+      "profileType": 3,
+      "profileTypeConfig": {
+        "builtin": true,
+        "editable": true,
+        "selectable": true,
+        "supportsSubscriptions": true,
+        "supportsProfileProxy": true,
+        "customProxyPerRule": true,
+        "canBeDisabled": true,
+        "supportsRuleActionWhitelist": true,
+        "defaultRuleActionIsWhitelist": true
+      }
+    },
+    {
+      "enabled": true,
+      "proxyRules": [],
+      "rulesSubscriptions": [],
+      "profileId": "InternalProfile_SystemProxy",
+      "profileName": "系统代理",
+      "profileProxyServerId": null,
+      "profileType": 1,
+      "profileTypeConfig": {
+        "builtin": true,
+        "editable": false,
+        "selectable": true,
+        "supportsSubscriptions": false,
+        "supportsProfileProxy": false,
+        "customProxyPerRule": false,
+        "canBeDisabled": false,
+        "supportsRuleActionWhitelist": false,
+        "defaultRuleActionIsWhitelist": null
+      }
+    },
+    {
+      "enabled": true,
+      "proxyRules": [],
+      "rulesSubscriptions": [],
+      "profileId": "profile-3fbozmu0kod1l",
+      "profileName": "Ignore Failure Rules",
+      "profileType": 4,
+      "profileTypeConfig": {
+        "builtin": true,
+        "editable": false,
+        "selectable": false,
+        "supportsSubscriptions": false,
+        "supportsProfileProxy": false,
+        "customProxyPerRule": false,
+        "canBeDisabled": false,
+        "supportsRuleActionWhitelist": false,
+        "defaultRuleActionIsWhitelist": null
+      }
+    }
+  ],
+  "proxyServerSubscriptions": [],
+  "proxyServers": [
+    {
+      "name": "GbfA",
+      "id": "jypm3mu0ks4tu",
+      "order": 0,
+      "host": "127.0.0.1",
+      "port": 8124,
+      "protocol": "HTTP",
+      "username": "",
+      "password": "",
+      "proxyDNS": true,
+      "failoverTimeout": null
+    }
+  ],
+  "syncErrorCount": 0,
+  "syncLastError": "",
+  "uiOptions": {
+    "proxyServersGridRows": 10,
+    "rulesSubscriptionsGridRows": 10,
+    "serverSubscriptionsGridRows": 10,
+    "smartRulesGridRows": 10
+  },
+  "updateInfo": {
+    "updateIsAvailable": false,
+    "downloadPage": null,
+    "version": null,
+    "versionName": null,
+    "isBrowserSpecific": true
+  },
+  "version": "2.4.3",
+  "syncAutoDisabled": false
+}
