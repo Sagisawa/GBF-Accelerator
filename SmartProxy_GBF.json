@@ -56,7 +56,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -78,7 +78,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -100,7 +100,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -122,7 +122,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -144,7 +144,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -166,7 +166,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -188,7 +188,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -210,7 +210,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -232,7 +232,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -254,7 +254,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -276,7 +276,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -298,7 +298,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -320,7 +320,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -342,7 +342,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -364,7 +364,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -386,7 +386,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -408,7 +408,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -430,7 +430,7 @@
           "proxy": {
             "host": "127.0.0.1",
             "id": "jypm3mu0ks4tu",
-            "name": "GbfA",
+            "name": "GBF_Speed",
             "order": 1,
             "password": "",
             "port": "8124",
@@ -447,8 +447,8 @@
       ],
       "rulesSubscriptions": [],
       "profileId": "InternalProfile_SmartRules",
-      "profileName": "自动切换",
-      "profileProxyServerId": "",
+      "profileName": "GBF_AutoSwitch",
+      "profileProxyServerId": "jypm3mu0ks4tu",
       "profileType": 2,
       "profileTypeConfig": {
         "builtin": true,
@@ -556,7 +556,7 @@
   "proxyServerSubscriptions": [],
   "proxyServers": [
     {
-      "name": "GbfA",
+      "name": "GBF_Speed",
       "id": "jypm3mu0ks4tu",
       "order": 0,
       "host": "127.0.0.1",
