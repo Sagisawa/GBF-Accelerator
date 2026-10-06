@@ -12,8 +12,8 @@
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
 
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
-> - **Windows**：下载 `GBF_Accelerator_v2.4.1_GUI.zip`，解压即用。
-> - **macOS**：下载 `GBF_Accelerator_v2.4.1_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Windows**：下载 `GBF_Accelerator_v2.4.2_GUI.zip`，解压即用。
+> - **macOS**：下载 `GBF_Accelerator_v2.4.2_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
 > - **Android**：支持 **Root（LSPosed）与免 Root** 两种使用方式。
 > - 各版本详细更新日志与改动说明请参阅 [CHANGELOG.md](CHANGELOG.md)。
 

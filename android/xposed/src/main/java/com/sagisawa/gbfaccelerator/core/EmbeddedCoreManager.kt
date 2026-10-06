@@ -32,8 +32,8 @@ import java.util.zip.ZipInputStream
 object EmbeddedCoreManager {
 
     private const val TAG = "GBF-ACC-EmbeddedCore"
-    const val MODULE_VERSION = "2.4.1"
-    const val MODULE_VERSION_CODE = 4
+    const val MODULE_VERSION = "2.4.2"
+    const val MODULE_VERSION_CODE = 5
     const val PROXY_PORT = 8124
     const val CONTROL_PORT = 8125
 
