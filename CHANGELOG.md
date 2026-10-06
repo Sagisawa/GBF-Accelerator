@@ -8,7 +8,7 @@ GBF Accelerator 各版本的更新记录与 Release 说明。
 
 | 版本 | 发布日期 | 主要亮点 | 详细说明 |
 | :--- | :--- | :--- | :--- |
-| **v2.4.2** | 2026-10-06 | **跨格式图像容错校验、上游故障倒换系统通知与 SmartProxy 规则同步** | [v2.4.2 Notes](docs/releases/v2.4.2.md) |
+| **v2.4.2** | 2026-10-06 | 所罗门的贤者（肉鸽模式）下图裂修复 | [v2.4.2 Notes](docs/releases/v2.4.2.md) |
 | **v2.4.1** | 2026-10-03 | **一键系统健康体检与自愈、macOS 状态栏菜单、游戏数据智能预取与 Android 控制台精简** | [v2.4.1 Notes](docs/releases/v2.4.1.md) |
 | **v2.4.0** | 2026-10-01 | **传输架构代际跃迁、Stream-Through 流式边下边传与 Android 重新修补** | [v2.4.0 Notes](docs/releases/v2.4.0.md) |
 | **v2.3.0** | 2026-09-29 | **全局 RAM 激进缓存加速、实时日志多词高亮与预取优化** | [v2.3.0 Notes](docs/releases/v2.3.0.md) |
