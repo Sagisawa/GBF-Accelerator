@@ -122,6 +122,22 @@ func TestIsValidCacheContent(t *testing.T) {
 	if IsValidCacheContent("/assets/sound/voice.m4a", "text/html", htmlErr) {
 		t.Error("expected HTML error page for M4A to fail")
 	}
+
+	// 20. PNG extension with JPEG bytes (upstream GBF base_character_empty.png anomaly)
+	exifJpgDisguisedAsPng := []byte("\xff\xd8\xff\xe1\x00\x18Exif\x00\x00II*\x00\x08\x00\x00\x00")
+	if !IsValidCacheContent("/assets/img/sp/arcarum3/dungeon/base_character_empty.png", "image/png", exifJpgDisguisedAsPng) {
+		t.Error("expected JPEG disguised as PNG to pass validation")
+	}
+
+	// 21. PNG extension with WebP bytes
+	if !IsValidCacheContent("/assets/img/sp/test.png", "image/png", validWebp) {
+		t.Error("expected WebP disguised as PNG to pass validation")
+	}
+
+	// 22. JPG extension with PNG bytes
+	if !IsValidCacheContent("/assets/img/sp/test.jpg", "image/jpeg", validPng) {
+		t.Error("expected PNG disguised as JPG to pass validation")
+	}
 }
 
 func TestCanEarlyStream(t *testing.T) {
@@ -179,5 +195,11 @@ func TestCanEarlyStream(t *testing.T) {
 	// 10. Non-asset extension (e.g. custom file) passes early stream
 	if !CanEarlyStream("/unknown/resource.custom", "application/octet-stream", []byte("any_data")) {
 		t.Error("expected non-asset extension to pass")
+	}
+
+	// 11. PNG extension with JPEG magic bytes passes early stream (GBF upstream anomaly)
+	exifJpgChunk := []byte("\xff\xd8\xff\xe1\x00\x18Exif\x00\x00II*\x00\x08\x00\x00\x00")
+	if !CanEarlyStream("/assets/img/sp/arcarum3/dungeon/base_character_empty.png", "image/png", exifJpgChunk) {
+		t.Error("expected JPEG chunk disguised as PNG to pass early stream check")
 	}
 }

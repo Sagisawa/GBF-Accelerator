@@ -37,23 +37,47 @@ func isHTMLContent(sampleLower []byte) bool {
 		bytes.Contains(sampleLower, []byte("504 gateway time-out"))
 }
 
+func isImageExtension(cleanLower string) bool {
+	return strings.HasSuffix(cleanLower, ".png") ||
+		strings.HasSuffix(cleanLower, ".jpg") ||
+		strings.HasSuffix(cleanLower, ".jpeg") ||
+		strings.HasSuffix(cleanLower, ".webp") ||
+		strings.HasSuffix(cleanLower, ".gif")
+}
+
+func isImageMagic(sample []byte) bool {
+	if bytes.HasPrefix(sample, []byte("\x89PNG\r\n\x1a\n")) {
+		return true
+	}
+	if bytes.HasPrefix(sample, []byte("\xff\xd8\xff")) {
+		return true
+	}
+	if len(sample) >= 12 && bytes.HasPrefix(sample, []byte("RIFF")) && bytes.Equal(sample[8:12], []byte("WEBP")) {
+		return true
+	}
+	if bytes.HasPrefix(sample, []byte("GIF87a")) || bytes.HasPrefix(sample, []byte("GIF89a")) {
+		return true
+	}
+	return false
+}
+
 func checkMagicBytes(cleanLower string, sample []byte) bool {
-	if strings.HasSuffix(cleanLower, ".png") {
-		if !bytes.HasPrefix(sample, []byte("\x89PNG\r\n\x1a\n")) {
-			return false
+	if isImageExtension(cleanLower) {
+		if strings.HasSuffix(cleanLower, ".png") && bytes.HasPrefix(sample, []byte("\x89PNG\r\n\x1a\n")) {
+			return true
 		}
-	} else if strings.HasSuffix(cleanLower, ".jpg") || strings.HasSuffix(cleanLower, ".jpeg") {
-		if !bytes.HasPrefix(sample, []byte("\xff\xd8\xff")) {
-			return false
+		if (strings.HasSuffix(cleanLower, ".jpg") || strings.HasSuffix(cleanLower, ".jpeg")) && bytes.HasPrefix(sample, []byte("\xff\xd8\xff")) {
+			return true
 		}
-	} else if strings.HasSuffix(cleanLower, ".webp") {
-		if len(sample) < 12 || !bytes.HasPrefix(sample, []byte("RIFF")) || !bytes.Equal(sample[8:12], []byte("WEBP")) {
-			return false
+		if strings.HasSuffix(cleanLower, ".webp") && len(sample) >= 12 && bytes.HasPrefix(sample, []byte("RIFF")) && bytes.Equal(sample[8:12], []byte("WEBP")) {
+			return true
 		}
-	} else if strings.HasSuffix(cleanLower, ".gif") {
-		if !bytes.HasPrefix(sample, []byte("GIF87a")) && !bytes.HasPrefix(sample, []byte("GIF89a")) {
-			return false
+		if strings.HasSuffix(cleanLower, ".gif") && (bytes.HasPrefix(sample, []byte("GIF87a")) || bytes.HasPrefix(sample, []byte("GIF89a"))) {
+			return true
 		}
+		// If the extension does not match the exact format (e.g. Cygames upstream files having .png
+		// extension but actually encoded as JPEG/JFIF or WebP), accept any valid image magic bytes.
+		return isImageMagic(sample)
 	} else if strings.HasSuffix(cleanLower, ".wav") {
 		if len(sample) < 12 || !bytes.HasPrefix(sample, []byte("RIFF")) || !bytes.Equal(sample[8:12], []byte("WAVE")) {
 			return false
