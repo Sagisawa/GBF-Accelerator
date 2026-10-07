@@ -492,9 +492,9 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       <div className="space-y-4 text-sm text-slate-700">
         {/* Version Status Hero Banner */}
         <div className="p-4 sm:p-5 bg-gradient-to-r from-slate-50 to-slate-100/80 border border-slate-200/90 rounded-2xl flex items-center justify-between flex-wrap gap-4 shadow-2xs">
-          <div className="flex items-center gap-3.5">
+          <div className="flex items-start gap-3.5 flex-1 min-w-[280px]">
             <div
-              className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 shadow-2xs ${
+              className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 shadow-2xs mt-1 ${
                 checking
                   ? 'bg-sky-500 text-white shadow-sky-500/20'
                   : hasNew
@@ -510,7 +510,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 <CheckCircle2 className="w-6 h-6" />
               )}
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1.5 flex-1 min-w-0">
               <div className="flex items-center gap-2.5 flex-wrap">
                 <span className="text-base sm:text-lg font-extrabold text-slate-900 tracking-tight">
                   {checking
@@ -530,15 +530,28 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   </span>
                 )}
               </div>
-              <p className="text-xs sm:text-sm text-slate-600 leading-snug">
-                {checking
-                  ? '正在连接 GitHub 获取最新版本信息与安全指纹...'
-                  : hasNew
-                  ? releaseTitle || '官方已发布新的性能优化与协议增强，建议升级以获得最佳加速体验。'
-                  : '本地运行的核心加速代理服务与静态缓存模块均处于最优状态。'}
-              </p>
-              {publishedAt && hasNew && !checking && (
-                <p className="text-[11px] text-slate-500">发布日期: {publishedAt}</p>
+              {hasNew && !checking ? (
+                <div className="mt-2 p-3 bg-white border border-slate-200/90 border-l-[4px] border-l-amber-500 rounded-xl shadow-2xs space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200/80">
+                      版本定位
+                    </span>
+                    {publishedAt && (
+                      <span className="text-[11px] text-slate-400 font-medium">
+                        发布日期: {publishedAt}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[15px] sm:text-base font-extrabold text-slate-900 leading-snug break-words [word-break:break-word] max-h-40 overflow-y-auto pt-0.5">
+                    {releaseTitle || '官方已发布新的性能优化与协议增强，建议升级以获得最佳加速体验。'}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs sm:text-sm text-slate-600 leading-snug">
+                  {checking
+                    ? '正在连接 GitHub 获取最新版本信息与安全指纹...'
+                    : '本地运行的核心加速代理服务与静态缓存模块均处于最优状态。'}
+                </p>
               )}
             </div>
           </div>

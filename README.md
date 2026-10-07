@@ -695,7 +695,7 @@ go vet ./...
 
 ## 赞助与支持
 
-如果 GBF Accelerator 为你的骑空士之旅节省了流量与等待时间，欢迎通过微信赞赏请作者喝杯咖啡 ☕（祝天天掉金！）：
+如果 GBF Accelerator 为你的骑空士之旅节省了流量与等待时间，欢迎通过微信赞赏请作者喝杯咖啡 ☕（祝天天出金！）：
 
 <details>
   <summary>☕ <b>点击展开微信赞赏码 (WeChat Pay)</b></summary>
