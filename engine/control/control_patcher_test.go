@@ -3,6 +3,7 @@ package control
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -677,3 +678,156 @@ func TestControlAndroidEnvInstallAndUninstallAll(t *testing.T) {
 		t.Errorf("expected ok=true for uninstall")
 	}
 }
+
+func TestControlAndroidEnvInstallAll_LifecycleAndRetry(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// 1. Initial status has active=false
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/android/components/download-status", nil)
+	reqStatus.Host = "127.0.0.1:8125"
+	wStatus := httptest.NewRecorder()
+	ctrl.handleRoute(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", wStatus.Code)
+	}
+
+	// 2. Set an error state simulating failed download
+	ctrl.componentDlMu.Lock()
+	ctrl.componentDlActive = false
+	ctrl.componentDlProgress = patcher.DownloadProgress{
+		Active:          false,
+		Done:            false,
+		Stage:           "error",
+		Error:           patcher.ErrPermissionUserNotice,
+		ErrorDetails:    "mkdir tools/android: Access is denied",
+		IsPermissionErr: true,
+	}
+	ctrl.componentDlMu.Unlock()
+
+	// 3. Verify /api/android/env reflects the error and permission flag
+	reqEnv := httptest.NewRequest(http.MethodGet, "/api/android/env", nil)
+	reqEnv.Host = "127.0.0.1:8125"
+	wEnv := httptest.NewRecorder()
+	ctrl.handleRoute(wEnv, reqEnv)
+	if wEnv.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", wEnv.Code)
+	}
+	var envRes struct {
+		OK       bool `json:"ok"`
+		Download struct {
+			Active          bool   `json:"active"`
+			Stage           string `json:"stage"`
+			Error           string `json:"error"`
+			ErrorDetails    string `json:"error_details"`
+			IsPermissionErr bool   `json:"is_permission_error"`
+		} `json:"download"`
+	}
+	if err := json.Unmarshal(wEnv.Body.Bytes(), &envRes); err != nil {
+		t.Fatalf("failed to decode env response: %v", err)
+	}
+	if envRes.Download.Stage != "error" {
+		t.Errorf("expected download stage=error, got %s", envRes.Download.Stage)
+	}
+	if !envRes.Download.IsPermissionErr {
+		t.Errorf("expected is_permission_error=true")
+	}
+	if envRes.Download.Error != patcher.ErrPermissionUserNotice {
+		t.Errorf("expected permission notice, got %s", envRes.Download.Error)
+	}
+	if envRes.Download.ErrorDetails != "mkdir tools/android: Access is denied" {
+		t.Errorf("expected error details preserved, got %s", envRes.Download.ErrorDetails)
+	}
+
+	// 4. Verify user can retry install-all without conflict
+	// In writable test environment, install-all should accept and start
+	reqRetry := httptest.NewRequest(http.MethodPost, "/api/android/env/install-all", nil)
+	reqRetry.Host = "127.0.0.1:8125"
+	wRetry := httptest.NewRecorder()
+	ctrl.handleRoute(wRetry, reqRetry)
+	// Cancel immediately so background goroutine does not do unnecessary network I/O
+	ctrl.componentDlMu.Lock()
+	if ctrl.componentDlCancelFn != nil {
+		ctrl.componentDlCancelFn()
+	}
+	ctrl.componentDlMu.Unlock()
+
+	if wRetry.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for retry install-all, got %d: %s", wRetry.Code, wRetry.Body.String())
+	}
+}
+
+func TestControlAndroidEnvInstallAll_ConcurrentRequests_OnlyOneWins(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// 1. Set componentDlActive = true to simulate an in-flight active download
+	ctrl.componentDlMu.Lock()
+	ctrl.componentDlActive = true
+	ctrl.componentDlMu.Unlock()
+
+	// 2. Launch concurrent requests while componentDlActive = true
+	const concurrentCount = 10
+	results := make(chan int, concurrentCount)
+	startBarrier := make(chan struct{})
+
+	for i := 0; i < concurrentCount; i++ {
+		go func() {
+			<-startBarrier
+			req := httptest.NewRequest(http.MethodPost, "/api/android/env/install-all", nil)
+			req.Host = "127.0.0.1:8125"
+			w := httptest.NewRecorder()
+			ctrl.handleRoute(w, req)
+			results <- w.Code
+		}()
+	}
+
+	close(startBarrier)
+
+	for i := 0; i < concurrentCount; i++ {
+		code := <-results
+		if code != http.StatusConflict {
+			t.Fatalf("expected 409 Conflict when download is active, got %d", code)
+		}
+	}
+
+	// 3. Reset active and verify clean request succeeds with 200 OK
+	ctrl.componentDlMu.Lock()
+	ctrl.componentDlActive = false
+	ctrl.componentDlMu.Unlock()
+
+	reqOK := httptest.NewRequest(http.MethodPost, "/api/android/env/install-all", nil)
+	reqOK.Host = "127.0.0.1:8125"
+	wOK := httptest.NewRecorder()
+	ctrl.handleRoute(wOK, reqOK)
+
+	ctrl.componentDlMu.Lock()
+	if ctrl.componentDlCancelFn != nil {
+		ctrl.componentDlCancelFn()
+	}
+	ctrl.componentDlActive = false
+	ctrl.componentDlMu.Unlock()
+
+	if wOK.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK after download became inactive, got %d", wOK.Code)
+	}
+}
+
+func TestControlAndroidAdbDownloadTools_PreFlight(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	req := httptest.NewRequest(http.MethodPost, "/api/android/adb/download-tools", nil).WithContext(ctx)
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	// In writable test environment, pre-flight should succeed and not return 403 Forbidden
+	if w.Code == http.StatusForbidden {
+		t.Errorf("did not expect 403 Forbidden in writable test directory, got: %s", w.Body.String())
+	}
+}
+
+

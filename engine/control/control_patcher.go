@@ -225,9 +225,11 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 			"total_bytes":      dlProg.TotalBytes,
 			"percent":          dlProg.Percent,
 			"speed_bytes_sec":  dlProg.SpeedBytesSec,
-			"stage":            dlProg.Stage,
-			"error":            dlProg.Error,
-			"done":             dlProg.Done,
+			"stage":               dlProg.Stage,
+			"error":               dlProg.Error,
+			"error_details":       dlProg.ErrorDetails,
+			"is_permission_error": dlProg.IsPermissionErr,
+			"done":                dlProg.Done,
 		},
 		"java": map[string]interface{}{
 			"found":   javaFound,
@@ -631,6 +633,7 @@ func (c *ControlServer) handleAndroidComponentsDownload(w http.ResponseWriter, r
 		}
 	}
 
+	// Atomically mark active to close TOCTOU race window
 	ctx, cancel := context.WithCancel(context.Background())
 	c.componentDlActive = true
 	c.componentDlCancelFn = cancel
@@ -638,8 +641,34 @@ func (c *ControlServer) handleAndroidComponentsDownload(w http.ResponseWriter, r
 		Active:  true,
 		Stage:   "downloading",
 		Percent: 0,
+		Error:   "",
 	}
 	c.componentDlMu.Unlock()
+
+	// Pre-flight write access check on Windows
+	if err := patcher.CheckAndroidEnvironmentWriteAccess(); err != nil {
+		c.componentDlMu.Lock()
+		c.componentDlActive = false
+		c.componentDlCancelFn = nil
+		c.componentDlProgress = patcher.DownloadProgress{
+			Active:          false,
+			Done:            false,
+			Stage:           "error",
+			Error:           patcher.ErrPermissionUserNotice,
+			ErrorDetails:    err.Error(),
+			IsPermissionErr: true,
+		}
+		c.componentDlMu.Unlock()
+		cancel()
+
+		c.sendJSON(w, http.StatusForbidden, map[string]interface{}{
+			"ok":                  false,
+			"error":               patcher.ErrPermissionUserNotice,
+			"details":             err.Error(),
+			"is_permission_error": true,
+		})
+		return
+	}
 
 	go func(ctx context.Context, toolsDir string, customURLs map[string]string) {
 		err := patcher.DownloadComponents(ctx, toolsDir, customURLs, func(p patcher.DownloadProgress) {
@@ -656,13 +685,23 @@ func (c *ControlServer) handleAndroidComponentsDownload(w http.ResponseWriter, r
 			c.componentDlProgress.Active = false
 			c.componentDlProgress.Done = false
 			c.componentDlProgress.Stage = "error"
-			c.componentDlProgress.Error = err.Error()
+			if patcher.IsPermissionError(err) {
+				c.componentDlProgress.Error = patcher.ErrPermissionUserNotice
+				c.componentDlProgress.ErrorDetails = err.Error()
+				c.componentDlProgress.IsPermissionErr = true
+			} else {
+				c.componentDlProgress.Error = err.Error()
+				c.componentDlProgress.ErrorDetails = ""
+				c.componentDlProgress.IsPermissionErr = false
+			}
 		} else {
 			c.componentDlProgress.Active = false
 			c.componentDlProgress.Done = true
 			c.componentDlProgress.Stage = "done"
 			c.componentDlProgress.Percent = 100
 			c.componentDlProgress.Error = ""
+			c.componentDlProgress.ErrorDetails = ""
+			c.componentDlProgress.IsPermissionErr = false
 		}
 	}(ctx, toolsDir, body.CustomURLs)
 
@@ -1005,6 +1044,17 @@ func (c *ControlServer) handleAndroidAdbInstall(w http.ResponseWriter, req *http
 }
 
 func (c *ControlServer) handleAndroidAdbDownloadTools(w http.ResponseWriter, req *http.Request) {
+	// Pre-flight write access check on Windows
+	if err := patcher.CheckAndroidEnvironmentWriteAccess(); err != nil {
+		c.sendJSON(w, http.StatusForbidden, map[string]interface{}{
+			"ok":                  false,
+			"error":               patcher.ErrPermissionUserNotice,
+			"details":             err.Error(),
+			"is_permission_error": true,
+		})
+		return
+	}
+
 	toolsDir := patcher.GetAndroidToolsDir()
 	patcher.SetUpstreamProxy(c.cfgMgr.GetEffectiveUpstreamProxy())
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
@@ -1012,9 +1062,17 @@ func (c *ControlServer) handleAndroidAdbDownloadTools(w http.ResponseWriter, req
 
 	adbPath, err := patcher.DownloadPlatformTools(ctx, toolsDir, "", nil)
 	if err != nil {
-		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-			"ok":    false,
-			"error": fmt.Sprintf("下载平台工具失败: %v", err),
+		status := http.StatusInternalServerError
+		errNotice := fmt.Sprintf("下载平台工具失败: %v", err)
+		if patcher.IsPermissionError(err) {
+			status = http.StatusForbidden
+			errNotice = patcher.ErrPermissionUserNotice
+		}
+		c.sendJSON(w, status, map[string]interface{}{
+			"ok":                  false,
+			"error":               errNotice,
+			"details":             err.Error(),
+			"is_permission_error": patcher.IsPermissionError(err),
 		})
 		return
 	}
@@ -1106,25 +1164,52 @@ func (c *ControlServer) handleAndroidEnvInstallAll(w http.ResponseWriter, req *h
 	toolsDir := patcher.GetAndroidToolsDir()
 	patcher.SetUpstreamProxy(c.cfgMgr.GetEffectiveUpstreamProxy())
 
+	// Atomically check and mark active to close TOCTOU race window
+	ctx, cancel := context.WithCancel(context.Background())
 	c.componentDlMu.Lock()
 	if c.componentDlActive {
 		c.componentDlMu.Unlock()
+		cancel()
 		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 			"ok":    false,
 			"error": "组件或环境安装任务正在进行中",
 		})
 		return
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 	c.componentDlActive = true
 	c.componentDlCancelFn = cancel
 	c.componentDlProgress = patcher.DownloadProgress{
 		Active:  true,
 		Stage:   "downloading",
 		Percent: 0,
+		Error:   "",
 	}
 	c.componentDlMu.Unlock()
+
+	// 1. Perform pre-flight write access check on Windows before initiating big downloads
+	if err := patcher.CheckAndroidEnvironmentWriteAccess(); err != nil {
+		c.componentDlMu.Lock()
+		c.componentDlActive = false
+		c.componentDlCancelFn = nil
+		c.componentDlProgress = patcher.DownloadProgress{
+			Active:          false,
+			Done:            false,
+			Stage:           "error",
+			Error:           patcher.ErrPermissionUserNotice,
+			ErrorDetails:    err.Error(),
+			IsPermissionErr: true,
+		}
+		c.componentDlMu.Unlock()
+		cancel()
+
+		c.sendJSON(w, http.StatusForbidden, map[string]interface{}{
+			"ok":                  false,
+			"error":               patcher.ErrPermissionUserNotice,
+			"details":             err.Error(),
+			"is_permission_error": true,
+		})
+		return
+	}
 
 	go func(ctx context.Context, toolsDir string, customURLs map[string]string) {
 		err := patcher.InstallAllComponents(ctx, toolsDir, customURLs, func(p patcher.DownloadProgress) {
@@ -1141,13 +1226,23 @@ func (c *ControlServer) handleAndroidEnvInstallAll(w http.ResponseWriter, req *h
 			c.componentDlProgress.Active = false
 			c.componentDlProgress.Done = false
 			c.componentDlProgress.Stage = "error"
-			c.componentDlProgress.Error = err.Error()
+			if patcher.IsPermissionError(err) {
+				c.componentDlProgress.Error = patcher.ErrPermissionUserNotice
+				c.componentDlProgress.ErrorDetails = err.Error()
+				c.componentDlProgress.IsPermissionErr = true
+			} else {
+				c.componentDlProgress.Error = err.Error()
+				c.componentDlProgress.ErrorDetails = ""
+				c.componentDlProgress.IsPermissionErr = false
+			}
 		} else {
 			c.componentDlProgress.Active = false
 			c.componentDlProgress.Done = true
 			c.componentDlProgress.Stage = "done"
 			c.componentDlProgress.Percent = 100
 			c.componentDlProgress.Error = ""
+			c.componentDlProgress.ErrorDetails = ""
+			c.componentDlProgress.IsPermissionErr = false
 		}
 	}(ctx, toolsDir, body.CustomURLs)
 

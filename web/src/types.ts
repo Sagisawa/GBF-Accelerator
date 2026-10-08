@@ -192,6 +192,8 @@ export interface AndroidComponentDownloadProgress {
   speed_bytes_sec?: number;
   stage: string;
   error?: string;
+  error_details?: string;
+  is_permission_error?: boolean;
   done?: boolean;
 }
 

@@ -55,6 +55,18 @@ interface AndroidPatchPanelProps {
   showToast: (msg: string, type: 'success' | 'error' | 'info') => void
 }
 
+const isPermissionErrorText = (msg?: string): boolean => {
+  if (!msg) return false
+  const lower = msg.toLowerCase()
+  return (
+    lower.includes('写入权限') ||
+    lower.includes('以管理员身份运行') ||
+    lower.includes('access is denied') ||
+    lower.includes('permission denied') ||
+    lower.includes('write access denied')
+  )
+}
+
 const formatBytes = (bytes?: number) => {
   if (!bytes || bytes <= 0) return '0 B'
   const k = 1024
@@ -69,6 +81,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [loadingEnv, setLoadingEnv] = useState<boolean>(false)
   const [isInstallingAll, setIsInstallingAll] = useState<boolean>(false)
   const [isUninstallingAll, setIsUninstallingAll] = useState<boolean>(false)
+  const [installError, setInstallError] = useState<{
+    message: string
+    details?: string
+    isPermission?: boolean
+  } | null>(null)
 
   // Component Download state
   const [downloadProgress, setDownloadProgress] = useState<AndroidComponentDownloadProgress | null>(null)
@@ -117,6 +134,13 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       setEnvStatus(data)
       if (data.download?.active) {
         setDownloadProgress(data.download)
+      } else if (data.download?.stage === 'error' && data.download?.error) {
+        setDownloadProgress(data.download)
+        setInstallError({
+          message: data.download.error,
+          details: data.download.error_details,
+          isPermission: data.download.is_permission_error || isPermissionErrorText(data.download.error),
+        })
       }
     } catch (e: any) {
       showToast(`检测环境失败: ${e.message}`, 'error')
@@ -143,10 +167,17 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           timer = window.setTimeout(pollDl, 500)
         } else {
           if (res.progress.done) {
+            setInstallError(null)
             showToast('Android Patch 组件下载完成并通过校验', 'success')
             checkEnv()
           } else if (res.progress.stage === 'error') {
-            showToast(`组件下载失败: ${res.progress.error || '未知错误'}`, 'error')
+            const isPerm = Boolean(res.progress.is_permission_error || isPermissionErrorText(res.progress.error))
+            setInstallError({
+              message: res.progress.error || '组件安装失败',
+              details: res.progress.error_details,
+              isPermission: isPerm,
+            })
+            showToast(`组件下载安装失败: ${res.progress.error || '未知错误'}`, 'error')
             checkEnv()
           }
         }
@@ -175,6 +206,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
   const handleInstallAllEnv = async () => {
     setIsInstallingAll(true)
+    setInstallError(null)
     try {
       await installAllAndroidEnv()
       showToast('已启动全套 Android 工具链与运行环境安装...', 'info')
@@ -184,7 +216,21 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         stage: 'downloading',
       })
     } catch (e: any) {
-      showToast(`一键安装全环境失败: ${e.message}`, 'error')
+      const errMsg = e.message || '一键安装全环境失败'
+      const isPerm = isPermissionErrorText(errMsg)
+      setInstallError({
+        message: errMsg,
+        isPermission: isPerm,
+      })
+      setDownloadProgress({
+        active: false,
+        done: false,
+        stage: 'error',
+        percent: 0,
+        error: errMsg,
+        is_permission_error: isPerm,
+      })
+      showToast(`一键安装全环境失败: ${errMsg}`, 'error')
     } finally {
       setIsInstallingAll(false)
     }
@@ -597,6 +643,25 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const isDownloadActive = Boolean(downloadProgress?.active || envStatus?.download?.active)
   const isEnvironmentReady = isReady && isComponentsVerified
 
+  // Active error detection for environment setup
+  const activeErrorMsg =
+    downloadProgress?.stage === 'error'
+      ? downloadProgress.error
+      : envStatus?.download?.stage === 'error'
+      ? envStatus.download.error
+      : installError?.message
+  const activeErrorDetails =
+    downloadProgress?.error_details ||
+    envStatus?.download?.error_details ||
+    installError?.details ||
+    ''
+  const isActivePermissionError = Boolean(
+    downloadProgress?.is_permission_error ||
+    envStatus?.download?.is_permission_error ||
+    installError?.isPermission ||
+    (activeErrorMsg && isPermissionErrorText(activeErrorMsg))
+  )
+
   // Component-specific installation status in the portable tools environment
   const lspatchComp = envStatus?.components?.find(c => c.id === 'lspatch')
   const isLspatchInstalled = Boolean(lspatchComp?.installed && lspatchComp?.verified)
@@ -660,10 +725,16 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
                   isEnvironmentReady
                     ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30'
+                    : activeErrorMsg
+                    ? 'bg-rose-500/20 text-rose-200 border-rose-400/30'
                     : 'bg-amber-500/20 text-amber-200 border-amber-400/30'
                 }`}
               >
-                {isEnvironmentReady ? '● 补丁环境齐备' : '○ 缺少环境依赖'}
+                {isEnvironmentReady
+                  ? '● 补丁环境齐备'
+                  : activeErrorMsg
+                  ? '● 环境安装失败'
+                  : '○ 缺少环境依赖'}
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
@@ -824,33 +895,130 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         )}
       </div>
 
-      {/* Conditional: If Environment is NOT ready, display clean onboarding card */}
+      {/* Conditional: If Environment is NOT ready, display error alert or clean onboarding card */}
       {!isEnvironmentReady ? (
-        <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-8 sm:p-10 text-center space-y-4">
-          <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto shadow-2xs">
-            <Layers className="w-7 h-7" />
+        activeErrorMsg ? (
+          <div className="bg-white rounded-xl border border-rose-200 shadow-2xs p-6 sm:p-8 space-y-5 text-left">
+            {/* Error Banner */}
+            <div className="rounded-xl bg-rose-50 border border-rose-200/80 p-4 sm:p-5 text-rose-900 space-y-3">
+              <div className="flex items-start gap-3">
+                <span className="p-2 rounded-lg bg-rose-100 text-rose-600 shrink-0 mt-0.5">
+                  <AlertTriangle className="w-5 h-5" />
+                </span>
+                <div className="space-y-1 flex-1 min-w-0">
+                  <h3 className="text-sm sm:text-base font-bold text-rose-900">
+                    {isActivePermissionError ? '环境安装失败：程序目录缺少写入权限' : 'Android 补丁环境配置失败'}
+                  </h3>
+                  <p className="text-xs sm:text-sm text-rose-700 leading-relaxed">
+                    {isActivePermissionError
+                      ? '程序目录没有足够的写入权限，无法创建或写入 Android 工具链与 JRE 运行环境文件。'
+                      : activeErrorMsg}
+                  </p>
+                </div>
+              </div>
+
+              {/* If Permission error, show clear dual actionable solutions */}
+              {isActivePermissionError && (
+                <div className="ml-11 bg-white/90 rounded-lg p-3 text-xs text-slate-700 border border-rose-200/60 space-y-2">
+                  <div className="font-semibold text-rose-800">推荐解决方式：</div>
+                  <div className="space-y-1.5 text-slate-600">
+                    <div className="flex items-start gap-1.5">
+                      <span className="font-bold text-indigo-600 shrink-0">1. 推荐：</span>
+                      <span>将 GBF-Accelerator 移动或解压到普通用户拥有完整写入权限的目录（如 <code className="px-1 py-0.5 bg-slate-100 rounded font-mono text-[11px]">D:\GBF-Accelerator</code>、个人文档或桌面）后重新运行。</span>
+                    </div>
+                    <div className="flex items-start gap-1.5">
+                      <span className="font-bold text-indigo-600 shrink-0">2. 备选：</span>
+                      <span>右键点击本程序图标，选择【以管理员身份运行】后重新点击一键安装。</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Technical error details if available */}
+              {activeErrorDetails && (
+                <details className="ml-11 text-xs text-rose-700/80 cursor-pointer">
+                  <summary className="font-medium hover:underline">查看底层错误详细信息</summary>
+                  <pre className="mt-1.5 p-2 bg-rose-100/60 rounded text-[11px] font-mono text-rose-900 whitespace-pre-wrap break-all">
+                    {activeErrorDetails}
+                  </pre>
+                </details>
+              )}
+            </div>
+
+            {/* Component status overview */}
+            <div className="bg-slate-50/70 border border-slate-200/60 rounded-xl p-4 space-y-3">
+              <div className="text-xs font-bold text-slate-700 flex items-center justify-between">
+                <span>环境组件就绪状态</span>
+                <span className="text-[11px] font-normal text-slate-500">已就绪项不会重复下载</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
+                  <span className="text-slate-600">Java 21+ 运行库 (JRE)</span>
+                  <span className={`font-mono font-medium ${isJavaFound ? 'text-emerald-600' : 'text-rose-500'}`}>
+                    {isJavaFound ? '✓ 已就绪' : '✗ 未就绪'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
+                  <span className="text-slate-600">LSPatch 核心工具</span>
+                  <span className={`font-mono font-medium ${isLspatchInstalled ? 'text-emerald-600' : 'text-rose-500'}`}>
+                    {isLspatchInstalled ? '✓ 已就绪' : '✗ 未就绪'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
+                  <span className="text-slate-600">GBF 内置 Xposed 模块</span>
+                  <span className={`font-mono font-medium ${isModuleInstalled ? 'text-emerald-600' : 'text-rose-500'}`}>
+                    {isModuleInstalled ? '✓ 已就绪' : '✗ 未就绪'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
+                  <span className="text-slate-600">ADB 平台调试工具</span>
+                  <span className={`font-mono font-medium ${isAdbFound ? 'text-emerald-600' : 'text-rose-500'}`}>
+                    {isAdbFound ? '✓ 已就绪' : '✗ 未就绪'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Action button */}
+            <div className="flex items-center justify-center pt-1">
+              <button
+                type="button"
+                onClick={handleInstallAllEnv}
+                disabled={isInstallingAll || isDownloadActive}
+                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-sm font-bold shadow-sm transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 select-none"
+              >
+                <RefreshCw className={`w-4 h-4 ${isInstallingAll ? 'animate-spin' : ''}`} />
+                <span>{isDownloadActive ? '环境组件下载中...' : '重新尝试一键安装全环境'}</span>
+              </button>
+            </div>
           </div>
-          <div className="space-y-1.5 max-w-lg mx-auto">
-            <h3 className="text-base sm:text-lg font-bold text-slate-800">
-              请先就绪 Android 补丁制作环境
-            </h3>
-            <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
-              制作全内置补丁需要依赖 LSPatch 核心、内置 Xposed 模块以及免配置的轻量 Java 21+ 运行库。
-              点击下方【一键安装全环境】，系统将全自动完成静默下载与校验，环境齐备后将自动展开制作面板。
-            </p>
+        ) : (
+          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-8 sm:p-10 text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto shadow-2xs">
+              <Layers className="w-7 h-7" />
+            </div>
+            <div className="space-y-1.5 max-w-lg mx-auto">
+              <h3 className="text-base sm:text-lg font-bold text-slate-800">
+                请先就绪 Android 补丁制作环境
+              </h3>
+              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
+                制作全内置补丁需要依赖 LSPatch 核心、内置 Xposed 模块以及免配置的轻量 Java 21+ 运行库。
+                点击下方【一键安装全环境】，系统将全自动完成静默下载与校验，环境齐备后将自动展开制作面板。
+              </p>
+            </div>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleInstallAllEnv}
+                disabled={isInstallingAll || isDownloadActive}
+                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-sm font-bold shadow-sm transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 select-none"
+              >
+                <Zap className="w-4 h-4 fill-current" />
+                <span>{isDownloadActive ? '环境组件下载中...' : '一键安装全环境 (约 120 MB)'}</span>
+              </button>
+            </div>
           </div>
-          <div className="pt-2">
-            <button
-              type="button"
-              onClick={handleInstallAllEnv}
-              disabled={isInstallingAll || isDownloadActive}
-              className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-sm font-bold shadow-sm transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 select-none"
-            >
-              <Zap className="w-4 h-4 fill-current" />
-              <span>{isDownloadActive ? '环境组件下载中...' : '一键安装全环境 (约 120 MB)'}</span>
-            </button>
-          </div>
-        </div>
+        )
       ) : (
         <>
 
