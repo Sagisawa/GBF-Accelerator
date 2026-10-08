@@ -129,6 +129,8 @@ type DownloadProgress struct {
 	SpeedBytesSec   int64   `json:"speed_bytes_sec"`
 	Stage           string  `json:"stage"` // "idle", "downloading", "verifying", "done", "error"
 	Error           string  `json:"error"`
+	ErrorDetails    string  `json:"error_details,omitempty"`
+	IsPermissionErr bool    `json:"is_permission_error,omitempty"`
 	Done            bool    `json:"done"`
 }
 
@@ -354,6 +356,20 @@ func DownloadComponentsWithSpecs(
 	progressFn func(DownloadProgress),
 ) error {
 	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		prog := DownloadProgress{
+			Active: false,
+			Stage:  "error",
+		}
+		if IsPermissionError(err) {
+			prog.Error = ErrPermissionUserNotice
+			prog.ErrorDetails = err.Error()
+			prog.IsPermissionErr = true
+		} else {
+			prog.Error = err.Error()
+		}
+		if progressFn != nil {
+			progressFn(prog)
+		}
 		return fmt.Errorf("failed to create tools directory: %w", err)
 	}
 
@@ -514,13 +530,77 @@ func DownloadComponentsWithSpecs(
 		}
 
 		if localCandidate != "" {
-			_ = copyFile(localCandidate, targetPath)
+			if err := copyFile(localCandidate, targetPath); err != nil {
+				prog.Active = false
+				prog.Stage = "error"
+				if IsPermissionError(err) {
+					prog.Error = ErrPermissionUserNotice
+					prog.ErrorDetails = err.Error()
+					prog.IsPermissionErr = true
+				} else {
+					prog.Error = err.Error()
+					prog.ErrorDetails = ""
+					prog.IsPermissionErr = false
+				}
+				if progressFn != nil {
+					progressFn(prog)
+				}
+				return fmt.Errorf("failed to copy local %s: %w", spec.FileName, err)
+			}
 			if spec.ID == "platform-tools" && strings.HasSuffix(spec.FileName, ".zip") {
-				_ = unzipArchive(targetPath, toolsDir)
+				if err := unzipArchive(targetPath, toolsDir); err != nil {
+					prog.Active = false
+					prog.Stage = "error"
+					if IsPermissionError(err) {
+						prog.Error = ErrPermissionUserNotice
+						prog.ErrorDetails = err.Error()
+						prog.IsPermissionErr = true
+					} else {
+						prog.Error = err.Error()
+						prog.ErrorDetails = ""
+						prog.IsPermissionErr = false
+					}
+					if progressFn != nil {
+						progressFn(prog)
+					}
+					return fmt.Errorf("failed to extract local %s: %w", spec.FileName, err)
+				}
 			} else if spec.ID == "jre" && strings.HasSuffix(spec.FileName, ".zip") {
 				jreDir := filepath.Join(config.GetBaseDir(), "jre")
-				_ = os.MkdirAll(jreDir, 0755)
-				_ = unzipArchive(targetPath, jreDir)
+				if err := os.MkdirAll(jreDir, 0755); err != nil {
+					prog.Active = false
+					prog.Stage = "error"
+					if IsPermissionError(err) {
+						prog.Error = ErrPermissionUserNotice
+						prog.ErrorDetails = err.Error()
+						prog.IsPermissionErr = true
+					} else {
+						prog.Error = err.Error()
+						prog.ErrorDetails = ""
+						prog.IsPermissionErr = false
+					}
+					if progressFn != nil {
+						progressFn(prog)
+					}
+					return fmt.Errorf("failed to create jre directory: %w", err)
+				}
+				if err := unzipArchive(targetPath, jreDir); err != nil {
+					prog.Active = false
+					prog.Stage = "error"
+					if IsPermissionError(err) {
+						prog.Error = ErrPermissionUserNotice
+						prog.ErrorDetails = err.Error()
+						prog.IsPermissionErr = true
+					} else {
+						prog.Error = err.Error()
+						prog.ErrorDetails = ""
+						prog.IsPermissionErr = false
+					}
+					if progressFn != nil {
+						progressFn(prog)
+					}
+					return fmt.Errorf("failed to extract local %s: %w", spec.FileName, err)
+				}
 			}
 			actualSHA := spec.SHA256
 			if actualSHA == "" {
@@ -666,11 +746,17 @@ func DownloadComponentsWithSpecs(
 
 			// Automatically unpack archives into their canonical tool locations
 			if spec.ID == "platform-tools" && strings.HasSuffix(spec.FileName, ".zip") {
-				_ = unzipArchive(targetPath, toolsDir)
+				if err := unzipArchive(targetPath, toolsDir); err != nil {
+					return fmt.Errorf("failed to extract %s: %w", spec.FileName, err)
+				}
 			} else if spec.ID == "jre" && strings.HasSuffix(spec.FileName, ".zip") {
 				jreDir := filepath.Join(config.GetBaseDir(), "jre")
-				_ = os.MkdirAll(jreDir, 0755)
-				_ = unzipArchive(targetPath, jreDir)
+				if err := os.MkdirAll(jreDir, 0755); err != nil {
+					return fmt.Errorf("failed to create jre directory: %w", err)
+				}
+				if err := unzipArchive(targetPath, jreDir); err != nil {
+					return fmt.Errorf("failed to extract %s: %w", spec.FileName, err)
+				}
 			}
 
 			downloadedMap[spec.ID] = actualSHA
@@ -681,7 +767,15 @@ func DownloadComponentsWithSpecs(
 		if err != nil {
 			prog.Active = false
 			prog.Stage = "error"
-			prog.Error = err.Error()
+			if IsPermissionError(err) {
+				prog.Error = ErrPermissionUserNotice
+				prog.ErrorDetails = err.Error()
+				prog.IsPermissionErr = true
+			} else {
+				prog.Error = err.Error()
+				prog.ErrorDetails = ""
+				prog.IsPermissionErr = false
+			}
 			if progressFn != nil {
 				progressFn(prog)
 			}
@@ -697,7 +791,23 @@ func DownloadComponentsWithSpecs(
 	}
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err == nil {
-		_ = os.WriteFile(filepath.Join(toolsDir, "manifest.json"), manifestData, 0644)
+		if err := os.WriteFile(filepath.Join(toolsDir, "manifest.json"), manifestData, 0644); err != nil {
+			prog.Active = false
+			prog.Stage = "error"
+			if IsPermissionError(err) {
+				prog.Error = ErrPermissionUserNotice
+				prog.ErrorDetails = err.Error()
+				prog.IsPermissionErr = true
+			} else {
+				prog.Error = err.Error()
+				prog.ErrorDetails = ""
+				prog.IsPermissionErr = false
+			}
+			if progressFn != nil {
+				progressFn(prog)
+			}
+			return fmt.Errorf("failed to write manifest.json: %w", err)
+		}
 	}
 
 	prog.Active = false
