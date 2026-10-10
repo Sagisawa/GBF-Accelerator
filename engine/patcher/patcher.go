@@ -18,6 +18,8 @@ type PatchListener interface {
 }
 
 type PatchOptions struct {
+	Context         context.Context
+	Timeout         time.Duration
 	InputPath       string
 	OutputDir       string
 	AppLabel        string
@@ -75,7 +77,31 @@ func NewPatcher(opts PatchOptions) (*Patcher, error) {
 }
 
 func (p *Patcher) Run() (*BundleResult, error) {
+	ctx := p.opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if p.opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.opts.Timeout)
+		defer cancel()
+	} else if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultLSPatchTimeout)
+		defer cancel()
+	}
+	return p.RunContext(ctx)
+}
+
+func (p *Patcher) RunContext(ctx context.Context) (*BundleResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	printBanner()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	// 1. Setup temporary workspace
 	workDir, err := os.MkdirTemp("", "gbf_patch_workspace_*")
@@ -92,7 +118,10 @@ func (p *Patcher) Run() (*BundleResult, error) {
 
 	// 2. Discover required toolchain
 	p.stage(1, "Checking environment & toolchain...", 0.20)
-	javaPath, javaVer, err := FindJavaRuntime(p.opts.JavaOverride)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	javaPath, javaVer, err := FindJavaRuntimeContext(ctx, p.opts.JavaOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +149,7 @@ func (p *Patcher) Run() (*BundleResult, error) {
 		p.logf("      - SkyLeapModule: %s (User override)\n", moduleApk)
 	} else {
 		// When no override is given, ensure we are using the latest canonical module
-		mod, err := EnsureCanonicalModule(context.Background(), GetAndroidToolsDir(), p.exeDir, func(msg string) {
+		mod, err := EnsureCanonicalModule(ctx, GetAndroidToolsDir(), p.exeDir, func(msg string) {
 			p.logf("      [*] %s\n", msg)
 		})
 		if err != nil {
@@ -147,6 +176,9 @@ func (p *Patcher) Run() (*BundleResult, error) {
 
 	// 3. Inspect Input package
 	p.stage(2, "Inspecting input package...", 0.40)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	pkgInfo, err := InspectInput(p.opts.InputPath, workDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect input: %w", err)
@@ -243,12 +275,16 @@ func (p *Patcher) Run() (*BundleResult, error) {
 
 	// 4. Run LSPatch Portable
 	p.stage(3, "Executing LSPatch Portable injection...", 0.60)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	lspatchOutDir := filepath.Join(workDir, "lspatch_raw_out")
 	if err := os.MkdirAll(lspatchOutDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create lspatch output dir: %w", err)
 	}
 
 	cfg := &LSPatchConfig{
+		Context:        ctx,
 		JavaBinaryPath: javaPath,
 		LSPatchJarPath: lspatchJar,
 		ModuleApkPath:  moduleApk,
@@ -268,6 +304,9 @@ func (p *Patcher) Run() (*BundleResult, error) {
 
 	// 5. Organize and verify output
 	p.stage(4, "Packaging final output...", 0.80)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	baseInputName := filepath.Base(p.opts.InputPath)
 	result, err := BundleOutput(pkgInfo.IsSplit, baseInputName, rawOutputs, p.opts.OutputDir)
 	if err != nil {
@@ -279,6 +318,9 @@ func (p *Patcher) Run() (*BundleResult, error) {
 	}
 
 	p.stage(5, "Performing post-patch integrity audit...", 1.00)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := VerifyIntegrity(result, pkgInfo.IsSplit, pkgInfo.TotalApks); err != nil {
 		return nil, fmt.Errorf("output integrity verification failed: %w", err)
 	}

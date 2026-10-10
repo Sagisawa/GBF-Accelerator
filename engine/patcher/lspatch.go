@@ -3,6 +3,7 @@ package patcher
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -14,8 +15,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"gbf-proxy/config"
+)
+
+const (
+	// DefaultLSPatchTimeout is the default timeout for executing LSPatch Portable.
+	DefaultLSPatchTimeout = 15 * time.Minute
 )
 
 var (
@@ -23,6 +30,7 @@ var (
 )
 
 type LSPatchConfig struct {
+	Context        context.Context
 	JavaBinaryPath string
 	LSPatchJarPath string
 	ModuleApkPath  string
@@ -32,9 +40,19 @@ type LSPatchConfig struct {
 	LogFn          func(string)
 }
 
-// FindJavaRuntime discovers a Java binary with major version >= 21.
+// FindJavaRuntime discovers a Java binary with major version >= 21 with a 30s timeout.
 // Checks override path, JAVA_HOME, Android Studio JBR, and PATH.
 func FindJavaRuntime(overridePath string) (path string, version string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return FindJavaRuntimeContext(ctx, overridePath)
+}
+
+// FindJavaRuntimeContext discovers a Java binary with major version >= 21 using the provided context.
+func FindJavaRuntimeContext(ctx context.Context, overridePath string) (path string, version string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	candidates := make([]string, 0)
 	if overridePath != "" {
 		candidates = append(candidates, overridePath)
@@ -95,8 +113,13 @@ func FindJavaRuntime(overridePath string) (path string, version string, err erro
 
 	var checkedErrors []string
 	for _, c := range candidates {
+		if err := ctx.Err(); err != nil {
+			return "", "", fmt.Errorf("java runtime discovery cancelled: %w", err)
+		}
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
-			major, verStr, err := checkJavaVersion(c)
+			candCtx, candCancel := context.WithTimeout(ctx, 10*time.Second)
+			major, verStr, err := checkJavaVersion(candCtx, c)
+			candCancel()
 			if err == nil {
 				if major >= 21 {
 					return c, verStr, nil
@@ -114,11 +137,22 @@ func FindJavaRuntime(overridePath string) (path string, version string, err erro
 	return "", "", fmt.Errorf("java executable not found on system. Please install JDK 21+ or specify --java")
 }
 
-func checkJavaVersion(javaPath string) (int, string, error) {
-	cmd := exec.Command(javaPath, "-version")
+func checkJavaVersion(ctx context.Context, javaPath string) (int, string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, javaPath, "-version")
 	prepareCmd(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return 0, "", fmt.Errorf("java -version timed out or cancelled: %w", ctx.Err())
+		}
 		return 0, "", fmt.Errorf("failed to run java -version: %w", err)
 	}
 
@@ -382,7 +416,44 @@ func ValidateModuleApk(apkPath string) error {
 }
 
 // ExecuteLSPatch invokes LSPatch Portable to patch the provided APK(s) with the given module.
+// If cfg.Context is nil or has no deadline, a default 15-minute timeout is applied.
 func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outputDir string) ([]string, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("nil LSPatchConfig")
+	}
+	cmdCtx := cfg.Context
+	if cmdCtx == nil {
+		cmdCtx = context.Background()
+	}
+	if _, ok := cmdCtx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		cmdCtx, cancel = context.WithTimeout(cmdCtx, DefaultLSPatchTimeout)
+		defer cancel()
+	}
+	return executeLSPatchWithContext(cmdCtx, cfg, baseApk, splitApks, outputDir)
+}
+
+// ExecuteLSPatchContext invokes LSPatch Portable with an explicit context.
+// If ctx is nil or has no deadline, DefaultLSPatchTimeout is applied.
+func ExecuteLSPatchContext(ctx context.Context, cfg *LSPatchConfig, baseApk string, splitApks []string, outputDir string) ([]string, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("nil LSPatchConfig")
+	}
+	if ctx == nil {
+		ctx = cfg.Context
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultLSPatchTimeout)
+		defer cancel()
+	}
+	return executeLSPatchWithContext(ctx, cfg, baseApk, splitApks, outputDir)
+}
+
+func executeLSPatchWithContext(ctx context.Context, cfg *LSPatchConfig, baseApk string, splitApks []string, outputDir string) ([]string, error) {
 	args := []string{
 		"-jar", cfg.LSPatchJarPath,
 		"-m", cfg.ModuleApkPath,
@@ -402,7 +473,7 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 	args = append(args, baseApk)
 	args = append(args, splitApks...)
 
-	cmd := exec.Command(cfg.JavaBinaryPath, args...)
+	cmd := exec.CommandContext(ctx, cfg.JavaBinaryPath, args...)
 	prepareCmd(cmd)
 
 	var outBuf bytes.Buffer
@@ -417,6 +488,9 @@ func ExecuteLSPatch(cfg *LSPatchConfig, baseApk string, splitApks []string, outp
 	}
 
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("LSPatch execution timed out or cancelled: %w", ctx.Err())
+		}
 		return nil, fmt.Errorf("LSPatch execution failed (exit code %v):\n%s", err, outBuf.String())
 	}
 

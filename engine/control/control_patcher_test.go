@@ -4,14 +4,20 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"gbf-proxy/cache"
 	"gbf-proxy/config"
@@ -830,4 +836,1203 @@ func TestControlAndroidAdbDownloadTools_PreFlight(t *testing.T) {
 	}
 }
 
+func TestControlAndroidAdb_MaliciousPackageNameRejected(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	maliciousPkgs := []string{
+		"com.dena.skyleap; rm -rf /",
+		"../../evil",
+		"com.dena.skyleap$(whoami)",
+		"com.dena.skyleap`id`",
+		"com.dena.skyleap | cat",
+		"invalid package name",
+		"com.dena.skyleap\nreboot",
+		".leadingdot",
+		"trailingdot.",
+		"two..dots",
+		"com.-hyphenstart",
+	}
+
+	endpoints := []string{
+		"/api/android/adb/probe-app",
+		"/api/android/adb/extract",
+		"/api/android/adb/install",
+	}
+
+	for _, ep := range endpoints {
+		for _, badPkg := range maliciousPkgs {
+			body, _ := json.Marshal(map[string]interface{}{
+				"serial":       "emulator-5554",
+				"package_name": badPkg,
+			})
+			req := httptest.NewRequest(http.MethodPost, ep, bytes.NewBuffer(body))
+			req.Host = "127.0.0.1:8125"
+			w := httptest.NewRecorder()
+			ctrl.handleRoute(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("[%s] expected 400 Bad Request for malicious package %q, got %d: %s", ep, badPkg, w.Code, w.Body.String())
+			}
+
+			var resp map[string]interface{}
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			if resp["ok"] == true {
+				t.Errorf("[%s] expected ok=false for malicious package %q", ep, badPkg)
+			}
+		}
+	}
+}
+
+func TestControlAndroidPatch_CancelAndStatusRecovery(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// 1. Cancel when no patch job is running
+	reqCancelIdle := httptest.NewRequest(http.MethodPost, "/api/android/patch/cancel", nil)
+	reqCancelIdle.Host = "127.0.0.1:8125"
+	wCancelIdle := httptest.NewRecorder()
+	ctrl.handleRoute(wCancelIdle, reqCancelIdle)
+	if wCancelIdle.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK when cancelling idle patcher, got %d", wCancelIdle.Code)
+	}
+
+	// 2. Simulate an active running patch job with cancelFn
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ctrl.androidPatchMu.Lock()
+	ctrl.androidPatchStatus = AndroidPatchStatus{
+		Running:   true,
+		Stage:     3,
+		StageText: "Executing LSPatch injection...",
+		Progress:  0.6,
+		Logs:      []string{"patching..."},
+	}
+	ctrl.androidPatchCancelFn = cancel
+	ctrl.androidPatchMu.Unlock()
+
+	// 3. Verify status shows running
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/android/patch/status", nil)
+	reqStatus.Host = "127.0.0.1:8125"
+	wStatus := httptest.NewRecorder()
+	ctrl.handleRoute(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for status, got %d", wStatus.Code)
+	}
+	var statusResp struct {
+		Running bool `json:"running"`
+	}
+	_ = json.Unmarshal(wStatus.Body.Bytes(), &statusResp)
+	if !statusResp.Running {
+		t.Errorf("expected running=true")
+	}
+
+	// 4. Send cancel request
+	reqCancel := httptest.NewRequest(http.MethodPost, "/api/android/patch/cancel", nil)
+	reqCancel.Host = "127.0.0.1:8125"
+	wCancel := httptest.NewRecorder()
+	ctrl.handleRoute(wCancel, reqCancel)
+	if wCancel.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for cancel, got %d: %s", wCancel.Code, wCancel.Body.String())
+	}
+
+	// Verify context was cancelled
+	if ctx.Err() != context.Canceled {
+		t.Errorf("expected cancelFn to be invoked, ctx.Err() = %v", ctx.Err())
+	}
+
+	// 5. Simulate goroutine recovering state on cancellation
+	ctrl.androidPatchMu.Lock()
+	ctrl.androidPatchStatus.Running = false
+	ctrl.androidPatchStatus.Done = true
+	ctrl.androidPatchStatus.Error = "Patch 任务已被用户取消"
+	ctrl.androidPatchCancelFn = nil
+	ctrl.androidPatchMu.Unlock()
+
+	// Verify status after recovery
+	wStatusAfter := httptest.NewRecorder()
+	ctrl.handleRoute(wStatusAfter, reqStatus)
+	var statusAfterResp struct {
+		Running bool   `json:"running"`
+		Done    bool   `json:"done"`
+		Error   string `json:"error"`
+	}
+	_ = json.Unmarshal(wStatusAfter.Body.Bytes(), &statusAfterResp)
+	if statusAfterResp.Running {
+		t.Errorf("expected running=false after cancellation")
+	}
+	if !statusAfterResp.Done {
+		t.Errorf("expected done=true after cancellation")
+	}
+	if !strings.Contains(statusAfterResp.Error, "取消") {
+		t.Errorf("expected cancellation error message, got %q", statusAfterResp.Error)
+	}
+}
+
+func TestControlAndroidPatch_CancelRealBackgroundTask(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// Write a valid test APK file
+	apkBytes := buildMinimalValidApkBytes()
+	tempApk := filepath.Join(t.TempDir(), "skyleap_valid.apk")
+	if err := os.WriteFile(tempApk, apkBytes, 0644); err != nil {
+		t.Fatalf("failed to write temp apk: %v", err)
+	}
+
+	ctrl.checkComponentsFn = func(toolsDir, exeDir string) (bool, bool, []patcher.ComponentStatus, string) {
+		return true, true, nil, ""
+	}
+
+	jobStarted := make(chan struct{})
+	jobExited := make(chan struct{})
+
+	ctrl.runPatchFn = func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error) {
+		close(jobStarted)
+		defer close(jobExited)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	// 1. Start the patch job via real API
+	body, _ := json.Marshal(map[string]interface{}{
+		"file_path": tempApk,
+	})
+	reqPatch := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(body))
+	reqPatch.Host = "127.0.0.1:8125"
+	wPatch := httptest.NewRecorder()
+	ctrl.handleRoute(wPatch, reqPatch)
+
+	if wPatch.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK starting patch job, got %d: %s", wPatch.Code, wPatch.Body.String())
+	}
+
+	// Wait for goroutine to actually start and execute
+	select {
+	case <-jobStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for patch job to start")
+	}
+
+	// 2. Query status: should be running
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/android/patch/status", nil)
+	reqStatus.Host = "127.0.0.1:8125"
+	wStatus := httptest.NewRecorder()
+	ctrl.handleRoute(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for status, got %d", wStatus.Code)
+	}
+	var statusRunning struct {
+		Running bool `json:"running"`
+		Done    bool `json:"done"`
+	}
+	_ = json.Unmarshal(wStatus.Body.Bytes(), &statusRunning)
+	if !statusRunning.Running || statusRunning.Done {
+		t.Fatalf("expected running=true, done=false, got %+v", statusRunning)
+	}
+
+	// 3. Send cancel request via real cancel endpoint
+	reqCancel := httptest.NewRequest(http.MethodPost, "/api/android/patch/cancel", nil)
+	reqCancel.Host = "127.0.0.1:8125"
+	wCancel := httptest.NewRecorder()
+	ctrl.handleRoute(wCancel, reqCancel)
+	if wCancel.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK cancelling patch job, got %d: %s", wCancel.Code, wCancel.Body.String())
+	}
+
+	// 4. Verify background goroutine exits naturally
+	select {
+	case <-jobExited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for background goroutine to exit naturally after cancellation")
+	}
+
+	// 5. Query status: verify natural exit and state recovery
+	deadline := time.Now().Add(2 * time.Second)
+	var finalStatus struct {
+		Running bool   `json:"running"`
+		Done    bool   `json:"done"`
+		Error   string `json:"error"`
+	}
+	for time.Now().Before(deadline) {
+		wStatusFinal := httptest.NewRecorder()
+		ctrl.handleRoute(wStatusFinal, reqStatus)
+		_ = json.Unmarshal(wStatusFinal.Body.Bytes(), &finalStatus)
+		if !finalStatus.Running && finalStatus.Done {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if finalStatus.Running || !finalStatus.Done {
+		t.Errorf("expected job to recover to running=false, done=true, got: %+v", finalStatus)
+	}
+	if !strings.Contains(finalStatus.Error, "取消") {
+		t.Errorf("expected cancellation error message, got %q", finalStatus.Error)
+	}
+
+	// Verify cancel handle was cleared
+	ctrl.androidPatchMu.Lock()
+	cancelFnNil := (ctrl.androidPatchCancelFn == nil)
+	ctrl.androidPatchMu.Unlock()
+	if !cancelFnNil {
+		t.Errorf("expected androidPatchCancelFn to be cleared (nil) after job exit")
+	}
+
+	// 6. Verify that a subsequent patch job can be started cleanly
+	jobStarted2 := make(chan struct{})
+	ctrl.runPatchFn = func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error) {
+		close(jobStarted2)
+		return &patcher.BundleResult{SingleApk: "skyleap-patched.apk"}, nil
+	}
+	wPatch2 := httptest.NewRecorder()
+	reqPatch2 := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(body))
+	reqPatch2.Host = "127.0.0.1:8125"
+	ctrl.handleRoute(wPatch2, reqPatch2)
+	if wPatch2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK starting 2nd patch job, got %d: %s", wPatch2.Code, wPatch2.Body.String())
+	}
+	select {
+	case <-jobStarted2:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for 2nd patch job to start")
+	}
+}
+
+func TestControlAndroidPatch_CancelHandleRaceRegression(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	apkBytes := buildMinimalValidApkBytes()
+	tempApk := filepath.Join(t.TempDir(), "skyleap_race.apk")
+	if err := os.WriteFile(tempApk, apkBytes, 0644); err != nil {
+		t.Fatalf("failed to write temp apk: %v", err)
+	}
+
+	ctrl.checkComponentsFn = func(toolsDir, exeDir string) (bool, bool, []patcher.ComponentStatus, string) {
+		return true, true, nil, ""
+	}
+
+	job1Started := make(chan struct{})
+	job1CanFinish := make(chan struct{})
+	job1Done := make(chan struct{})
+
+	job2Started := make(chan struct{})
+	job2Exited := make(chan struct{})
+
+	ctrl.runPatchFn = func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error) {
+		ctrl.androidPatchMu.Lock()
+		currID := ctrl.androidPatchJobID
+		ctrl.androidPatchMu.Unlock()
+
+		if currID == 1 {
+			close(job1Started)
+			<-job1CanFinish
+			defer close(job1Done)
+			return &patcher.BundleResult{SingleApk: "job1.apk"}, nil
+		}
+
+		close(job2Started)
+		defer close(job2Exited)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	// 1. Start Job 1 via real HTTP API
+	body, _ := json.Marshal(map[string]interface{}{
+		"file_path": tempApk,
+	})
+	reqPatch1 := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(body))
+	reqPatch1.Host = "127.0.0.1:8125"
+	wPatch1 := httptest.NewRecorder()
+	ctrl.handleRoute(wPatch1, reqPatch1)
+	if wPatch1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK starting Job 1, got %d: %s", wPatch1.Code, wPatch1.Body.String())
+	}
+
+	select {
+	case <-job1Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Job 1 to start")
+	}
+
+	// Verify Job 1 state
+	ctrl.androidPatchMu.Lock()
+	if ctrl.androidPatchJobID != 1 || !ctrl.androidPatchStatus.Running || ctrl.androidPatchCancelFn == nil {
+		ctrl.androidPatchMu.Unlock()
+		t.Fatal("Job 1 not properly initialized")
+	}
+	ctrl.androidPatchMu.Unlock()
+
+	bridge1 := &patchListenerBridge{server: ctrl.ControlServer, jobID: 1}
+
+	// 2. Simulate Job 2 being permitted to start (e.g. if Running was reset or during state transition)
+	ctrl.androidPatchMu.Lock()
+	ctrl.androidPatchStatus.Running = false
+	ctrl.androidPatchMu.Unlock()
+
+	// Start Job 2 via real HTTP API
+	reqPatch2 := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(body))
+	reqPatch2.Host = "127.0.0.1:8125"
+	wPatch2 := httptest.NewRecorder()
+	ctrl.handleRoute(wPatch2, reqPatch2)
+	if wPatch2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK starting Job 2, got %d: %s", wPatch2.Code, wPatch2.Body.String())
+	}
+
+	select {
+	case <-job2Started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Job 2 to start")
+	}
+
+	ctrl.androidPatchMu.Lock()
+	if ctrl.androidPatchJobID != 2 || !ctrl.androidPatchStatus.Running || ctrl.androidPatchCancelFn == nil {
+		ctrl.androidPatchMu.Unlock()
+		t.Fatal("Job 2 not properly initialized")
+	}
+	ctrl.androidPatchMu.Unlock()
+
+	// 3. Now release Job 1's background goroutine to run its delayed exit cleanup!
+	close(job1CanFinish)
+	select {
+	case <-job1Done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Job 1 to finish")
+	}
+
+	// Give a moment for Job 1's defer to execute
+	time.Sleep(50 * time.Millisecond)
+
+	// 4. VERIFY: Job 1's delayed exit MUST NOT clear Job 2's cancelFn or status!
+	ctrl.androidPatchMu.Lock()
+	curCancelFn := ctrl.androidPatchCancelFn
+	curRunning := ctrl.androidPatchStatus.Running
+	curJobID := ctrl.androidPatchJobID
+	ctrl.androidPatchMu.Unlock()
+
+	if curJobID != 2 {
+		t.Fatalf("expected active job ID 2, got %d", curJobID)
+	}
+	if !curRunning {
+		t.Fatal("REGRESSION: Job 1's exit wiped out Job 2's Running status!")
+	}
+	if curCancelFn == nil {
+		t.Fatal("REGRESSION: Job 1's exit wiped out Job 2's androidPatchCancelFn!")
+	}
+
+	// 5. Verify Job 1's bridge callbacks cannot pollute Job 2
+	bridge1.OnStage(9, "Job 1 stale stage", 0.99)
+	bridge1.OnLog("Job 1 stale log")
+
+	ctrl.androidPatchMu.Lock()
+	curStage := ctrl.androidPatchStatus.Stage
+	curLogs := ctrl.androidPatchStatus.Logs
+	ctrl.androidPatchMu.Unlock()
+
+	if curStage == 9 {
+		t.Errorf("Job 1 bridge polluted Job 2 stage: got 9")
+	}
+	for _, l := range curLogs {
+		if strings.Contains(l, "Job 1 stale log") {
+			t.Errorf("Job 1 bridge polluted Job 2 logs: %s", l)
+		}
+	}
+
+	// 6. Verify Job 2 can be cancelled via real HTTP cancel endpoint
+	reqCancel := httptest.NewRequest(http.MethodPost, "/api/android/patch/cancel", nil)
+	reqCancel.Host = "127.0.0.1:8125"
+	wCancel := httptest.NewRecorder()
+	ctrl.handleRoute(wCancel, reqCancel)
+	if wCancel.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK cancelling Job 2, got %d: %s", wCancel.Code, wCancel.Body.String())
+	}
+
+	select {
+	case <-job2Exited:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for Job 2 to exit after cancellation")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	ctrl.androidPatchMu.Lock()
+	finalRunning := ctrl.androidPatchStatus.Running
+	finalDone := ctrl.androidPatchStatus.Done
+	finalCancelFn := ctrl.androidPatchCancelFn
+	ctrl.androidPatchMu.Unlock()
+
+	if finalRunning || !finalDone {
+		t.Errorf("expected Job 2 to finish with running=false, done=true, got running=%v, done=%v", finalRunning, finalDone)
+	}
+	if finalCancelFn != nil {
+		t.Errorf("expected Job 2's cancelFn to be cleared after exit")
+	}
+}
+
+func TestControlAndroidPatch_CancelHandleRaceConcurrent(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// High concurrency stress test across goroutines to ensure no race conditions
+	// between status queries, cancellations, and state updates.
+	var wg sync.WaitGroup
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					// Query status
+					reqStatus := httptest.NewRequest(http.MethodGet, "/api/android/patch/status", nil)
+					reqStatus.Host = "127.0.0.1:8125"
+					wStatus := httptest.NewRecorder()
+					ctrl.handleRoute(wStatus, reqStatus)
+
+					// Attempt cancel
+					reqCancel := httptest.NewRequest(http.MethodPost, "/api/android/patch/cancel", nil)
+					reqCancel.Host = "127.0.0.1:8125"
+					wCancel := httptest.NewRecorder()
+					ctrl.handleRoute(wCancel, reqCancel)
+				}
+			}
+		}(i)
+	}
+
+	// Concurrently simulate jobs starting and stopping
+	for j := 0; j < 50; j++ {
+		_, jobCancel := context.WithCancel(context.Background())
+		ctrl.androidPatchMu.Lock()
+		ctrl.androidPatchJobID++
+		currJob := ctrl.androidPatchJobID
+		ctrl.androidPatchStatus = AndroidPatchStatus{
+			Running:   true,
+			Stage:     j % 5,
+			StageText: fmt.Sprintf("Job %d", j),
+			Progress:  float64(j) / 50.0,
+		}
+		ctrl.androidPatchCancelFn = jobCancel
+		ctrl.androidPatchMu.Unlock()
+
+		bridge := &patchListenerBridge{server: ctrl.ControlServer, jobID: currJob}
+		bridge.OnLog(fmt.Sprintf("log from job %d", j))
+		bridge.OnStage(j%5, fmt.Sprintf("stage %d", j), 0.5)
+
+		time.Sleep(2 * time.Millisecond)
+
+		ctrl.androidPatchMu.Lock()
+		if ctrl.androidPatchJobID == currJob {
+			ctrl.androidPatchStatus.Running = false
+			ctrl.androidPatchStatus.Done = true
+			ctrl.androidPatchCancelFn = nil
+		}
+		ctrl.androidPatchMu.Unlock()
+		jobCancel()
+	}
+
+	cancel()
+	wg.Wait()
+}
+
+func TestControlAndroidUpload_FailureCleanup(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// Count existing gbf_upload_* dirs in temp directory before upload
+	tempBase := os.TempDir()
+	countUploadDirs := func() int {
+		entries, _ := os.ReadDir(tempBase)
+		cnt := 0
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "gbf_upload_") {
+				cnt++
+			}
+		}
+		return cnt
+	}
+
+	beforeCount := countUploadDirs()
+
+	// Upload invalid non-APK content disguised as .apk
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "corrupt.apk")
+	if err != nil {
+		t.Fatalf("failed to create form file: %v", err)
+	}
+	_, _ = part.Write([]byte("this is not a valid zip or apk file"))
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/android/upload", &body)
+	req.Host = "127.0.0.1:8125"
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for corrupted package, got %d: %s", w.Code, w.Body.String())
+	}
+
+	afterCount := countUploadDirs()
+	if afterCount > beforeCount {
+		t.Errorf("temporary upload directory was leaked on failure: before=%d, after=%d", beforeCount, afterCount)
+	}
+}
+
+func TestControlAndroidAdbExtract_FailureCleanup(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	tempBase := os.TempDir()
+	countExtractDirs := func() int {
+		entries, _ := os.ReadDir(tempBase)
+		cnt := 0
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "gbf_extracted_") {
+				cnt++
+			}
+		}
+		return cnt
+	}
+
+	beforeCount := countExtractDirs()
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"serial":       "fake-device-1234",
+		"package_name": "com.dena.skyleap",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/android/adb/extract", bytes.NewBuffer(body))
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	afterCount := countExtractDirs()
+	if afterCount > beforeCount {
+		t.Errorf("temporary extract directory was leaked: before=%d, after=%d", beforeCount, afterCount)
+	}
+}
+
+func buildMinimalValidApkBytes() []byte {
+	var axml bytes.Buffer
+	str := "com.dena.skyleap"
+	var strBlock bytes.Buffer
+	strBlock.WriteByte(byte(len(str))) // u16 len prefix
+	strBlock.WriteByte(byte(len(str))) // u8 len prefix
+	strBlock.WriteString(str)
+	strBlock.WriteByte(0) // null terminator
+	for strBlock.Len()%4 != 0 {
+		strBlock.WriteByte(0)
+	}
+
+	spChunkSize := uint32(28 + 4 + strBlock.Len())
+	totalAxmlSize := uint32(8 + spChunkSize)
+
+	_ = binary.Write(&axml, binary.LittleEndian, uint32(0x00080003)) // RES_XML_TYPE
+	_ = binary.Write(&axml, binary.LittleEndian, totalAxmlSize)
+	_ = binary.Write(&axml, binary.LittleEndian, uint32(0x001C0001)) // RES_STRING_POOL_TYPE
+	_ = binary.Write(&axml, binary.LittleEndian, spChunkSize)
+	_ = binary.Write(&axml, binary.LittleEndian, uint32(1))          // stringCount
+	_ = binary.Write(&axml, binary.LittleEndian, uint32(0))          // styleCount
+	_ = binary.Write(&axml, binary.LittleEndian, uint32(1<<8))       // flags: UTF-8
+	_ = binary.Write(&axml, binary.LittleEndian, uint32(32))         // stringsStart (28 + 4)
+	_ = binary.Write(&axml, binary.LittleEndian, uint32(0))          // stylesStart
+	_ = binary.Write(&axml, binary.LittleEndian, uint32(0))          // offset[0]
+	axml.Write(strBlock.Bytes())
+
+	var zipBuf bytes.Buffer
+	zw := zip.NewWriter(&zipBuf)
+	w, _ := zw.Create("AndroidManifest.xml")
+	_, _ = w.Write(axml.Bytes())
+	_ = zw.Close()
+	return zipBuf.Bytes()
+}
+
+func TestControlAndroidUpload_PathTraversalBlocked(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	apkBytes := buildMinimalValidApkBytes()
+
+	// 1. Filenames containing paths, slashes, or traversal sequences should be cleaned safely
+	// and stored strictly within the created upload directory without escaping.
+	safeTestCases := []struct {
+		rawName      string
+		expectedBase string
+	}{
+		{"../../evil.apk", "evil.apk"},
+		{"..\\..\\evil.apk", "evil.apk"},
+		{"/evil.apk", "evil.apk"},
+		{"sub/../../evil.apk", "evil.apk"},
+		{"..%2Fevil.apk", "evil.apk"},
+		{"%2E%2E%2Fevil.apk", "evil.apk"},
+		{"C:\\Users\\admin\\Downloads\\skyleap.apk", "skyleap.apk"},
+		{"C:/fakepath/skyleap.apk", "skyleap.apk"},
+		{"C:skyleap.apk", "skyleap.apk"},
+		{"/var/tmp/upload.apk", "upload.apk"},
+		{"  spaces_test.apk  ", "spaces_test.apk"},
+	}
+
+	for _, tc := range safeTestCases {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", tc.rawName)
+		if err != nil {
+			t.Fatalf("[%s] failed to create form file: %v", tc.rawName, err)
+		}
+		_, _ = part.Write(apkBytes)
+		_ = writer.Close()
+
+		req := httptest.NewRequest(http.MethodPost, "/api/android/upload", &body)
+		req.Host = "127.0.0.1:8125"
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		w := httptest.NewRecorder()
+		ctrl.handleRoute(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("[%s] expected 200 OK for safe path handling, got %d: %s", tc.rawName, w.Code, w.Body.String())
+			continue
+		}
+
+		var resp struct {
+			Ok            bool   `json:"ok"`
+			FilePath      string `json:"file_path"`
+			BaseInputName string `json:"base_input_name"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Errorf("[%s] failed to parse response: %v", tc.rawName, err)
+			continue
+		}
+
+		if resp.BaseInputName != tc.expectedBase {
+			t.Errorf("[%s] expected BaseInputName %q, got %q", tc.rawName, tc.expectedBase, resp.BaseInputName)
+		}
+
+		// Verify file exists on disk and is strictly inside the uploadDir
+		if fi, err := os.Stat(resp.FilePath); err != nil || fi.Size() == 0 {
+			t.Errorf("[%s] uploaded file does not exist on disk: %s (err: %v)", tc.rawName, resp.FilePath, err)
+		}
+		uploadDir := filepath.Dir(resp.FilePath)
+		if !strings.Contains(uploadDir, "gbf_upload_") {
+			t.Errorf("[%s] upload dir expected to contain 'gbf_upload_', got: %s", tc.rawName, uploadDir)
+		}
+		rel, err := filepath.Rel(uploadDir, resp.FilePath)
+		if err != nil || rel != tc.expectedBase || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || rel == "." {
+			t.Errorf("[%s] file escaped upload directory! rel=%q, uploadDir=%s, fullPath=%s", tc.rawName, rel, uploadDir, resp.FilePath)
+		}
+
+		_ = os.RemoveAll(uploadDir)
+	}
+
+	// 2. Genuinely invalid filenames (empty, dot-only, null bytes, or unsupported formats) must return 400 Bad Request
+	invalidFilenames := []string{
+		"../../",
+		"..\\..\\",
+		"/",
+		"\\",
+		"",
+		"   ",
+		".",
+		"..",
+		".apk",
+		"/path/to/.apk",
+		"bad.txt",
+		"malicious.sh",
+		"evil.apk\x00",
+		"\x00evil.apk",
+	}
+
+	for _, badName := range invalidFilenames {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", badName)
+		if err != nil {
+			t.Fatalf("[%s] failed to create form file: %v", badName, err)
+		}
+		_, _ = part.Write(apkBytes)
+		_ = writer.Close()
+
+		req := httptest.NewRequest(http.MethodPost, "/api/android/upload", &body)
+		req.Host = "127.0.0.1:8125"
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		w := httptest.NewRecorder()
+		ctrl.handleRoute(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("[%s] expected 400 Bad Request for invalid filename, got %d: %s", badName, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestControlAndroidUpload_SuccessPreservesFile(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	apkBytes := buildMinimalValidApkBytes()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "skyleap_test.apk")
+	if err != nil {
+		t.Fatalf("failed to create form file: %v", err)
+	}
+	_, _ = part.Write(apkBytes)
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/android/upload", &body)
+	req.Host = "127.0.0.1:8125"
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for valid upload, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Ok            bool   `json:"ok"`
+		FilePath      string `json:"file_path"`
+		BaseInputName string `json:"base_input_name"`
+		PackageName   string `json:"package_name"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response JSON: %v", err)
+	}
+
+	if !resp.Ok {
+		t.Errorf("expected ok=true")
+	}
+	if resp.PackageName != "com.dena.skyleap" {
+		t.Errorf("expected package com.dena.skyleap, got %s", resp.PackageName)
+	}
+	if resp.BaseInputName != "skyleap_test.apk" {
+		t.Errorf("expected base_input_name=skyleap_test.apk, got %s", resp.BaseInputName)
+	}
+
+	// Verify that the file actually exists on disk in the upload directory
+	if fi, err := os.Stat(resp.FilePath); err != nil || fi.Size() == 0 {
+		t.Errorf("expected preserved upload file at %s, err: %v", resp.FilePath, err)
+	}
+
+	// Clean up preserved upload directory after test
+	_ = os.RemoveAll(filepath.Dir(resp.FilePath))
+}
+
+func TestControlAndroidPatch_Validation(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// 1. Invalid new_package_name
+	bodyBadPkg, _ := json.Marshal(map[string]interface{}{
+		"file_path":        "dummy.apk",
+		"new_package_name": "../../evil",
+	})
+	reqBadPkg := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(bodyBadPkg))
+	reqBadPkg.Host = "127.0.0.1:8125"
+	wBadPkg := httptest.NewRecorder()
+	ctrl.handleRoute(wBadPkg, reqBadPkg)
+	if wBadPkg.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad new_package_name, got %d: %s", wBadPkg.Code, wBadPkg.Body.String())
+	}
+
+	// 2. Negative and over-limit timeout_seconds
+	badTimeouts := []int{-1, -10, 3601, 100000}
+	for _, badTimeout := range badTimeouts {
+		bodyBadTimeout, _ := json.Marshal(map[string]interface{}{
+			"file_path":       "dummy.apk",
+			"timeout_seconds": badTimeout,
+		})
+		reqBadTimeout := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(bodyBadTimeout))
+		reqBadTimeout.Host = "127.0.0.1:8125"
+		wBadTimeout := httptest.NewRecorder()
+		ctrl.handleRoute(wBadTimeout, reqBadTimeout)
+		if wBadTimeout.Code != http.StatusBadRequest {
+			t.Errorf("[%d] expected 400 for out-of-bounds timeout_seconds, got %d: %s", badTimeout, wBadTimeout.Code, wBadTimeout.Body.String())
+		}
+	}
+}
+
+func TestControlAndroidPatch_TimeoutBounds(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	apkBytes := buildMinimalValidApkBytes()
+	tempApk := filepath.Join(t.TempDir(), "skyleap_timeout.apk")
+	if err := os.WriteFile(tempApk, apkBytes, 0644); err != nil {
+		t.Fatalf("failed to write temp apk: %v", err)
+	}
+
+	ctrl.checkComponentsFn = func(toolsDir, exeDir string) (bool, bool, []patcher.ComponentStatus, string) {
+		return true, true, nil, ""
+	}
+
+	// 1. timeout_seconds == 0 (default: 15 minutes) should be accepted and start successfully
+	jobDone1 := make(chan struct{})
+	ctrl.runPatchFn = func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error) {
+		defer close(jobDone1)
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("expected context to have a deadline")
+		} else {
+			remaining := time.Until(deadline)
+			// Default is 15 minutes (~900s), should be between 14m and 16m
+			if remaining < 14*time.Minute || remaining > 16*time.Minute {
+				t.Errorf("expected default timeout around 15m, got remaining: %v", remaining)
+			}
+		}
+		return &patcher.BundleResult{SingleApk: "skyleap-patched.apk"}, nil
+	}
+
+	bodyZero, _ := json.Marshal(map[string]interface{}{
+		"file_path":       tempApk,
+		"timeout_seconds": 0,
+	})
+	reqZero := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(bodyZero))
+	reqZero.Host = "127.0.0.1:8125"
+	wZero := httptest.NewRecorder()
+	ctrl.handleRoute(wZero, reqZero)
+	if wZero.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for timeout_seconds=0, got %d: %s", wZero.Code, wZero.Body.String())
+	}
+	select {
+	case <-jobDone1:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for job 1 to finish")
+	}
+
+	// Wait for status reset
+	time.Sleep(50 * time.Millisecond)
+
+	// 2. timeout_seconds == 3600 (upper bound: 1 hour) should be accepted and start successfully
+	jobDone2 := make(chan struct{})
+	ctrl.runPatchFn = func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error) {
+		defer close(jobDone2)
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("expected context to have a deadline")
+		} else {
+			remaining := time.Until(deadline)
+			// 3600s = 60 minutes, should be between 58m and 61m
+			if remaining < 58*time.Minute || remaining > 61*time.Minute {
+				t.Errorf("expected timeout around 60m, got remaining: %v", remaining)
+			}
+		}
+		return &patcher.BundleResult{SingleApk: "skyleap-patched.apk"}, nil
+	}
+
+	bodyMax, _ := json.Marshal(map[string]interface{}{
+		"file_path":       tempApk,
+		"timeout_seconds": 3600,
+	})
+	reqMax := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(bodyMax))
+	reqMax.Host = "127.0.0.1:8125"
+	wMax := httptest.NewRecorder()
+	ctrl.handleRoute(wMax, reqMax)
+	if wMax.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for timeout_seconds=3600, got %d: %s", wMax.Code, wMax.Body.String())
+	}
+	select {
+	case <-jobDone2:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for job 2 to finish")
+	}
+
+	// Wait for status reset
+	time.Sleep(50 * time.Millisecond)
+
+	// 3. timeout_seconds == 60 (explicit 1 minute) should be accepted and set duration accurately
+	jobDone3 := make(chan struct{})
+	ctrl.runPatchFn = func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error) {
+		defer close(jobDone3)
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Errorf("expected context to have a deadline")
+		} else {
+			remaining := time.Until(deadline)
+			if remaining < 50*time.Second || remaining > 70*time.Second {
+				t.Errorf("expected timeout around 60s, got remaining: %v", remaining)
+			}
+		}
+		return &patcher.BundleResult{SingleApk: "skyleap-patched.apk"}, nil
+	}
+
+	body60, _ := json.Marshal(map[string]interface{}{
+		"file_path":       tempApk,
+		"timeout_seconds": 60,
+	})
+	req60 := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(body60))
+	req60.Host = "127.0.0.1:8125"
+	w60 := httptest.NewRecorder()
+	ctrl.handleRoute(w60, req60)
+	if w60.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for timeout_seconds=60, got %d: %s", w60.Code, w60.Body.String())
+	}
+	select {
+	case <-jobDone3:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for job 3 to finish")
+	}
+}
+
+func TestControlAndroidAdbExtract_FailureCleanupWithMockAdb(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	// Build a mock adb that succeeds on `pm path` and fails on `pull`
+	mockDir := t.TempDir()
+	mockSrc := filepath.Join(mockDir, "mock_adb.go")
+	srcCode := `package main
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+func main() {
+	args := strings.Join(os.Args, " ")
+	if strings.Contains(args, "pm path") {
+		fmt.Println("package:/data/app/com.dena.skyleap/base.apk")
+		os.Exit(0)
+	}
+	if strings.Contains(args, "dumpsys package") {
+		fmt.Println("versionName=1.60.0")
+		os.Exit(0)
+	}
+	if strings.Contains(args, "pull") {
+		// Simulate adb pull network failure or disconnection
+		fmt.Fprintln(os.Stderr, "adb: error: failed to copy: connection closed")
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+`
+	if err := os.WriteFile(mockSrc, []byte(srcCode), 0644); err != nil {
+		t.Fatalf("failed to write mock adb src: %v", err)
+	}
+
+	toolsDir := patcher.GetAndroidToolsDir()
+	platformTools := filepath.Join(toolsDir, "platform-tools")
+	if err := os.MkdirAll(platformTools, 0755); err != nil {
+		t.Fatalf("failed to create platform-tools: %v", err)
+	}
+	defer os.RemoveAll(toolsDir)
+
+	mockBin := filepath.Join(platformTools, "adb")
+	if runtime.GOOS == "windows" {
+		mockBin += ".exe"
+		buildCmd := exec.Command("go", "build", "-o", mockBin, mockSrc)
+		if out, err := buildCmd.CombinedOutput(); err != nil {
+			t.Skipf("skipping mock adb test (go build failed: %v): %s", err, string(out))
+		}
+	} else {
+		shScript := "#!/bin/sh\n" +
+			"for arg in \"$@\"; do\n" +
+			"    if [ \"$arg\" = \"path\" ]; then\n" +
+			"        echo \"package:/data/app/com.dena.skyleap/base.apk\"\n" +
+			"        exit 0\n" +
+			"    fi\n" +
+			"    if [ \"$arg\" = \"dumpsys\" ]; then\n" +
+			"        echo \"versionName=1.60.0\"\n" +
+			"        exit 0\n" +
+			"    fi\n" +
+			"    if [ \"$arg\" = \"pull\" ]; then\n" +
+			"        echo \"adb: pull error simulated\" >&2\n" +
+			"        exit 1\n" +
+			"    fi\n" +
+			"done\n" +
+			"exit 0\n"
+		if err := os.WriteFile(mockBin, []byte(shScript), 0755); err != nil {
+			t.Fatalf("failed to write mock adb script: %v", err)
+		}
+	}
+
+	tempBase := os.TempDir()
+	countExtractDirs := func() int {
+		entries, _ := os.ReadDir(tempBase)
+		cnt := 0
+		for _, e := range entries {
+			if e.IsDir() && strings.HasPrefix(e.Name(), "gbf_extracted_") {
+				cnt++
+			}
+		}
+		return cnt
+	}
+
+	beforeCount := countExtractDirs()
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"serial":       "emulator-mock",
+		"package_name": "com.dena.skyleap",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/android/adb/extract", bytes.NewBuffer(body))
+	req.Host = "127.0.0.1:8125"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+
+	// Since pull failed, it must return 500
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 Internal Server Error when adb pull fails, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify that the extractDir created during extraction was cleaned up!
+	afterCount := countExtractDirs()
+	if afterCount > beforeCount {
+		t.Errorf("temporary extract directory was leaked after failed pull: before=%d, after=%d", beforeCount, afterCount)
+	}
+}
+
+func TestControlAndroidPatch_PanicRecovery(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	ctrl.checkComponentsFn = func(toolsDir, exeDir string) (bool, bool, []patcher.ComponentStatus, string) {
+		return true, true, nil, ""
+	}
+
+	apkBytes := buildMinimalValidApkBytes()
+	tempApk := filepath.Join(t.TempDir(), "panic_recovery_test.apk")
+	if err := os.WriteFile(tempApk, apkBytes, 0644); err != nil {
+		t.Fatalf("failed to write temp apk: %v", err)
+	}
+
+	// 1. Configure runPatchFn to simulate an unhandled panic inside the background job
+	panicTriggered := make(chan struct{})
+	ctrl.runPatchFn = func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error) {
+		close(panicTriggered)
+		panic("simulated critical crash in patch engine")
+	}
+
+	body1, _ := json.Marshal(map[string]interface{}{
+		"file_path": tempApk,
+	})
+	req1 := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(body1))
+	req1.Host = "127.0.0.1:8125"
+	w1 := httptest.NewRecorder()
+	ctrl.handleRoute(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK starting patch job 1, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	select {
+	case <-panicTriggered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for patch job to trigger panic")
+	}
+
+	// 2. Poll until the background defer/recover completes and status is updated
+	deadline := time.Now().Add(2 * time.Second)
+	recovered := false
+	for time.Now().Before(deadline) {
+		ctrl.androidPatchMu.Lock()
+		running := ctrl.androidPatchStatus.Running
+		done := ctrl.androidPatchStatus.Done
+		errStr := ctrl.androidPatchStatus.Error
+		logs := ctrl.androidPatchStatus.Logs
+		cancelNil := ctrl.androidPatchCancelFn == nil
+		ctrl.androidPatchMu.Unlock()
+
+		if !running && done && strings.Contains(errStr, "simulated critical crash in patch engine") && cancelNil {
+			hasPanicLog := false
+			for _, l := range logs {
+				if strings.Contains(l, "[PANIC]") && strings.Contains(l, "simulated critical crash in patch engine") {
+					hasPanicLog = true
+					break
+				}
+			}
+			if !hasPanicLog {
+				t.Errorf("expected logs to contain [PANIC] entry, got: %v", logs)
+			}
+			recovered = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !recovered {
+		ctrl.androidPatchMu.Lock()
+		defer ctrl.androidPatchMu.Unlock()
+		t.Fatalf("timed out waiting for panic recovery: Running=%v, Done=%v, Error=%q, CancelFnNil=%v",
+			ctrl.androidPatchStatus.Running, ctrl.androidPatchStatus.Done, ctrl.androidPatchStatus.Error, ctrl.androidPatchCancelFn == nil)
+	}
+
+	// 3. Verify /api/android/patch/status HTTP endpoint reflects the recovered state
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/android/patch/status", nil)
+	reqStatus.Host = "127.0.0.1:8125"
+	wStatus := httptest.NewRecorder()
+	ctrl.handleRoute(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for status, got %d", wStatus.Code)
+	}
+	var stResp struct {
+		Running bool     `json:"running"`
+		Done    bool     `json:"done"`
+		Error   string   `json:"error"`
+		Logs    []string `json:"logs"`
+	}
+	if err := json.Unmarshal(wStatus.Body.Bytes(), &stResp); err != nil {
+		t.Fatalf("failed to parse status JSON: %v", err)
+	}
+	if stResp.Running {
+		t.Errorf("expected status.running=false after panic, got true")
+	}
+	if !stResp.Done {
+		t.Errorf("expected status.done=true after panic, got false")
+	}
+	if !strings.Contains(stResp.Error, "simulated critical crash in patch engine") {
+		t.Errorf("expected status.error to contain panic message, got: %q", stResp.Error)
+	}
+
+	// 4. Verify subsequent patch task can start normally and complete successfully
+	job2Done := make(chan struct{})
+	ctrl.runPatchFn = func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error) {
+		defer close(job2Done)
+		return &patcher.BundleResult{SingleApk: "skyleap-patched.apk"}, nil
+	}
+
+	body2, _ := json.Marshal(map[string]interface{}{
+		"file_path": tempApk,
+	})
+	req2 := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(body2))
+	req2.Host = "127.0.0.1:8125"
+	w2 := httptest.NewRecorder()
+	ctrl.handleRoute(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK starting patch job 2, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	select {
+	case <-job2Done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for patch job 2 to finish")
+	}
+
+	deadline2 := time.Now().Add(2 * time.Second)
+	job2Success := false
+	for time.Now().Before(deadline2) {
+		ctrl.androidPatchMu.Lock()
+		running := ctrl.androidPatchStatus.Running
+		done := ctrl.androidPatchStatus.Done
+		errStr := ctrl.androidPatchStatus.Error
+		cancelNil := ctrl.androidPatchCancelFn == nil
+		ctrl.androidPatchMu.Unlock()
+
+		if !running && done && errStr == "" && cancelNil {
+			job2Success = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !job2Success {
+		ctrl.androidPatchMu.Lock()
+		defer ctrl.androidPatchMu.Unlock()
+		t.Fatalf("job 2 failed to complete cleanly after job 1 panic recovery: Running=%v, Done=%v, Error=%q, CancelFnNil=%v",
+			ctrl.androidPatchStatus.Running, ctrl.androidPatchStatus.Done, ctrl.androidPatchStatus.Error, ctrl.androidPatchCancelFn == nil)
+	}
+}
 

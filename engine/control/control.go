@@ -86,8 +86,10 @@ type ControlServer struct {
 	sseClients []chan []byte
 
 	// Android Patch state
-	androidPatchMu     sync.Mutex
-	androidPatchStatus AndroidPatchStatus
+	androidPatchMu       sync.Mutex
+	androidPatchJobID    uint64
+	androidPatchStatus   AndroidPatchStatus
+	androidPatchCancelFn context.CancelFunc
 
 	// Android Component Download state
 	componentDlMu       sync.Mutex
@@ -95,10 +97,12 @@ type ControlServer struct {
 	componentDlProgress patcher.DownloadProgress
 	componentDlCancelFn context.CancelFunc
 
-	// Side-effect hooks for system proxy and startup registration (mockable in tests)
+	// Side-effect hooks for system proxy, startup registration and android patcher (mockable in tests)
 	enablePACProxyFn    func(string) error
 	disablePACProxyFn   func(bool) error
 	setStartupEnabledFn func(bool) error
+	checkComponentsFn   func(toolsDir, exeDir string) (bool, bool, []patcher.ComponentStatus, string)
+	runPatchFn          func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error)
 
 	repairer *health.Repairer
 }
@@ -264,6 +268,14 @@ func (c *ControlServer) Stop() {
 	}
 	c.running = false
 	c.listenerGen++
+
+	c.androidPatchMu.Lock()
+	if c.androidPatchCancelFn != nil {
+		c.androidPatchCancelFn()
+		c.androidPatchCancelFn = nil
+	}
+	c.androidPatchMu.Unlock()
+
 	if c.server != nil {
 		_ = c.server.Close()
 		c.server = nil
@@ -620,6 +632,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	case "/api/android/patch/status":
 		if req.Method == http.MethodGet {
 			c.handleAndroidPatchStatus(w, req)
+			return
+		}
+	case "/api/android/patch/cancel":
+		if req.Method == http.MethodPost {
+			c.handleAndroidPatchCancel(w, req)
 			return
 		}
 	case "/api/android/patch/open-output":
