@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,11 +34,15 @@ type AndroidPatchStatus struct {
 
 type patchListenerBridge struct {
 	server *ControlServer
+	jobID  uint64
 }
 
 func (b *patchListenerBridge) OnStage(stage int, text string, progress float64) {
 	b.server.androidPatchMu.Lock()
 	defer b.server.androidPatchMu.Unlock()
+	if b.server.androidPatchJobID != b.jobID {
+		return
+	}
 	b.server.androidPatchStatus.Stage = stage
 	b.server.androidPatchStatus.StageText = text
 	b.server.androidPatchStatus.Progress = progress
@@ -46,6 +51,9 @@ func (b *patchListenerBridge) OnStage(stage int, text string, progress float64) 
 func (b *patchListenerBridge) OnLog(line string) {
 	b.server.androidPatchMu.Lock()
 	defer b.server.androidPatchMu.Unlock()
+	if b.server.androidPatchJobID != b.jobID {
+		return
+	}
 	b.server.androidPatchStatus.Logs = append(b.server.androidPatchStatus.Logs, line)
 	// Cap logs to last 1000 lines to prevent unbounded memory growth
 	if len(b.server.androidPatchStatus.Logs) > 1000 {
@@ -337,11 +345,56 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 	}
 	defer file.Close()
 
-	ext := strings.ToLower(filepath.Ext(header.Filename))
+	// Sanitize uploaded filename across platforms (handles POSIX '/', Windows '\', drive letters, and URL-encoded slashes)
+	rawFilename := strings.TrimSpace(header.Filename)
+	if unescaped, err := url.PathUnescape(rawFilename); err == nil {
+		rawFilename = strings.TrimSpace(unescaped)
+	}
+
+	// Reject null bytes immediately
+	if strings.Contains(rawFilename, "\x00") {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "Filename contains invalid characters",
+		})
+		return
+	}
+
+	// Strip Windows drive letter prefix (e.g. "C:" or "c:") if present
+	if len(rawFilename) >= 2 && ((rawFilename[0] >= 'a' && rawFilename[0] <= 'z') || (rawFilename[0] >= 'A' && rawFilename[0] <= 'Z')) && rawFilename[1] == ':' {
+		rawFilename = rawFilename[2:]
+	}
+
+	// Extract base filename after last POSIX or Windows path separator
+	if idx := strings.LastIndexAny(rawFilename, "/\\"); idx != -1 {
+		rawFilename = rawFilename[idx+1:]
+	}
+
+	cleanFilename := filepath.Base(filepath.Clean(rawFilename))
+	cleanFilename = strings.TrimRight(cleanFilename, ". ")
+	if cleanFilename == "." || cleanFilename == ".." || cleanFilename == "/" || cleanFilename == "\\" || cleanFilename == "" {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("Invalid or empty filename: %s", header.Filename),
+		})
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(cleanFilename))
 	if ext != ".apk" && ext != ".apks" && ext != ".xapk" && ext != ".zip" {
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"ok":    false,
 			"error": fmt.Sprintf("Unsupported file format %q. Expected .apk, .apks, .xapk, or .zip", ext),
+		})
+		return
+	}
+
+	// Must have a non-empty stem before the extension
+	stem := strings.TrimSuffix(cleanFilename, ext)
+	if stem == "" {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("Invalid filename without stem: %s", header.Filename),
 		})
 		return
 	}
@@ -352,7 +405,17 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	savedPath := filepath.Join(uploadDir, header.Filename)
+	savedPath := filepath.Join(uploadDir, cleanFilename)
+	// Ensure savedPath is strictly within uploadDir and does not escape
+	rel, err := filepath.Rel(uploadDir, savedPath)
+	if err != nil || rel != cleanFilename || rel == ".." || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		_ = os.RemoveAll(uploadDir)
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("Filename path traversal detected: %s", header.Filename),
+		})
+		return
+	}
 	outF, err := os.Create(savedPath)
 	if err != nil {
 		_ = os.RemoveAll(uploadDir)
@@ -371,6 +434,7 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 	// Inspect the uploaded package
 	workDir, err := os.MkdirTemp("", "gbf_inspect_*")
 	if err != nil {
+		_ = os.RemoveAll(uploadDir)
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": fmt.Sprintf("Failed to create temp inspect dir: %v", err)})
 		return
 	}
@@ -378,6 +442,7 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 
 	pkg, err := patcher.InspectInput(savedPath, workDir)
 	if err != nil {
+		_ = os.RemoveAll(uploadDir)
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": fmt.Sprintf("Uploaded file is not a valid Android package: %v", err)})
 		return
 	}
@@ -387,7 +452,7 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                      true,
 		"file_path":               savedPath,
-		"base_input_name":         header.Filename,
+		"base_input_name":         cleanFilename,
 		"package_name":            pkg.PackageName,
 		"version_name":            pkg.VersionName,
 		"is_split":                pkg.IsSplit,
@@ -410,6 +475,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		AppLabel       string `json:"app_label"`
 		NewPackageName string `json:"new_package_name"`
 		AutoBackup     *bool  `json:"auto_backup"`
+		TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid JSON body"})
@@ -433,6 +499,20 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 	}
 	appLabel := strings.TrimSpace(body.AppLabel)
 	newPkg := strings.TrimSpace(body.NewPackageName)
+	if newPkg != "" && !patcher.IsValidPackageName(newPkg) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("Invalid new package name: %s", newPkg),
+		})
+		return
+	}
+	if body.TimeoutSeconds < 0 || body.TimeoutSeconds > 3600 {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "timeout_seconds must be between 0 and 3600",
+		})
+		return
+	}
 
 	c.androidPatchMu.Lock()
 	if c.androidPatchStatus.Running {
@@ -452,7 +532,11 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 	// Ensure canonical companion module is downloaded and up to date before checking components
 	_, _ = patcher.EnsureCanonicalModule(req.Context(), toolsDir, exeDir, nil)
 
-	_, allVerified, _, errStr := patcher.CheckComponents(toolsDir, exeDir)
+	checkComponents := patcher.CheckComponents
+	if c.checkComponentsFn != nil {
+		checkComponents = c.checkComponentsFn
+	}
+	_, allVerified, _, errStr := checkComponents(toolsDir, exeDir)
 	if !allVerified {
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"ok":    false,
@@ -488,6 +572,17 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		return
 	}
 
+	timeoutDur := 15 * time.Minute
+	if body.TimeoutSeconds > 0 {
+		timeoutDur = time.Duration(body.TimeoutSeconds) * time.Second
+	}
+
+	c.androidPatchJobID++
+	jobID := c.androidPatchJobID
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutDur)
+	c.androidPatchCancelFn = cancel
+
 	// Initialize new job status
 	c.androidPatchStatus = AndroidPatchStatus{
 		Running:   true,
@@ -502,9 +597,63 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 	c.androidPatchMu.Unlock()
 
 	// Launch patch execution in background goroutine (non-blocking)
-	go func(inPath, outDir, label, customPkg string, backup bool) {
-		bridge := &patchListenerBridge{server: c}
+	go func(ctx context.Context, cancel context.CancelFunc, jobID uint64, inPath, outDir, label, customPkg string, backup bool, timeout time.Duration) {
+		var (
+			result   *patcher.BundleResult
+			err      error
+			panicked interface{}
+		)
+
+		defer cancel()
+		defer func() {
+			c.androidPatchMu.Lock()
+			defer c.androidPatchMu.Unlock()
+
+			if c.androidPatchJobID != jobID {
+				return
+			}
+
+			c.androidPatchStatus.Running = false
+			c.androidPatchStatus.Done = true
+			c.androidPatchCancelFn = nil
+
+			if panicked != nil {
+				c.androidPatchStatus.Error = fmt.Sprintf("Patch 任务发生异常: %v", panicked)
+				c.androidPatchStatus.Logs = append(c.androidPatchStatus.Logs, fmt.Sprintf("[PANIC] %v", panicked))
+				return
+			}
+
+			if err != nil {
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					if timeout >= time.Minute && timeout%time.Minute == 0 {
+						c.androidPatchStatus.Error = fmt.Sprintf("Patch 任务执行超时 (超过 %d 分钟)", int(timeout/time.Minute))
+					} else {
+						c.androidPatchStatus.Error = fmt.Sprintf("Patch 任务执行超时 (超过 %v)", timeout)
+					}
+					c.androidPatchStatus.Logs = append(c.androidPatchStatus.Logs, fmt.Sprintf("[ERROR] %s", c.androidPatchStatus.Error))
+				} else if errors.Is(ctx.Err(), context.Canceled) {
+					c.androidPatchStatus.Error = "Patch 任务已被用户取消"
+					c.androidPatchStatus.Logs = append(c.androidPatchStatus.Logs, "[*] Patch 任务已取消")
+				} else {
+					c.androidPatchStatus.Error = err.Error()
+					c.androidPatchStatus.Logs = append(c.androidPatchStatus.Logs, fmt.Sprintf("[ERROR] %v", err))
+				}
+			} else {
+				c.androidPatchStatus.Result = result
+				c.androidPatchStatus.Progress = 1.0
+				c.androidPatchStatus.Stage = 5
+				c.androidPatchStatus.StageText = "Patch completed successfully"
+			}
+		}()
+		defer func() {
+			if r := recover(); r != nil {
+				panicked = r
+			}
+		}()
+
+		bridge := &patchListenerBridge{server: c, jobID: jobID}
 		opts := patcher.PatchOptions{
+			Context:        ctx,
 			InputPath:      inPath,
 			OutputDir:      outDir,
 			AppLabel:       label,
@@ -513,37 +662,41 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 			Listener:       bridge,
 		}
 
-		p, err := patcher.NewPatcher(opts)
-		if err != nil {
-			c.androidPatchMu.Lock()
-			c.androidPatchStatus.Running = false
-			c.androidPatchStatus.Done = true
-			c.androidPatchStatus.Error = err.Error()
-			c.androidPatchStatus.Logs = append(c.androidPatchStatus.Logs, fmt.Sprintf("[ERROR] %v", err))
-			c.androidPatchMu.Unlock()
-			return
-		}
-
-		result, err := p.Run()
-
-		c.androidPatchMu.Lock()
-		defer c.androidPatchMu.Unlock()
-		c.androidPatchStatus.Running = false
-		c.androidPatchStatus.Done = true
-		if err != nil {
-			c.androidPatchStatus.Error = err.Error()
-			c.androidPatchStatus.Logs = append(c.androidPatchStatus.Logs, fmt.Sprintf("[ERROR] %v", err))
+		if c.runPatchFn != nil {
+			result, err = c.runPatchFn(ctx, opts)
 		} else {
-			c.androidPatchStatus.Result = result
-			c.androidPatchStatus.Progress = 1.0
-			c.androidPatchStatus.Stage = 5
-			c.androidPatchStatus.StageText = "Patch completed successfully"
+			var p *patcher.Patcher
+			p, err = patcher.NewPatcher(opts)
+			if err == nil {
+				result, err = p.RunContext(ctx)
+			}
 		}
-	}(targetPath, outputDir, appLabel, newPkg, autoBackup)
+	}(ctx, cancel, jobID, targetPath, outputDir, appLabel, newPkg, autoBackup, timeoutDur)
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "Patch job started",
+	})
+}
+
+func (c *ControlServer) handleAndroidPatchCancel(w http.ResponseWriter, req *http.Request) {
+	c.androidPatchMu.Lock()
+	defer c.androidPatchMu.Unlock()
+
+	if !c.androidPatchStatus.Running || c.androidPatchCancelFn == nil {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"message": "没有正在进行的 Patch 任务",
+		})
+		return
+	}
+
+	c.androidPatchCancelFn()
+	c.androidPatchStatus.Logs = append(c.androidPatchStatus.Logs, "[*] 收到取消信号，正在中止 Patch 任务...")
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "已发送取消信号",
 	})
 }
 
@@ -817,6 +970,10 @@ func (c *ControlServer) handleAndroidAdbProbeApp(w http.ResponseWriter, req *htt
 	if pkgName == "" {
 		pkgName = "com.dena.skyleap"
 	}
+	if !patcher.IsValidPackageName(pkgName) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": fmt.Sprintf("Invalid package name: %s", pkgName)})
+		return
+	}
 
 	toolsDir := patcher.GetAndroidToolsDir()
 	exeDir := c.getExeDir()
@@ -869,6 +1026,10 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 	if pkgName == "" {
 		pkgName = "com.dena.skyleap"
 	}
+	if !patcher.IsValidPackageName(pkgName) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": fmt.Sprintf("Invalid package name: %s", pkgName)})
+		return
+	}
 
 	toolsDir := patcher.GetAndroidToolsDir()
 	exeDir := c.getExeDir()
@@ -900,8 +1061,11 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 	defer cancel()
 
 	localPaths, err := patcher.PullDeviceApp(ctx, adbPath, serial, appInfo, extractDir, nil)
-	if err != nil {
+	if err != nil || len(localPaths) == 0 {
 		_ = os.RemoveAll(extractDir)
+		if err == nil {
+			err = errors.New("no APK files were extracted from device")
+		}
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"ok":    false,
 			"error": fmt.Sprintf("从设备提取文件失败: %v", err),
@@ -911,6 +1075,7 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 
 	inspectWorkDir, err := os.MkdirTemp("", "gbf_inspect_*")
 	if err != nil {
+		_ = os.RemoveAll(extractDir)
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"ok":    false,
 			"error": fmt.Sprintf("创建临时检查目录失败: %v", err),
@@ -926,6 +1091,7 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 
 	pkg, err := patcher.InspectInput(targetInspectPath, inspectWorkDir)
 	if err != nil {
+		_ = os.RemoveAll(extractDir)
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"ok":    false,
 			"error": fmt.Sprintf("提取的应用包解析失败: %v", err),
@@ -967,6 +1133,10 @@ func (c *ControlServer) handleAndroidAdbInstall(w http.ResponseWriter, req *http
 	pkgName := strings.TrimSpace(body.PackageName)
 	if pkgName == "" {
 		pkgName = "com.dena.skyleap"
+	}
+	if !patcher.IsValidPackageName(pkgName) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": fmt.Sprintf("Invalid package name: %s", pkgName)})
+		return
 	}
 
 	toolsDir := patcher.GetAndroidToolsDir()
