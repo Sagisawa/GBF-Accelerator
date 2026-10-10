@@ -123,6 +123,9 @@ func (p *Patcher) RunContext(ctx context.Context) (*BundleResult, error) {
 	}
 	javaPath, javaVer, err := FindJavaRuntimeContext(ctx, p.opts.JavaOverride)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, err
 	}
 	p.logf("      - Java Runtime: %s (%s)\n", javaPath, javaVer)
@@ -153,6 +156,9 @@ func (p *Patcher) RunContext(ctx context.Context) (*BundleResult, error) {
 			p.logf("      [*] %s\n", msg)
 		})
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			// If fetching latest failed (e.g. offline), fall back to existing local module if available
 			fallbackMod, fbErr := FindModuleApk("", p.exeDir)
 			if fbErr != nil {
@@ -298,6 +304,9 @@ func (p *Patcher) RunContext(ctx context.Context) (*BundleResult, error) {
 
 	rawOutputs, err := ExecuteLSPatch(cfg, pkgInfo.BaseApkPath, pkgInfo.SplitApkPaths, lspatchOutDir)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
 		return nil, err
 	}
 	p.logf("      [+] Injected SkyLeapModule into %d package file(s).\n", len(rawOutputs))
