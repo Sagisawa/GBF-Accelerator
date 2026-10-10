@@ -9,8 +9,9 @@
 
 1. **定位与架构**:
    - 定位: **高性能本地静态资源缓存与透明代理工具**。
-   - 架构: v2.0 **Go 原生单静态二进制** (零 Python 运行时依赖)。
-   - 核心 (`engine/`): `proxy` (转发/静态命中), `cache` (RAM LRU + 磁盘持久化), `control` (控制面), `telemetry` (指标/日志), `updater` (自更新); 适配层: `cert`, `sysproxy`, `startup`, `desktop`。
+   - 架构: **v2.x Go 原生单静态二进制架构** (零 Python 运行时依赖；`v2.x` 指代 Go 架构代际，具体产品发行版本以 `engine/config/config.go` 的 `AppVersion` 为唯一权威来源)。
+   - 核心与支撑 (`engine/`): `proxy` (转发/静态命中/上游路由), `cache` (RAM SLRU + 磁盘持久化 + ResidentPool), `control` (控制面), `telemetry` (指标/日志), `updater` (自更新), `patcher` (Android 环境与 Web 视图兼容补丁), `health` (环境诊断与自愈修复); 适配与辅助层: `cert`, `sysproxy`, `startup`, `desktop`, `firewall` (系统防火墙适配), `process` (前台进程检测), `res` (内嵌模板与资源分发)。
+   - 缓存模型规范: RAM 采用 16 分片双段 SLRU (Probationary 试用段 + Protected 保护段)；磁盘缓存采用整文件直接读取与 `.ext` 元数据校验 (`diskMeta`)；RAM Boost 模式使用独立的只读不淘汰常驻池 (`ResidentPool`)。`MaxDiskDirectReadSize` (2 MiB) 仅为磁盘命中项反向加载进入 RAM SLRU 试用段的准入体积上限，不限制磁盘整文件读取或直接网络缓存。
    - 前端: React SPA 内嵌 `engine/ui`。历史 Python 实现已废除, 规范以 Go 源码为准。
 2. **目标与协议分流**:
    - 本地缓存 + HTTP/2 多路复用加速静态素材; 温和调度削峰填谷, 降低突发并发与 CDN 负载。
@@ -29,24 +30,39 @@
 - **转发范围与协议基线**: 非静态请求 (`/rest/`, `/quest/`, `/party/`, `/user/`, `/deck/`, `/gacha/`, `/casino/`, `/mypage/` 等) 经专用 `api_client` 透明转发。当前动态 API 上游基线为 HTTP/1.1 Keep-Alive；任何未来协议栈调整必须经过专项审计与 benchmark，并且不得改变业务语义、重试规则和透明转发约束。
 - **业务零干预**: 除逐跳头 (`Connection`, `Transfer-Encoding` 等), **严禁修改上游状态码、实体正文、Cookie 或业务 Header**。
 - **Content-Encoding 限制**: 仅底层解压且客户端无法解码时技术剔除, 保证解压字节语义一致, 严禁扩大篡改。
-- **严禁 Mock 与动态缓存**: `MOCK_PATHS = ()` 保持为空, 严禁构造本地伪造 200; 动态响应严禁写入磁盘或 RAM 缓存。
+- **严禁 Mock 与动态缓存**: 严禁在代理管道中对任何非静态 API 构造本地伪造 200 或 Mock 响应；动态响应严禁写入磁盘或 RAM 缓存。
 
 ### 2. 官方探测绝对穿透
 - `/ob/r` (反作弊心跳) 与 `/rest/error/js` (前端错误上报) 作为标准动态 API 100% 穿透 Cygames; 严禁本地拦截/丢弃/伪造。
 
-### 3. 双重约束安全重试机制 (Dual-Constraint Safe Retry)
-- **POST/PUT/DELETE 坚决零重试**: 写请求 (攻击/技能/召唤/体力等) `max_attempts = 1`, **绝对禁止自动重试**, 杜绝"技能双发 / 状态不一致"。
-- **GET 重试双重限制**:
-  1. 仅限预审只读幂等接口 (`RETRYABLE_API_PATHS` 白名单);
-  2. 仅建连前空闲 TCP 断开或 Stale Connection (`ConnectError`, `RemoteProtocolError`) 时允许最多 1 次静默快速重连。
+### 3. 多层约束安全重试机制 (Multi-Layer Safe Retry & Replay Guardrails)
+- **非幂等写请求应用层坚决零重试**: 写请求 (攻击/技能/召唤/体力等) 应用层 `max_attempts = 1`, **绝对禁止自动重试或重放**, 杜绝"技能双发 / 状态不一致"。
+- **Transport 隐式重试与可重放性约束**:
+  - 非幂等写请求在传输层严禁被 Go `http.Transport` 底层机制自动重试或重放；
+  - 维护网络转发代码时，必须严格关注 Go 标准库 `net/http.Transport` 在连接池复用时因 Stale Connection 对可重放请求自动重发的底层机制；
+  - 清除 `upReq.GetBody` 或将 `maxAttempts` 设为 1 均不是充分的绝对零重放保证 (例如空 Body、特定协议头或传输层上下文仍可能触发 Transport 重试逻辑)；
+  - 规范要求维护者必须持续核查底层实际重试路径与请求可重放行为，严禁仅凭某一字段赋值或单一变量声明就断言系统在所有边界下绝对不可重放。
+- **Failover 上游切换隔离**:
+  - 上游代理故障转移 (Failover) 严格仅影响后续新发起请求；**绝对禁止将当前在途失败的动态写请求自动切换并重发至备用上游**。
+- **应用层显式 GET 重试的双重限制**:
+  1. 仅限经预审的只读幂等接口 (通过代码中的只读白名单判定，如 `isRetryableAPI`);
+  2. 仅在遇到连接丢失类网络错误 (如当前代码实际识别的 EOF、Connection Reset、Broken Pipe、Connection Refused 等网络级断开错误) 时允许最多 1 次静默快速重连;
+  3. 白名单仅对应用层重试生效，不得暗示所有 GET 重试已受白名单完全约束 (Transport 底层在连接级遇到 Stale 断开时仍有独立重连机制)。
 
 ### 4. 响应头零指纹污染 (Zero Header Pollution)
 - 严禁向客户端返回自定义代理头 (`X-Proxy-Cache`, `X-Cache-Source`, `X-Acceleration-*`)。
-- 动态响应头经 `forward_upstream_response` 原样还原, 严格多行保留每条 `Set-Cookie`, 禁逗号折叠合并。
+- 动态响应头经反向代理管道原样还原, 严格多行保留每条 `Set-Cookie`, 禁逗号折叠合并。
 
-### 5. 静态资源防篡改与缓存完整性 (Byte-for-Byte Integrity)
-- 磁盘与 RAM 缓存素材 (`.js`, `.css`, 图频等) 必须为 Akamai CDN 原始字节流; 严禁注入作弊/挂机/DOM 脚本。
-- 补丁清理 (Quarantine) 限"结构化空函数 (`void 0` / 空体) + 异常上下文"精准特征, 严禁误伤合法 `void 0`。
+### 5. 静态资源防篡改与多层校验机制 (Integrity & Validation Guardrails)
+- **多层校验职责分离**:
+  1. **格式识别与兼容**: 基于文件头 Magic Number 识别真实媒体类型，放行上游合法的跨格式命名资源 (如拓展名为 `.png` 但内容为合规 WebP)，拦截上游错误 HTML 落地；但 Magic Number 仅用于格式识别，不能单独证明资源完整或未被篡改；
+  2. **损坏检测**: 校验文件非空、压缩流可解压及无错误标记；
+  3. **内容完整性与防篡改**: 磁盘与 RAM 缓存素材 (`.js`, `.css`, 图频等) 必须为 Akamai CDN 原始字节流，严禁本地注入作弊/挂机/DOM 脚本；补丁清理 (Quarantine) 限"结构化空函数 (`void 0` / 空体) + 异常上下文"精准特征，严禁误伤合法 `void 0`。
+
+### 6. Android Patcher 安全边界 (Android Patcher Security Guardrails)
+- **业务零篡改与合规底线**: Android 补丁机能力仅限用于代理分流与系统证书兼容 (如 Network Security Config 信任用户 CA)，**严禁修改游戏业务逻辑，严禁注入作弊、挂机或自动化 DOM 脚本**。
+- **进程超时可控与资源清理**: 外部命令与工具调用 (如 Java, LSPatch, ADB 等) 必须具备超时控制、任务取消及失败时的临时文件与目录清理机制，严禁无超时的无限阻塞调用。
+- **不可信输入与路径隔离**: 控制面板接收的外部参数 (如应用包名、上传文件名) 在进入底层文件系统或设备端命令前，必须进行前置合法性校验与路径清洗 (如防止路径穿越与设备端 Shell 异常拼接)。
 
 ---
 
@@ -58,7 +74,7 @@
   - 负责代理流量, 向 LAN 提供 `/ca.crt`, `/proxy.pac` 与移动端引导页。
 - **8125 Control Plane**:
   - **永远仅绑 `127.0.0.1` (Strictly Loopback)**。
-  - 管理接口 (`/api/config/apply`, `/api/cache/*`, `/api/cert/*`, `/api/sysproxy/*`, `/api/startup/*`, `/api/update/*` 等) 仅限 Loopback。
+  - 管理接口 (示例包括但不限于 `/api/config/*`, `/api/cache/*`, `/api/cert/*`, `/api/sysproxy/*`, `/api/startup/*`, `/api/update/*`, `/api/health/*`, `/api/firewall/*`, `/api/android/*` 等管理端点) 仅限 Loopback。
   - 严禁因 `AllowLAN=true` 改绑非 Loopback; 严禁改 Origin 或白名单向 LAN 暴露 8125。
 - **AllowLAN 语义**:
   - 仅控制 8124 是否接受非 Loopback 连接; 绝不开放 Control Plane 与后台。
@@ -212,7 +228,7 @@
      go vet ./...
      ```
    - 涉及并发、Listener、配置事务时: `go test -race -count=1 ./...`;
-   - 涉及 Web 控制台时: 在 `web/` 执行 `npm run build`;
+   - 涉及 Web 控制台时: 必须依次完成 `(cd web && npm test)` 前端单测、前端构建并将产物同步至 `engine/ui/dist` 再编译 Go 程序；完整发行构建与 Universal 2 合成仅在有发布需求时执行，日常开发无需执行发行包制作流程；
    - 涉及跨平台逻辑时: 验证 `windows/amd64`, `linux/amd64`, `darwin/amd64`, `darwin/arm64` 编译;
    - **报告真实性**: 环境受限无法执行项 (如 Windows 缺少 CGO 运行 `-race`) 须注明 `Race detector 未执行`, 严禁虚报; 旧 Python 测试已移除, 严禁引用。
 5. **Diff 自检核对 (Self-Review via Diff)**: 运行 `git diff` 逐行审查所有变动行, 确认未引入非预期副作用与违规代码。
