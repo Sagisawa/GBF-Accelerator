@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -108,18 +109,74 @@ func checkMagicBytes(cleanLower string, sample []byte) bool {
 	return true
 }
 
+func readGzipSample(r io.Reader, buf []byte) (int, error) {
+	total := 0
+	for total < len(buf) {
+		n, err := r.Read(buf[total:])
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+func validateCompleteGzipStream(cleanLower string, r io.Reader) bool {
+	gr, err := gzip.NewReader(r)
+	if err != nil {
+		return false
+	}
+	var buf [512]byte
+	n, readErr := readGzipSample(gr, buf[:])
+	if readErr != nil && readErr != io.EOF {
+		_ = gr.Close()
+		return false
+	}
+	if n == 0 {
+		_ = gr.Close()
+		return false
+	}
+	if isAssetExtension(cleanLower) {
+		sample := buf[:n]
+		sampleLower := bytes.TrimSpace(bytes.ToLower(sample))
+		if isHTMLContent(sampleLower) {
+			_ = gr.Close()
+			return false
+		}
+		if !checkMagicBytes(cleanLower, sample) {
+			_ = gr.Close()
+			return false
+		}
+	}
+	if _, copyErr := io.Copy(io.Discard, gr); copyErr != nil {
+		_ = gr.Close()
+		return false
+	}
+	if closeErr := gr.Close(); closeErr != nil {
+		return false
+	}
+	return true
+}
+
+// IsValidCacheContent validates a complete asset payload in memory.
+// For gzip-compressed data, it verifies decompression, non-truncation, CRC32/ISIZE checksums,
+// HTML rejection, and inner magic bytes.
 func IsValidCacheContent(cleanPath, contentType string, data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
-
-	cleanLower := strings.ToLower(cleanPath)
-	if !isAssetExtension(cleanLower) {
-		return true
-	}
-
 	if strings.Contains(strings.ToLower(contentType), "text/html") {
 		return false
+	}
+
+	cleanLower := strings.ToLower(cleanPath)
+
+	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		return validateCompleteGzipStream(cleanLower, bytes.NewReader(data))
+	}
+
+	if !isAssetExtension(cleanLower) {
+		return true
 	}
 
 	sample := data
@@ -127,39 +184,21 @@ func IsValidCacheContent(cleanPath, contentType string, data []byte) bool {
 		sample = data[:512]
 	}
 
-	// If gzip compressed, decompress sample
-	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-		gr, err := gzip.NewReader(bytes.NewReader(data))
-		if err == nil {
-			buf := make([]byte, 512)
-			n, _ := io.ReadFull(gr, buf)
-			_ = gr.Close()
-			if n > 0 {
-				sample = buf[:n]
-			}
-		}
-	}
-
 	sampleLower := bytes.TrimSpace(bytes.ToLower(sample))
 	if isHTMLContent(sampleLower) {
 		return false
 	}
 
-	// Magic byte verification on unstripped data
-	rawSample := data
-	if len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-		rawSample = sample
-	}
-
-	return checkMagicBytes(cleanLower, rawSample)
+	return checkMagicBytes(cleanLower, sample)
 }
 
-// CanEarlyStream performs fast-rejection check on the first chunk of an asset stream.
-// It verifies that the chunk does not contain HTML error pages and matches expected magic bytes.
-// If the payload is gzip-compressed and cannot be conclusively validated from this chunk alone,
-// it returns false so the proxy can fall back to the conservative batch read path.
-func CanEarlyStream(cleanPath, contentType string, chunk []byte) bool {
-	if len(chunk) == 0 {
+// IsValidCacheSample validates either a complete payload (isComplete=true) or a streaming
+// prefix sample (isComplete=false) that may be lawfully truncated at a chunk boundary.
+func IsValidCacheSample(cleanPath, contentType string, sample []byte, isComplete bool) bool {
+	if isComplete {
+		return IsValidCacheContent(cleanPath, contentType, sample)
+	}
+	if len(sample) == 0 {
 		return false
 	}
 	if strings.Contains(strings.ToLower(contentType), "text/html") {
@@ -168,19 +207,32 @@ func CanEarlyStream(cleanPath, contentType string, chunk []byte) bool {
 
 	cleanLower := strings.ToLower(cleanPath)
 	if !isAssetExtension(cleanLower) {
+		if len(sample) >= 2 && sample[0] == 0x1f && sample[1] == 0x8b {
+			gr, err := gzip.NewReader(bytes.NewReader(sample))
+			if err != nil {
+				return false
+			}
+			var buf [512]byte
+			n, readErr := readGzipSample(gr, buf[:])
+			_ = gr.Close()
+			if readErr != nil && readErr != io.ErrUnexpectedEOF && readErr != io.EOF {
+				return false
+			}
+			return n > 0
+		}
 		return true
 	}
 
-	// If gzip compressed, attempt to decompress a sample
-	if len(chunk) >= 2 && chunk[0] == 0x1f && chunk[1] == 0x8b {
-		gr, err := gzip.NewReader(bytes.NewReader(chunk))
+	// If gzip compressed, attempt to decompress a prefix sample
+	if len(sample) >= 2 && sample[0] == 0x1f && sample[1] == 0x8b {
+		gr, err := gzip.NewReader(bytes.NewReader(sample))
 		if err != nil {
 			return false
 		}
-		buf := make([]byte, 512)
-		n, err := io.ReadFull(gr, buf)
+		var buf [512]byte
+		n, readErr := readGzipSample(gr, buf[:])
 		_ = gr.Close()
-		if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		if readErr != nil && readErr != io.ErrUnexpectedEOF && readErr != io.EOF {
 			return false
 		}
 		if n == 0 {
@@ -191,13 +243,70 @@ func CanEarlyStream(cleanPath, contentType string, chunk []byte) bool {
 		if isHTMLContent(decompLower) {
 			return false
 		}
+		if readErr == io.ErrUnexpectedEOF && len(decompLower) > 0 && decompLower[0] == '<' && n < 64 {
+			return false
+		}
 		return checkMagicBytes(cleanLower, decomp)
 	}
 
+	chunk := sample
+	if len(sample) > 512 {
+		chunk = sample[:512]
+	}
 	chunkLower := bytes.TrimSpace(bytes.ToLower(chunk))
 	if isHTMLContent(chunkLower) {
 		return false
 	}
 
 	return checkMagicBytes(cleanLower, chunk)
+}
+
+// IsValidCacheFile validates a cached asset file on disk.
+// For uncompressed files it reads only the first 512 bytes; for gzip-compressed files
+// it streams the file through gzip.Reader so large headers/dictionaries do not cause
+// false-positive magic-byte rejections while truncation and checksum errors are caught.
+func IsValidCacheFile(cleanPath, contentType, filePath string) bool {
+	if strings.Contains(strings.ToLower(contentType), "text/html") {
+		return false
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	fi, sErr := f.Stat()
+	if sErr != nil || fi.Size() <= 0 {
+		return false
+	}
+
+	var header [512]byte
+	n, rErr := io.ReadFull(f, header[:])
+	if (rErr != nil && rErr != io.EOF && rErr != io.ErrUnexpectedEOF) || n == 0 {
+		return false
+	}
+
+	cleanLower := strings.ToLower(cleanPath)
+	if n >= 2 && header[0] == 0x1f && header[1] == 0x8b {
+		return validateCompleteGzipStream(cleanLower, io.MultiReader(bytes.NewReader(header[:n]), f))
+	}
+
+	if !isAssetExtension(cleanLower) {
+		return true
+	}
+
+	sample := header[:n]
+	sampleLower := bytes.TrimSpace(bytes.ToLower(sample))
+	if isHTMLContent(sampleLower) {
+		return false
+	}
+	return checkMagicBytes(cleanLower, sample)
+}
+
+// CanEarlyStream performs fast-rejection check on the first chunk of an asset stream.
+// It verifies that the chunk does not contain HTML error pages and matches expected magic bytes.
+// If the payload is gzip-compressed and cannot be conclusively validated from this chunk alone,
+// it returns false so the proxy can fall back to the conservative batch read path.
+func CanEarlyStream(cleanPath, contentType string, chunk []byte) bool {
+	return IsValidCacheSample(cleanPath, contentType, chunk, false)
 }

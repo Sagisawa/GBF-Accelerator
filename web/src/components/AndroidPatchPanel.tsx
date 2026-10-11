@@ -37,6 +37,7 @@ import {
   uploadAndroidPackage,
   startAndroidPatch,
   fetchAndroidPatchStatus,
+  cancelAndroidPatch,
   openPatchOutputFolder,
   openPatchBackupFolder,
   installAllAndroidEnv,
@@ -623,6 +624,19 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       showToast(`启动失败: ${e.message}`, 'error')
     } finally {
       setIsPatchStarting(false)
+    }
+  }
+
+  const handleCancelPatch = async () => {
+    try {
+      await cancelAndroidPatch()
+      showToast('已请求取消处理任务', 'info')
+      const status = await fetchAndroidPatchStatus().catch(() => null)
+      if (status) {
+        setPatchStatus(status)
+      }
+    } catch (e: any) {
+      showToast(`取消处理失败: ${e.message}`, 'error')
     }
   }
 
@@ -1554,34 +1568,45 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                disabled={!isReady || !isComponentsVerified || !inspectedPkg || inspectedPkg.is_system_webview === false || isRunning || isPatchStarting}
-                onClick={handleStartPatch}
-                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
-              >
-                {isRunning ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>处理中 ({progressPercent}%)...</span>
-                  </>
-                ) : !inspectedPkg ? (
-                  <>
-                    <Play className="w-4 h-4 fill-current opacity-60" />
-                    <span>请先导入或选择安装包</span>
-                  </>
-                ) : inspectedPkg.is_already_patched ? (
-                  <>
-                    <RefreshCw className="w-4 h-4" />
-                    <span>重新修补 / 升级核心</span>
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 fill-current" />
-                    <span>开始制作修补</span>
-                  </>
+              <div className="flex items-center gap-2">
+                {isRunning && (
+                  <button
+                    type="button"
+                    onClick={handleCancelPatch}
+                    className="px-4 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs sm:text-sm font-semibold transition-all cursor-pointer select-none"
+                  >
+                    取消制作
+                  </button>
                 )}
-              </button>
+                <button
+                  type="button"
+                  disabled={!isReady || !isComponentsVerified || !inspectedPkg || inspectedPkg.is_system_webview === false || isRunning || isPatchStarting}
+                  onClick={handleStartPatch}
+                  className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
+                >
+                  {isRunning ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>处理中 ({progressPercent}%)...</span>
+                    </>
+                  ) : !inspectedPkg ? (
+                    <>
+                      <Play className="w-4 h-4 fill-current opacity-60" />
+                      <span>请先导入或选择安装包</span>
+                    </>
+                  ) : inspectedPkg.is_already_patched ? (
+                    <>
+                      <RefreshCw className="w-4 h-4" />
+                      <span>重新修补 / 升级核心</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 fill-current" />
+                      <span>开始制作修补</span>
+                    </>
+                  )}
+                </button>
+              </div>
             )}
           </div>
         </div>

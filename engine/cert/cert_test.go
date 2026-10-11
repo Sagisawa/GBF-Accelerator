@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -95,3 +96,47 @@ func TestCertCacheCapping(t *testing.T) {
 		t.Errorf("expected certCache to be capped at 512 entries, got %d", cacheSize)
 	}
 }
+
+func TestCertManager_ConcurrentRegenerateAndRead(t *testing.T) {
+	tempCertsDir := t.TempDir()
+	mgr, err := NewManager(tempCertsDir)
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				if fp := mgr.GetFingerprintSHA256(); fp == "" {
+					t.Errorf("GetFingerprintSHA256 returned empty")
+				}
+				if fp1 := mgr.GetFingerprintSHA1(); fp1 == "" {
+					t.Errorf("GetFingerprintSHA1 returned empty")
+				}
+				if pem := mgr.GetCAPEM(); len(pem) == 0 {
+					t.Errorf("GetCAPEM returned empty")
+				}
+				if dir := mgr.GetCertsDir(); dir == "" {
+					t.Errorf("GetCertsDir returned empty")
+				}
+				_, _ = mgr.GetOrCreateCert("game.granbluefantasy.jp")
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 3; j++ {
+			if err := mgr.RegenerateCA(); err != nil {
+				t.Errorf("RegenerateCA failed: %v", err)
+			}
+		}
+	}()
+
+	wg.Wait()
+}
+

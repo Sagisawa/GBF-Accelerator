@@ -712,6 +712,7 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	fetchStart := time.Now()
 
 	// Execute through SingleFlight so concurrent foreground requests coalesce naturally
+	var prefetchSaved bool
 	res, err := pe.srv.cacheMgr.SingleFlight().DoContext(context.Background(), flightKey, func() (interface{}, error) {
 		// Double check cache in case it landed just before acquiring flight
 		if pe.srv.cacheMgr.SingleFlight().Waiters(flightKey) > 0 {
@@ -788,12 +789,13 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 			savedItem, ok = pe.srv.cacheMgr.SavePrefetchValidatedWithNamespace(ns, item.path, headersMap, data)
 		}
 		if !ok || savedItem == nil {
-			return nil, fmt.Errorf("failed to save asset")
+			return buildTransientCacheItem(ns, item.path, headersMap, data), nil
 		}
+		prefetchSaved = true
 		return savedItem, nil
 	})
 
-	if err == nil && res != nil {
+	if err == nil && res != nil && prefetchSaved {
 		fetchMs := time.Since(fetchStart).Milliseconds()
 		dataLen := 0
 		if ci, ok := res.(*cache.CacheItem); ok && ci != nil {

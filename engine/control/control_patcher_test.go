@@ -2036,3 +2036,96 @@ func TestControlAndroidPatch_PanicRecovery(t *testing.T) {
 	}
 }
 
+func TestControlAndroidSecurityAndLifecycleGuardrails(t *testing.T) {
+	ctrl, cleanup := setupTestControlServer(t)
+	defer cleanup()
+
+	tempDir := t.TempDir()
+	dummyApk := filepath.Join(tempDir, "dummy.apk")
+	_ = os.WriteFile(dummyApk, []byte("PK\x03\x04dummy"), 0644)
+
+	// 1. Reject app_label CLI flag injection on /api/android/patch
+	patchBody, _ := json.Marshal(map[string]interface{}{
+		"file_path": dummyApk,
+		"app_label": "--inject-flag",
+	})
+	reqPatch := httptest.NewRequest(http.MethodPost, "/api/android/patch", bytes.NewBuffer(patchBody))
+	reqPatch.Host = "127.0.0.1:8125"
+	wPatch := httptest.NewRecorder()
+	ctrl.handleRoute(wPatch, reqPatch)
+	if wPatch.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for flag-like app_label, got %d: %s", wPatch.Code, wPatch.Body.String())
+	}
+
+	// 2. Reject custom_urls on /api/android/components/download and /api/android/env/install-all
+	for _, ep := range []string{"/api/android/components/download", "/api/android/env/install-all"} {
+		body, _ := json.Marshal(map[string]interface{}{
+			"custom_urls": map[string]string{"lspatch": "https://evil.example.com/lspatch.jar"},
+		})
+		req := httptest.NewRequest(http.MethodPost, ep, bytes.NewBuffer(body))
+		req.Host = "127.0.0.1:8125"
+		w := httptest.NewRecorder()
+		ctrl.handleRoute(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 Bad Request for custom_urls on %s, got %d: %s", ep, w.Code, w.Body.String())
+		}
+	}
+
+	// 3. Reject invalid ADB serials across all ADB endpoints
+	badSerials := []string{"-e", "--help", "../serial", "127.0.0.1:5555;id", "serial with space"}
+	adbEndpoints := []string{
+		"/api/android/adb/list-browsers",
+		"/api/android/adb/probe-app",
+		"/api/android/adb/extract",
+		"/api/android/adb/install",
+		"/api/android/adb/install-host-app",
+	}
+	for _, serial := range badSerials {
+		for _, ep := range adbEndpoints {
+			body, _ := json.Marshal(map[string]interface{}{
+				"serial":       serial,
+				"package_name": "com.dena.skyleap",
+			})
+			req := httptest.NewRequest(http.MethodPost, ep, bytes.NewBuffer(body))
+			req.Host = "127.0.0.1:8125"
+			w := httptest.NewRecorder()
+			ctrl.handleRoute(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 Bad Request for serial %q on %s, got %d: %s", serial, ep, w.Code, w.Body.String())
+			}
+		}
+	}
+
+	// 4. Reject GET on side-effect folder open endpoints
+	for _, ep := range []string{"/api/update/open-folder", "/api/android/patch/open-backup"} {
+		req := httptest.NewRequest(http.MethodGet, ep, nil)
+		req.Host = "127.0.0.1:8125"
+		w := httptest.NewRecorder()
+		ctrl.handleRoute(w, req)
+		if w.Code != http.StatusMethodNotAllowed && w.Code != http.StatusNotFound {
+			t.Fatalf("expected 404/405 rejection for GET %s, got %d", ep, w.Code)
+		}
+	}
+
+	// 5. Verify registerAndroidTempDir & Stop() clean up staging directories
+	stage1, err := os.MkdirTemp("", "gbf_upload_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage2, err := os.MkdirTemp("", "gbf_extracted_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrl.registerAndroidTempDir(stage1)
+	ctrl.registerAndroidTempDir(stage2)
+	ctrl.Stop()
+
+	if _, err := os.Stat(stage1); !os.IsNotExist(err) {
+		t.Errorf("expected stage1 temp dir %s to be removed on Stop()", stage1)
+	}
+	if _, err := os.Stat(stage2); !os.IsNotExist(err) {
+		t.Errorf("expected stage2 temp dir %s to be removed on Stop()", stage2)
+	}
+}
+
+

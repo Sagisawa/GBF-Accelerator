@@ -84,8 +84,11 @@ export async function applyConfig(patch: Record<string, any>): Promise<ApplyConf
     const targetPort = String(data.config.control_port)
     const currentPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
     if (targetPort !== currentPort && (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')) {
+      window.dispatchEvent(new CustomEvent('gbf-control-port-migrating', { detail: { control_url: data.control_url } }))
+      const base = data.control_url.replace(/\/+$/, '')
+      const suffix = `${window.location.pathname || '/'}${window.location.search || ''}${window.location.hash || ''}`
       setTimeout(() => {
-        window.location.href = data.control_url!
+        window.location.href = `${base}${suffix}`
       }, 500)
     }
   }
@@ -485,6 +488,17 @@ export async function startAndroidPatch(
 
 export async function fetchAndroidPatchStatus(): Promise<AndroidPatchProgress> {
   const res = await fetch(`${BASE}/api/android/patch/status`)
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function cancelAndroidPatch(): Promise<{ ok: boolean; message?: string }> {
+  const res = await fetch(`${BASE}/api/android/patch/cancel`, {
+    method: 'POST',
+  })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     throw new Error(data.error || data.message || `HTTP ${res.status}`)

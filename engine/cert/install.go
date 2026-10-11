@@ -39,11 +39,11 @@ func GetCAFingerprintSHA1(certPEM []byte) string {
 }
 
 func (m *Manager) GetFingerprintSHA256() string {
-	return GetCAFingerprintSHA256(m.caPEM)
+	return GetCAFingerprintSHA256(m.GetCAPEM())
 }
 
 func (m *Manager) GetFingerprintSHA1() string {
-	return GetCAFingerprintSHA1(m.caPEM)
+	return GetCAFingerprintSHA1(m.GetCAPEM())
 }
 
 func (m *Manager) IsInstalled() bool {
@@ -51,7 +51,7 @@ func (m *Manager) IsInstalled() bool {
 	if sha1 == "" {
 		return false
 	}
-	caPath := filepath.Join(m.certsDir, "ca.crt")
+	caPath := filepath.Join(m.GetCertsDir(), "ca.crt")
 	return isCAInstalled(sha1, caPath)
 }
 
@@ -68,16 +68,16 @@ func (m *Manager) GetInstallStore() string {
 
 func (m *Manager) Install(certsDir string) error {
 	if certsDir == "" {
-		if m.certsDir != "" {
-			certsDir = m.certsDir
+		if dir := m.GetCertsDir(); dir != "" {
+			certsDir = dir
 		} else {
 			certsDir = "certs"
 		}
 		caPath := filepath.Join(certsDir, "ca.crt")
 		if fi, err := os.Stat(caPath); err != nil || fi.Size() == 0 {
-			if len(m.caPEM) > 0 {
+			if caPEM := m.GetCAPEM(); len(caPEM) > 0 {
 				_ = os.MkdirAll(certsDir, 0755)
-				_ = os.WriteFile(caPath, m.caPEM, 0644)
+				_ = os.WriteFile(caPath, caPEM, 0644)
 			}
 		}
 	}

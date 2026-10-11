@@ -447,6 +447,8 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 		return
 	}
 
+	c.registerAndroidTempDir(uploadDir)
+
 	isOfficialSkyLeap := (pkg.PackageName == "com.dena.skyleap")
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
@@ -466,6 +468,39 @@ func (c *ControlServer) handleAndroidUpload(w http.ResponseWriter, req *http.Req
 		"patch_type":              pkg.PatchType,
 		"original_version_name":   pkg.OriginalVersionName,
 	})
+}
+
+func (c *ControlServer) registerAndroidTempDir(newDir string) {
+	c.androidPatchMu.Lock()
+	running := c.androidPatchStatus.Running
+	c.androidPatchMu.Unlock()
+
+	c.androidTempMu.Lock()
+	defer c.androidTempMu.Unlock()
+
+	if !running {
+		for _, oldDir := range c.androidTempDirs {
+			if oldDir != "" && oldDir != newDir {
+				_ = os.RemoveAll(oldDir)
+			}
+		}
+		c.androidTempDirs = []string{newDir}
+		return
+	}
+	c.androidTempDirs = append(c.androidTempDirs, newDir)
+}
+
+func (c *ControlServer) cleanupAndroidTempDirs() {
+	c.androidTempMu.Lock()
+	dirs := c.androidTempDirs
+	c.androidTempDirs = nil
+	c.androidTempMu.Unlock()
+
+	for _, dir := range dirs {
+		if dir != "" {
+			_ = os.RemoveAll(dir)
+		}
+	}
 }
 
 func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Request) {
@@ -498,6 +533,13 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		autoBackup = *body.AutoBackup
 	}
 	appLabel := strings.TrimSpace(body.AppLabel)
+	if err := patcher.ValidateAppLabel(appLabel); err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": fmt.Sprintf("Invalid app_label: %v", err),
+		})
+		return
+	}
 	newPkg := strings.TrimSpace(body.NewPackageName)
 	if newPkg != "" && !patcher.IsValidPackageName(newPkg) {
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -523,7 +565,17 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		})
 		return
 	}
+	c.androidPatchStatus.Running = true
 	c.androidPatchMu.Unlock()
+
+	reserved := true
+	defer func() {
+		if reserved {
+			c.androidPatchMu.Lock()
+			c.androidPatchStatus.Running = false
+			c.androidPatchMu.Unlock()
+		}
+	}()
 
 	toolsDir := patcher.GetAndroidToolsDir()
 	exeDir := c.getExeDir()
@@ -559,17 +611,14 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 				})
 				return
 			}
+			if newPkg != "" && newPkg != pkg.PackageName {
+				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"ok":    false,
+					"error": fmt.Sprintf("Embedded LSPatch does not support changing package name from %s to %s", pkg.PackageName, newPkg),
+				})
+				return
+			}
 		}
-	}
-
-	c.androidPatchMu.Lock()
-	if c.androidPatchStatus.Running {
-		c.androidPatchMu.Unlock()
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-			"ok":    false,
-			"error": "已有正在进行的 Patch 任务，请等待完成",
-		})
-		return
 	}
 
 	timeoutDur := 15 * time.Minute
@@ -577,6 +626,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		timeoutDur = time.Duration(body.TimeoutSeconds) * time.Second
 	}
 
+	c.androidPatchMu.Lock()
 	c.androidPatchJobID++
 	jobID := c.androidPatchJobID
 
@@ -594,6 +644,7 @@ func (c *ControlServer) handleAndroidPatch(w http.ResponseWriter, req *http.Requ
 		Done:      false,
 		Result:    nil,
 	}
+	reserved = false
 	c.androidPatchMu.Unlock()
 
 	// Launch patch execution in background goroutine (non-blocking)
@@ -758,6 +809,13 @@ func (c *ControlServer) handleAndroidComponentsDownload(w http.ResponseWriter, r
 		CustomURLs map[string]string `json:"custom_urls,omitempty"`
 	}
 	_ = json.NewDecoder(req.Body).Decode(&body)
+	if len(body.CustomURLs) > 0 {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "Custom component download URLs are not permitted via control API",
+		})
+		return
+	}
 
 	toolsDir := patcher.GetAndroidToolsDir()
 	exeDir := c.getExeDir()
@@ -938,6 +996,10 @@ func (c *ControlServer) handleAndroidAdbListBrowsers(w http.ResponseWriter, req 
 	_ = json.NewDecoder(req.Body).Decode(&body)
 
 	serial := strings.TrimSpace(body.Serial)
+	if !patcher.IsValidAdbSerial(serial) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid ADB device serial"})
+		return
+	}
 	toolsDir := patcher.GetAndroidToolsDir()
 	exeDir := c.getExeDir()
 	adbPath, err := patcher.FindAdb(toolsDir, exeDir)
@@ -966,6 +1028,10 @@ func (c *ControlServer) handleAndroidAdbProbeApp(w http.ResponseWriter, req *htt
 	_ = json.NewDecoder(req.Body).Decode(&body)
 
 	serial := strings.TrimSpace(body.Serial)
+	if !patcher.IsValidAdbSerial(serial) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid ADB device serial"})
+		return
+	}
 	pkgName := strings.TrimSpace(body.PackageName)
 	if pkgName == "" {
 		pkgName = "com.dena.skyleap"
@@ -1022,6 +1088,10 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 	}
 
 	serial := strings.TrimSpace(body.Serial)
+	if !patcher.IsValidAdbSerial(serial) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid ADB device serial"})
+		return
+	}
 	pkgName := strings.TrimSpace(body.PackageName)
 	if pkgName == "" {
 		pkgName = "com.dena.skyleap"
@@ -1099,6 +1169,8 @@ func (c *ControlServer) handleAndroidAdbExtract(w http.ResponseWriter, req *http
 		return
 	}
 
+	c.registerAndroidTempDir(extractDir)
+
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":                      true,
 		"file_path":               targetInspectPath,
@@ -1130,6 +1202,10 @@ func (c *ControlServer) handleAndroidAdbInstall(w http.ResponseWriter, req *http
 	}
 
 	serial := strings.TrimSpace(body.Serial)
+	if !patcher.IsValidAdbSerial(serial) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid ADB device serial"})
+		return
+	}
 	pkgName := strings.TrimSpace(body.PackageName)
 	if pkgName == "" {
 		pkgName = "com.dena.skyleap"
@@ -1268,6 +1344,10 @@ func (c *ControlServer) handleAndroidAdbInstallHostApp(w http.ResponseWriter, re
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "未指定设备序列号"})
 		return
 	}
+	if !patcher.IsValidAdbSerial(serial) {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{"ok": false, "error": "Invalid ADB device serial"})
+		return
+	}
 
 	toolsDir := patcher.GetAndroidToolsDir()
 	exeDir := c.getExeDir()
@@ -1330,6 +1410,13 @@ func (c *ControlServer) handleAndroidEnvInstallAll(w http.ResponseWriter, req *h
 		CustomURLs map[string]string `json:"custom_urls,omitempty"`
 	}
 	_ = json.NewDecoder(req.Body).Decode(&body)
+	if len(body.CustomURLs) > 0 {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"error": "Custom component download URLs are not permitted via control API",
+		})
+		return
+	}
 
 	toolsDir := patcher.GetAndroidToolsDir()
 	patcher.SetUpstreamProxy(c.cfgMgr.GetEffectiveUpstreamProxy())

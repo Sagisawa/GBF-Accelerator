@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fetchHealth, repairHealth } from './api'
+import { fetchHealth, repairHealth, applyConfig, cancelAndroidPatch } from './api'
 import { HealthResponse, RepairResponse } from './types'
 
 describe('fetchHealth API', () => {
@@ -164,6 +164,72 @@ describe('repairHealth API', () => {
     expect(health.status).toBe('ok')
     expect(health.core_health.control_plane.status).toBe('ok')
     expect(callCount).toBe(2)
+  })
+})
+
+describe('applyConfig port migration & cancelAndroidPatch API', () => {
+  const originalFetch = globalThis.fetch
+  const originalWindow = (globalThis as any).window
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    ;(globalThis as any).window = originalWindow
+  })
+
+  it('dispatches gbf-control-port-migrating and preserves path/search/hash on control_port migration', async () => {
+    vi.useFakeTimers()
+    try {
+      const dispatchedEvents: string[] = []
+      const mockLocation = {
+        port: '8125',
+        protocol: 'http:',
+        hostname: '127.0.0.1',
+        pathname: '/console',
+        search: '?standalone=1',
+        hash: '#logs',
+        href: 'http://127.0.0.1:8125/console?standalone=1#logs',
+      }
+      ;(globalThis as any).window = {
+        location: mockLocation,
+        dispatchEvent: (ev: Event) => {
+          dispatchedEvents.push(ev.type)
+          return true
+        },
+      }
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          control_url: 'http://127.0.0.1:8126',
+          config: { control_port: 8126 },
+        }),
+      }) as any
+
+      await applyConfig({ control_port: 8126 })
+      expect(dispatchedEvents).toContain('gbf-control-port-migrating')
+      vi.advanceTimersByTime(600)
+      expect(mockLocation.href).toBe('http://127.0.0.1:8126/console?standalone=1#logs')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('calls POST /api/android/patch/cancel in cancelAndroidPatch', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, message: 'cancelled' }),
+    }) as any
+
+    const res = await cancelAndroidPatch()
+    expect(res.ok).toBe(true)
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/android/patch/cancel', {
+      method: 'POST',
+    })
   })
 })
 

@@ -5,7 +5,7 @@ package process
 
 import (
 	"bytes"
-	"fmt"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +17,9 @@ import (
 )
 
 func killProcessOnPort(port int) (bool, error) {
-	cmd := exec.Command("lsof", "-ti", fmt.Sprintf("tcp:%d", port))
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "lsof", "-nP", "-tiTCP:"+strconv.Itoa(port), "-sTCP:LISTEN")
 	outBytes, err := cmd.Output()
 	if err != nil || len(bytes.TrimSpace(outBytes)) == 0 {
 		return false, nil
@@ -44,8 +46,10 @@ func killProcessOnPort(port int) (bool, error) {
 
 	for _, pid := range pids {
 		// 1. Check comm
-		commCmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=")
+		pCtx, pCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		commCmd := exec.CommandContext(pCtx, "ps", "-p", strconv.Itoa(pid), "-o", "comm=")
 		commOut, _ := commCmd.Output()
+		pCancel()
 		commName := filepath.Base(strings.TrimSpace(string(commOut)))
 
 		commLower := strings.ToLower(commName)
@@ -54,8 +58,11 @@ func killProcessOnPort(port int) (bool, error) {
 			shouldKill = true
 		} else {
 			// 2. Check full command line
-			cmdLineCmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "command=")
-			if cmdLineOut, err := cmdLineCmd.Output(); err == nil {
+			cCtx, cCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			cmdLineCmd := exec.CommandContext(cCtx, "ps", "-p", strconv.Itoa(pid), "-o", "command=")
+			cmdLineOut, err := cmdLineCmd.Output()
+			cCancel()
+			if err == nil {
 				cmdLine := string(cmdLineOut)
 				cmdLower := strings.ToLower(cmdLine)
 				if pyScriptRe.MatchString(cmdLine) ||

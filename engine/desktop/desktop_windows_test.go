@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"os"
+	"sync"
 	"testing"
 )
 
@@ -72,3 +73,38 @@ func TestAppModeUserDataDir(t *testing.T) {
 		t.Fatalf("appModeUserDataDir returned empty string")
 	}
 }
+
+func TestEnumWindowsCallbackReuseNoExhaustion(t *testing.T) {
+	// Go runtime limits syscall.NewCallback on Windows to 2000 slots across process lifetime.
+	// Invoking enumExplorerWindows and findAppWindowInTree >2,500 times concurrently must not
+	// exhaust callback slots or race on shared enumeration state.
+	tree := map[uint32]struct{}{uint32(os.Getpid()): {}}
+
+	const workers = 4
+	const iterationsPerWorker = 700 // 2,800 calls per function (5,600 total > 2,000 limit)
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterationsPerWorker; i++ {
+				m := enumExplorerWindows()
+				if m == nil {
+					t.Errorf("enumExplorerWindows returned nil map")
+					return
+				}
+				_ = findAppWindowInTree(tree)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if enumExplorerCB == 0 || findAppWinCB == 0 {
+		t.Fatalf("expected singleton callbacks to be initialized, got enumExplorerCB=%d findAppWinCB=%d", enumExplorerCB, findAppWinCB)
+	}
+	if enumExplorerCurrent != nil || findAppWinTree != nil {
+		t.Fatalf("expected enumeration state to be cleared after calls")
+	}
+}
+

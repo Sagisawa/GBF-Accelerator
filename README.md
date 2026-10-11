@@ -257,7 +257,7 @@ flowchart TD
   - 支持将已被旧版核心修补过的安装包直接拖入重新修补与升级，流式提取并还原 Origin APK，原生支持 Split APK / APKS 分包结构恢复；
   - 严格限制单层解包（防范嵌套注入风险），内置 Zip Slip 路径穿越防御与 CRC-32 损坏完整性自愈，无需手动解包即可直接升级最新加速核心。
 - **已 Root / LSPosed 模块直接接入**：
-  - 提供预编译的 `GBF_Accelerator_v2.4.1_Xposed_arm64.apk` 独立模块；
+  - 提供预编译的 `GBF_Accelerator_v2.4.2_Xposed_arm64.apk` 独立模块；
   - 安装后在 LSPosed 管理器中激活并勾选作用域（官方原版 SkyLeap 或 Via），重启浏览器即可免重打包原版应用直接生效。
 - **移动端轻量功耗与沙盒隔离**：
   - 移动端核心默认关闭 RAM 缓存与 Prefetch，优先保证低功耗、低发热与蜂窝流量安全；
@@ -317,7 +317,7 @@ flowchart TD
 ### 方式一：使用预构建便携版（推荐）
 
 #### Windows 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新便携包 `GBF_Accelerator_v2.4.1_GUI.zip`。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新便携包 `GBF_Accelerator_v2.4.2_GUI.zip`。
 2. 解压到任意非中文路径（例如 `D:\GBF_Accelerator\`）。
 3. **准备上游网络**：确保你的代理软件（Clash Verge / Clash / v2rayN 等）已开启并正常联网（若网络环境良好也可在界面中勾选【直连模式】）。
 4. **启动程序**：双击运行 `GBF_Accelerator.exe`。
@@ -333,7 +333,7 @@ flowchart TD
    > 💡 **缓存命中技术说明**：首次游玩新副本时素材经网络首次下载并写入加速器本地磁盘缓存；**同一浏览器会话短时间内重复游玩时，现代浏览器自带的 Memory Cache（内存缓存）会直接在内部交付（开发者工具 Network 显示 from memory cache），根本不会向外部网络或本地代理发请求**。因此，只有游玩一段时间后（浏览器内部内存缓存置换淘汰）、重启浏览器、或第二天再次进入相同副本时，请求才会由加速器本地缓存（RAM 0ms / SSD 1~3ms）高速交付，控制台顶部的【本地缓存命中】数字会快速跳动增加。
 
 #### macOS 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.4.1_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.4.2_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
 2. 解压并将 `GBF_Accelerator.app` 拖入系统的【应用程序】文件夹。
    > 💡 **Gatekeeper 提示**：首次打开若提示“无法验证开发者”或“已损坏”，请按住 Control 键并鼠标右键点击应用选择【打开】；或在终端执行 `xattr -cr /Applications/GBF_Accelerator.app` 解除系统隔离。
 3. 确保 Clash / Surge 等上游代理正常运行。
@@ -355,7 +355,7 @@ flowchart TD
    - 手机端确保 Clash / v2rayNG 等 VPN 模式网络工具正常连接，直接打开修补版 SkyLeap 即可正常游玩，手机无需后台常驻加速器。
 
 ##### 方案 B：已 Root / LSPosed 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.4.1_Xposed_arm64.apk`；
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.4.2_Xposed_arm64.apk`；
 2. 在手机上安装并在 LSPosed 管理器中激活模块，勾选作用域（官方原版 SkyLeap 或 Via）；
 3. 彻底结束并重新打开 SkyLeap，即可直接生效，无需对官方原版 APK 进行任何修改或重打包。
 
@@ -667,7 +667,7 @@ go vet ./...
   # 若修改了 web/ 前端代码，需同步重新编译 React SPA
   .\build.ps1 -RebuildWeb
   ```
-  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v2.4.1_GUI.zip`。
+  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v2.4.2_GUI.zip`。
 
 - **macOS / Linux**（编译 Universal 2 双架构二进制并打包）：
   ```bash
@@ -677,7 +677,7 @@ go vet ./...
   # 若修改了 web/ 前端代码，需同步重新编译 React SPA
   ./build.sh --rebuild-web --release
   ```
-  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v2.4.1_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
+  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v2.4.2_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
 
 > ⚠️ **发布构建说明**：macOS Universal 2 正式发布包（融合 arm64 与 amd64）必须在具备 `lipo` 工具的 macOS 主机环境下打包生成。在缺乏 `lipo` 的环境（如 Windows）运行 macOS 打包将严格报错并中断，防止输出非预期的单架构包。
 

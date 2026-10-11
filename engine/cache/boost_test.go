@@ -506,4 +506,77 @@ func TestBoost_PrewarmTamperedErrorHandlerQuarantinedAndSkipped(t *testing.T) {
 	}
 }
 
+func TestCache_CommitDiskTempFileInvalidatesStaleRAM(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	relPath := "assets/test_stream_update.png"
+	oldPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRold_payload_v1")
+	newPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRnew_payload_v2_updated")
+
+	// 1. Seed initial item into both RAM and Disk
+	if !mgr.SaveWithNamespace("gbf", relPath, map[string]string{"content-type": "image/png", "etag": `"v1"`}, oldPng) {
+		t.Fatalf("mgr.SaveWithNamespace failed")
+	}
+	item1, src1 := mgr.GetWithNamespace("gbf", relPath)
+	if item1 == nil || src1 != "RAM" || !bytes.Equal(item1.Data, oldPng) {
+		t.Fatalf("expected initial RAM hit with oldPng, got src=%s", src1)
+	}
+
+	// 2. Write new payload via temp file and commit via CommitDiskTempFile
+	tmpFile, tmpPath, gen, err := mgr.CreateDiskTempFile("gbf", relPath)
+	if err != nil {
+		t.Fatalf("CreateDiskTempFile failed: %v", err)
+	}
+	if _, err := tmpFile.Write(newPng); err != nil {
+		_ = tmpFile.Close()
+		t.Fatalf("write temp file failed: %v", err)
+	}
+	_ = tmpFile.Close()
+
+	if _, ok := mgr.CommitDiskTempFile("gbf", relPath, map[string]string{"content-type": "image/png", "etag": `"v2"`}, tmpPath, int64(len(newPng)), gen); !ok {
+		t.Fatalf("CommitDiskTempFile failed")
+	}
+
+	// 3. Subsequent GetWithNamespace must NOT return stale oldPng from RAM
+	item2, src2 := mgr.GetWithNamespace("gbf", relPath)
+	if item2 == nil {
+		t.Fatalf("expected cache hit after CommitDiskTempFile, got nil")
+	}
+	if !bytes.Equal(item2.Data, newPng) {
+		t.Fatalf("expected updated payload %q (src=%s), got stale %q", string(newPng), src2, string(item2.Data))
+	}
+}
+
+func TestBoost_DisableDuringPass1StaysDisabled(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	assetsDir := filepath.Join(tempDir, "assets", "pass1race")
+	_ = os.MkdirAll(assetsDir, 0755)
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRpass1")
+	for i := 0; i < 20; i++ {
+		p := filepath.Join(assetsDir, fmt.Sprintf("item_%d.png", i))
+		_ = os.WriteFile(p, validPng, 0644)
+		_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
+	}
+
+	// Trigger DisableBoost as soon as the first progress callback (totalFiles announcement at end of Pass 1) fires
+	res := mgr.PrewarmBoostPoolWithProgress(nil, func(p BoostProgress) {
+		if p.LoadedFiles == 0 && p.TotalFiles > 0 {
+			mgr.DisableBoost()
+		}
+	}, nil)
+
+	if res.State != BoostStateDisabled {
+		t.Fatalf("expected BoostStateDisabled when DisableBoost called right after Pass 1, got %s", res.State)
+	}
+	if mgr.ResidentPool().Enabled() {
+		t.Fatalf("expected ResidentPool to remain disabled")
+	}
+}
+
+
 

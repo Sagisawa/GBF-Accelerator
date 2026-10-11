@@ -4,20 +4,25 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var kernel32DLL = syscall.NewLazyDLL("kernel32.dll")
 var getLogicalDrivesProc = kernel32DLL.NewProc("GetLogicalDrives")
 
 func getRunningACGPowerPath() string {
-	psCmd := exec.Command("powershell", "-NoProfile", "-Command",
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	psCmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
 		`(Get-CimInstance Win32_Process -Filter "Name LIKE '%acgpower%'").ExecutablePath`)
+	psCmd.WaitDelay = 2 * time.Second
 	psCmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	out, err := psCmd.Output()
 	if err == nil {

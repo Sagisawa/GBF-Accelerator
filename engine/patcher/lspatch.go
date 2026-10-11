@@ -453,6 +453,28 @@ func ExecuteLSPatchContext(ctx context.Context, cfg *LSPatchConfig, baseApk stri
 	return executeLSPatchWithContext(ctx, cfg, baseApk, splitApks, outputDir)
 }
 
+// ValidateAppLabel checks that an optional custom application label does not
+// start with '-' (preventing JCommander CLI flag injection) and contains no
+// control characters or excessive length.
+func ValidateAppLabel(label string) error {
+	if label == "" {
+		return nil
+	}
+	trimmed := strings.TrimSpace(label)
+	if strings.HasPrefix(trimmed, "-") || strings.HasPrefix(label, "-") {
+		return fmt.Errorf("invalid app label %q: must not start with '-'", label)
+	}
+	if len(label) > 128 {
+		return fmt.Errorf("invalid app label: exceeds 128 bytes")
+	}
+	for _, r := range label {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("invalid app label: contains control character")
+		}
+	}
+	return nil
+}
+
 func executeLSPatchWithContext(ctx context.Context, cfg *LSPatchConfig, baseApk string, splitApks []string, outputDir string) ([]string, error) {
 	args := []string{
 		"-jar", cfg.LSPatchJarPath,
@@ -463,6 +485,9 @@ func executeLSPatchWithContext(ctx context.Context, cfg *LSPatchConfig, baseApk 
 	}
 
 	if cfg.AppLabel != "" {
+		if err := ValidateAppLabel(cfg.AppLabel); err != nil {
+			return nil, err
+		}
 		args = append(args, "--name", cfg.AppLabel)
 	}
 

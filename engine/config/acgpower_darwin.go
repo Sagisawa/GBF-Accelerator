@@ -4,17 +4,21 @@
 package config
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 func autoDetectACGPowerCache() string {
 	home, _ := os.UserHomeDir()
 
 	// 1. Process check
-	if cmdOut, err := exec.Command("ps", "-ax", "-o", "command=").Output(); err == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if cmdOut, err := exec.CommandContext(ctx, "ps", "-ax", "-o", "command=").Output(); err == nil {
 		lines := strings.Split(string(cmdOut), "\n")
 		for _, l := range lines {
 			lower := strings.ToLower(l)

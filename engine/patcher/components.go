@@ -26,6 +26,7 @@ const (
 	CanonicalModuleSHA256               = "55bc5eee3976e9cf021c481e08624bca4d1e5360fbeb713f09b678d2c541aad4"
 	CanonicalLicensesSHA256             = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
 	CanonicalPlatformToolsWindowsSHA256 = "e79e5d613cda3912f8dbf77a1ec1b2eaf5de96d93b7fca0a88d9b97c4253ee25"
+	CanonicalPlatformToolsDarwinSHA256  = "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d"
 	CanonicalJreWindowsSHA256           = "c7677f06a0a92f593d13c3640718efad034a2ae57bf6e35a813c40399d35a277"
 	GitHubRepo                          = "Sagisawa/GBF-Accelerator"
 	AssetsRepo                          = "Sagisawa/GBF-Accelerator-Assets"
@@ -36,6 +37,7 @@ const (
 var (
 	proxyMu              sync.RWMutex
 	defaultUpstreamProxy string
+	canonicalModuleMu    sync.Mutex
 )
 
 // SetUpstreamProxy configures the proxy URL to use for downloading companion tools and assets from GitHub.
@@ -731,7 +733,12 @@ func DownloadComponentsWithSpecs(
 			}
 
 			actualSHA := hex.EncodeToString(hasher.Sum(nil))
-			if spec.SHA256 != "" && !strings.EqualFold(actualSHA, spec.SHA256) {
+			if spec.SHA256 == "" {
+				cleanupTemp()
+				_ = os.Remove(targetPath)
+				return fmt.Errorf("missing expected SHA-256 checksum for %s", spec.FileName)
+			}
+			if !strings.EqualFold(actualSHA, spec.SHA256) {
 				cleanupTemp()
 				_ = os.Remove(targetPath)
 				return fmt.Errorf("checksum validation failed for %s: expected %s, got %s", spec.FileName, spec.SHA256, actualSHA)
@@ -909,8 +916,12 @@ func FetchCanonicalModule(ctx context.Context, toolsDir string) (string, error) 
 	}
 
 	targetPath := filepath.Join(toolsDir, "xposed-release.apk")
-	tempPath := filepath.Join(toolsDir, "xposed-release.apk.download.tmp")
-	_ = os.Remove(tempPath)
+	tmpFile, err := os.CreateTemp(toolsDir, "xposed-release-*.apk.tmp")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tempPath := tmpFile.Name()
+	_ = tmpFile.Close()
 	defer func() {
 		_ = os.Remove(tempPath)
 	}()
@@ -965,6 +976,9 @@ func FetchCanonicalModule(ctx context.Context, toolsDir string) (string, error) 
 // If not found locally or if the local version is outdated/corrupted, it automatically
 // fetches the latest canonical module from GitHub Assets and updates toolsDir.
 func EnsureCanonicalModule(ctx context.Context, toolsDir string, exeDir string, logFn func(string)) (string, error) {
+	canonicalModuleMu.Lock()
+	defer canonicalModuleMu.Unlock()
+
 	if toolsDir == "" {
 		toolsDir = GetAndroidToolsDir()
 	}

@@ -158,10 +158,6 @@ func disablePACProxy(force bool) error {
 	svcs := macGetServicesOrdered()
 	var errs []string
 	for _, s := range svcs {
-		if !force && !macManagedServices[s] {
-			continue
-		}
-
 		currURL, _ := macGetAutoProxyInfo(s)
 		var isOur bool
 		if managedPACURL != "" {
@@ -169,6 +165,10 @@ func disablePACProxy(force bool) error {
 		} else {
 			isOur = strings.Contains(strings.ToLower(currURL), "/proxy.pac") &&
 				(strings.Contains(currURL, "127.0.0.1") || strings.Contains(currURL, "localhost"))
+		}
+
+		if !force && !macManagedServices[s] && !isOur {
+			continue
 		}
 
 		// Do not overwrite a service whose PAC was changed by another application

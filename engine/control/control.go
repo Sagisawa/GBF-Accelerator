@@ -90,6 +90,8 @@ type ControlServer struct {
 	androidPatchJobID    uint64
 	androidPatchStatus   AndroidPatchStatus
 	androidPatchCancelFn context.CancelFunc
+	androidTempMu        sync.Mutex
+	androidTempDirs      []string
 
 	// Android Component Download state
 	componentDlMu       sync.Mutex
@@ -231,7 +233,17 @@ func (c *ControlServer) ReloadListener(newPort int) error {
 	c.listenerGen++
 	c.startServe(newLn, c.listenerGen)
 
-	// 3. Gracefully shut down old server in background so in-flight HTTP requests
+	// 3. Close any active SSE streams bound to the old port so oldSrv.Shutdown()
+	// completes immediately after in-flight short HTTP requests finish.
+	c.sseMu.Lock()
+	oldSSEClients := c.sseClients
+	c.sseClients = nil
+	c.sseMu.Unlock()
+	for _, ch := range oldSSEClients {
+		close(ch)
+	}
+
+	// 4. Gracefully shut down old server in background so in-flight HTTP requests
 	// (specifically POST /api/config/apply that initiated this reload) can finish sending
 	// their response to the browser before the old socket is terminated.
 	if oldLn != nil {
@@ -264,6 +276,7 @@ func (c *ControlServer) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.running {
+		c.cleanupAndroidTempDirs()
 		return
 	}
 	c.running = false
@@ -275,6 +288,33 @@ func (c *ControlServer) Stop() {
 		c.androidPatchCancelFn = nil
 	}
 	c.androidPatchMu.Unlock()
+
+	c.componentDlMu.Lock()
+	if c.componentDlCancelFn != nil {
+		c.componentDlCancelFn()
+		c.componentDlCancelFn = nil
+	}
+	c.componentDlMu.Unlock()
+
+	c.dlMu.Lock()
+	if c.dlCancelFn != nil {
+		c.dlCancelFn()
+		c.dlCancelFn = nil
+	}
+	c.dlMu.Unlock()
+
+	c.cacheTaskMu.Lock()
+	if c.cacheCancelCh != nil {
+		select {
+		case <-c.cacheCancelCh:
+		default:
+			close(c.cacheCancelCh)
+		}
+		c.cacheCancelCh = nil
+	}
+	c.cacheTaskMu.Unlock()
+
+	c.cleanupAndroidTempDirs()
 
 	if c.server != nil {
 		_ = c.server.Close()
@@ -535,7 +575,7 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	case "/api/update/open-folder", "/api/updater/open-folder":
-		if req.Method == http.MethodPost || req.Method == http.MethodGet {
+		if req.Method == http.MethodPost {
 			c.handleUpdateOpenFolder(w, req)
 			return
 		}
@@ -645,7 +685,7 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 	case "/api/android/patch/open-backup":
-		if req.Method == http.MethodPost || req.Method == http.MethodGet {
+		if req.Method == http.MethodPost {
 			c.handleAndroidPatchOpenBackup(w, req)
 			return
 		}

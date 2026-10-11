@@ -408,7 +408,7 @@ export const App: React.FC = () => {
             if (!data?.tag_name) return
             const latest = data.tag_name.replace(/^v/, '').trim()
             fetchStatus().then((cur) => {
-              const current = (cur?.version || '2.4.1').replace(/^v/, '').trim()
+              const current = (cur?.version || '2.4.2').replace(/^v/, '').trim()
               if (latest && isNewerVersion(latest, current)) {
                 setUpdateInfo({ available: true, version: latest })
               }
@@ -423,7 +423,17 @@ export const App: React.FC = () => {
       fetchUpstreamStatus().then(setUpstreamRuntime).catch(() => {})
     }, 4000)
 
+    const handleControlPortMigrating = () => {
+      clearInterval(interval)
+      if (es) {
+        es.close()
+        es = null
+      }
+    }
+    window.addEventListener('gbf-control-port-migrating', handleControlPortMigrating)
+
     return () => {
+      window.removeEventListener('gbf-control-port-migrating', handleControlPortMigrating)
       clearInterval(interval)
       if (es) es.close()
     }
@@ -619,6 +629,26 @@ export const App: React.FC = () => {
     }
   }
 
+  // Save manually typed Cache Directory
+  const handleSaveCacheDir = async () => {
+    const trimmed = cacheDirInput.trim()
+    if (!trimmed) {
+      showToast('缓存目录路径不能为空', 'error')
+      return
+    }
+    await runConfigAction('save-cache-dir', async () => {
+      try {
+        await applyConfig({ cache_dir: trimmed })
+        setCacheDirInput(trimmed)
+        setConfig((prev) => ({ ...prev, cache_dir: trimmed }))
+        showToast(`缓存目录已成功更改为：${trimmed}`, 'success')
+        loadState()
+      } catch (e: any) {
+        showToast(`保存缓存目录失败: ${e.message}`, 'error')
+      }
+    })
+  }
+
   // Detect ACGPower Cache
   const handleDetectAcgp = async () => {
     await runConfigAction('detect-acgp', async () => {
@@ -716,8 +746,8 @@ export const App: React.FC = () => {
       showToast('连续异常次数须为 1 到 10 次', 'error')
       return
     }
-    if (!Number.isInteger(cooldown) || cooldown < 60 || cooldown > 3600) {
-      showToast('切回等待时间须为 60 到 3600 秒', 'error')
+    if (!Number.isInteger(cooldown) || cooldown < 1 || cooldown > 3600) {
+      showToast('切回等待时间须为 1 到 3600 秒', 'error')
       return
     }
 
@@ -939,8 +969,8 @@ export const App: React.FC = () => {
   const handleApplyRamMb = async () => {
     const mb = parseInt(ramMbInput.trim(), 10)
     const maxAllowed = 65536
-    if (isNaN(mb) || mb < 64 || mb > maxAllowed) {
-      showToast(`请输入 64 到 ${maxAllowed} MB (64GB) 之间的有效内存上限`, 'error')
+    if (isNaN(mb) || mb < 16 || mb > maxAllowed) {
+      showToast(`请输入 16 到 ${maxAllowed} MB (64GB) 之间的有效内存上限`, 'error')
       return
     }
     await runConfigAction('ram-mb', async () => {
@@ -1157,7 +1187,7 @@ export const App: React.FC = () => {
                     碧蓝幻想 GBF-Accelerator
                   </span>
                   <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                    v{status?.version || '2.4.1'}
+                    v{status?.version || '2.4.2'}
                   </span>
                   {updateInfo?.available && (
                     <button
@@ -1288,8 +1318,23 @@ export const App: React.FC = () => {
                       disabled={Boolean(loadingAction) || loadingBrowse}
                       value={cacheDirInput}
                       onChange={(e) => setCacheDirInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          handleSaveCacheDir()
+                        }
+                      }}
                       className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
                     />
+                    <button
+                      type="button"
+                      onClick={handleSaveCacheDir}
+                      disabled={Boolean(loadingAction) || loadingBrowse}
+                      aria-busy={isActionLoading('save-cache-dir')}
+                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
+                    >
+                      {isActionLoading('save-cache-dir') ? '保存中...' : '保存'}
+                    </button>
                     {!isAndroid && (
                       <button
                         type="button"
@@ -1635,7 +1680,7 @@ export const App: React.FC = () => {
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <input
                             type="number"
-                            min={60}
+                            min={1}
                             max={3600}
                             step={10}
                             value={failoverCooldownInput}
@@ -2348,7 +2393,7 @@ export const App: React.FC = () => {
       <UpdateModal
         isOpen={isUpdateModalOpen}
         onClose={() => setIsUpdateModalOpen(false)}
-        currentVersion={status?.version || '2.4.1'}
+        currentVersion={status?.version || '2.4.2'}
       />
 
       <LiveLogsWindow

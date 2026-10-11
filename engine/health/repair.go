@@ -563,7 +563,9 @@ func (r *Repairer) executeAction(ctx context.Context, code, action string) (bool
 			if r.cfgMgr != nil {
 				host = r.cfgMgr.GetEffectiveListenHost()
 			}
-			_ = r.proxySrv.ReloadListener(host, cfg.ListenPort)
+			if err := r.proxySrv.ReloadListener(host, cfg.ListenPort); err != nil {
+				return false, fmt.Sprintf("重载数据面以同步 PAC 失败: %v", err), err
+			}
 		}
 		return true, fmt.Sprintf("PAC 脚本已重新生成并同步至端口 %d", cfg.ListenPort), nil
 

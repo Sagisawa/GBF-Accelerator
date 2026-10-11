@@ -70,10 +70,12 @@ var (
 	selPostEventAtStart           objc.SEL
 	selOtherEventWithType         objc.SEL
 
-	selOpenConsoleAction objc.SEL
-	selToggleProxyAction objc.SEL
-	selOpenCacheAction   objc.SEL
-	selQuitAppAction     objc.SEL
+	selOpenConsoleAction          objc.SEL
+	selToggleProxyAction          objc.SEL
+	selOpenCacheAction            objc.SEL
+	selQuitAppAction              objc.SEL
+	selPerformSelectorOnMainThread objc.SEL
+	selUpdateTrayOnMainThread     objc.SEL
 
 	menuHandlerClass objc.Class
 	menuHandlerErr   error
@@ -138,11 +140,13 @@ func initSelectors() {
 	selSetTemplate = objc.RegisterName("setTemplate:")
 	selPostEventAtStart = objc.RegisterName("postEvent:atStart:")
 	selOtherEventWithType = objc.RegisterName("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:")
+	selPerformSelectorOnMainThread = objc.RegisterName("performSelectorOnMainThread:withObject:waitUntilDone:")
 
 	selOpenConsoleAction = objc.RegisterName("openConsoleAction:")
 	selToggleProxyAction = objc.RegisterName("toggleProxyAction:")
 	selOpenCacheAction = objc.RegisterName("openCacheAction:")
 	selQuitAppAction = objc.RegisterName("quitAppAction:")
+	selUpdateTrayOnMainThread = objc.RegisterName("updateTrayOnMainThread:")
 }
 
 func initMenuHandlerClass() error {
@@ -178,6 +182,12 @@ func initMenuHandlerClass() error {
 					handleQuitApp()
 				},
 			},
+			{
+				Cmd: selUpdateTrayOnMainThread,
+				Fn: func(self objc.ID, _cmd objc.SEL, sender objc.ID) {
+					handleUpdateTrayOnMainThread()
+				},
+			},
 		}
 
 		cls, err := objc.RegisterClass(
@@ -202,17 +212,25 @@ func initMenuHandlerClass() error {
 
 // DarwinTray provides a native macOS Menu Bar status item with context menu.
 type DarwinTray struct {
-	ctrl       Controller
-	iconBytes  []byte
-	app        objc.ID
-	statusItem objc.ID
-	menu       objc.ID
-	handler    objc.ID
-	active     bool
-	inRunLoop  bool
-	mu         sync.Mutex
-	stopOnce   sync.Once
-	doneChan   chan struct{}
+	ctrl               Controller
+	iconBytes          []byte
+	app                objc.ID
+	statusItem         objc.ID
+	menu               objc.ID
+	handler            objc.ID
+	active             bool
+	inRunLoop          bool
+	stopping           bool
+	pendingUpdate      bool
+	updateScheduled    bool
+	inFlightDispatches int
+	dispatchDone       chan struct{}
+	applyUpdateFn      func()
+	dispatchMainFn     func()
+	runAppLoopFn       func()
+	mu                 sync.Mutex
+	stopOnce           sync.Once
+	doneChan           chan struct{}
 }
 
 func NewTray(ctrl Controller, iconBytes []byte) Tray {
@@ -307,6 +325,9 @@ func (t *DarwinTray) Start() error {
 	t.mu.Lock()
 	t.menu = menu
 	t.active = true
+	t.stopping = false
+	t.pendingUpdate = false
+	t.updateScheduled = false
 	t.mu.Unlock()
 
 	activeTrayMu.Lock()
@@ -445,7 +466,66 @@ func (t *DarwinTray) addMenuItem(menu objc.ID, title string, action objc.SEL, ta
 
 func (t *DarwinTray) Update() {
 	t.mu.Lock()
-	if !t.active || t.statusItem == 0 {
+	if !t.active || t.stopping || t.statusItem == 0 {
+		t.mu.Unlock()
+		return
+	}
+	t.pendingUpdate = true
+	if !t.inRunLoop || t.updateScheduled {
+		t.mu.Unlock()
+		return
+	}
+	dispatchFn := t.dispatchMainFn
+	handler := t.handler
+	canDispatch := dispatchFn != nil || (handler != 0 && selPerformSelectorOnMainThread != 0 && selUpdateTrayOnMainThread != 0)
+	if !canDispatch {
+		t.mu.Unlock()
+		return
+	}
+	t.updateScheduled = true
+	t.inFlightDispatches++
+	t.mu.Unlock()
+
+	defer func() {
+		t.mu.Lock()
+		t.inFlightDispatches--
+		if t.inFlightDispatches == 0 && t.dispatchDone != nil {
+			close(t.dispatchDone)
+			t.dispatchDone = nil
+		}
+		t.mu.Unlock()
+	}()
+
+	if dispatchFn != nil {
+		dispatchFn()
+		return
+	}
+	handler.Send(selPerformSelectorOnMainThread, selUpdateTrayOnMainThread, uintptr(0), false)
+}
+
+func (t *DarwinTray) flushPendingUpdateOnMainThread() {
+	for {
+		t.mu.Lock()
+		if !t.active || t.stopping || t.statusItem == 0 || !t.pendingUpdate {
+			t.updateScheduled = false
+			t.mu.Unlock()
+			return
+		}
+		t.pendingUpdate = false
+		applyFn := t.applyUpdateFn
+		t.mu.Unlock()
+
+		if applyFn != nil {
+			applyFn()
+		} else {
+			t.updateOnMainThread()
+		}
+	}
+}
+
+func (t *DarwinTray) updateOnMainThread() {
+	t.mu.Lock()
+	if !t.active || t.stopping || t.statusItem == 0 {
 		t.mu.Unlock()
 		return
 	}
@@ -472,6 +552,8 @@ func (t *DarwinTray) ShowNotification(title, message string) {
 func (t *DarwinTray) requestStop() {
 	t.stopOnce.Do(func() {
 		t.mu.Lock()
+		t.stopping = true
+		t.pendingUpdate = false
 		app := t.app
 		t.mu.Unlock()
 
@@ -523,11 +605,26 @@ func postDummyEvent(app objc.ID) bool {
 // cleanupOnMainThread performs status item unregistration and Objective-C releases on main thread.
 func (t *DarwinTray) cleanupOnMainThread() {
 	t.mu.Lock()
+	t.stopping = true
+	t.pendingUpdate = false
+	t.updateScheduled = false
+	for t.inFlightDispatches > 0 {
+		waitCh := t.dispatchDone
+		if waitCh == nil {
+			waitCh = make(chan struct{})
+			t.dispatchDone = waitCh
+		}
+		t.mu.Unlock()
+		<-waitCh
+		t.mu.Lock()
+	}
 	if !t.active {
+		t.inRunLoop = false
 		t.mu.Unlock()
 		return
 	}
 	t.active = false
+	t.inRunLoop = false
 	app := t.app
 	t.app = 0
 	item := t.statusItem
@@ -600,13 +697,31 @@ func (t *DarwinTray) Stop() {
 
 func (t *DarwinTray) RunLoop(sigCh <-chan os.Signal, quitChan <-chan struct{}) {
 	t.mu.Lock()
+	if !t.active || t.stopping {
+		t.mu.Unlock()
+		t.cleanupOnMainThread()
+		return
+	}
 	t.inRunLoop = true
+	hasPending := t.pendingUpdate
+	if hasPending {
+		t.updateScheduled = true
+	}
+	runLoopFn := t.runAppLoopFn
+	app := t.app
 	t.mu.Unlock()
+
 	defer func() {
 		t.mu.Lock()
 		t.inRunLoop = false
+		t.updateScheduled = false
+		t.pendingUpdate = false
 		t.mu.Unlock()
 	}()
+
+	if hasPending {
+		t.flushPendingUpdateOnMainThread()
+	}
 
 	// Background monitor only notifies the RunLoop to wake and stop.
 	// It NEVER directly performs AppKit object destruction.
@@ -622,8 +737,10 @@ func (t *DarwinTray) RunLoop(sigCh <-chan os.Signal, quitChan <-chan struct{}) {
 		t.requestStop()
 	}()
 
-	if t.app != 0 {
-		t.app.Send(selRun)
+	if runLoopFn != nil {
+		runLoopFn()
+	} else if app != 0 {
+		app.Send(selRun)
 	}
 
 	// Main thread resumes here after NSApp run loop exits.
@@ -651,7 +768,16 @@ func handleToggleProxy() {
 		} else {
 			_ = t.ctrl.StartProxy()
 		}
-		t.Update()
+		t.updateOnMainThread()
+	}
+}
+
+func handleUpdateTrayOnMainThread() {
+	activeTrayMu.Lock()
+	t := activeTray
+	activeTrayMu.Unlock()
+	if t != nil {
+		t.flushPendingUpdateOnMainThread()
 	}
 }
 

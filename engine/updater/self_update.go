@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -22,6 +23,7 @@ const (
 	updateSHA256Flag      = "--update-sha256"
 	updateVersionFlag     = "--update-version"
 	updateRestartArgsFlag = "--update-restart-args"
+	updateParentPIDFlag   = "--update-parent-pid"
 )
 
 type applyRequest struct {
@@ -30,6 +32,7 @@ type applyRequest struct {
 	ExpectedSHA256 string
 	Version        string
 	RestartArgs    []string
+	ParentPID      int
 }
 
 // LaunchSelfUpdater copies the current executable to a temporary helper, then
@@ -74,6 +77,7 @@ func LaunchSelfUpdater(archivePath, expectedSHA256, version string, restartArgs 
 		updateSHA256Flag, strings.ToLower(strings.TrimSpace(expectedSHA256)),
 		updateVersionFlag, version,
 		updateRestartArgsFlag, argsPath,
+		updateParentPIDFlag, strconv.Itoa(os.Getpid()),
 	}
 	cmd := exec.Command(helperPath, args...)
 	cmd.Dir = filepath.Dir(currentExe)
@@ -156,6 +160,16 @@ func parseApplyArgs(args []string) (applyRequest, error) {
 				return req, fmt.Errorf("解析重启参数失败: %w", err)
 			}
 			_ = os.Remove(args[i])
+		case updateParentPIDFlag:
+			i++
+			if i >= len(args) {
+				return req, fmt.Errorf("缺少 %s 参数", updateParentPIDFlag)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(args[i]))
+			if err != nil || pid < 0 {
+				return req, fmt.Errorf("解析父进程 PID 失败: %v", args[i])
+			}
+			req.ParentPID = pid
 		}
 	}
 	if req.ArchivePath == "" || req.TargetPath == "" || req.ExpectedSHA256 == "" {
@@ -180,6 +194,12 @@ func applyUpdate(req applyRequest) error {
 
 	if err := verifyArchiveSHA256(archivePath, req.ExpectedSHA256); err != nil {
 		return err
+	}
+
+	if req.ParentPID > 0 && req.ParentPID != os.Getpid() {
+		if err := waitForParentExit(req.ParentPID, 15*time.Second); err != nil {
+			return err
+		}
 	}
 
 	if runtime.GOOS == "darwin" {
@@ -229,7 +249,12 @@ func applyWindowsExecutable(archivePath, targetPath string, restartArgs []string
 		_ = os.Rename(backupPath, targetPath)
 		return fmt.Errorf("新版本已替换，但自动重启失败，已尝试恢复旧版本: %w", err)
 	}
-	_ = os.Remove(backupPath)
+	for i := 0; i < 10; i++ {
+		if err := os.Remove(backupPath); err == nil || os.IsNotExist(err) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	return nil
 }
 
@@ -553,7 +578,9 @@ func CleanupStaleHelpers() {
 	cutoff := time.Now().Add(-10 * time.Minute)
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasPrefix(name, "gbf-accelerator-helper-") && !strings.HasPrefix(name, "gbf-accelerator-updater-") {
+		if !strings.HasPrefix(name, "gbf-accelerator-helper-") &&
+			!strings.HasPrefix(name, "gbf-accelerator-updater-") &&
+			!strings.HasPrefix(name, "gbf-accelerator-restart-") {
 			continue
 		}
 		info, err := entry.Info()

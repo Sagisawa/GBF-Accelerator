@@ -760,6 +760,163 @@ func (m *Manager) GetMetadataWithNamespace(ns, urlPath string) (*CacheItem, stri
 	return nil, ""
 }
 
+// VerifyAndGetMetadataWithNamespace validates an unverified disk cache file in-place (reading only
+// the 512B header for uncompressed files or streaming Gzip) without loading the entire file into RAM,
+// promotes its metadata to Verified=true, and returns a metadata-only CacheItem (Data == nil).
+func (m *Manager) VerifyAndGetMetadataWithNamespace(ns, urlPath string) (*CacheItem, string) {
+	if item, src := m.GetMetadataWithNamespace(ns, urlPath); item != nil {
+		return item, src
+	}
+
+	basePath, _, _ := strings.Cut(urlPath, "?")
+	cleanKey := strings.TrimPrefix(basePath, "/")
+	ramKey := makeRAMKey(ns, cleanKey)
+
+	if m.isMissing(ramKey) {
+		return nil, ""
+	}
+
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
+	if !ok {
+		return nil, ""
+	}
+
+	item, err := m.verifyDiskMetaOnly(ns, cleanKey, filePath)
+	if err != nil {
+		if ns == "" || ns == "gbf" {
+			var altPath, altKey string
+			if !strings.HasPrefix(cleanKey, "assets") {
+				altKey = "assets/" + cleanKey
+				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
+			} else {
+				altKey = strings.TrimPrefix(cleanKey, "assets/")
+				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
+			}
+			if altPath != "" {
+				if item2, err2 := m.verifyDiskMetaOnly("gbf", altKey, altPath); err2 == nil && item2 != nil {
+					item2.Key = ramKey
+					altMeta, _ := m.getDiskMeta(makeRAMKey("gbf", altKey))
+					m.setDiskMeta(ramKey, diskMetaEntry{
+						mtimeNano:       altMeta.mtimeNano,
+						size:            altMeta.size,
+						contentType:     item2.ContentType,
+						contentEncoding: item2.ContentEncoding,
+						etag:            item2.ETag,
+						lastModified:    item2.LastModified,
+						exists:          true,
+						hasMeta:         true,
+						verified:        altMeta.verified,
+					})
+					return item2, "DISK"
+				}
+			}
+		}
+		m.markMissing(ramKey)
+		return nil, ""
+	}
+	return item, "DISK"
+}
+
+func (m *Manager) verifyDiskMetaOnly(ns, cleanKey, filePath string) (*CacheItem, error) {
+	ramKey := makeRAMKey(ns, cleanKey)
+
+	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
+		if m.CheckAndQuarantineTamperedJS(filePath) {
+			m.deleteDiskMeta(ramKey)
+			if m.residentPool != nil {
+				m.residentPool.Delete(ramKey)
+			}
+			return nil, fmt.Errorf("tampered JS quarantined: %s", filePath)
+		}
+	}
+
+	f, err := os.Open(filePath)
+	if err != nil {
+		m.deleteDiskMeta(ramKey)
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() || fi.Size() == 0 {
+		_ = f.Close()
+		m.deleteDiskMeta(ramKey)
+		return nil, fmt.Errorf("invalid cache file: %s", filePath)
+	}
+	mtimeNano := fi.ModTime().UnixNano()
+	size := fi.Size()
+	var magic [2]byte
+	nMagic, _ := io.ReadFull(f, magic[:])
+	_ = f.Close()
+
+	extPath := filePath + ".ext"
+	contentType := ""
+	contentEncoding := ""
+	etag := ""
+	lastMod := ""
+	if metaBytes, err := os.ReadFile(extPath); err == nil {
+		if meta, ok := parseExtFile(metaBytes); ok {
+			contentType = meta.ContentType
+			contentEncoding = meta.ContentEncoding
+			etag = meta.ETag
+			lastMod = meta.LastModified
+		}
+	}
+	contentType = resolveContentType(contentType, filePath)
+
+	if !IsValidCacheFile(cleanKey, contentType, filePath) {
+		m.deleteDiskMeta(ramKey)
+		if m.autoRepair.Load() {
+			_ = os.Remove(filePath)
+			_ = os.Remove(extPath)
+			if m.residentPool != nil {
+				m.residentPool.Delete(ramKey)
+			}
+		}
+		return nil, fmt.Errorf("invalid cache content: %s", filePath)
+	}
+
+	if etag == "" {
+		etag = fmt.Sprintf("\"%x-%x\"", mtimeNano/1e9, size)
+	}
+	if nMagic >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		contentEncoding = "gzip"
+	} else if contentEncoding == "gzip" {
+		contentEncoding = ""
+	}
+
+	m.setDiskMeta(ramKey, diskMetaEntry{
+		mtimeNano:       mtimeNano,
+		size:            size,
+		contentType:     contentType,
+		contentEncoding: contentEncoding,
+		etag:            etag,
+		lastModified:    lastMod,
+		exists:          true,
+		hasMeta:         true,
+		verified:        true,
+	})
+	_ = writeDiskExtFile(filePath, diskMeta{
+		LastModified:    lastMod,
+		ETag:            etag,
+		AccessTime:      time.Now().Unix(),
+		ContentEncoding: contentEncoding,
+		ContentType:     contentType,
+		Version:         1,
+		Verified:        true,
+		Size:            size,
+		MTimeNano:       mtimeNano,
+	})
+
+	return &CacheItem{
+		Key:             ramKey,
+		Data:            nil,
+		ContentType:     contentType,
+		ContentEncoding: contentEncoding,
+		ETag:            etag,
+		LastModified:    lastMod,
+		Size:            size,
+	}, nil
+}
+
 func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 	return m.GetWithNamespace("gbf", urlPath)
 }
@@ -924,7 +1081,15 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 
 	contentType = resolveContentType(contentType, filePath)
 
-	if !IsValidCacheContent(cleanKey, contentType, data) {
+	validContent := false
+	if extVerified && len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
+		// This file previously passed full Gzip stream + inner magic/HTML validation
+		// and its physical size + mtimeNano still match the verified metadata.
+		validContent = !strings.Contains(strings.ToLower(contentType), "text/html")
+	} else {
+		validContent = IsValidCacheContent(cleanKey, contentType, data)
+	}
+	if !validContent {
 		m.deleteDiskMeta(ramKey)
 		if m.autoRepair.Load() {
 			_ = f.Close()
@@ -1672,6 +1837,7 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 		}
 	}
 
+	m.ramCache.Delete(ramKey)
 	if m.residentPool != nil {
 		m.residentPool.Delete(ramKey)
 	}
@@ -1758,8 +1924,6 @@ type SlimProgress struct {
 }
 
 func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), cancelCh <-chan struct{}) map[string]interface{} {
-	m.persistMu.Lock()
-	defer m.persistMu.Unlock()
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
@@ -1779,7 +1943,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		}
 		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
 			if strings.Contains(p, ".tmp.") {
+				m.persistMu.Lock()
 				_ = os.Remove(p)
+				m.persistMu.Unlock()
 			}
 			return nil
 		}
@@ -1791,13 +1957,18 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		}
 
 		if strings.HasSuffix(p, "set-error-handler.js") {
-			if m.CheckAndQuarantineTamperedJS(p) {
+			m.persistMu.Lock()
+			quarantined := m.CheckAndQuarantineTamperedJS(p)
+			if quarantined {
 				corrupted++
 				m.ramCache.Delete(ramKey)
 				if m.residentPool != nil {
 					m.residentPool.Delete(ramKey)
 				}
 				m.deleteDiskMeta(ramKey)
+			}
+			m.persistMu.Unlock()
+			if quarantined {
 				return nil
 			}
 		}
@@ -1806,24 +1977,13 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		info, iErr := d.Info()
 		if iErr != nil || info.Size() == 0 {
 			isBad = true
-		} else {
-			f, err := os.Open(p)
-			if err != nil {
-				isBad = true
-			} else {
-				var header [512]byte
-				n, rErr := io.ReadFull(f, header[:])
-				_ = f.Close()
-				if (rErr != nil && rErr != io.EOF && rErr != io.ErrUnexpectedEOF) || n == 0 {
-					isBad = true
-				} else if !IsValidCacheContent(p, "", header[:n]) {
-					isBad = true
-				}
-			}
+		} else if !IsValidCacheFile(p, "", p) {
+			isBad = true
 		}
 
 		if isBad {
 			corrupted++
+			m.persistMu.Lock()
 			_ = os.Remove(p)
 			_ = os.Remove(p + ".ext")
 			m.ramCache.Delete(ramKey)
@@ -1831,6 +1991,7 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 				m.residentPool.Delete(ramKey)
 			}
 			m.deleteDiskMeta(ramKey)
+			m.persistMu.Unlock()
 		} else {
 			healthy++
 		}
@@ -1868,8 +2029,6 @@ func (m *Manager) AuditAndRepair() map[string]interface{} {
 }
 
 func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(p SlimProgress), cancelCh <-chan struct{}) (int, int, int64) {
-	m.persistMu.Lock()
-	defer m.persistMu.Unlock()
 	if keepCount <= 0 {
 		keepCount = 8
 	}
@@ -1952,6 +2111,7 @@ func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(
 			})
 		}
 
+		m.persistMu.Lock()
 		_ = filepath.WalkDir(s.fullPath, func(p string, d os.DirEntry, err error) error {
 			if err == nil && !d.IsDir() {
 				deletedFiles++
@@ -1971,6 +2131,7 @@ func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(
 		if err := os.RemoveAll(s.fullPath); err == nil {
 			deletedDirs++
 		}
+		m.persistMu.Unlock()
 	}
 
 	if progressCb != nil {

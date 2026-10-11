@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestIsSafeZipPath(t *testing.T) {
@@ -238,4 +240,62 @@ func TestPrepareRestartArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestParseApplyArgs_ParentPID(t *testing.T) {
+	tempDir := t.TempDir()
+	parsed, err := parseApplyArgs([]string{
+		"helper.exe",
+		updateApplyFlag,
+		updateArchiveFlag, filepath.Join(tempDir, "update.zip"),
+		updateTargetFlag, filepath.Join(tempDir, "GBF_Accelerator.exe"),
+		updateSHA256Flag, "abcdef",
+		updateParentPIDFlag, "43210",
+	})
+	if err != nil {
+		t.Fatalf("parseApplyArgs with parent PID failed: %v", err)
+	}
+	if parsed.ParentPID != 43210 {
+		t.Fatalf("expected ParentPID 43210, got %d", parsed.ParentPID)
+	}
+
+	_, errInvalid := parseApplyArgs([]string{
+		"helper.exe",
+		updateApplyFlag,
+		updateArchiveFlag, filepath.Join(tempDir, "update.zip"),
+		updateTargetFlag, filepath.Join(tempDir, "GBF_Accelerator.exe"),
+		updateSHA256Flag, "abcdef",
+		updateParentPIDFlag, "not-a-pid",
+	})
+	if errInvalid == nil {
+		t.Fatal("expected error for invalid parent PID")
+	}
+}
+
+func TestWaitForParentExit(t *testing.T) {
+	// 1. Non-positive PID or non-existent PID returns immediately
+	if err := waitForParentExit(0, 100*time.Millisecond); err != nil {
+		t.Fatalf("expected nil for pid 0, got %v", err)
+	}
+
+	// 2. Current process is still alive -> must time out when waited on with short timeout
+	if err := waitForParentExit(os.Getpid(), 150*time.Millisecond); err == nil {
+		t.Fatal("expected timeout error when waiting for still-running current process")
+	}
+
+	// 3. Spawn a short-lived child process and verify waitForParentExit waits until it exits
+	exe, err := os.Executable()
+	if err == nil {
+		cmd := exec.Command(exe, "-test.run=^TestNonExistentHelperProcess$")
+		if startErr := cmd.Start(); startErr == nil {
+			pid := cmd.Process.Pid
+			go func() {
+				_ = cmd.Wait()
+			}()
+			if waitErr := waitForParentExit(pid, 5*time.Second); waitErr != nil {
+				t.Fatalf("expected waitForParentExit to succeed after short-lived process exited, got: %v", waitErr)
+			}
+		}
+	}
+}
+
 

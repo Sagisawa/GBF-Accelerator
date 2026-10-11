@@ -362,6 +362,9 @@ func main() {
 			fmt.Printf("[*] Desktop tray not available in current session: %v\n", err)
 		} else {
 			notifier.SetTray(tray)
+			cfgMgr.OnUpdate(func(c *config.Config) {
+				tray.Update()
+			})
 			defer tray.Stop()
 		}
 	}

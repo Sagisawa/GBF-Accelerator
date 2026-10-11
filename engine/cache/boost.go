@@ -106,12 +106,20 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 	base := m.cacheBase
 	m.mu.RUnlock()
 
+	workerGen := m.residentPool.NextGeneration()
+	m.residentPool.ResetForGen(workerGen)
+
 	var candidates []boostCandidate
 	var totalPayloadBytes int64
 	cancelledDuringScan := false
+	disabledDuringScan := false
 
 	// Pass 1: Disk Cache Discovery & Filtration
 	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+		if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
+			disabledDuringScan = true
+			return filepath.SkipAll
+		}
 		select {
 		case <-cancelCh:
 			cancelledDuringScan = true
@@ -147,6 +155,18 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 		return nil
 	})
 
+	if disabledDuringScan || m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
+		res := BoostProgress{
+			State:   BoostStateDisabled,
+			Done:    true,
+			Message: "RAM Boost 已关闭",
+		}
+		if progressCb != nil {
+			progressCb(res)
+		}
+		return res
+	}
+
 	if cancelledDuringScan {
 		res := BoostProgress{
 			State:   BoostStateCancelled,
@@ -158,9 +178,6 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 		}
 		return res
 	}
-
-	workerGen := m.residentPool.NextGeneration()
-	m.residentPool.ResetForGen(workerGen)
 
 	totalCandidates := len(candidates)
 	if totalCandidates == 0 {

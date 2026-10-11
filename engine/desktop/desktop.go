@@ -44,15 +44,26 @@ func OpenAppWindowWithGeometry(url string, width, height int, maximized bool) er
 	return openAppWindowWithGeometry(url, width, height, maximized)
 }
 
+func startDetachedCmd(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() {
+		_ = cmd.Wait()
+	}()
+	return nil
+}
+
 // OpenBrowser opens the specified URL in the system default web browser.
 func OpenBrowser(url string) error {
 	switch runtime.GOOS {
 	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+		return startDetachedCmd("rundll32", "url.dll,FileProtocolHandler", url)
 	case "darwin":
-		return exec.Command("open", url).Start()
+		return startDetachedCmd("open", url)
 	default:
-		return exec.Command("xdg-open", url).Start()
+		return startDetachedCmd("xdg-open", url)
 	}
 }
 

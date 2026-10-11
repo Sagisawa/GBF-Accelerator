@@ -4,6 +4,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,28 @@ import (
 	"strings"
 	"time"
 )
+
+// IsValidAdbSerial validates an ADB device serial identifier, rejecting empty values,
+// leading dashes (option injection), path separators, whitespace, and shell/control characters.
+func IsValidAdbSerial(serial string) bool {
+	if serial == "" || len(serial) > 128 {
+		return false
+	}
+	if strings.HasPrefix(serial, "-") {
+		return false
+	}
+	for _, r := range serial {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '_' || r == '-' || r == ':' || r == '[' || r == ']':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 var (
 	ErrSignatureMismatch = errors.New("signatures do not match: please uninstall the original package first")
@@ -194,6 +218,12 @@ func ListAdbDevices(adbPath string) ([]AdbDevice, error) {
 
 // GetDeviceApp checks if a package is installed on the device and returns its APK locations and version.
 func GetDeviceApp(adbPath, serial, packageName string) (*DeviceAppInfo, error) {
+	if !IsValidAdbSerial(serial) {
+		return nil, fmt.Errorf("invalid adb device serial")
+	}
+	if !IsValidPackageName(packageName) {
+		return nil, fmt.Errorf("invalid package name: %s", packageName)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -295,6 +325,9 @@ var knownBrowserCatalog = []knownBrowserDef{
 
 // ListDeviceBrowsers discovers all browser and SkyLeap packages on the target device.
 func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
+	if !IsValidAdbSerial(serial) {
+		return nil, fmt.Errorf("invalid adb device serial")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
@@ -420,6 +453,9 @@ func PullDeviceApp(
 	targetDir string,
 	onProgress func(cur, total int, file string),
 ) ([]string, error) {
+	if !IsValidAdbSerial(serial) {
+		return nil, fmt.Errorf("invalid adb device serial")
+	}
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create target directory: %w", err)
 	}
@@ -431,7 +467,13 @@ func PullDeviceApp(
 		baseName := filepath.Base(remotePath)
 		// Clean up carriage returns from adb shell if any
 		baseName = strings.TrimRight(baseName, "\r\n")
+		if baseName == "" || baseName == "." || baseName == ".." || strings.ContainsAny(baseName, `/\`) {
+			return nil, fmt.Errorf("invalid remote APK filename: %q", baseName)
+		}
 		localPath := filepath.Join(targetDir, baseName)
+		if !isPathContained(targetDir, localPath) {
+			return nil, fmt.Errorf("pulled path escapes target directory: %s", localPath)
+		}
 
 		if onProgress != nil {
 			onProgress(i+1, total, baseName)
@@ -463,6 +505,9 @@ func InstallToDevice(
 	isSplit bool,
 	apkPaths []string,
 ) (string, error) {
+	if !IsValidAdbSerial(serial) {
+		return "", fmt.Errorf("invalid adb device serial")
+	}
 	if len(apkPaths) == 0 {
 		return "", fmt.Errorf("no APK paths provided for installation")
 	}
@@ -495,6 +540,12 @@ func InstallToDevice(
 
 // UninstallFromDevice uninstalls a package from the device.
 func UninstallFromDevice(ctx context.Context, adbPath, serial, packageName string) error {
+	if !IsValidAdbSerial(serial) {
+		return fmt.Errorf("invalid adb device serial")
+	}
+	if !IsValidPackageName(packageName) {
+		return fmt.Errorf("invalid package name: %s", packageName)
+	}
 	cmd := exec.CommandContext(ctx, adbPath, "-s", serial, "uninstall", packageName)
 	prepareCmd(cmd)
 	out, err := cmd.CombinedOutput()
@@ -577,6 +628,9 @@ func DownloadPlatformTools(
 		return "", err
 	}
 
+	hasher := sha256.New()
+	mw := io.MultiWriter(f, hasher)
+
 	totalBytes := resp.ContentLength
 	var downloadedBytes int64
 	buf := make([]byte, 64*1024)
@@ -591,7 +645,7 @@ func DownloadPlatformTools(
 
 		n, rErr := resp.Body.Read(buf)
 		if n > 0 {
-			if _, wErr := f.Write(buf[:n]); wErr != nil {
+			if _, wErr := mw.Write(buf[:n]); wErr != nil {
 				f.Close()
 				return "", wErr
 			}
@@ -611,6 +665,19 @@ func DownloadPlatformTools(
 	}
 	_ = f.Close()
 
+	if customURL == "" {
+		expectedSHA := ""
+		if runtime.GOOS == "windows" {
+			expectedSHA = CanonicalPlatformToolsWindowsSHA256
+		} else if runtime.GOOS == "darwin" {
+			expectedSHA = CanonicalPlatformToolsDarwinSHA256
+		}
+		actualSHA := hex.EncodeToString(hasher.Sum(nil))
+		if expectedSHA != "" && !strings.EqualFold(actualSHA, expectedSHA) {
+			return "", fmt.Errorf("platform-tools checksum validation failed: expected %s, got %s", expectedSHA, actualSHA)
+		}
+	}
+
 	// Extract zip archive into toolsDir
 	zr, err := zip.OpenReader(tmpZip)
 	if err != nil {
@@ -619,12 +686,18 @@ func DownloadPlatformTools(
 	defer zr.Close()
 
 	for _, file := range zr.File {
+		if file.FileInfo().Mode()&os.ModeSymlink != 0 {
+			continue
+		}
 		cleanName := filepath.Clean(file.Name)
 		if strings.Contains(cleanName, "..") {
 			continue
 		}
 
 		destPath := filepath.Join(toolsDir, cleanName)
+		if !isPathContained(toolsDir, destPath) {
+			return "", fmt.Errorf("zip entry escapes target directory: %s", file.Name)
+		}
 		if file.FileInfo().IsDir() {
 			_ = os.MkdirAll(destPath, 0755)
 			continue

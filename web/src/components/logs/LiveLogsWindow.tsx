@@ -40,6 +40,7 @@ export function maskLogPrivacy(line: string): string {
 // --- Columnar Alignment Parser (Aligned with Python main _align_log_line) ---
 export interface ParsedLogLine {
   raw: string
+  unmaskedRaw: string
   time: string
   levelTag: string
   method?: string
@@ -56,6 +57,12 @@ export interface ParsedLogLine {
   systemMsg?: string
 }
 
+function extractAssetPath(fullUrl: string): string {
+  const stripped = fullUrl.replace(/^https?:\/\//i, '')
+  const slashIdx = stripped.indexOf('/')
+  return slashIdx !== -1 ? stripped.substring(slashIdx) : fullUrl
+}
+
 function parseLogLine(
   rawLine: string,
   timeStr: string,
@@ -64,7 +71,8 @@ function parseLogLine(
   compactDomain: boolean,
   maskPrivacy: boolean
 ): ParsedLogLine {
-  let line = rawLine.trim()
+  const unmaskedRaw = rawLine.trim()
+  let line = unmaskedRaw
   if (maskPrivacy) {
     line = maskLogPrivacy(line)
   }
@@ -91,6 +99,7 @@ function parseLogLine(
   if (!align) {
     return {
       raw: line,
+      unmaskedRaw,
       time: timeStr,
       levelTag: tag,
       isError,
@@ -120,7 +129,7 @@ function parseLogLine(
           path = fullUrl.split('game.granbluefantasy.jp')[1] || '/'
         } else if (fullUrl.includes('akamaized.net')) {
           hostTag = '[asset]'
-          path = '/' + (fullUrl.split('/')[1] || fullUrl)
+          path = extractAssetPath(fullUrl)
         } else if (fullUrl.includes('mbga.jp')) {
           hostTag = '[mbga ]'
           path = fullUrl.split('mbga.jp')[1] || '/'
@@ -138,6 +147,7 @@ function parseLogLine(
 
       return {
         raw: line,
+        unmaskedRaw,
         time: timeStr,
         levelTag: tag,
         method,
@@ -167,10 +177,11 @@ function parseLogLine(
       let hostTag: string | undefined
       if (compactDomain && fullUrl.includes('akamaized.net')) {
         hostTag = '[asset]'
-        path = '/' + (fullUrl.split('/')[1] || fullUrl)
+        path = extractAssetPath(fullUrl)
       }
       return {
         raw: line,
+        unmaskedRaw,
         time: timeStr,
         levelTag: tag,
         method: 'GET ',
@@ -195,10 +206,11 @@ function parseLogLine(
       let hostTag: string | undefined
       if (compactDomain && fullUrl.includes('akamaized.net')) {
         hostTag = '[asset]'
-        path = '/' + (fullUrl.split('/')[1] || fullUrl)
+        path = extractAssetPath(fullUrl)
       }
       return {
         raw: line,
+        unmaskedRaw,
         time: timeStr,
         levelTag: tag,
         method: 'GET ',
@@ -229,6 +241,7 @@ function parseLogLine(
       const subTag = isDisk ? '[hit304]' : '[ram304]'
       return {
         raw: line,
+        unmaskedRaw,
         time: timeStr,
         levelTag: tag,
         method: 'GET ',
@@ -252,6 +265,7 @@ function parseLogLine(
         const extra = pMatch[3] || ''
         return {
           raw: line,
+          unmaskedRaw,
           time: timeStr,
           levelTag: tag,
           method: 'GET ',
@@ -270,6 +284,7 @@ function parseLogLine(
         const extra = pLeg[2] || ''
         return {
           raw: line,
+          unmaskedRaw,
           time: timeStr,
           levelTag: tag,
           method: 'GET ',
@@ -305,6 +320,7 @@ function parseLogLine(
       }
       return {
         raw: line,
+        unmaskedRaw,
         time: timeStr,
         levelTag: tag,
         method: proto,
@@ -324,6 +340,7 @@ function parseLogLine(
     const target = msg.replace('Tunneling ', '').replace(' via upstream', '').trim()
     return {
       raw: line,
+      unmaskedRaw,
       time: timeStr,
       levelTag: tag,
       method: 'TCP ',
@@ -350,6 +367,7 @@ function parseLogLine(
       const waitInfo = waitMs > 0 ? ` wait=${waitMs}ms` : ''
       return {
         raw: line,
+        unmaskedRaw,
         time: timeStr,
         levelTag: tag,
         method: 'GET ',
@@ -372,6 +390,7 @@ function parseLogLine(
       const extra = mLeg[3] || ''
       return {
         raw: line,
+        unmaskedRaw,
         time: timeStr,
         levelTag: tag,
         method: 'GET ',
@@ -390,6 +409,7 @@ function parseLogLine(
   // Fallback for system lines (READY, WARN, RAM-WARM, etc.)
   return {
     raw: line,
+    unmaskedRaw,
     time: timeStr,
     levelTag: tag,
     isError,
@@ -1305,7 +1325,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
 
         <button
           onClick={() => {
-            if (contextMenu.item) navigator.clipboard.writeText(contextMenu.item.raw)
+            if (contextMenu.item) navigator.clipboard.writeText(contextMenu.item.unmaskedRaw)
             setContextMenu(null)
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"

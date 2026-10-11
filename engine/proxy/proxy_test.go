@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -946,3 +947,98 @@ func TestIsVersionedAssetPathCombinatorial(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkRangeDiskHit_3MiBFile_64BSlice(b *testing.B) {
+	tempDir := b.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))
+	if err != nil {
+		b.Fatalf("failed to create cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tempDir, 64)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	defer srv.Stop()
+
+	const diskSize = 3 * 1024 * 1024
+	payload := make([]byte, diskSize)
+	copy(payload, []byte("\x89PNG\r\n\x1a\n"))
+	for i := 8; i < len(payload); i++ {
+		payload[i] = byte(i % 251)
+	}
+	assetPath := "/assets/img/sp/bench_range_3mb.png"
+	if !cacheMgr.SaveWithNamespace("gbf", assetPath, map[string]string{
+		"content-type": "image/png",
+		"etag":         `"bench-range-etag"`,
+	}, payload) {
+		b.Fatalf("failed to save disk asset")
+	}
+	cacheMgr.ClearRAM()
+
+	targetHost := "prd-game-a-granbluefantasy.akamaized.net"
+	req, _ := http.NewRequest(http.MethodGet, "https://"+targetHost+assetPath, nil)
+	req.Header.Set("Range", "bytes=1024-1087")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		srv.handleDecryptedRequest(io.Discard, req, targetHost)
+	}
+}
+
+func BenchmarkDynamicAPIForward(b *testing.B) {
+	tempDir := b.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))
+	if err != nil {
+		b.Fatalf("failed to create cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	defer srv.Stop()
+
+	respBody := []byte(`{"result":"ok","ap":99}`)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "23")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+	tr := ts.Client().Transport.(*http.Transport).Clone()
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return net.Dial("tcp", u.Host)
+	}
+	tr.TLSClientConfig.InsecureSkipVerify = true
+	tr.MaxIdleConns = 16
+	tr.MaxIdleConnsPerHost = 16
+	tr.IdleConnTimeout = 30 * time.Second
+	wrapAPITransportSingleAttempt(tr)
+	srv.apiClient.Store(&http.Client{Transport: tr})
+
+	apiHost := "game.granbluefantasy.jp"
+	postPayload := []byte(`{"ability_id":1}`)
+
+	// Warm connection pool
+	warmReq, _ := http.NewRequest(http.MethodPost, "https://"+apiHost+"/rest/raid/ability_result.json", bytes.NewReader(postPayload))
+	srv.handleDynamicAPI(io.Discard, warmReq, apiHost)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		req, _ := http.NewRequest(http.MethodPost, "https://"+apiHost+"/rest/raid/ability_result.json", bytes.NewReader(postPayload))
+		srv.handleDynamicAPI(io.Discard, req, apiHost)
+	}
+}
+

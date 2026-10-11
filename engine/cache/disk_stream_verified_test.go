@@ -2,11 +2,13 @@ package cache
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestVerified_MetadataSerializationAndCompat tests .ext serialization, deserialization,
@@ -729,4 +731,135 @@ func TestDiskRead_LegacyLargeAsset_CorruptContentRejected(t *testing.T) {
 		t.Fatal("expected OpenDiskStream to reject unverified corrupt asset")
 	}
 }
+
+// TestVerifiedGzip_SkipRedundantDecompressAndInvalidateOnTamper verifies that:
+// 1. An unverified Gzip file on disk is validated via full decompression on first read and promoted to Verified=true.
+// 2. Subsequent disk reads with matching Size and MTimeNano succeed using the verified fast path.
+// 3. If an unverified Gzip file is truncated/corrupted, or if a verified Gzip file is externally modified (size or mtime mismatch),
+//    full Gzip decompression runs and rejects the corrupted stream.
+func TestVerifiedGzip_SkipRedundantDecompressAndInvalidateOnTamper(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	_, _ = gw.Write(bytes.Repeat([]byte("console.log('gbf verified gzip test');\n"), 512))
+	_ = gw.Close()
+	validGzip := gzBuf.Bytes()
+
+	// 1. Unverified valid Gzip file on disk -> validated and promoted to Verified=true
+	cleanKey := "assets/js/verified_gzip_test.js"
+	p, ok := mgr.resolvePathWithNamespace("gbf", cleanKey)
+	if !ok {
+		t.Fatal("failed to resolve path")
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	if err := os.WriteFile(p, validGzip, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p+".ext", []byte(`{"ContentType":"application/javascript","ContentEncoding":"gzip","v":1,"verified":false}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	item1, src1 := mgr.GetWithNamespace("gbf", "/"+cleanKey)
+	if item1 == nil || src1 != "DISK" || !bytes.Equal(item1.Data, validGzip) {
+		t.Fatalf("expected valid unverified gzip file to pass and load from DISK, got item=%v src=%s", item1, src1)
+	}
+	extBytes, err := os.ReadFile(p + ".ext")
+	if err != nil {
+		t.Fatalf("expected .ext to exist: %v", err)
+	}
+	parsedMeta, ok := parseExtFile(extBytes)
+	if !ok || !parsedMeta.Verified {
+		t.Fatalf("expected .ext to be promoted to Verified=true, got %+v", parsedMeta)
+	}
+
+	// 2. Subsequent disk hit after ClearRAM succeeds via verified fast path
+	mgr.ClearRAM()
+	item2, src2 := mgr.GetWithNamespace("gbf", "/"+cleanKey)
+	if item2 == nil || src2 != "DISK" || !bytes.Equal(item2.Data, validGzip) {
+		t.Fatalf("expected verified gzip disk hit to succeed, got item=%v src=%s", item2, src2)
+	}
+
+	// 3. External modification (corrupt tail + new mtime) invalidates Verified and triggers full Gzip check -> rejected!
+	mgr.ClearRAM()
+	corruptGzip := append([]byte(nil), validGzip[:len(validGzip)-4]...)
+	if err := os.WriteFile(p, corruptGzip, 0644); err != nil {
+		t.Fatal(err)
+	}
+	futureTime := time.Now().Add(5 * time.Second)
+	_ = os.Chtimes(p, futureTime, futureTime)
+
+	itemCorrupt, srcCorrupt := mgr.GetWithNamespace("gbf", "/"+cleanKey)
+	if itemCorrupt != nil || srcCorrupt != "" {
+		t.Fatalf("expected modified/corrupted gzip file to be re-validated and rejected, got item=%v src=%s", itemCorrupt, srcCorrupt)
+	}
+}
+
+// TestVerifyAndGetMetadataWithNamespace_PromotesWithoutFullRAMLoad verifies that
+// VerifyAndGetMetadataWithNamespace validates an unverified disk file in-place and returns
+// a metadata-only CacheItem (Data == nil) without admitting the full file into RAM.
+func TestVerifyAndGetMetadataWithNamespace_PromotesWithoutFullRAMLoad(t *testing.T) {
+	tempDir := t.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	cleanKey := "assets/img/sp/meta_only_verify.png"
+	p, ok := mgr.resolvePathWithNamespace("gbf", cleanKey)
+	if !ok {
+		t.Fatal("failed to resolve path")
+	}
+	_ = os.MkdirAll(filepath.Dir(p), 0755)
+	payload := makeFakePNG(64 * 1024)
+	if err := os.WriteFile(p, payload, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	metaItem, src := mgr.VerifyAndGetMetadataWithNamespace("gbf", "/"+cleanKey)
+	if metaItem == nil || src != "DISK" {
+		t.Fatalf("expected DISK hit from VerifyAndGetMetadataWithNamespace, got item=%v src=%s", metaItem, src)
+	}
+	if metaItem.Data != nil {
+		t.Fatalf("expected Data == nil from VerifyAndGetMetadataWithNamespace, got %d bytes", len(metaItem.Data))
+	}
+	if metaItem.Size != int64(len(payload)) {
+		t.Fatalf("expected Size=%d, got %d", len(payload), metaItem.Size)
+	}
+	if mgr.ramCache.TotalBytes() != 0 {
+		t.Fatalf("expected 0 bytes in RAM cache after VerifyAndGetMetadataWithNamespace, got %d", mgr.ramCache.TotalBytes())
+	}
+}
+
+func BenchmarkGzipDiskHit_Verified(b *testing.B) {
+	tempDir := b.TempDir()
+	mgr := NewManager(tempDir, 16)
+	defer mgr.Close()
+
+	var gzBuf bytes.Buffer
+	gw := gzip.NewWriter(&gzBuf)
+	_, _ = gw.Write(bytes.Repeat([]byte("function gbfBenchAsset(){return 42;}\n"), 700))
+	_ = gw.Close()
+	validGzip := gzBuf.Bytes()
+
+	urlPath := "/assets/js/bench_verified_gzip.js"
+	if !mgr.SaveWithNamespace("gbf", urlPath, map[string]string{
+		"content-type":     "application/javascript",
+		"content-encoding": "gzip",
+	}, validGzip) {
+		b.Fatalf("failed to save gzip asset")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		mgr.ClearRAM()
+		item, src := mgr.GetWithNamespace("gbf", urlPath)
+		if item == nil || src != "DISK" {
+			b.Fatalf("expected DISK hit, got %v %s", item, src)
+		}
+	}
+}
+
+
 

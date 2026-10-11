@@ -2,9 +2,17 @@
 
 package patcher
 
-import "os/exec"
+import (
+	"os/exec"
+	"time"
+)
 
-// prepareCmd is a no-op on non-Windows platforms.
+// prepareCmd configures bounded pipe wait delay on non-Windows platforms.
 func prepareCmd(cmd *exec.Cmd) {
-	// no-op
+	if cmd == nil {
+		return
+	}
+	if cmd.WaitDelay == 0 {
+		cmd.WaitDelay = 3 * time.Second
+	}
 }

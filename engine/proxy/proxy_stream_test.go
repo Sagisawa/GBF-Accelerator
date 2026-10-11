@@ -1488,10 +1488,10 @@ func TestStreamThrough_CacheMiss_HeadAndConditional(t *testing.T) {
 		t.Fatalf("expected empty body for HEAD, got %d bytes", len(headBody))
 	}
 
-	// Asset should now be cached
+	// HEAD request on cache miss only fetches metadata and must NOT populate full asset cache
 	item, _ := cacheMgr.GetWithNamespace("gbf", path)
-	if item == nil {
-		t.Fatal("expected HEAD request on cache miss to populate cache")
+	if item != nil {
+		t.Fatal("expected HEAD request on cache miss NOT to populate cache with bodyless item")
 	}
 
 	// 2. Direct conditional GET with matching ETag on different asset (cache miss)
@@ -2059,5 +2059,501 @@ func TestStreamThrough_CacheSinkError_LeaderCompletesFollowerFailsGracefully(t *
 		t.Fatalf("follower expected 502 Bad Gateway, got %d", respF.StatusCode)
 	}
 }
+
+// TestProxy_HeadRace_ErrHeadCannotBeGetLeader_GetFollowerIntegrity verifies that when:
+// 1. A HEAD request observes an active in-flight GET leader and passes the IsInFlight check.
+// 2. The GET leader finishes and commits the asset to cache before the HEAD request enters DoContext.
+// 3. The HEAD request enters DoContext, becomes the leader, and executes its closure which returns errHeadCannotBeGetLeader.
+// 4. A concurrent GET request enters DoContext as a follower of this HEAD request.
+// 5. The HEAD request handles errHeadCannotBeGetLeader via handleStaticAssetHeadMiss (returning 200 OK with empty body from cache).
+// 6. The GET follower handles errHeadCannotBeGetLeader via serveStaticAssetFollowerFallback (returning 200 OK with FULL BODY from cache).
+// 7. GET NEVER receives an empty body or a HEAD response.
+func TestProxy_HeadRace_ErrHeadCannotBeGetLeader_GetFollowerIntegrity(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	const totalSize = 100 * 1024
+	payload := make([]byte, totalSize)
+	copy(payload, []byte("\x89PNG\r\n\x1a\n"))
+	for i := 8; i < totalSize; i++ {
+		payload[i] = byte(i % 251)
+	}
+
+	const host = "prd-game-a-granbluefantasy.akamaized.net"
+	const path = "/assets/img/sp/head_race_get_integrity.png"
+	const flightKey = "gbf:" + path
+
+	var upstreamHits atomic.Int64
+	leaderStartChan := make(chan struct{}, 1)
+	leaderCanFinishChan := make(chan struct{})
+
+	ts, client := newMockAssetServer(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("ETag", `"race-test-etag"`)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.WriteHeader(http.StatusOK)
+
+		if r.Method == http.MethodHead {
+			return
+		}
+
+		select {
+		case leaderStartChan <- struct{}{}:
+		default:
+		}
+		<-leaderCanFinishChan
+		_, _ = w.Write(payload)
+	})
+	defer ts.Close()
+
+	srv := &ProxyServer{
+		cfgMgr:   cfgMgr,
+		cacheMgr: cacheMgr,
+		stats:    stats,
+	}
+	setTestAssetClient(srv, client)
+
+	var (
+		leader1Passed      atomic.Bool
+		getFollowerBlocked atomic.Bool
+
+		headCheckedInFlightOnce sync.Once
+		headCheckedInFlightChan = make(chan struct{})
+		headCanProceedChan      = make(chan struct{})
+
+		getFollowerCanProceedChan = make(chan struct{})
+
+		headInsideClosureOnce sync.Once
+		headInsideClosureChan = make(chan struct{})
+		headCanReturnErrorChan = make(chan struct{})
+	)
+
+	srv.beforeSingleFlightDoContext = func(key string, isHead bool) {
+		if key != flightKey {
+			return
+		}
+		if isHead {
+			headCheckedInFlightOnce.Do(func() {
+				close(headCheckedInFlightChan)
+			})
+			<-headCanProceedChan
+		} else {
+			if !leader1Passed.Swap(true) {
+				return
+			}
+			if !getFollowerBlocked.Swap(true) {
+				<-getFollowerCanProceedChan
+				return
+			}
+		}
+	}
+
+	srv.insideSingleFlightHeadHook = func(key string) {
+		if key != flightKey {
+			return
+		}
+		headInsideClosureOnce.Do(func() {
+			close(headInsideClosureChan)
+		})
+		<-headCanReturnErrorChan
+	}
+
+	// 1. Launch Leader 1 (GET)
+	var leaderBuf bytes.Buffer
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+		req.RequestURI = path
+		req.Host = host
+		srv.handleStaticAssetLower(&leaderBuf, req, host, path)
+	}()
+
+	// Wait until Leader 1 is actively streaming upstream
+	select {
+	case <-leaderStartChan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for leader 1 to reach upstream")
+	}
+
+	// 2. Launch GET 2 (follower) while Leader 1 is in-flight (so it passes cache lookup on cache miss)
+	var getFollowerBuf bytes.Buffer
+	getFollowerDone := make(chan struct{})
+	go func() {
+		defer close(getFollowerDone)
+		req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+		req.RequestURI = path
+		req.Host = host
+		srv.handleStaticAssetLower(&getFollowerBuf, req, host, path)
+	}()
+
+	// 3. Launch HEAD request while Leader 1 is in-flight (so it passes IsInFlight check)
+	var headBuf bytes.Buffer
+	headDone := make(chan struct{})
+	go func() {
+		defer close(headDone)
+		req, _ := http.NewRequest(http.MethodHead, "https://"+host+path, nil)
+		req.RequestURI = path
+		req.Host = host
+		srv.handleStaticAssetLower(&headBuf, req, host, path)
+	}()
+
+	// Wait until HEAD passes IsInFlight check and reaches hook
+	select {
+	case <-headCheckedInFlightChan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for HEAD to pass IsInFlight check")
+	}
+
+	// 4. Now allow Leader 1 to finish and commit asset to cache
+	close(leaderCanFinishChan)
+	select {
+	case <-leaderDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for leader 1 to complete")
+	}
+
+	// Ensure Leader 1 has cleared SingleFlight
+	if srv.cacheMgr.SingleFlight().IsInFlight(flightKey) {
+		t.Fatal("expected flightKey to no longer be in-flight after leader 1 completed")
+	}
+
+	// 5. Allow HEAD to enter DoContext and become the leader of flightKey
+	close(headCanProceedChan)
+	select {
+	case <-headInsideClosureChan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for HEAD to enter DoContext closure")
+	}
+
+	// 6. Allow GET 2 to enter DoContext as a follower of HEAD
+	close(getFollowerCanProceedChan)
+
+	// Spin until GET 2 is registered as a waiter in SingleFlight
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.cacheMgr.SingleFlight().Waiters(flightKey) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for GET follower to register as waiter of HEAD in SingleFlight")
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	// 7. Allow HEAD to return errHeadCannotBeGetLeader
+	close(headCanReturnErrorChan)
+
+	// Wait for both HEAD and GET 2 to finish
+	select {
+	case <-headDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for HEAD to finish")
+	}
+
+	select {
+	case <-getFollowerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for GET follower to finish")
+	}
+
+	// 8. Verify Leader 1 response: 200 OK, full payload
+	reqL, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	respL, err := http.ReadResponse(bufio.NewReader(&leaderBuf), reqL)
+	if err != nil {
+		t.Fatalf("failed to read leader 1 response: %v", err)
+	}
+	defer respL.Body.Close()
+	if respL.StatusCode != http.StatusOK {
+		t.Fatalf("leader 1 expected 200 OK, got %d", respL.StatusCode)
+	}
+	bodyL, _ := io.ReadAll(respL.Body)
+	if !bytes.Equal(bodyL, payload) {
+		t.Fatalf("leader 1 payload mismatch: got %d, want %d", len(bodyL), len(payload))
+	}
+
+	// 9. Verify HEAD response: 200 OK, Content-Length == totalSize, EMPTY body
+	reqH, _ := http.NewRequest(http.MethodHead, "https://"+host+path, nil)
+	respH, err := http.ReadResponse(bufio.NewReader(&headBuf), reqH)
+	if err != nil {
+		t.Fatalf("failed to read HEAD response: %v", err)
+	}
+	defer respH.Body.Close()
+	if respH.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD expected 200 OK, got %d", respH.StatusCode)
+	}
+	if respH.ContentLength != int64(totalSize) {
+		t.Fatalf("HEAD Content-Length mismatch: got %d, want %d", respH.ContentLength, totalSize)
+	}
+	bodyH, _ := io.ReadAll(respH.Body)
+	if len(bodyH) != 0 {
+		t.Fatalf("HEAD expected 0 body bytes, got %d bytes", len(bodyH))
+	}
+
+	// 10. Verify GET follower response: 200 OK, Content-Length == totalSize, FULL BODY!
+	reqG, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	respG, err := http.ReadResponse(bufio.NewReader(&getFollowerBuf), reqG)
+	if err != nil {
+		t.Fatalf("failed to read GET follower response: %v", err)
+	}
+	defer respG.Body.Close()
+	if respG.StatusCode != http.StatusOK {
+		t.Fatalf("GET follower expected 200 OK, got %d", respG.StatusCode)
+	}
+	if respG.ContentLength != int64(totalSize) {
+		t.Fatalf("GET follower Content-Length mismatch: got %d, want %d", respG.ContentLength, totalSize)
+	}
+	bodyG, _ := io.ReadAll(respG.Body)
+	if !bytes.Equal(bodyG, payload) {
+		t.Fatalf("GET follower body mismatch: got %d bytes (expected %d bytes, identical to payload)", len(bodyG), len(payload))
+	}
+
+	// 11. Verify cache integrity
+	cachedItem, _ := cacheMgr.GetWithNamespace("gbf", path)
+	if cachedItem == nil {
+		t.Fatal("expected asset to be present in cache")
+	}
+	if !bytes.Equal(cachedItem.Data, payload) {
+		t.Fatal("cached asset payload mismatch")
+	}
+
+	// Upstream hits must strictly be 1 (only Leader 1 fetched from upstream; HEAD and GET 2 reused cache)
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("expected strictly 1 upstream hit, got %d", upstreamHits.Load())
+	}
+}
+
+// TestProxy_HeadRace_ErrHeadCannotBeGetLeader_GetFollower_ColdCacheFallback verifies that when
+// the previous GET leader failed/aborted without populating the cache, a GET follower receiving
+// errHeadCannotBeGetLeader safely re-enters the SingleFlight pipeline (allowRetry=false) as a new
+// GET leader to fetch and cache the complete asset, rather than receiving an empty body or failing.
+func TestProxy_HeadRace_ErrHeadCannotBeGetLeader_GetFollower_ColdCacheFallback(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	const totalSize = 50 * 1024
+	payload := make([]byte, totalSize)
+	copy(payload, []byte("\x89PNG\r\n\x1a\n"))
+	for i := 8; i < totalSize; i++ {
+		payload[i] = byte(i % 199)
+	}
+
+	const host = "prd-game-a-granbluefantasy.akamaized.net"
+	const path = "/assets/img/sp/head_race_cold_fallback.png"
+	const flightKey = "gbf:" + path
+
+	var upstreamHits atomic.Int64
+	leader1StartChan := make(chan struct{}, 1)
+	leader1CanFailChan := make(chan struct{})
+
+	ts, client := newMockAssetServer(func(w http.ResponseWriter, r *http.Request) {
+		count := upstreamHits.Add(1)
+		if count == 1 {
+			// Leader 1 simulates an in-flight request that fails with 500 without caching
+			select {
+			case leader1StartChan <- struct{}{}:
+			default:
+			}
+			<-leader1CanFailChan
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		// Subsequent requests succeed (HEAD miss upstream fetch or GET retry upstream fetch)
+		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("ETag", `"cold-fallback-etag"`)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.WriteHeader(http.StatusOK)
+		if r.Method != http.MethodHead {
+			_, _ = w.Write(payload)
+		}
+	})
+	defer ts.Close()
+
+	srv := &ProxyServer{
+		cfgMgr:   cfgMgr,
+		cacheMgr: cacheMgr,
+		stats:    stats,
+	}
+	setTestAssetClient(srv, client)
+
+	var (
+		leader1Passed      atomic.Bool
+		getFollowerBlocked atomic.Bool
+
+		headCheckedInFlightOnce sync.Once
+		headCheckedInFlightChan = make(chan struct{})
+		headCanProceedChan      = make(chan struct{})
+
+		getFollowerCanProceedChan = make(chan struct{})
+
+		headInsideClosureOnce sync.Once
+		headInsideClosureChan = make(chan struct{})
+		headCanReturnErrorChan = make(chan struct{})
+	)
+
+	srv.beforeSingleFlightDoContext = func(key string, isHead bool) {
+		if key != flightKey {
+			return
+		}
+		if isHead {
+			headCheckedInFlightOnce.Do(func() {
+				close(headCheckedInFlightChan)
+			})
+			<-headCanProceedChan
+		} else {
+			if !leader1Passed.Swap(true) {
+				return
+			}
+			if !getFollowerBlocked.Swap(true) {
+				<-getFollowerCanProceedChan
+				return
+			}
+		}
+	}
+
+	srv.insideSingleFlightHeadHook = func(key string) {
+		if key != flightKey {
+			return
+		}
+		headInsideClosureOnce.Do(func() {
+			close(headInsideClosureChan)
+		})
+		<-headCanReturnErrorChan
+	}
+
+	// 1. Launch Leader 1 (GET)
+	var leader1Buf bytes.Buffer
+	leader1Done := make(chan struct{})
+	go func() {
+		defer close(leader1Done)
+		req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+		req.RequestURI = path
+		req.Host = host
+		srv.handleStaticAssetLower(&leader1Buf, req, host, path)
+	}()
+
+	select {
+	case <-leader1StartChan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for leader 1 to reach upstream")
+	}
+
+	// 2. Launch GET 2 (follower) on cold cache miss
+	var getFollowerBuf bytes.Buffer
+	getFollowerDone := make(chan struct{})
+	go func() {
+		defer close(getFollowerDone)
+		req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+		req.RequestURI = path
+		req.Host = host
+		srv.handleStaticAssetLower(&getFollowerBuf, req, host, path)
+	}()
+
+	// 3. Launch HEAD request while Leader 1 is in-flight
+	var headBuf bytes.Buffer
+	headDone := make(chan struct{})
+	go func() {
+		defer close(headDone)
+		req, _ := http.NewRequest(http.MethodHead, "https://"+host+path, nil)
+		req.RequestURI = path
+		req.Host = host
+		srv.handleStaticAssetLower(&headBuf, req, host, path)
+	}()
+
+	select {
+	case <-headCheckedInFlightChan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for HEAD to pass IsInFlight check")
+	}
+
+	// 4. Leader 1 fails with 500 (no cache stored) and exits SingleFlight
+	close(leader1CanFailChan)
+	select {
+	case <-leader1Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for leader 1 to finish")
+	}
+
+	// 5. Allow HEAD to enter DoContext as leader
+	close(headCanProceedChan)
+	select {
+	case <-headInsideClosureChan:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for HEAD to enter DoContext closure")
+	}
+
+	// 6. Allow GET 2 to enter DoContext as follower of HEAD
+	close(getFollowerCanProceedChan)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.cacheMgr.SingleFlight().Waiters(flightKey) < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for GET follower to register as waiter in SingleFlight")
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	// 7. Allow HEAD to return errHeadCannotBeGetLeader
+	close(headCanReturnErrorChan)
+
+	select {
+	case <-headDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for HEAD to finish")
+	}
+
+	select {
+	case <-getFollowerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for GET follower to finish")
+	}
+
+	// 8. Verify HEAD: 200 OK, empty body
+	reqH, _ := http.NewRequest(http.MethodHead, "https://"+host+path, nil)
+	respH, err := http.ReadResponse(bufio.NewReader(&headBuf), reqH)
+	if err != nil {
+		t.Fatalf("failed to read HEAD response: %v", err)
+	}
+	defer respH.Body.Close()
+	if respH.StatusCode != http.StatusOK {
+		t.Fatalf("HEAD expected 200 OK, got %d", respH.StatusCode)
+	}
+	bodyH, _ := io.ReadAll(respH.Body)
+	if len(bodyH) != 0 {
+		t.Fatalf("HEAD expected 0 body bytes, got %d bytes", len(bodyH))
+	}
+
+	// 9. Verify GET follower: 200 OK, full body!
+	reqG, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	respG, err := http.ReadResponse(bufio.NewReader(&getFollowerBuf), reqG)
+	if err != nil {
+		t.Fatalf("failed to read GET follower response: %v", err)
+	}
+	defer respG.Body.Close()
+	if respG.StatusCode != http.StatusOK {
+		t.Fatalf("GET follower expected 200 OK, got %d", respG.StatusCode)
+	}
+	bodyG, _ := io.ReadAll(respG.Body)
+	if !bytes.Equal(bodyG, payload) {
+		t.Fatalf("GET follower body mismatch: got %d bytes, want %d bytes", len(bodyG), len(payload))
+	}
+
+	// 10. Verify cache was populated by the GET fallback retry
+	cachedItem, _ := cacheMgr.GetWithNamespace("gbf", path)
+	if cachedItem == nil {
+		t.Fatal("expected asset to be cached after GET fallback retry")
+	}
+	if !bytes.Equal(cachedItem.Data, payload) {
+		t.Fatal("cached payload mismatch after GET fallback retry")
+	}
+}
+
 
 

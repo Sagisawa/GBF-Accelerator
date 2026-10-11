@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -79,25 +80,54 @@ type monitorInfo struct {
 	dwFlags   uint32
 }
 
-func enumExplorerWindows() map[uintptr]struct{} {
-	windows := make(map[uintptr]struct{})
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		classBuf := make([]uint16, 64)
-		ret, _, _ := getClassNameW.Call(
-			hwnd,
-			uintptr(unsafe.Pointer(&classBuf[0])),
-			uintptr(len(classBuf)),
-		)
-		if ret == 0 {
-			return 1
-		}
-		className := syscall.UTF16ToString(classBuf[:ret])
-		if className == "CabinetWClass" || className == "ExploreWClass" {
-			windows[hwnd] = struct{}{}
-		}
+var (
+	enumExplorerOnce    sync.Once
+	enumExplorerCB      uintptr
+	enumExplorerMu      sync.Mutex
+	enumExplorerCurrent map[uintptr]struct{}
+
+	findAppWinOnce     sync.Once
+	findAppWinCB       uintptr
+	findAppWinMu       sync.Mutex
+	findAppWinTree     map[uint32]struct{}
+	findAppWinBest     uintptr
+	findAppWinBestArea int64
+)
+
+func enumExplorerWindowsProc(hwnd uintptr, _ uintptr) uintptr {
+	if enumExplorerCurrent == nil {
 		return 1
+	}
+	var classBuf [64]uint16
+	ret, _, _ := getClassNameW.Call(
+		hwnd,
+		uintptr(unsafe.Pointer(&classBuf[0])),
+		uintptr(len(classBuf)),
+	)
+	if ret == 0 {
+		return 1
+	}
+	className := syscall.UTF16ToString(classBuf[:ret])
+	if className == "CabinetWClass" || className == "ExploreWClass" {
+		enumExplorerCurrent[hwnd] = struct{}{}
+	}
+	return 1
+}
+
+func enumExplorerWindows() map[uintptr]struct{} {
+	enumExplorerOnce.Do(func() {
+		enumExplorerCB = syscall.NewCallback(enumExplorerWindowsProc)
 	})
-	_, _, _ = enumWindows.Call(cb, 0)
+
+	windows := make(map[uintptr]struct{})
+	enumExplorerMu.Lock()
+	enumExplorerCurrent = windows
+	defer func() {
+		enumExplorerCurrent = nil
+		enumExplorerMu.Unlock()
+	}()
+
+	_, _, _ = enumWindows.Call(enumExplorerCB, 0)
 	return windows
 }
 
@@ -295,57 +325,74 @@ func findProcessTreePIDs(rootPID uint32) map[uint32]struct{} {
 	return tree
 }
 
+func findAppWindowInTreeProc(hwnd uintptr, _ uintptr) uintptr {
+	if len(findAppWinTree) == 0 {
+		return 1
+	}
+
+	var windowPID uint32
+	getWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&windowPID)))
+	if _, ok := findAppWinTree[windowPID]; !ok {
+		return 1
+	}
+
+	visible, _, _ := isWindowVisible.Call(hwnd)
+	if visible == 0 {
+		return 1
+	}
+
+	var classBuf [64]uint16
+	ret, _, _ := getClassNameW.Call(
+		hwnd,
+		uintptr(unsafe.Pointer(&classBuf[0])),
+		uintptr(len(classBuf)),
+	)
+	if ret == 0 || syscall.UTF16ToString(classBuf[:ret]) != "Chrome_WidgetWin_1" {
+		return 1
+	}
+
+	var r rect
+	if v, _, _ := getWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); v == 0 {
+		return 1
+	}
+	w := int64(r.right - r.left)
+	h := int64(r.bottom - r.top)
+	// Filter out auxiliary / IME / small indicator windows (e.g. 50x50)
+	if w <= 200 || h <= 200 {
+		return 1
+	}
+
+	area := w * h
+	if area > findAppWinBestArea {
+		findAppWinBest = hwnd
+		findAppWinBestArea = area
+	}
+	return 1
+}
+
 // findAppWindowInTree locates the primary Chrome_WidgetWin_1 window belonging to any PID in the process tree.
 func findAppWindowInTree(tree map[uint32]struct{}) uintptr {
 	if len(tree) == 0 {
 		return 0
 	}
 
-	var best uintptr
-	var bestArea int64
-
-	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-		var windowPID uint32
-		getWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&windowPID)))
-		if _, ok := tree[windowPID]; !ok {
-			return 1
-		}
-
-		visible, _, _ := isWindowVisible.Call(hwnd)
-		if visible == 0 {
-			return 1
-		}
-
-		classBuf := make([]uint16, 64)
-		ret, _, _ := getClassNameW.Call(
-			hwnd,
-			uintptr(unsafe.Pointer(&classBuf[0])),
-			uintptr(len(classBuf)),
-		)
-		if ret == 0 || syscall.UTF16ToString(classBuf[:ret]) != "Chrome_WidgetWin_1" {
-			return 1
-		}
-
-		var r rect
-		if v, _, _ := getWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r))); v == 0 {
-			return 1
-		}
-		w := int64(r.right - r.left)
-		h := int64(r.bottom - r.top)
-		// Filter out auxiliary / IME / small indicator windows (e.g. 50x50)
-		if w <= 200 || h <= 200 {
-			return 1
-		}
-
-		area := w * h
-		if area > bestArea {
-			best = hwnd
-			bestArea = area
-		}
-		return 1
+	findAppWinOnce.Do(func() {
+		findAppWinCB = syscall.NewCallback(findAppWindowInTreeProc)
 	})
-	_, _, _ = enumWindows.Call(cb, 0)
-	return best
+
+	findAppWinMu.Lock()
+	findAppWinTree = tree
+	findAppWinBest = 0
+	findAppWinBestArea = 0
+	defer func() {
+		findAppWinTree = nil
+		findAppWinBest = 0
+		findAppWinBestArea = 0
+		findAppWinMu.Unlock()
+	}()
+
+	_, _, _ = enumWindows.Call(findAppWinCB, 0)
+	return findAppWinBest
 }
 
 // applyWindowGeometry applies the persisted size or maximized state to the window HWND
