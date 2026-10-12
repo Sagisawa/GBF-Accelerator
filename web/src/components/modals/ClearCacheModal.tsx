@@ -5,7 +5,6 @@ import {
   Trash2,
   Cpu,
   HardDrive,
-  Search,
   RefreshCw,
   XCircle,
   CheckCircle2,
@@ -17,8 +16,6 @@ import {
   clearCache,
   fetchCacheBreakdown,
   startCacheBreakdownScan,
-  searchCacheSnapshot,
-  invalidateCacheEntries,
   clearCacheCategories,
   fetchCacheTaskStatus,
   cancelCacheTask,
@@ -28,7 +25,6 @@ import {
   BreakdownResponse,
   CategoryStat,
   SearchItem,
-  SearchResponse,
   DeleteResult,
   CleanupProgress,
 } from '../../types'
@@ -62,6 +58,27 @@ const CATEGORY_BADGES: Record<string, string> = {
 }
 
 const DEFAULT_CAUTION_CATEGORIES = new Set(['battle_cjs', 'core_ui', 'other'])
+
+const CATEGORY_SORT_ORDER: Record<string, number> = {
+  versioned: 0,
+  story: 1,
+  event_gacha: 2,
+  audio: 3,
+  battle_cjs: 4,
+  core_ui: 5,
+  other: 6,
+}
+
+function sortCategoriesWithCautionLast(categories: CategoryStat[]): CategoryStat[] {
+  return [...categories].sort((a, b) => {
+    const aCaution = DEFAULT_CAUTION_CATEGORIES.has(a.category) ? 1 : 0
+    const bCaution = DEFAULT_CAUTION_CATEGORIES.has(b.category) ? 1 : 0
+    if (aCaution !== bCaution) return aCaution - bCaution
+    const aOrder = CATEGORY_SORT_ORDER[a.category] ?? 99
+    const bOrder = CATEGORY_SORT_ORDER[b.category] ?? 99
+    return aOrder - bOrder
+  })
+}
 
 function formatTimestamp(ms?: number): string {
   if (!ms || ms <= 0) return '--'
@@ -98,7 +115,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   onToast,
   onOpenSlimModal,
 }) => {
-  const [activeTab, setActiveTab] = useState<'breakdown' | 'search' | 'reset'>('breakdown')
+  const [activeTab, setActiveTab] = useState<'breakdown' | 'reset'>('breakdown')
 
   // Breakdown & Task State
   const [breakdown, setBreakdown] = useState<BreakdownResponse | null>(null)
@@ -111,14 +128,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const [confirmingCategoryClean, setConfirmingCategoryClean] = useState(false)
   const [submittingCategoryClean, setSubmittingCategoryClean] = useState(false)
 
-  // Targeted Search & Delete State
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searching, setSearching] = useState(false)
-  const [searchResult, setSearchResult] = useState<SearchResponse | null>(null)
-  const [searchError, setSearchError] = useState<string | null>(null)
-  const [selectedSearchKeys, setSelectedSearchKeys] = useState<Record<string, SearchItem>>({})
-  const [submittingInvalidate, setSubmittingInvalidate] = useState(false)
-
   // RAM / Full Reset State
   const [busyRam, setBusyRam] = useState(false)
   const [busyAll, setBusyAll] = useState(false)
@@ -130,7 +139,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const breakdownReqSeqRef = useRef<number>(0)
   const statusReqSeqRef = useRef<number>(0)
   const statusInFlightCountRef = useRef<number>(0)
-  const searchReqSeqRef = useRef<number>(0)
   const breakdownScanningRef = useRef<boolean>(false)
 
   const loadBreakdown = useCallback(async () => {
@@ -185,8 +193,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       }, 1000)
     } else {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current)
-      searchReqSeqRef.current++
-      setSearching(false)
     }
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current)
@@ -200,25 +206,16 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   useEffect(() => {
     if (prevSnapshotIdRef.current !== activeSnapshotId) {
       prevSnapshotIdRef.current = activeSnapshotId
-      searchReqSeqRef.current++
-      setSearching(false)
       setConfirmingCategoryClean(false)
       setSelectedCategories([])
-      setSearchResult(null)
-      setSelectedSearchKeys({})
-    } else if (searchResult && searchResult.snapshot_id !== activeSnapshotId) {
-      searchReqSeqRef.current++
-      setSearching(false)
-      setSearchResult(null)
-      setSelectedSearchKeys({})
     }
-  }, [activeSnapshotId, searchResult])
+  }, [activeSnapshotId])
 
   const isScanning =
     taskStatus !== null ? Boolean(taskStatus?.is_scanning) : Boolean(breakdown?.is_scanning)
   const isCleaning = Boolean(taskStatus?.is_invalidating || taskStatus?.is_clearing_category)
   const isSubmittingAction =
-    startingScan || submittingCategoryClean || submittingInvalidate || busyRam || busyAll
+    startingScan || submittingCategoryClean || busyRam || busyAll
   const hasAnyActiveTask = Boolean(
     isSubmittingAction ||
       taskStatus?.active_task_id ||
@@ -240,16 +237,16 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     const nsSet = new Set(nsList)
     const matchingNamespaces = (snapshot.namespaces || []).filter((n) => nsSet.has(n.namespace))
 
-    // If all namespaces in snapshot are selected or namespace breakdown is unavailable, return snapshot.categories
+    // If all namespaces in snapshot are selected or namespace breakdown is unavailable, return sorted snapshot.categories
     if (
       matchingNamespaces.length === (snapshot.namespaces || []).length &&
       matchingNamespaces.length > 0
     ) {
-      return snapshot.categories
+      return sortCategoriesWithCautionLast(snapshot.categories)
     }
 
     const totalAssetBytesInScope = matchingNamespaces.reduce((acc, n) => acc + n.asset_bytes, 0)
-    return snapshot.categories.map((cat) => {
+    const computed = snapshot.categories.map((cat) => {
       let assetFiles = 0
       let assetBytes = 0
       let metaFiles = 0
@@ -279,6 +276,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
         percentage: pct,
       }
     })
+    return sortCategoriesWithCautionLast(computed)
   }, [snapshot, selectedNamespaces])
 
   const selectedCategorySummary = useMemo(() => {
@@ -301,11 +299,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const handleStartScan = async () => {
     setStartingScan(true)
     setConfirmingCategoryClean(false)
-    searchReqSeqRef.current++
-    setSearching(false)
-    setSearchResult(null)
-    setSelectedSearchKeys({})
-    setSearchError(null)
     try {
       await startCacheBreakdownScan()
       prevBusyRef.current = true
@@ -372,107 +365,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     }
   }
 
-  const handleSearch = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault()
-    const trimmed = searchQuery.trim()
-    if (!trimmed) {
-      setSearchError('请输入 URL、相对路径或文件名关键词')
-      return
-    }
-    if (!snapshot || !isSnapshotReady) {
-      setSearchError('当前无有效扫描快照，请先点击上方“开始扫描”建立索引')
-      return
-    }
-    const reqSeq = ++searchReqSeqRef.current
-    setSearching(true)
-    setSearchError(null)
-    try {
-      const res = await searchCacheSnapshot({
-        q: trimmed,
-        limit: 100,
-        snapshot_id: snapshot.snapshot_id,
-      })
-      if (reqSeq !== searchReqSeqRef.current) return
-      setSearching(false)
-      setSearchResult({
-        ...res,
-        snapshot_id: res.snapshot_id || snapshot.snapshot_id,
-      })
-      setSelectedSearchKeys({})
-    } catch (err: any) {
-      if (reqSeq !== searchReqSeqRef.current) return
-      setSearching(false)
-      setSearchError(err.message || '搜索失败')
-    } finally {
-      if (reqSeq === searchReqSeqRef.current) {
-        setSearching(false)
-      }
-    }
-  }
-
-  const makeItemKey = (item: SearchItem) => `${item.ns}:::${item.key}`
-
-  const toggleSearchItem = (item: SearchItem) => {
-    const k = makeItemKey(item)
-    setSelectedSearchKeys((prev) => {
-      const next = { ...prev }
-      if (next[k]) {
-        delete next[k]
-      } else {
-        if (Object.keys(next).length >= 200) {
-          onToast('单次定点删除最多勾选 200 项', 'info')
-          return prev
-        }
-        next[k] = item
-      }
-      return next
-    })
-  }
-
-  const toggleSelectAllSearch = () => {
-    if (!searchResult?.items?.length) return
-    const currentCount = Object.keys(selectedSearchKeys).length
-    if (currentCount > 0) {
-      setSelectedSearchKeys({})
-      return
-    }
-    const next: Record<string, SearchItem> = {}
-    for (const item of searchResult.items.slice(0, 200)) {
-      next[makeItemKey(item)] = item
-    }
-    setSelectedSearchKeys(next)
-  }
-
-  const handleDeleteSearchItems = async (items: SearchItem[]) => {
-    const boundSnapshotId = searchResult?.snapshot_id
-    if (!boundSnapshotId || !snapshot || !isSnapshotReady || snapshot.snapshot_id !== boundSnapshotId) {
-      searchReqSeqRef.current++
-      setSearching(false)
-      setSearchResult(null)
-      setSelectedSearchKeys({})
-      onToast('搜索结果对应的扫描快照已过期或已变更，请重新搜索后再执行删除本地缓存', 'error')
-      return
-    }
-    if (items.length === 0) return
-    setSubmittingInvalidate(true)
-    try {
-      const entries = items.map((item) => ({ ns: item.ns, key: item.key }))
-      await invalidateCacheEntries(boundSnapshotId, entries)
-      prevBusyRef.current = true
-      searchReqSeqRef.current++
-      setSearching(false)
-      onToast(`已启动删除本地缓存任务（共 ${entries.length} 项）`, 'info')
-      setSearchResult(null)
-      setSelectedSearchKeys({})
-      await loadTaskStatus()
-      await loadBreakdown()
-    } catch (e: any) {
-      onToast(`删除本地缓存失败: ${e.message}`, 'error')
-    } finally {
-      setSubmittingInvalidate(false)
-    }
-  }
-
   const handleClearRam = async () => {
     setBusyRam(true)
     try {
@@ -503,12 +395,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     }
   }
 
-  const selectedSearchList = Object.values(selectedSearchKeys)
-  const selectedSearchEstBytes = useMemo(
-    () => computeDeduplicatedSearchDeleteBytes(selectedSearchList),
-    [selectedSearchList]
-  )
-
   const scanOutcomeStatus = !isScanning
     ? scanProgress?.status === 'failed' || scanProgress?.status === 'cancelled'
       ? scanProgress.status
@@ -525,10 +411,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Layers className="w-4 h-4 text-sky-600" />
-          <span>磁盘缓存分类透视与定点管理</span>
+          <span>磁盘缓存分类透视与清理</span>
         </div>
       }
-      subtitle="查看本地缓存分类构成、按类别选择性清理、按路径搜索删除本地缓存或清空 RAM SLRU"
+      subtitle="查看本地缓存分类构成、按类别选择性清理或清空 RAM SLRU"
       maxWidth="max-w-3xl"
     >
       <div className="space-y-3.5 text-xs text-slate-700">
@@ -741,18 +627,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('search')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
-              activeTab === 'search'
-                ? 'bg-sky-600 text-white shadow-2xs'
-                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-            }`}
-          >
-            <Search className="w-3.5 h-3.5" />
-            <span>定点搜索与删除本地缓存</span>
-          </button>
-          <button
-            type="button"
             onClick={() => setActiveTab('reset')}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer flex items-center gap-1.5 ${
               activeTab === 'reset'
@@ -872,7 +746,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                                 <span className="font-bold text-slate-900">{cat.label}</span>
                                 {isCaution && (
                                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                                    默认不选
+                                    推荐不选
                                   </span>
                                 )}
                               </div>
@@ -979,154 +853,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           </div>
         )}
 
-        {/* TAB 2: Targeted Search & Delete */}
-        {activeTab === 'search' && (
-          <div className="space-y-3">
-            <form onSubmit={handleSearch} className="flex items-center gap-2">
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                maxLength={512}
-                placeholder="输入完整 URL、相对路径 (如 assets/img/sp/...) 或文件名关键词 (如 3040001000)"
-                className="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500"
-              />
-              <Button
-                type="submit"
-                variant="primary"
-                size="sm"
-                loading={searching}
-                disabled={!isSnapshotReady || hasAnyActiveTask}
-                icon={<Search className="w-3.5 h-3.5" />}
-              >
-                搜索索引
-              </Button>
-            </form>
-
-            {!isSnapshotReady && (
-              <div className="p-2.5 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-800">
-                提示：搜索基于最近一次有效分类扫描快照。请先点击上方“开始分类扫描”或“重新扫描磁盘”。
-              </div>
-            )}
-
-            {searchError && (
-              <div className="p-2.5 bg-red-50 border border-red-200 rounded text-[11px] text-red-700">
-                {searchError}
-              </div>
-            )}
-
-            {searchResult && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between text-[11px] text-slate-600 flex-wrap gap-2">
-                  <div>
-                    共匹配 <strong className="font-mono">{searchResult.total_matches}</strong> 项
-                    {searchResult.truncated && `（仅展示前 ${searchResult.items.length} 项）`} · 快照时间:{' '}
-                    <span className="font-mono">{formatTimestamp(searchResult.completed_at_ms)}</span>
-                  </div>
-                  {searchResult.items.length > 0 && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={toggleSelectAllSearch}
-                        className="text-sky-600 hover:text-sky-800 font-medium cursor-pointer"
-                      >
-                        {selectedSearchList.length > 0 ? '取消全选' : '全选当前结果'}
-                      </button>
-                      {selectedSearchList.length > 0 && (
-                        <Button
-                          variant="danger"
-                          size="xs"
-                          loading={submittingInvalidate}
-                          disabled={!isSnapshotReady || hasAnyActiveTask}
-                          onClick={() => handleDeleteSearchItems(selectedSearchList)}
-                        >
-                          删除本地缓存 (已选 {selectedSearchList.length} 项 · 预计{' '}
-                          {formatBytesBinary(selectedSearchEstBytes)})
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {searchResult.items.length === 0 ? (
-                  <div className="p-4 text-center bg-slate-50 border border-slate-200 rounded text-slate-500">
-                    未找到匹配的本地缓存条目
-                  </div>
-                ) : (
-                  <div className="border border-slate-200 rounded-lg overflow-hidden">
-                    <div className="max-h-60 overflow-y-auto divide-y divide-slate-200">
-                      {searchResult.items.map((item) => {
-                        const k = makeItemKey(item)
-                        const checked = Boolean(selectedSearchKeys[k])
-                        return (
-                          <div
-                            key={k}
-                            className={`p-2 flex items-center justify-between gap-2 text-[11px] ${
-                              checked ? 'bg-sky-50/70' : 'bg-white hover:bg-slate-50'
-                            }`}
-                          >
-                            <div className="flex items-start gap-2 min-w-0 flex-1">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => toggleSearchItem(item)}
-                                disabled={!isSnapshotReady || hasAnyActiveTask}
-                                className="w-3.5 h-3.5 mt-0.5 rounded text-sky-600 accent-sky-600 cursor-pointer shrink-0"
-                              />
-                              <div className="min-w-0 flex-1 space-y-0.5">
-                                <div className="font-mono text-slate-900 break-all">
-                                  <span className="px-1 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 mr-1.5 text-[10px]">
-                                    {item.ns}
-                                  </span>
-                                  {item.key}
-                                </div>
-                                <div className="flex items-center gap-2 flex-wrap text-slate-500">
-                                  <span
-                                    className={`px-1.5 py-0.2 rounded border text-[10px] font-mono ${
-                                      CATEGORY_BADGES[item.category] || CATEGORY_BADGES.other
-                                    }`}
-                                  >
-                                    {item.category_label}
-                                  </span>
-                                  <span className="font-mono">
-                                    素材体积: {formatBytesBinary(item.asset_bytes)}
-                                  </span>
-                                  <span className="font-mono text-sky-700">
-                                    预计删除字节数: {formatBytesBinary(item.estimated_delete_bytes)}
-                                  </span>
-                                  <span className="font-mono">
-                                    文件修改时间: {formatTimestamp(item.file_modified_ms)}
-                                  </span>
-                                  {item.has_alias && (
-                                    <span className="text-amber-700 bg-amber-50 border border-amber-200 px-1 rounded text-[10px]">
-                                      含回退路径副本 ({item.alias_key})
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-
-                            <Button
-                              variant="desktop"
-                              size="xs"
-                              loading={submittingInvalidate}
-                              disabled={!isSnapshotReady || hasAnyActiveTask}
-                              onClick={() => handleDeleteSearchItems([item])}
-                            >
-                              删除本地缓存
-                            </Button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* TAB 3: RAM SLRU & Full Disk Clear */}
+        {/* TAB 2: RAM SLRU & Full Disk Clear */}
         {activeTab === 'reset' && (
           <div className="space-y-3">
             {/* Option 1: RAM SLRU Only */}

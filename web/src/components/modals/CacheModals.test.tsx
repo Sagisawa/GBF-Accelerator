@@ -271,73 +271,111 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
     vi.useRealTimers()
   })
 
-  it('resets searching loading state when an in-flight search or completed search is invalidated by rescan', async () => {
+  it('places 推荐不选 categories at the bottom, omits search tab, and resets category selection on rescan', async () => {
     let currentSnapId = 'snap-1'
-    let resolvePendingSearch: ((val: any) => void) | null = null
-    let searchCalls = 0
+
+    const multiCategorySnapshot = (id: string) => ({
+      ...sampleSnapshot(id),
+      categories: [
+        {
+          category: 'versioned',
+          label: '版本化静态资源',
+          description: '版本目录资源',
+          selectable: false,
+          asset_files: 2,
+          asset_bytes: 1024,
+          metadata_files: 2,
+          metadata_bytes: 128,
+          estimated_delete_bytes: 1152,
+          percentage: 20,
+        },
+        {
+          category: 'battle_cjs',
+          label: '战斗动画与特效 (CJS)',
+          description: '战斗帧动画',
+          selectable: true,
+          asset_files: 2,
+          asset_bytes: 1024,
+          metadata_files: 2,
+          metadata_bytes: 128,
+          estimated_delete_bytes: 1152,
+          percentage: 20,
+        },
+        {
+          category: 'story',
+          label: '剧情与支线素材',
+          description: '剧情背景与立绘',
+          selectable: true,
+          asset_files: 5,
+          asset_bytes: 5120,
+          metadata_files: 5,
+          metadata_bytes: 512,
+          estimated_delete_bytes: 5632,
+          percentage: 20,
+        },
+        {
+          category: 'core_ui',
+          label: '常驻 UI 与基础素材',
+          description: '高频界面素材',
+          selectable: true,
+          asset_files: 2,
+          asset_bytes: 1024,
+          metadata_files: 2,
+          metadata_bytes: 128,
+          estimated_delete_bytes: 1152,
+          percentage: 20,
+        },
+        {
+          category: 'event_gacha',
+          label: '活动与宣发素材',
+          description: '活动与卡池',
+          selectable: true,
+          asset_files: 2,
+          asset_bytes: 1024,
+          metadata_files: 2,
+          metadata_bytes: 128,
+          estimated_delete_bytes: 1152,
+          percentage: 10,
+        },
+        {
+          category: 'audio',
+          label: '音频素材',
+          description: '语音与音效',
+          selectable: true,
+          asset_files: 2,
+          asset_bytes: 1024,
+          metadata_files: 2,
+          metadata_bytes: 128,
+          estimated_delete_bytes: 1152,
+          percentage: 5,
+        },
+        {
+          category: 'other',
+          label: '其它未归类素材',
+          description: '未归类文件',
+          selectable: true,
+          asset_files: 1,
+          asset_bytes: 512,
+          metadata_files: 1,
+          metadata_bytes: 64,
+          estimated_delete_bytes: 576,
+          percentage: 5,
+        },
+      ],
+      namespaces: [
+        {
+          namespace: 'gbf',
+          asset_files: 16,
+          asset_bytes: 10752,
+          metadata_files: 16,
+          metadata_bytes: 1216,
+          estimated_delete_bytes: 11968,
+          categories: {},
+        },
+      ],
+    })
 
     globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
-      if (url.startsWith('/api/cache/search')) {
-        searchCalls++
-        if (searchCalls === 1) {
-          return {
-            ok: true,
-            json: async () => ({
-              ok: true,
-              snapshot_id: 'snap-1',
-              completed_at_ms: 1700000001000,
-              query: 'scene/1.png',
-              total_matches: 1,
-              truncated: false,
-              items: [
-                {
-                  ns: 'gbf',
-                  key: 'assets/img/sp/quest/scene/1.png',
-                  category: 'story',
-                  category_label: '剧情与支线素材',
-                  asset_bytes: 1024,
-                  metadata_bytes: 128,
-                  estimated_delete_bytes: 1152,
-                  has_metadata: true,
-                  file_modified_ms: 1700000000000,
-                  file_modified_iso: '2023-11-14T22:13:20Z',
-                },
-              ],
-            }),
-          }
-        }
-        if (searchCalls === 2) {
-          // Second search stays in-flight when user clicks rescan
-          return new Promise((resolve) => {
-            resolvePendingSearch = resolve
-          })
-        }
-        return {
-          ok: true,
-          json: async () => ({
-            ok: true,
-            snapshot_id: 'snap-2',
-            completed_at_ms: 1700000005000,
-            query: 'scene/1.png',
-            total_matches: 1,
-            truncated: false,
-            items: [
-              {
-                ns: 'gbf',
-                key: 'assets/img/sp/quest/scene/2.png',
-                category: 'story',
-                category_label: '剧情与支线素材',
-                asset_bytes: 2048,
-                metadata_bytes: 128,
-                estimated_delete_bytes: 2176,
-                has_metadata: true,
-                file_modified_ms: 1700000005000,
-                file_modified_iso: '2023-11-14T22:13:25Z',
-              },
-            ],
-          }),
-        }
-      }
       if (url === '/api/cache/breakdown/scan') {
         currentSnapId = 'snap-2'
         return {
@@ -354,7 +392,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
             cache_base: 'D:\\cache',
             has_snapshot: true,
             is_scanning: false,
-            snapshot: sampleSnapshot(currentSnapId),
+            snapshot: multiCategorySnapshot(currentSnapId),
           }),
         }
       }
@@ -387,74 +425,41 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
     )
     await flushMicrotasks()
 
-    // Switch to search tab
-    const searchTabBtn = findElements(
-      lastTree,
-      (el) => el.type === 'button' && el.text.includes('定点搜索与删除本地缓存')
-    )[0]
-    expect(searchTabBtn).toBeDefined()
-    searchTabBtn.props.onClick()
+    const fullText = collectText(lastTree)
+    // 1. Search tab is removed
+    expect(fullText).not.toContain('定点搜索与删除本地缓存')
+    // 2. Wording uses 推荐不选 instead of 默认不选
+    expect(fullText).toContain('推荐不选')
+    expect(fullText).not.toContain('默认不选')
 
-    // Enter query
-    const searchInput = findElements(lastTree, (el) => el.type === 'input' && el.props.type === 'text')[0]
-    expect(searchInput).toBeDefined()
-    searchInput.props.onChange({ target: { value: 'scene/1.png' } })
+    // 3. Recommended-unselected categories (battle_cjs, core_ui, other) are placed at the bottom
+    const storyIdx = fullText.indexOf('剧情与支线素材')
+    const eventIdx = fullText.indexOf('活动与宣发素材')
+    const audioIdx = fullText.indexOf('音频素材')
+    const battleIdx = fullText.indexOf('战斗动画与特效 (CJS)')
+    const coreUiIdx = fullText.indexOf('常驻 UI 与基础素材')
+    const otherIdx = fullText.indexOf('其它未归类素材')
 
-    // 1. Normal search completes
-    const searchForm = findElements(lastTree, (el) => el.type === 'form')[0]
-    await searchForm.props.onSubmit({ preventDefault: vi.fn() })
-    await flushMicrotasks()
-    expect(collectText(lastTree)).toContain('assets/img/sp/quest/scene/1.png')
+    expect(storyIdx).toBeGreaterThan(0)
+    expect(eventIdx).toBeGreaterThan(storyIdx)
+    expect(audioIdx).toBeGreaterThan(eventIdx)
+    expect(battleIdx).toBeGreaterThan(audioIdx)
+    expect(coreUiIdx).toBeGreaterThan(battleIdx)
+    expect(otherIdx).toBeGreaterThan(coreUiIdx)
 
-    // 2. Start a second search that remains in-flight, then trigger rescan
-    const secondSearchPromise = searchForm.props.onSubmit({ preventDefault: vi.fn() })
-    await flushMicrotasks(2)
+    // 4. Selecting a category and rescanning resets selection
+    const checkboxes = findElements(lastTree, (el) => el.type === 'input' && el.props.type === 'checkbox')
+    expect(checkboxes.length).toBeGreaterThan(0)
+    checkboxes[0].props.onChange()
+    expect(collectText(lastTree)).toContain('已选 1 个类别')
 
-    const searchBtnDuringFlight = findElements(
-      lastTree,
-      (el) => el.type === 'button' && el.text.includes('搜索索引')
-    )[0]
-    expect(searchBtnDuringFlight.props.disabled).toBe(true)
-
-    // Trigger rescan while search #2 is in-flight
     const rescanBtn = findElements(
       lastTree,
       (el) => el.type === 'button' && el.text.includes('重新扫描磁盘')
     )[0]
-    const rescanPromise = rescanBtn.props.onClick()
+    await rescanBtn.props.onClick()
     await flushMicrotasks()
-    await rescanPromise
-    await flushMicrotasks()
-
-    // Resolve the invalidated search #2 late
-    ;(resolvePendingSearch as any)?.({
-      ok: true,
-      json: async () => ({
-        ok: true,
-        snapshot_id: 'snap-1',
-        completed_at_ms: 1700000001000,
-        query: 'scene/1.png',
-        total_matches: 1,
-        truncated: false,
-        items: [],
-      }),
-    })
-    await secondSearchPromise
-    await flushMicrotasks()
-
-    // Search button must NOT be stuck disabled/loading after rescan + new valid snapshot
-    const searchBtnAfterRescan = findElements(
-      lastTree,
-      (el) => el.type === 'button' && el.text.includes('搜索索引')
-    )[0]
-    expect(searchBtnAfterRescan.props.disabled).toBeFalsy()
-
-    // 3. Subsequent search #3 against snap-2 succeeds
-    const latestForm = findElements(lastTree, (el) => el.type === 'form')[0]
-    await latestForm.props.onSubmit({ preventDefault: vi.fn() })
-    await flushMicrotasks()
-    expect(searchCalls).toBe(3)
-    expect(collectText(lastTree)).toContain('assets/img/sp/quest/scene/2.png')
+    expect(collectText(lastTree)).toContain('已选 0 个类别')
   })
 
   it('does not starve or discard slow (>1s) status poll responses in ClearCacheModal and SlimModal', async () => {

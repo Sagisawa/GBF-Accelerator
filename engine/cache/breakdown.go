@@ -28,11 +28,11 @@ const (
 // AllCategories defines the canonical display and reporting order for categories.
 var AllCategories = []string{
 	CategoryVersioned,
-	CategoryBattleCJS,
 	CategoryStory,
-	CategoryCoreUI,
 	CategoryEventGacha,
 	CategoryAudio,
+	CategoryBattleCJS,
+	CategoryCoreUI,
 	CategoryOther,
 }
 
