@@ -248,7 +248,8 @@ export async function invalidateCacheEntries(
 export async function clearCacheCategories(
   snapshotId: string,
   categories: string[],
-  namespaces?: string[]
+  namespaces?: string[],
+  slimVersioned?: boolean
 ): Promise<{
   ok: boolean
   task_id: string
@@ -263,6 +264,9 @@ export async function clearCacheCategories(
   }
   if (namespaces && namespaces.length > 0) {
     body.namespaces = namespaces
+  }
+  if (slimVersioned) {
+    body.slim_versioned = true
   }
   const res = await fetch(`${BASE}/api/cache/clear-category`, {
     method: 'POST',

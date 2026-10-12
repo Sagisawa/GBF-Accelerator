@@ -42,38 +42,38 @@ var categoryMeta = map[string]struct {
 	Selectable  bool
 }{
 	CategoryVersioned: {
-		Label:       "版本化静态资源",
-		Description: "位于 assets / assets_en / assets_jp 数字版本目录下的脚本、样式与清单文件，仅通过版本保留策略清理。",
+		Label:       "游戏历史版本文件",
+		Description: "游戏每次更新后留下的旧版脚本与资源（清理时自动保留最新 8 个版本，不影响当前游玩）。",
 		Selectable:  false,
 	},
 	CategoryBattleCJS: {
-		Label:       "战斗动画与特效 (CJS)",
-		Description: "非版本目录中的 img/sp/cjs 战斗帧动画与特效脚本，战斗中可能频繁使用。",
+		Label:       "战斗动画与特效",
+		Description: "角色技能、奥义与 Boss 战斗动画，清理后进战斗需重新加载。",
 		Selectable:  true,
 	},
 	CategoryStory: {
-		Label:       "剧情与支线素材",
-		Description: "主线/活动剧情立绘与背景 (quest/scene)、支线剧情 (sidestory) 与小剧场漫画 (comic)。",
+		Label:       "剧情与立绘漫画",
+		Description: "主线/活动剧情对话背景、人物立绘、支线与小剧场漫画（看过的剧情一般不再需要）。",
 		Selectable:  true,
 	},
 	CategoryCoreUI: {
-		Label:       "常驻 UI 与基础素材",
-		Description: "主页、编成、共斗、转世、商店及活动公共框架 (event/common) 等高频界面素材。",
+		Label:       "常用界面与图标",
+		Description: "主页、编成、共斗、商店等每天高频使用的界面素材，清理后切页需重新下载。",
 		Selectable:  true,
 	},
 	CategoryEventGacha: {
-		Label:       "活动与宣发素材",
-		Description: "特定活动专属目录 (排除 event/common)、卡池 (gacha)、横幅 (banner)、宣传 (campaign) 与登录奖励。",
+		Label:       "活动与卡池宣传图",
+		Description: "往期活动页面、转盘/卡池横幅与登录宣传图（活动结束后即可清理）。",
 		Selectable:  true,
 	},
 	CategoryAudio: {
-		Label:       "音频素材",
-		Description: "非版本目录中的语音、BGM 与音效文件 (sound/** 及 .mp3/.wav/.ogg/.m4a)。",
+		Label:       "语音与音乐音效",
+		Description: "角色语音、背景音乐 (BGM) 与音效文件。",
 		Selectable:  true,
 	},
 	CategoryOther: {
-		Label:       "其它未归类素材",
-		Description: "未命中已知业务目录规则的受管理缓存文件及非 GBF 域名资源。",
+		Label:       "其它基础资源",
+		Description: "其它游戏通用图片与公共静态资源。",
 		Selectable:  true,
 	},
 }

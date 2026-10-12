@@ -462,9 +462,10 @@ func (c *ControlServer) handleCacheInvalidate(w http.ResponseWriter, req *http.R
 }
 
 type clearCategoryRequestPayload struct {
-	SnapshotID string   `json:"snapshot_id"`
-	Categories []string `json:"categories"`
-	Namespaces []string `json:"namespaces,omitempty"`
+	SnapshotID    string   `json:"snapshot_id"`
+	Categories    []string `json:"categories"`
+	Namespaces    []string `json:"namespaces,omitempty"`
+	SlimVersioned bool     `json:"slim_versioned,omitempty"`
 }
 
 // handleCacheClearCategory handles POST /api/cache/clear-category.
@@ -555,8 +556,8 @@ func (c *ControlServer) handleCacheClearCategory(w http.ResponseWriter, req *htt
 	c.cacheTaskMu.Unlock()
 
 	if c.stats != nil {
-		c.stats.Log("INFO", fmt.Sprintf("[CACHE-CLEAR-CAT] Starting category cleanup (task_id=%s, categories=%v)...",
-			taskID, payload.Categories))
+		c.stats.Log("INFO", fmt.Sprintf("[CACHE-CLEAR-CAT] Starting category cleanup (task_id=%s, categories=%v, slim_versioned=%v)...",
+			taskID, payload.Categories, payload.SlimVersioned))
 	}
 
 	go func() {
@@ -601,6 +602,32 @@ func (c *ControlServer) handleCacheClearCategory(w http.ResponseWriter, req *htt
 					Done:    true,
 					Message: err.Error(),
 				}
+			}
+		} else if payload.SlimVersioned && res != nil && !res.Cancelled {
+			slimRes, slimErr := c.cacheMgr.PruneStaleVersionsDetailed(cache.DefaultVersionKeep, "", nil, cancelCh)
+			if slimRes != nil {
+				res.DeletedDirs += slimRes.DeletedDirs
+				res.DeletedFiles += slimRes.DeletedFiles
+				res.DeletedAssetFiles += slimRes.DeletedAssetFiles
+				res.DeletedAssetBytes += slimRes.DeletedAssetBytes
+				res.DeletedMetaFiles += slimRes.DeletedMetaFiles
+				res.DeletedMetaBytes += slimRes.DeletedMetaBytes
+				res.FreedBytes += slimRes.FreedBytes
+				res.FreedMB = math.Round(float64(res.FreedBytes)/(1024*1024)*100) / 100
+				res.AlreadyMissingCount += slimRes.AlreadyMissingCount
+				res.SkippedChangedCount += slimRes.SkippedChangedCount
+				res.FailedCount += slimRes.FailedCount
+				res.Failures = append(res.Failures, slimRes.Failures...)
+				if slimRes.Cancelled {
+					res.Cancelled = true
+					res.Status = "cancelled"
+				} else if slimRes.Status == "failed" || slimRes.Status == "partial_failed" {
+					res.Status = "partial_failed"
+				}
+				res.Message = fmt.Sprintf("分类与旧版本清理完成：共删除 %d 个文件，释放 %.2f MiB", res.DeletedAssetFiles, res.FreedMB)
+			} else if slimErr != nil {
+				res.FailedCount++
+				res.Status = "partial_failed"
 			}
 		}
 		if res != nil {

@@ -376,6 +376,21 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
           categories: {},
         },
       ],
+      retention_previews: {
+        '8': {
+          keep: 8,
+          total_groups: 1,
+          total_version_dirs: 10,
+          kept_dirs: 8,
+          prune_dirs: 2,
+          prune_asset_files: 4,
+          prune_asset_bytes: 2048,
+          prune_metadata_files: 4,
+          prune_metadata_bytes: 256,
+          estimated_delete_bytes: 2304,
+          groups: [],
+        },
+      },
     })
 
     globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
@@ -435,24 +450,26 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
     expect(fullText).toContain('推荐不选')
     expect(fullText).not.toContain('默认不选')
 
-    // 3. Recommended-unselected categories (battle_cjs, core_ui, other) are placed at the bottom
-    const storyIdx = fullText.indexOf('剧情与支线素材')
-    const eventIdx = fullText.indexOf('活动与宣发素材')
-    const audioIdx = fullText.indexOf('音频素材')
-    const battleIdx = fullText.indexOf('战斗动画与特效 (CJS)')
-    const coreUiIdx = fullText.indexOf('常驻 UI 与基础素材')
-    const otherIdx = fullText.indexOf('其它未归类素材')
+    // 3. Plain-language labels are rendered and 推荐不选 categories (battle_cjs, core_ui, other) are placed at the bottom
+    const versionedIdx = fullText.indexOf('游戏历史版本文件')
+    const storyIdx = fullText.indexOf('剧情与立绘漫画')
+    const eventIdx = fullText.indexOf('活动与卡池宣传图')
+    const audioIdx = fullText.indexOf('语音与音乐音效')
+    const battleIdx = fullText.indexOf('战斗动画与特效')
+    const coreUiIdx = fullText.indexOf('常用界面与图标')
+    const otherIdx = fullText.indexOf('其它基础资源')
 
-    expect(storyIdx).toBeGreaterThan(0)
+    expect(versionedIdx).toBeGreaterThan(0)
+    expect(storyIdx).toBeGreaterThan(versionedIdx)
     expect(eventIdx).toBeGreaterThan(storyIdx)
     expect(audioIdx).toBeGreaterThan(eventIdx)
     expect(battleIdx).toBeGreaterThan(audioIdx)
     expect(coreUiIdx).toBeGreaterThan(battleIdx)
     expect(otherIdx).toBeGreaterThan(coreUiIdx)
 
-    // 4. Selecting a category and rescanning resets selection
+    // 4. All 7 categories use checkboxes uniformly; selecting a category and rescanning resets selection
     const checkboxes = findElements(lastTree, (el) => el.type === 'input' && el.props.type === 'checkbox')
-    expect(checkboxes.length).toBeGreaterThan(0)
+    expect(checkboxes.length).toBe(7)
     checkboxes[0].props.onChange()
     expect(collectText(lastTree)).toContain('已选 1 个类别')
 
