@@ -924,6 +924,10 @@ func verifyStrictPathChain(absBase, realBase string, expectedRootFi os.FileInfo,
 }
 
 func verifyStrictDirChain(absBase, realBase string, expectedRootFi os.FileInfo, dirPath string) error {
+	return verifyStrictDirChainWithDirInfos(absBase, realBase, expectedRootFi, nil, dirPath)
+}
+
+func verifyStrictDirChainWithDirInfos(absBase, realBase string, expectedRootFi os.FileInfo, dirInfos map[string]os.FileInfo, dirPath string) error {
 	if err := verifyStrictPathChain(absBase, realBase, expectedRootFi, dirPath); err != nil {
 		return err
 	}
@@ -933,6 +937,31 @@ func verifyStrictDirChain(absBase, realBase string, expectedRootFi os.FileInfo, 
 	}
 	if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !fi.IsDir() {
 		return fmt.Errorf("target is not a regular directory: %s", dirPath)
+	}
+	if dirInfos != nil {
+		if expBaseFi, ok := dirInfos[absBase]; ok && expBaseFi != nil {
+			if curBaseFi, bErr := os.Lstat(absBase); bErr != nil || !os.SameFile(expBaseFi, curBaseFi) {
+				return fmt.Errorf("cache root directory identity changed since scan: %s", absBase)
+			}
+		}
+		if rel, rErr := filepath.Rel(absBase, dirPath); rErr == nil && rel != "." && !strings.HasPrefix(rel, "..") {
+			cur := absBase
+			for _, seg := range strings.Split(rel, string(filepath.Separator)) {
+				if seg == "" || seg == "." {
+					continue
+				}
+				cur = filepath.Join(cur, seg)
+				if expFi, ok := dirInfos[cur]; ok && expFi != nil {
+					curFi, cErr := os.Lstat(cur)
+					if cErr != nil {
+						return cErr
+					}
+					if !os.SameFile(expFi, curFi) {
+						return fmt.Errorf("directory physical identity changed since discovery: %s", cur)
+					}
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -1259,15 +1288,17 @@ type VersionRetentionPreview struct {
 
 // SnapshotEntry represents an indexed managed data file in a breakdown snapshot.
 type SnapshotEntry struct {
-	NS        string      `json:"ns"`
-	Key       string      `json:"key"`
-	Category  string      `json:"category"`
-	Size      int64       `json:"asset_bytes"`
-	MetaBytes int64       `json:"metadata_bytes"`
-	HasMeta   bool        `json:"has_metadata"`
-	MTimeNano int64       `json:"mtime_nano"`
-	MTimeMS   int64       `json:"mtime_ms"`
-	fileInfo  os.FileInfo
+	NS           string      `json:"ns"`
+	Key          string      `json:"key"`
+	Category     string      `json:"category"`
+	Size         int64       `json:"asset_bytes"`
+	MetaBytes    int64       `json:"metadata_bytes"`
+	HasMeta      bool        `json:"has_metadata"`
+	MTimeNano    int64       `json:"mtime_nano"`
+	MTimeMS      int64       `json:"mtime_ms"`
+	fileInfo     os.FileInfo
+	extMTimeNano int64
+	extFileInfo  os.FileInfo
 }
 
 type orphanExtCandidate struct {
@@ -1695,12 +1726,14 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 			}
 
 			if d.IsDir() {
-				if err := verifyStrictDirChain(absBase, realBase, rootInfo, p); err != nil {
+				if err := verifyStrictDirChainWithDirInfos(absBase, realBase, rootInfo, dirInfos, p); err != nil {
 					skippedCount++
 					return filepath.SkipDir
 				}
-				if dInfo, dErr := d.Info(); dErr == nil && dInfo != nil {
-					dirInfos[p] = dInfo
+				if _, exists := dirInfos[p]; !exists {
+					if dInfo, dErr := d.Info(); dErr == nil && dInfo != nil {
+						dirInfos[p] = dInfo
+					}
 				}
 				return nil
 			}
@@ -1845,7 +1878,7 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 	// dirs with only .tmp.* files, or dirs with only orphan .ext files are included
 	// consistently with live slimming discovery.
 	if baseExists {
-		discoveredDirs, dirFailures := discoverAllVersionDirsWithErrors(absBase, realBase)
+		discoveredDirs, dirFailures := discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase, dirInfos)
 		readErrors += len(dirFailures)
 		for _, d := range discoveredDirs {
 			vk := versionDirKey{ns: d.ns, prefix: d.prefix, version: d.version, verNum: d.verNum}
@@ -1873,11 +1906,15 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 
 	for _, rf := range rawFiles {
 		var metaBytes int64
+		var extMTimeNano int64
+		var extFileInfo os.FileInfo
 		hasMeta := false
 		if ext, ok := extMap[rf.slashRel]; ok {
 			ext.paired = true
 			hasMeta = true
 			metaBytes = ext.size
+			extMTimeNano = ext.mtimeNano
+			extFileInfo = ext.fileInfo
 			totalMetaFiles++
 			totalMetaBytes += ext.size
 		}
@@ -1885,15 +1922,17 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		cat := ClassifyCacheEntry(rf.ns, rf.key)
 		entryIdx := len(entries)
 		entries = append(entries, SnapshotEntry{
-			NS:        rf.ns,
-			Key:       rf.key,
-			Category:  cat,
-			Size:      rf.size,
-			MetaBytes: metaBytes,
-			HasMeta:   hasMeta,
-			MTimeNano: rf.mtimeNano,
-			MTimeMS:   rf.mtimeNano / 1e6,
-			fileInfo:  rf.fileInfo,
+			NS:           rf.ns,
+			Key:          rf.key,
+			Category:     cat,
+			Size:         rf.size,
+			MetaBytes:    metaBytes,
+			HasMeta:      hasMeta,
+			MTimeNano:    rf.mtimeNano,
+			MTimeMS:      rf.mtimeNano / 1e6,
+			fileInfo:     rf.fileInfo,
+			extMTimeNano: extMTimeNano,
+			extFileInfo:  extFileInfo,
 		})
 		entryByNSKey[makeNSKey(rf.ns, rf.key)] = entryIdx
 
@@ -2231,6 +2270,10 @@ func (m *Manager) SearchSnapshot(snapshotID, query string, limit int, hostNormal
 			cleanP := strings.TrimPrefix(strings.ReplaceAll(u.Path, "\\", "/"), "/")
 			segs := splitCleanSegments(cleanP)
 			searchPathLower = strings.ToLower(strings.Join(segs, "/"))
+			if filterNS == "gbf" && len(segs) >= 3 && strings.EqualFold(segs[0], "hosts") {
+				filterNS = sanitizeNamespace(segs[1])
+				searchPathLower = strings.ToLower(strings.Join(segs[2:], "/"))
+			}
 		}
 	}
 
@@ -2781,11 +2824,13 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			res.AlreadyMissingCount++
-			// Clean up paired .ext if it still lingers after data file disappeared
+			// Clean up paired .ext if it still lingers after data file disappeared and matches recorded metadata identity
 			if extFi, extErr := parentRoot.Lstat(extLeaf); extErr == nil {
 				if extFi.IsDir() || extFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !extFi.Mode().IsRegular() {
 					res.FailedCount++
 					appendBoundedFailure(res, normNS, normKey+".ext", "残留元数据路径不是普通文件")
+				} else if (cand.extFileInfo != nil && (extFi.Size() != cand.MetaBytes || extFi.ModTime().UnixNano() != cand.extMTimeNano || !os.SameFile(cand.extFileInfo, extFi))) || (!cand.HasMeta && cand.fileInfo != nil) {
+					res.SkippedChangedCount++
 				} else {
 					extSize := extFi.Size()
 					if testBeforeUnlinkHook != nil {
@@ -2975,19 +3020,19 @@ func (m *Manager) pruneEmptyDirTreeControlledWithDirInfos(
 	dirRoot string,
 	cancelCh <-chan struct{},
 ) (removedRoot bool, cancelled bool, firstErr error) {
-	if err := verifyStrictDirChain(absBase, realBase, expectedRootFi, dirRoot); err != nil {
-		if os.IsNotExist(err) && verifyStrictRootIdentity(absBase, realBase, expectedRootFi) == nil {
-			return true, false, nil
-		}
-		return false, false, err
-	}
-
 	dirInfos := make(map[string]os.FileInfo)
 	for k, v := range baseDirInfos {
 		dirInfos[k] = v
 	}
 	if expectedRootFi != nil {
 		dirInfos[absBase] = expectedRootFi
+	}
+
+	if err := verifyStrictDirChainWithDirInfos(absBase, realBase, expectedRootFi, dirInfos, dirRoot); err != nil {
+		if os.IsNotExist(err) && verifyStrictRootIdentity(absBase, realBase, expectedRootFi) == nil {
+			return true, false, nil
+		}
+		return false, false, err
 	}
 
 	var subDirs []string
@@ -3021,7 +3066,7 @@ func (m *Manager) pruneEmptyDirTreeControlledWithDirInfos(
 			return nil
 		}
 		if d.IsDir() {
-			if chainErr := verifyStrictDirChain(absBase, realBase, expectedRootFi, p); chainErr != nil {
+			if chainErr := verifyStrictDirChainWithDirInfos(absBase, realBase, expectedRootFi, dirInfos, p); chainErr != nil {
 				if firstErr == nil {
 					firstErr = chainErr
 				}
@@ -3092,6 +3137,10 @@ func discoverAllVersionDirs(absBase, realBase string) []discoveredStaleVersionDi
 }
 
 func discoverAllVersionDirsWithErrors(absBase, realBase string) ([]discoveredStaleVersionDir, []DeleteFailure) {
+	return discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase, nil)
+}
+
+func discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase string, dirInfos map[string]os.FileInfo) ([]discoveredStaleVersionDir, []DeleteFailure) {
 	var allDirs []discoveredStaleVersionDir
 	var failures []DeleteFailure
 
@@ -3126,6 +3175,11 @@ func discoverAllVersionDirsWithErrors(absBase, realBase string) ([]discoveredSta
 						Reason: fmt.Sprintf("资源前缀目录安全边界校验失败: %s", prefixDir),
 					})
 					continue
+				}
+			}
+			if dirInfos != nil {
+				if _, exists := dirInfos[prefixDir]; !exists {
+					dirInfos[prefixDir] = lfi
 				}
 			}
 			entries, err := os.ReadDir(prefixDir)
@@ -3172,6 +3226,13 @@ func discoverAllVersionDirsWithErrors(absBase, realBase string) ([]discoveredSta
 						continue
 					}
 				}
+				if dirInfos != nil {
+					if _, exists := dirInfos[fullP]; !exists {
+						if vFi, vErr := e.Info(); vErr == nil && vFi != nil {
+							dirInfos[fullP] = vFi
+						}
+					}
+				}
 				groupDirs = append(groupDirs, discoveredStaleVersionDir{
 					ns:       ns,
 					prefix:   prefix,
@@ -3210,6 +3271,11 @@ func discoverAllVersionDirsWithErrors(absBase, realBase string) ([]discoveredSta
 				})
 			}
 		} else {
+			if dirInfos != nil {
+				if _, exists := dirInfos[hostsDir]; !exists {
+					dirInfos[hostsDir] = lfi
+				}
+			}
 			var hostNames []string
 			for _, he := range hostEntries {
 				if he.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
@@ -3223,8 +3289,9 @@ func discoverAllVersionDirsWithErrors(absBase, realBase string) ([]discoveredSta
 				if !he.IsDir() {
 					continue
 				}
+				hostDirPath := filepath.Join(hostsDir, he.Name())
 				if realBase != "" {
-					realHostDir, evalErr := filepath.EvalSymlinks(filepath.Join(hostsDir, he.Name()))
+					realHostDir, evalErr := filepath.EvalSymlinks(hostDirPath)
 					if evalErr != nil || !isRealPathWithinBase(realBase, realHostDir) {
 						failures = append(failures, DeleteFailure{
 							NS:     he.Name(),
@@ -3232,6 +3299,13 @@ func discoverAllVersionDirsWithErrors(absBase, realBase string) ([]discoveredSta
 							Reason: "hosts 子目录超出缓存根目录安全边界",
 						})
 						continue
+					}
+				}
+				if dirInfos != nil {
+					if _, exists := dirInfos[hostDirPath]; !exists {
+						if hFi, hErr := he.Info(); hErr == nil && hFi != nil {
+							dirInfos[hostDirPath] = hFi
+						}
 					}
 				}
 				hostNames = append(hostNames, he.Name())
@@ -3258,7 +3332,11 @@ func discoverStaleVersionDirs(absBase, realBase string, keepCount int) []discove
 }
 
 func discoverStaleVersionDirsWithErrors(absBase, realBase string, keepCount int) ([]discoveredStaleVersionDir, []DeleteFailure) {
-	allDirs, failures := discoverAllVersionDirsWithErrors(absBase, realBase)
+	return discoverStaleVersionDirsWithErrorsAndDirInfos(absBase, realBase, keepCount, nil)
+}
+
+func discoverStaleVersionDirsWithErrorsAndDirInfos(absBase, realBase string, keepCount int, dirInfos map[string]os.FileInfo) ([]discoveredStaleVersionDir, []DeleteFailure) {
+	allDirs, failures := discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase, dirInfos)
 	type groupKey struct {
 		ns     string
 		prefix string
@@ -3360,7 +3438,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 
 	if snap != nil {
 		dirInfos = snap.dirInfos
-		_, discoveryFailures = discoverAllVersionDirsWithErrors(absBase, realBase)
+		_, discoveryFailures = discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase, dirInfos)
 		snapCandidatesByDir = make(map[string][]SnapshotEntry)
 		snapOrphanExtsByDir = make(map[string][]orphanExtCandidate)
 		pruneVerSet := make(map[string]discoveredStaleVersionDir)
@@ -3432,7 +3510,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 		if rootInfo != nil {
 			dirInfos[absBase] = rootInfo
 		}
-		stales, discoveryFailures = discoverStaleVersionDirsWithErrors(absBase, realBase, keepCount)
+		stales, discoveryFailures = discoverStaleVersionDirsWithErrorsAndDirInfos(absBase, realBase, keepCount, dirInfos)
 	}
 
 	res := &DeleteResult{
@@ -3475,7 +3553,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 		}
 
 		// Verify version directory and its entire ancestor chain from absBase before walking/deleting
-		if chainErr := verifyStrictDirChain(absBase, realBase, rootInfo, s.fullPath); chainErr != nil {
+		if chainErr := verifyStrictDirChainWithDirInfos(absBase, realBase, rootInfo, dirInfos, s.fullPath); chainErr != nil {
 			if os.IsNotExist(chainErr) && verifyStrictRootIdentity(absBase, realBase, rootInfo) == nil {
 				if snap != nil {
 					res.AlreadyMissingCount += len(snapCandidatesByDir[s.fullPath])
@@ -3512,7 +3590,9 @@ func (m *Manager) PruneStaleVersionsDetailed(
 			}
 			// Live discovery of managed files within s.fullPath without holding locks
 			pairedExts := make(map[string]struct{})
+			foundExtsByPath := make(map[string]orphanExtCandidate)
 			var foundExts []orphanExtCandidate
+			var candPaths []string
 			_ = filepath.WalkDir(s.fullPath, func(p string, d os.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					res.FailedCount++
@@ -3528,13 +3608,15 @@ func (m *Manager) PruneStaleVersionsDetailed(
 					return nil
 				}
 				if d.IsDir() {
-					if chainErr := verifyStrictDirChain(absBase, realBase, rootInfo, p); chainErr != nil {
+					if chainErr := verifyStrictDirChainWithDirInfos(absBase, realBase, rootInfo, dirInfos, p); chainErr != nil {
 						res.FailedCount++
 						appendBoundedFailure(res, s.ns, p, chainErr.Error())
 						return filepath.SkipDir
 					}
-					if dInfo, dErr := d.Info(); dErr == nil && dInfo != nil {
-						dirInfos[p] = dInfo
+					if _, exists := dirInfos[p]; !exists {
+						if dInfo, dErr := d.Info(); dErr == nil && dInfo != nil {
+							dirInfos[p] = dInfo
+						}
 					}
 					return nil
 				}
@@ -3555,7 +3637,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 					return nil
 				}
 				if strings.HasSuffix(cleanKey, ".ext") {
-					foundExts = append(foundExts, orphanExtCandidate{
+					extCand := orphanExtCandidate{
 						ns:        ns,
 						cleanKey:  cleanKey,
 						slashRel:  slashRel,
@@ -3563,10 +3645,13 @@ func (m *Manager) PruneStaleVersionsDetailed(
 						size:      info.Size(),
 						mtimeNano: info.ModTime().UnixNano(),
 						fileInfo:  info,
-					})
+					}
+					foundExts = append(foundExts, extCand)
+					foundExtsByPath[p] = extCand
 					return nil
 				}
 				pairedExts[p+".ext"] = struct{}{}
+				candPaths = append(candPaths, p)
 				dirCandidates = append(dirCandidates, SnapshotEntry{
 					NS:        ns,
 					Key:       cleanKey,
@@ -3577,6 +3662,14 @@ func (m *Manager) PruneStaleVersionsDetailed(
 				})
 				return nil
 			})
+			for i := range dirCandidates {
+				if extCand, ok := foundExtsByPath[candPaths[i]+".ext"]; ok {
+					dirCandidates[i].HasMeta = true
+					dirCandidates[i].MetaBytes = extCand.size
+					dirCandidates[i].extMTimeNano = extCand.mtimeNano
+					dirCandidates[i].extFileInfo = extCand.fileInfo
+				}
+			}
 			for _, ext := range foundExts {
 				if _, paired := pairedExts[ext.fullPath]; !paired {
 					dirOrphanExts = append(dirOrphanExts, ext)

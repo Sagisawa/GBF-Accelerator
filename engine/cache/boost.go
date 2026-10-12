@@ -134,7 +134,7 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 			return nil
 		}
 
-		ns, cleanKey, ramKey, ok := extractNamespaceAndKey(base, p)
+		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(base, p)
 		if !ok {
 			return nil
 		}

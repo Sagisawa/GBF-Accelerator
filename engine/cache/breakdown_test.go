@@ -1401,3 +1401,225 @@ func TestConcurrentEmptyDirPruneAndTempFileSave(t *testing.T) {
 		}
 	}
 }
+
+func TestBoostPrewarmAndWarmupNamespaceIsolation(t *testing.T) {
+	tmpDir := t.TempDir()
+	writer := NewManager(tmpDir, 32)
+	headers := map[string]string{"content-type": "application/javascript"}
+	extBody := []byte("console.log('ext_cdn_boost_payload');")
+	gbfHostsBody := []byte("console.log('gbf_hosts_boost_payload');")
+
+	if !writer.SaveWithNamespace("cdn.example.com", "assets/js/app.js", headers, extBody) {
+		t.Fatalf("SaveWithNamespace cdn.example.com failed")
+	}
+	if !writer.SaveWithNamespace("gbf", "hosts/cdn.example.com/assets/js/gbf_only.js", headers, gbfHostsBody) {
+		t.Fatalf("SaveWithNamespace gbf hosts/... failed")
+	}
+	writer.Close()
+
+	reader := NewManager(tmpDir, 32)
+	defer reader.Close()
+	if loaded := reader.Warmup(100); loaded != 2 {
+		t.Fatalf("expected Warmup to load 2 items, got %d", loaded)
+	}
+
+	prog := reader.PrewarmBoostPoolWithProgress(nil, nil, nil)
+	if prog.State != BoostStateCompleted || !prog.Done {
+		t.Fatalf("PrewarmBoostPoolWithProgress unexpected state: %+v", prog)
+	}
+
+	item, src := reader.GetWithNamespace("cdn.example.com", "assets/js/app.js")
+	if item == nil {
+		t.Fatalf("expected cdn.example.com/assets/js/app.js to hit after PrewarmBoostPool")
+	}
+	if src != "RAM-BOOST" {
+		t.Fatalf("expected source RAM-BOOST for cdn.example.com/assets/js/app.js, got %q", src)
+	}
+	if !bytes.Equal(item.Data, extBody) {
+		t.Fatalf("unexpected payload for cdn.example.com: %q", string(item.Data))
+	}
+
+	if crossItem, _ := reader.GetWithNamespace("gbf", "hosts/cdn.example.com/assets/js/app.js"); crossItem != nil {
+		t.Fatalf("expected gbf lookup on external namespace file to miss")
+	}
+
+	gbfItem, gbfSrc := reader.GetWithNamespace("gbf", "hosts/cdn.example.com/assets/js/gbf_only.js")
+	if gbfItem == nil {
+		t.Fatalf("expected gbf hosts/cdn.example.com/assets/js/gbf_only.js to hit")
+	}
+	if gbfSrc != "RAM-BOOST" {
+		t.Fatalf("expected source RAM-BOOST for gbf hosts/... item, got %q", gbfSrc)
+	}
+	if !bytes.Equal(gbfItem.Data, gbfHostsBody) {
+		t.Fatalf("unexpected payload for gbf hosts/...: %q", string(gbfItem.Data))
+	}
+
+	if crossExtItem, _ := reader.GetWithNamespace("cdn.example.com", "assets/js/gbf_only.js"); crossExtItem != nil {
+		t.Fatalf("expected external namespace lookup on gbf-owned hosts/... file to miss")
+	}
+}
+
+func TestConcurrentDiskOnlyCrossNamespaceCollisionRace(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+	mgr.SetRAMEnabled(false)
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	// Identical byte length to maximize collision potential if ownership checks race
+	gbfBody := []byte("console.log('GBF_OWNED_DATA!!');")
+	extBody := []byte("console.log('EXT_OWNED_DATA!!');")
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	errCh := make(chan string, 16)
+
+	reportErr := func(msg string) {
+		select {
+		case errCh <- msg:
+		default:
+		}
+	}
+
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				mgr.SaveWithNamespace("gbf", "hosts/cdn.example.com/race.js", headers, gbfBody)
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				mgr.SaveWithNamespace("cdn.example.com", "race.js", headers, extBody)
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if item, _ := mgr.GetWithNamespace("gbf", "hosts/cdn.example.com/race.js"); item != nil {
+					if !bytes.Equal(item.Data, gbfBody) {
+						reportErr("gbf reader received non-gbf payload: " + string(item.Data))
+						return
+					}
+				}
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if item, _ := mgr.GetWithNamespace("cdn.example.com", "race.js"); item != nil {
+					if !bytes.Equal(item.Data, extBody) {
+						reportErr("cdn.example.com reader received non-ext payload: " + string(item.Data))
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	time.Sleep(180 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	select {
+	case msg := <-errCh:
+		t.Fatal(msg)
+	default:
+	}
+}
+
+func TestDeleteSnapshotSkipsModifiedLingeringExtWhenDataMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('lingering_ext_test');")
+	if !mgr.SaveWithNamespace("gbf", "assets/js/lingering.js", headers, body) {
+		t.Fatalf("SaveWithNamespace failed")
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snap == nil || !snap.Valid {
+		t.Fatalf("expected valid snapshot")
+	}
+
+	dataPath := filepath.Join(tmpDir, "assets", "js", "lingering.js")
+	extPath := dataPath + ".ext"
+	if err := os.Remove(dataPath); err != nil {
+		t.Fatalf("Remove dataPath failed: %v", err)
+	}
+	// Modify the .ext file after scan
+	if err := os.WriteFile(extPath, []byte(`{"ct":"application/javascript","ns":"gbf","v":1,"extra":true}`), 0644); err != nil {
+		t.Fatalf("WriteFile extPath failed: %v", err)
+	}
+
+	res, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
+		{NS: "gbf", Key: "assets/js/lingering.js"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("DeleteSnapshotEntriesWithProgress failed: %v", err)
+	}
+	if res.SkippedChangedCount != 1 {
+		t.Fatalf("expected SkippedChangedCount=1 when lingering .ext was modified after scan, got %+v", res)
+	}
+	if _, err := os.Stat(extPath); err != nil {
+		t.Fatalf("expected modified .ext to remain on disk, got err=%v", err)
+	}
+}
+
+func TestSearchSnapshotFullURLHostsSubpath(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('hosts_url_search');")
+	if !mgr.SaveWithNamespace("gbf", "hosts/cdn.example.com/js/app.js", headers, body) {
+		t.Fatalf("SaveWithNamespace failed")
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snap == nil || !snap.Valid {
+		t.Fatalf("expected valid snapshot")
+	}
+
+	sr, err := mgr.SearchSnapshot(
+		snap.SnapshotID,
+		"https://prd-game-a-granbluefantasy.akamaized.net/hosts/cdn.example.com/js/app.js",
+		50,
+		func(host string) (string, bool) {
+			if host == "prd-game-a-granbluefantasy.akamaized.net" {
+				return "gbf", true
+			}
+			return "", false
+		},
+	)
+	if err != nil {
+		t.Fatalf("SearchSnapshot failed: %v", err)
+	}
+	if sr.TotalMatches != 1 || len(sr.Items) != 1 {
+		t.Fatalf("expected 1 match for full GBF hosts/... URL search, got total=%d items=%+v", sr.TotalMatches, sr.Items)
+	}
+}
+

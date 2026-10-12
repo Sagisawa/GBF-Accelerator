@@ -522,6 +522,39 @@ func extractNamespaceAndKey(base, path string) (ns string, cleanKey string, ramK
 	return ns, cleanKey, ramKey, true
 }
 
+func resolveDiskFileOwner(base, path string) (ns string, cleanKey string, ramKey string, ok bool) {
+	rel, err := filepath.Rel(base, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", "", "", false
+	}
+	slashRel := filepath.ToSlash(rel)
+	ns = "gbf"
+	cleanKey = slashRel
+	if strings.HasPrefix(slashRel, "hosts/") {
+		parts := strings.SplitN(slashRel, "/", 3)
+		if len(parts) == 3 && parts[1] != "" && parts[2] != "" {
+			ns = sanitizeNamespace(parts[1])
+			cleanKey = parts[2]
+		}
+		if metaBytes, err := os.ReadFile(path + ".ext"); err == nil {
+			if meta, ok := parseExtFile(metaBytes); ok && meta.Namespace != "" {
+				extNS := sanitizeNamespace(meta.Namespace)
+				if extNS == "gbf" {
+					ns = "gbf"
+					cleanKey = slashRel
+				} else {
+					ns = extNS
+				}
+			}
+		}
+	}
+	normNS, normKey, ok := canonicalizeNSAndKey(ns, cleanKey)
+	if !ok {
+		return "", "", "", false
+	}
+	return normNS, normKey, makeRAMKey(normNS, normKey), true
+}
+
 func (m *Manager) resolvePath(urlPath string) (string, bool) {
 	return m.resolvePathWithNamespace("gbf", urlPath)
 }
@@ -589,17 +622,25 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 		return false
 	}
 	tok := m.acquireOpToken(ns, cleanKey)
+	isSharedHostsPath := ns != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
 	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 && checkDiskFileOwnership(ns, cleanKey, filePath) {
 		m.persistMu.RLock()
 		shard := m.tokenShardByCanon(tok.canonKey)
 		shard.mu.Lock()
 		valid := isTokenValidLocked(shard, tok, m.generation)
+		if valid && isSharedHostsPath {
+			if curFi, sErr := os.Stat(filePath); sErr != nil || curFi.IsDir() || !os.SameFile(fi, curFi) || !checkDiskFileOwnership(ns, cleanKey, filePath) {
+				valid = false
+			}
+		}
 		if valid {
 			m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
 		}
 		shard.mu.Unlock()
 		m.persistMu.RUnlock()
-		return valid
+		if valid {
+			return true
+		}
 	}
 	// Fallback check (only in gbf namespace)
 	if ns == "gbf" {
@@ -720,9 +761,26 @@ func (m *Manager) IsRAMProtected(ns, urlPath string) bool {
 func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano, size int64, tok opToken) (*CacheItem, bool) {
 	ramKey := makeRAMKey(ns, cleanKey)
 	normNS := sanitizeNamespace(ns)
+	isSharedHostsPath := normNS != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
 
 	// 1. Check in-memory metadata index
 	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.verified && meta.mtimeNano == mtimeNano && meta.size == size && (meta.namespace == "" || meta.namespace == normNS) {
+		if isSharedHostsPath {
+			m.persistMu.RLock()
+			shard := m.tokenShardByCanon(tok.canonKey)
+			shard.mu.Lock()
+			valid := isTokenValidLocked(shard, tok, m.generation)
+			if valid {
+				if curFi, sErr := os.Stat(filePath); sErr != nil || curFi.IsDir() || curFi.Size() != size || curFi.ModTime().UnixNano() != mtimeNano || !checkDiskFileOwnership(normNS, cleanKey, filePath) {
+					valid = false
+				}
+			}
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			if !valid {
+				return nil, false
+			}
+		}
 		ct := resolveContentType(meta.contentType, filePath)
 		etag := meta.etag
 		if etag == "" {
@@ -741,7 +799,22 @@ func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano,
 
 	// 2. Check .ext on disk
 	extPath := filePath + ".ext"
-	metaBytes, err := os.ReadFile(extPath)
+	var metaBytes []byte
+	var err error
+	if isSharedHostsPath {
+		m.persistMu.RLock()
+		shard := m.tokenShardByCanon(tok.canonKey)
+		shard.mu.Lock()
+		if curFi, sErr := os.Stat(filePath); sErr != nil || curFi.IsDir() || curFi.Size() != size || curFi.ModTime().UnixNano() != mtimeNano {
+			err = os.ErrNotExist
+		} else {
+			metaBytes, err = os.ReadFile(extPath)
+		}
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+	} else {
+		metaBytes, err = os.ReadFile(extPath)
+	}
 	if err != nil {
 		return nil, false
 	}
@@ -766,6 +839,13 @@ func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano,
 		shard.mu.Unlock()
 		m.persistMu.RUnlock()
 		return nil, false
+	}
+	if isSharedHostsPath {
+		if curFi, sErr := os.Stat(filePath); sErr != nil || curFi.IsDir() || curFi.Size() != size || curFi.ModTime().UnixNano() != mtimeNano || !checkDiskFileOwnership(normNS, cleanKey, filePath) {
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			return nil, false
+		}
 	}
 	m.setDiskMeta(ramKey, diskMetaEntry{
 		namespace:       normNS,
@@ -952,6 +1032,7 @@ func (m *Manager) verifyDiskMetaOnly(ns, cleanKey, filePath string) (*CacheItem,
 func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok opToken) (*CacheItem, error) {
 	ramKey := makeRAMKey(ns, cleanKey)
 	normNS := sanitizeNamespace(ns)
+	isSharedHostsPath := normNS != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
 
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
 		if m.CheckAndQuarantineTamperedJS(filePath) {
@@ -963,23 +1044,6 @@ func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok
 		}
 	}
 
-	f, err := os.Open(filePath)
-	if err != nil {
-		m.deleteDiskMeta(ramKey)
-		return nil, err
-	}
-	fi, err := f.Stat()
-	if err != nil || fi.IsDir() || fi.Size() == 0 {
-		_ = f.Close()
-		m.deleteDiskMeta(ramKey)
-		return nil, fmt.Errorf("invalid cache file: %s", filePath)
-	}
-	mtimeNano := fi.ModTime().UnixNano()
-	size := fi.Size()
-	var magic [2]byte
-	nMagic, _ := io.ReadFull(f, magic[:])
-	_ = f.Close()
-
 	extPath := filePath + ".ext"
 	contentType := ""
 	contentEncoding := ""
@@ -987,14 +1051,72 @@ func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok
 	lastMod := ""
 	var parsedMeta diskMeta
 	var hasExt bool
-	if metaBytes, err := os.ReadFile(extPath); err == nil {
-		if meta, ok := parseExtFile(metaBytes); ok {
-			parsedMeta = meta
-			hasExt = true
-			contentType = meta.ContentType
-			contentEncoding = meta.ContentEncoding
-			etag = meta.ETag
-			lastMod = meta.LastModified
+	var fi os.FileInfo
+	var mtimeNano, size int64
+	var magic [2]byte
+	var nMagic int
+
+	if isSharedHostsPath {
+		m.persistMu.RLock()
+		shard := m.tokenShardByCanon(tok.canonKey)
+		shard.mu.Lock()
+		f, err := os.Open(filePath)
+		if err != nil {
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			m.deleteDiskMeta(ramKey)
+			return nil, err
+		}
+		fi, err = f.Stat()
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			_ = f.Close()
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			m.deleteDiskMeta(ramKey)
+			return nil, fmt.Errorf("invalid cache file: %s", filePath)
+		}
+		mtimeNano = fi.ModTime().UnixNano()
+		size = fi.Size()
+		nMagic, _ = io.ReadFull(f, magic[:])
+		_ = f.Close()
+		metaBytes, rErr := os.ReadFile(extPath)
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+		if rErr == nil {
+			if meta, ok := parseExtFile(metaBytes); ok {
+				parsedMeta = meta
+				hasExt = true
+				contentType = meta.ContentType
+				contentEncoding = meta.ContentEncoding
+				etag = meta.ETag
+				lastMod = meta.LastModified
+			}
+		}
+	} else {
+		f, err := os.Open(filePath)
+		if err != nil {
+			m.deleteDiskMeta(ramKey)
+			return nil, err
+		}
+		fi, err = f.Stat()
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			_ = f.Close()
+			m.deleteDiskMeta(ramKey)
+			return nil, fmt.Errorf("invalid cache file: %s", filePath)
+		}
+		mtimeNano = fi.ModTime().UnixNano()
+		size = fi.Size()
+		nMagic, _ = io.ReadFull(f, magic[:])
+		_ = f.Close()
+		if metaBytes, err := os.ReadFile(extPath); err == nil {
+			if meta, ok := parseExtFile(metaBytes); ok {
+				parsedMeta = meta
+				hasExt = true
+				contentType = meta.ContentType
+				contentEncoding = meta.ContentEncoding
+				etag = meta.ETag
+				lastMod = meta.LastModified
+			}
 		}
 	}
 	if !isDiskFileOwnedByNamespace(normNS, cleanKey, parsedMeta, hasExt) {
@@ -1028,6 +1150,18 @@ func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok
 	shard := m.tokenShardByCanon(tok.canonKey)
 	shard.mu.Lock()
 	if isTokenValidLocked(shard, tok, m.generation) {
+		stillSame := true
+		if isSharedHostsPath {
+			if curFi, sErr := os.Stat(filePath); sErr != nil || curFi.IsDir() || !os.SameFile(fi, curFi) || curFi.Size() != size || curFi.ModTime().UnixNano() != mtimeNano || !checkDiskFileOwnership(normNS, cleanKey, filePath) {
+				stillSame = false
+			}
+		}
+		if !stillSame {
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			m.deleteDiskMeta(ramKey)
+			return nil, fmt.Errorf("cache file ownership changed during verification: %s", filePath)
+		}
 		m.setDiskMeta(ramKey, diskMetaEntry{
 			namespace:       normNS,
 			mtimeNano:       mtimeNano,
@@ -1138,28 +1272,35 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	// If the entry was invalidated while disk read was in flight, the in-flight request
 	// completes using the loaded bytes, but MUST NOT backfill stale state into RAM or diskMeta.
 	if item != nil {
+		isSharedHostsPath := ns != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
 		m.persistMu.RLock()
 		shard := m.tokenShardByCanon(tok.canonKey)
 		shard.mu.Lock()
 		if isTokenValidLocked(shard, tok, m.generation) {
-			if usedAltKey != "" {
-				if altMeta, hasAlt := m.getDiskMeta(makeRAMKey("gbf", usedAltKey)); hasAlt {
-					m.setDiskMeta(ramKey, diskMetaEntry{
-						namespace:       "gbf",
-						mtimeNano:       altMeta.mtimeNano,
-						size:            altMeta.size,
-						contentType:     item.ContentType,
-						contentEncoding: item.ContentEncoding,
-						etag:            item.ETag,
-						lastModified:    item.LastModified,
-						exists:          true,
-						hasMeta:         true,
-						verified:        altMeta.verified,
-					})
-				}
+			canBackfill := true
+			if isSharedHostsPath && !checkDiskFileOwnership(ns, cleanKey, filePath) {
+				canBackfill = false
 			}
-			if m.ramEnabled.Load() && len(item.Data) > 0 && item.Size <= MaxDiskDirectReadSize {
-				m.ramCache.SetProbation(ramKey, item)
+			if canBackfill {
+				if usedAltKey != "" {
+					if altMeta, hasAlt := m.getDiskMeta(makeRAMKey("gbf", usedAltKey)); hasAlt {
+						m.setDiskMeta(ramKey, diskMetaEntry{
+							namespace:       "gbf",
+							mtimeNano:       altMeta.mtimeNano,
+							size:            altMeta.size,
+							contentType:     item.ContentType,
+							contentEncoding: item.ContentEncoding,
+							etag:            item.ETag,
+							lastModified:    item.LastModified,
+							exists:          true,
+							hasMeta:         true,
+							verified:        altMeta.verified,
+						})
+					}
+				}
+				if m.ramEnabled.Load() && len(item.Data) > 0 && item.Size <= MaxDiskDirectReadSize {
+					m.ramCache.SetProbation(ramKey, item)
+				}
 			}
 		}
 		shard.mu.Unlock()
@@ -1187,6 +1328,7 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, filePath string, tok opToken) (*CacheItem, error) {
 	ramKey := makeRAMKey(ns, cleanKey)
 	normNS := sanitizeNamespace(ns)
+	isSharedHostsPath := normNS != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
 
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
 		if m.CheckAndQuarantineTamperedJS(filePath) {
@@ -1198,57 +1340,62 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 		}
 	}
 
-	f, err := os.Open(filePath)
-	if err != nil {
-		m.deleteDiskMeta(ramKey)
-		return nil, err
-	}
-	defer f.Close()
-
-	fi, err := f.Stat()
-	if err != nil || fi.IsDir() || fi.Size() == 0 {
-		m.deleteDiskMeta(ramKey)
-		if fi != nil && fi.Size() == 0 {
-			return nil, fmt.Errorf("empty cache file: %s", filePath)
-		}
-		return nil, fmt.Errorf("invalid cache file: %s", filePath)
-	}
-
-	mtimeNano := fi.ModTime().UnixNano()
-	size := fi.Size()
-
-	data, err := readDiskFile(f, size)
-	if err != nil || len(data) == 0 {
-		m.deleteDiskMeta(ramKey)
-		return nil, fmt.Errorf("failed to read cache file: %s", filePath)
-	}
-	if int64(len(data)) != size {
-		size = int64(len(data))
-		if fi2, err := f.Stat(); err == nil {
-			mtimeNano = fi2.ModTime().UnixNano()
-		}
-	}
-
-	// Read metadata: check in-memory metadata index first to avoid reading .ext from disk
 	extPath := filePath + ".ext"
 	contentType := ""
 	contentEncoding := ""
 	etag := ""
 	lastMod := ""
-
 	needsIndexSave := false
 	extVerified := false
-	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.mtimeNano == mtimeNano && meta.size == size && (meta.namespace == "" || meta.namespace == normNS) {
-		contentType = meta.contentType
-		contentEncoding = meta.contentEncoding
-		etag = meta.etag
-		lastMod = meta.lastModified
-		extVerified = meta.verified
-	} else {
-		needsIndexSave = true
+	var fi os.FileInfo
+	var mtimeNano, size int64
+	var data []byte
+
+	if isSharedHostsPath {
+		m.persistMu.RLock()
+		shard := m.tokenShardByCanon(tok.canonKey)
+		shard.mu.Lock()
+		f, err := os.Open(filePath)
+		if err != nil {
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			m.deleteDiskMeta(ramKey)
+			return nil, err
+		}
+		fi, err = f.Stat()
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			_ = f.Close()
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			m.deleteDiskMeta(ramKey)
+			if fi != nil && fi.Size() == 0 {
+				return nil, fmt.Errorf("empty cache file: %s", filePath)
+			}
+			return nil, fmt.Errorf("invalid cache file: %s", filePath)
+		}
+		mtimeNano = fi.ModTime().UnixNano()
+		size = fi.Size()
+		data, err = readDiskFile(f, size)
+		if err == nil && int64(len(data)) != size {
+			size = int64(len(data))
+			if fi2, err2 := f.Stat(); err2 == nil {
+				mtimeNano = fi2.ModTime().UnixNano()
+			}
+		}
+		_ = f.Close()
+		if err != nil || len(data) == 0 {
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			m.deleteDiskMeta(ramKey)
+			return nil, fmt.Errorf("failed to read cache file: %s", filePath)
+		}
+		metaBytes, rErr := os.ReadFile(extPath)
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+
 		var parsedMeta diskMeta
 		var hasExt bool
-		if metaBytes, err := os.ReadFile(extPath); err == nil {
+		if rErr == nil {
 			if meta, ok := parseExtFile(metaBytes); ok {
 				parsedMeta = meta
 				hasExt = true
@@ -1265,6 +1412,70 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 			m.deleteDiskMeta(ramKey)
 			return nil, fmt.Errorf("namespace mismatch for cache file: %s", filePath)
 		}
+		if meta, ok := m.getDiskMeta(ramKey); !ok || !meta.hasMeta || meta.mtimeNano != mtimeNano || meta.size != size || meta.namespace != normNS {
+			needsIndexSave = true
+		}
+	} else {
+		f, err := os.Open(filePath)
+		if err != nil {
+			m.deleteDiskMeta(ramKey)
+			return nil, err
+		}
+
+		fi, err = f.Stat()
+		if err != nil || fi.IsDir() || fi.Size() == 0 {
+			_ = f.Close()
+			m.deleteDiskMeta(ramKey)
+			if fi != nil && fi.Size() == 0 {
+				return nil, fmt.Errorf("empty cache file: %s", filePath)
+			}
+			return nil, fmt.Errorf("invalid cache file: %s", filePath)
+		}
+
+		mtimeNano = fi.ModTime().UnixNano()
+		size = fi.Size()
+
+		data, err = readDiskFile(f, size)
+		if err == nil && int64(len(data)) != size {
+			size = int64(len(data))
+			if fi2, err2 := f.Stat(); err2 == nil {
+				mtimeNano = fi2.ModTime().UnixNano()
+			}
+		}
+		_ = f.Close()
+		if err != nil || len(data) == 0 {
+			m.deleteDiskMeta(ramKey)
+			return nil, fmt.Errorf("failed to read cache file: %s", filePath)
+		}
+
+		if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.mtimeNano == mtimeNano && meta.size == size && (meta.namespace == "" || meta.namespace == normNS) {
+			contentType = meta.contentType
+			contentEncoding = meta.contentEncoding
+			etag = meta.etag
+			lastMod = meta.lastModified
+			extVerified = meta.verified
+		} else {
+			needsIndexSave = true
+			var parsedMeta diskMeta
+			var hasExt bool
+			if metaBytes, err := os.ReadFile(extPath); err == nil {
+				if meta, ok := parseExtFile(metaBytes); ok {
+					parsedMeta = meta
+					hasExt = true
+					contentType = meta.ContentType
+					contentEncoding = meta.ContentEncoding
+					etag = meta.ETag
+					lastMod = meta.LastModified
+					if meta.Verified && meta.Size == size && meta.MTimeNano == mtimeNano {
+						extVerified = true
+					}
+				}
+			}
+			if !isDiskFileOwnedByNamespace(normNS, cleanKey, parsedMeta, hasExt) {
+				m.deleteDiskMeta(ramKey)
+				return nil, fmt.Errorf("namespace mismatch for cache file: %s", filePath)
+			}
+		}
 	}
 
 	contentType = resolveContentType(contentType, filePath)
@@ -1280,7 +1491,6 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 	if !validContent {
 		m.deleteDiskMeta(ramKey)
 		if m.autoRepair.Load() {
-			_ = f.Close()
 			_ = os.Remove(filePath)
 			_ = os.Remove(extPath)
 			if m.residentPool != nil {
@@ -1307,6 +1517,18 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 		shard := m.tokenShardByCanon(tok.canonKey)
 		shard.mu.Lock()
 		if isTokenValidLocked(shard, tok, m.generation) {
+			stillSame := true
+			if isSharedHostsPath {
+				if curFi, sErr := os.Stat(filePath); sErr != nil || curFi.IsDir() || !os.SameFile(fi, curFi) || curFi.Size() != size || curFi.ModTime().UnixNano() != mtimeNano || !checkDiskFileOwnership(normNS, cleanKey, filePath) {
+					stillSame = false
+				}
+			}
+			if !stillSame {
+				shard.mu.Unlock()
+				m.persistMu.RUnlock()
+				m.deleteDiskMeta(ramKey)
+				return nil, fmt.Errorf("cache file ownership changed during load: %s", filePath)
+			}
 			m.setDiskMeta(ramKey, diskMetaEntry{
 				namespace:       normNS,
 				mtimeNano:       mtimeNano,
@@ -1655,7 +1877,7 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 	base := m.cacheBase
 	m.mu.RUnlock()
 	var tok opToken
-	ns, cleanKey, _, ok := extractNamespaceAndKey(base, filePath)
+	ns, cleanKey, _, ok := resolveDiskFileOwner(base, filePath)
 	if ok {
 		tok = m.acquireOpTokenWithGen(ns, cleanKey, generation)
 	}
@@ -1677,7 +1899,7 @@ func (m *Manager) saveToDiskWithNSAndToken(ns, cleanKey, filePath string, header
 	base := m.cacheBase
 	m.mu.RUnlock()
 	if ns == "" || cleanKey == "" {
-		if extNS, extKey, _, ok := extractNamespaceAndKey(base, filePath); ok {
+		if extNS, extKey, _, ok := resolveDiskFileOwner(base, filePath); ok {
 			ns = extNS
 			cleanKey = extKey
 		}
@@ -1690,7 +1912,7 @@ func (m *Manager) saveToDiskWithNSAndToken(ns, cleanKey, filePath string, header
 	}
 	ramKey := makeRAMKey(normNS, normKey)
 
-	var shard *tokenShard
+	shard, _ := m.tokenShardFor(normNS, normKey)
 	if tok.canonKey != "" {
 		shard = m.tokenShardByCanon(tok.canonKey)
 		shard.mu.Lock()
@@ -1728,14 +1950,15 @@ func (m *Manager) saveToDiskWithNSAndToken(ns, cleanKey, filePath string, header
 		return false
 	}
 
-	if shard != nil {
-		shard.mu.Lock()
-		defer shard.mu.Unlock()
-		if !isTokenValidLocked(shard, tok, m.generation) {
-			_ = os.Remove(tmpDataPath)
-			return false
-		}
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	if tok.canonKey != "" && !isTokenValidLocked(shard, tok, m.generation) {
+		_ = os.Remove(tmpDataPath)
+		return false
 	}
+
+	m.clearConflictingPhysicalPathState(normNS, normKey)
+	isSharedHostsPath := normNS != "gbf" || strings.HasPrefix(normKey, "hosts/")
 
 	if err := renameWithRetry(tmpDataPath, filePath, 3); err != nil {
 		_ = os.Remove(tmpDataPath)
@@ -1767,7 +1990,14 @@ func (m *Manager) saveToDiskWithNSAndToken(ns, cleanKey, filePath string, header
 		MTimeNano:       mtimeNano,
 		Namespace:       normNS,
 	}
-	_ = writeDiskExtFile(filePath, meta)
+	if err := writeDiskExtFile(filePath, meta); err != nil && isSharedHostsPath {
+		_ = os.Remove(filePath)
+		_ = os.Remove(filePath + ".ext")
+		if ramKey != "" {
+			m.deleteDiskMeta(ramKey)
+		}
+		return false
+	}
 
 	if ramKey != "" && fi != nil {
 		m.setDiskMeta(ramKey, diskMetaEntry{
@@ -1882,6 +2112,20 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 
 		actualSize := fi.Size()
 		actualMtime := fi.ModTime().UnixNano()
+		isSharedHostsPath := ns != "gbf" || strings.HasPrefix(k, "hosts/")
+		if isSharedHostsPath {
+			m.persistMu.RLock()
+			shard := m.tokenShardByCanon(tok.canonKey)
+			shard.mu.Lock()
+			curFi, sErr := os.Stat(p)
+			sameOwner := sErr == nil && !curFi.IsDir() && os.SameFile(fi, curFi) && curFi.Size() == actualSize && curFi.ModTime().UnixNano() == actualMtime && checkDiskFileOwnership(ns, k, p)
+			shard.mu.Unlock()
+			m.persistMu.RUnlock()
+			if !sameOwner {
+				_ = f.Close()
+				return nil, 0, fmt.Errorf("cache file replaced or ownership changed: %s", p)
+			}
+		}
 
 		// Requirement 3: Check actual size + mtime against verified metadata.
 		// If inconsistent, treat as cache invalidation.
@@ -1902,6 +2146,11 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 					shard := m.tokenShardByCanon(tok.canonKey)
 					shard.mu.Lock()
 					valid := isTokenValidLocked(shard, tok, m.generation)
+					if valid && isSharedHostsPath {
+						if curFi, sErr := os.Stat(p); sErr != nil || curFi.IsDir() || !os.SameFile(fi, curFi) || !checkDiskFileOwnership(ns, k, p) {
+							valid = false
+						}
+					}
 					if valid {
 						matched = true
 						m.setDiskMeta(ramKey, diskMetaEntry{
@@ -2082,6 +2331,9 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 	}
 
 	ramKey := makeRAMKey(ns, cleanKey)
+	m.clearConflictingPhysicalPathState(ns, cleanKey)
+	isSharedHostsPath := ns != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
+
 	if err := renameWithRetry(tmpFilePath, filePath, 3); err != nil {
 		_ = os.Remove(tmpFilePath)
 		m.deleteDiskMeta(ramKey)
@@ -2126,7 +2378,12 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 		MTimeNano:       mtimeNano,
 		Namespace:       ns,
 	}
-	_ = writeDiskExtFile(filePath, meta)
+	if err := writeDiskExtFile(filePath, meta); err != nil && isSharedHostsPath {
+		_ = os.Remove(filePath)
+		_ = os.Remove(filePath + ".ext")
+		m.deleteDiskMeta(ramKey)
+		return nil, false
+	}
 
 	if fi != nil {
 		m.setDiskMeta(ramKey, diskMetaEntry{
@@ -2268,7 +2525,7 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		}
 		scanned++
 
-		ns, cleanKey, _, ok := extractNamespaceAndKey(base, p)
+		ns, cleanKey, _, ok := resolveDiskFileOwner(base, p)
 		if !ok {
 			return nil
 		}
@@ -2407,7 +2664,7 @@ func (m *Manager) Warmup(maxItems int) int {
 
 	loaded := 0
 	for _, c := range candidates {
-		ns, cleanKey, _, ok := extractNamespaceAndKey(base, c.path)
+		ns, cleanKey, _, ok := resolveDiskFileOwner(base, c.path)
 		if !ok {
 			continue
 		}
