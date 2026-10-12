@@ -13,11 +13,6 @@ import (
 	"time"
 
 	"gbf-proxy/cache"
-	"gbf-proxy/proxy"
-)
-
-const (
-	maxBreakdownControlBodyBytes = 128 * 1024
 )
 
 func (c *ControlServer) hasActiveCacheTaskLocked() bool {
@@ -26,7 +21,6 @@ func (c *ControlServer) hasActiveCacheTaskLocked() bool {
 		c.isSlimming ||
 		c.isBoosting ||
 		c.isScanning ||
-		c.isInvalidating ||
 		c.isClearingCategory
 }
 
@@ -40,8 +34,6 @@ func (c *ControlServer) setTaskFlagLocked(taskType string, val bool) {
 		c.isBoosting = val
 	case "scan":
 		c.isScanning = val
-	case "invalidate":
-		c.isInvalidating = val
 	case "clear_category":
 		c.isClearingCategory = val
 	}
@@ -137,20 +129,7 @@ func decodeStrictJSONBody(req *http.Request, maxBytes int64, dst interface{}) er
 // handleCacheBreakdown handles GET /api/cache/breakdown.
 // It returns the latest completed scan snapshot without re-walking disk on poll/open.
 func (c *ControlServer) handleCacheBreakdown(w http.ResponseWriter, req *http.Request) {
-	customKeep := 0
-	if keepStr := strings.TrimSpace(req.URL.Query().Get("keep")); keepStr != "" {
-		k, err := strconv.Atoi(keepStr)
-		if err != nil || k <= 0 || k > 1000 {
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok":    false,
-				"error": "保留版本数量参数 keep 必须为 1~1000 之间的正整数",
-			})
-			return
-		}
-		customKeep = k
-	}
-
-	latest, active := c.cacheMgr.GetBreakdownSnapshot(customKeep)
+	latest, active := c.cacheMgr.GetBreakdownSnapshot()
 
 	c.cacheTaskMu.Lock()
 	isScanning := c.isScanning
@@ -259,208 +238,6 @@ func (c *ControlServer) handleCacheBreakdownScan(w http.ResponseWriter, req *htt
 	})
 }
 
-// handleCacheSearch handles GET /api/cache/search.
-func (c *ControlServer) handleCacheSearch(w http.ResponseWriter, req *http.Request) {
-	q := req.URL.Query()
-	snapshotID := strings.TrimSpace(q.Get("snapshot_id"))
-	queryStr := q.Get("q")
-	if queryStr == "" {
-		queryStr = q.Get("query")
-	}
-
-	limit := cache.DefaultSearchLimit
-	if limitStr := strings.TrimSpace(q.Get("limit")); limitStr != "" {
-		parsedLimit, err := strconv.Atoi(limitStr)
-		if err != nil {
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok":    false,
-				"error": "搜索数量参数 limit 必须为整数",
-			})
-			return
-		}
-		limit = parsedLimit
-	}
-
-	res, err := c.cacheMgr.SearchSnapshot(snapshotID, queryStr, limit, proxy.NormalizeAssetNamespace)
-	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, cache.ErrSnapshotNotFound) || errors.Is(err, cache.ErrSnapshotStale) {
-			status = http.StatusConflict
-		}
-		c.sendJSON(w, status, map[string]interface{}{
-			"ok":    false,
-			"error": err.Error(),
-		})
-		return
-	}
-
-	c.sendJSON(w, http.StatusOK, res)
-}
-
-type invalidateRequestPayload struct {
-	SnapshotID string                    `json:"snapshot_id"`
-	Entries    []cache.DeleteTargetEntry `json:"entries"`
-}
-
-// handleCacheInvalidate handles POST /api/cache/invalidate.
-// Validates snapshot identity and entry list, then runs controlled deletion in background (202 Accepted).
-func (c *ControlServer) handleCacheInvalidate(w http.ResponseWriter, req *http.Request) {
-	var payload invalidateRequestPayload
-	if err := decodeStrictJSONBody(req, maxBreakdownControlBodyBytes, &payload); err != nil {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":    false,
-			"error": err.Error(),
-		})
-		return
-	}
-
-	payload.SnapshotID = strings.TrimSpace(payload.SnapshotID)
-	if payload.SnapshotID == "" {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":    false,
-			"error": "必须提供有效的 snapshot_id",
-		})
-		return
-	}
-	if len(payload.Entries) == 0 {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":    false,
-			"error": cache.ErrEmptyCleanupSelection.Error(),
-		})
-		return
-	}
-	if len(payload.Entries) > cache.MaxInvalidateBatchSize {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":    false,
-			"error": cache.ErrBatchLimitExceeded.Error(),
-		})
-		return
-	}
-
-	// Validate each entry format and snapshot validity before starting task
-	for _, entry := range payload.Entries {
-		if strings.TrimSpace(entry.Key) == "" {
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok":    false,
-				"error": "删除条目列表包含空路径",
-			})
-			return
-		}
-	}
-
-	latest, _ := c.cacheMgr.GetBreakdownSnapshot(0)
-	if latest == nil {
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-			"ok":    false,
-			"error": cache.ErrSnapshotNotFound.Error(),
-		})
-		return
-	}
-	if !latest.Valid || latest.SnapshotID != payload.SnapshotID {
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-			"ok":    false,
-			"error": cache.ErrSnapshotStale.Error(),
-		})
-		return
-	}
-
-	candidates, initialFailures := cache.ExpandSnapshotTargets(latest, payload.Entries)
-	if len(candidates) == 0 && len(initialFailures) > 0 {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":       false,
-			"error":    initialFailures[0].Reason,
-			"failures": initialFailures,
-		})
-		return
-	}
-
-	taskID, cancelCh, ok := c.tryBeginCacheTask("invalidate")
-	if !ok {
-		c.sendTaskConflict(w)
-		return
-	}
-
-	c.cacheTaskMu.Lock()
-	c.cleanupProgress = cache.CleanupProgress{
-		TaskType:   "invalidate",
-		SnapshotID: payload.SnapshotID,
-		TotalFiles: len(candidates),
-		Done:       false,
-	}
-	c.cacheTaskMu.Unlock()
-
-	if c.stats != nil {
-		c.stats.Log("INFO", fmt.Sprintf("[CACHE-INVALIDATE] Starting targeted cache deletion (task_id=%s, requested=%d)...",
-			taskID, len(payload.Entries)))
-	}
-
-	go func() {
-		var finalStatus = "failed"
-		var finalCancelled = false
-		var finalResult interface{}
-		var finalErr string
-
-		defer func() {
-			c.finishCacheTask(taskID, "invalidate", finalStatus, finalCancelled, finalResult, finalErr)
-		}()
-
-		res, err := c.cacheMgr.DeleteSnapshotEntriesWithProgress(payload.SnapshotID, payload.Entries, func(p cache.CleanupProgress) {
-			c.cacheTaskMu.Lock()
-			if c.activeTaskID == taskID {
-				c.cleanupProgress = p
-			}
-			c.cacheTaskMu.Unlock()
-			c.broadcastEvent("cache_cleanup_progress", map[string]interface{}{
-				"task_id":  taskID,
-				"progress": p,
-			})
-		}, cancelCh)
-
-		if err != nil {
-			finalStatus = "failed"
-			finalErr = err.Error()
-			if res == nil {
-				res = &cache.DeleteResult{
-					TaskType:    "invalidate",
-					SnapshotID:  payload.SnapshotID,
-					Status:      "failed",
-					FailedCount: 1,
-					Failures: []cache.DeleteFailure{{
-						Reason: err.Error(),
-					}},
-					Done:    true,
-					Message: err.Error(),
-				}
-			}
-		}
-		if res != nil {
-			finalStatus = res.Status
-			finalCancelled = res.Cancelled
-			finalResult = res
-			c.cacheTaskMu.Lock()
-			c.lastCleanupResult = res
-			c.cacheTaskMu.Unlock()
-			c.broadcastEvent("cache_cleanup_done", map[string]interface{}{
-				"task_id": taskID,
-				"result":  res,
-			})
-			if c.stats != nil {
-				c.stats.Log("INFO", fmt.Sprintf("[CACHE-INVALIDATE] Completed (task_id=%s): deleted %d assets (%d meta), freed %.2f MiB, skipped %d, failed %d",
-					taskID, res.DeletedAssetFiles, res.DeletedMetaFiles, res.FreedMB, res.SkippedChangedCount, res.FailedCount))
-			}
-		}
-	}()
-
-	c.sendJSON(w, http.StatusAccepted, map[string]interface{}{
-		"ok":              true,
-		"task_id":         taskID,
-		"task":            "invalidate",
-		"status":          "running",
-		"candidate_files": len(candidates),
-		"message":         "定点缓存删除任务已在后台启动",
-	})
-}
-
 type clearCategoryRequestPayload struct {
 	SnapshotID    string   `json:"snapshot_id"`
 	Categories    []string `json:"categories"`
@@ -525,7 +302,7 @@ func (c *ControlServer) handleCacheClearCategory(w http.ResponseWriter, req *htt
 		}
 	}
 
-	latest, _ := c.cacheMgr.GetBreakdownSnapshot(0)
+	latest, _ := c.cacheMgr.GetBreakdownSnapshot()
 	if latest == nil {
 		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 			"ok":    false,

@@ -31,7 +31,6 @@ import { ShortcutsModal } from './components/modals/ShortcutsModal'
 import { RoutingGuideModal } from './components/modals/RoutingGuideModal'
 import { LatencyTestModal } from './components/modals/LatencyTestModal'
 import { AuditModal } from './components/modals/AuditModal'
-import { SlimModal } from './components/modals/SlimModal'
 import { BoostModal } from './components/modals/BoostModal'
 import { CaCertModal } from './components/modals/CaCertModal'
 import { UpdateModal } from './components/modals/UpdateModal'
@@ -220,7 +219,6 @@ export const App: React.FC = () => {
   const [isLatencyModalOpen, setIsLatencyModalOpen] = useState<boolean>(false)
   const [isHealthModalOpen, setIsHealthModalOpen] = useState<boolean>(false)
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false)
-  const [isSlimModalOpen, setIsSlimModalOpen] = useState<boolean>(false)
   const [isBoostModalOpen, setIsBoostModalOpen] = useState<boolean>(false)
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false)
   const [isUpstreamSelectModalOpen, setIsUpstreamSelectModalOpen] = useState<boolean>(false)
@@ -1050,7 +1048,6 @@ export const App: React.FC = () => {
     setIsLatencyModalOpen(false)
     setIsHealthModalOpen(false)
     setIsAuditModalOpen(false)
-    setIsSlimModalOpen(false)
     setIsUpdateModalOpen(false)
     setCaModalAction(null)
   }
@@ -1064,7 +1061,6 @@ export const App: React.FC = () => {
     isLatencyModalOpen ||
     isHealthModalOpen ||
     isAuditModalOpen ||
-    isSlimModalOpen ||
     isUpdateModalOpen ||
     caModalAction !== null ||
     isStandaloneLogsPage
@@ -2289,7 +2285,6 @@ export const App: React.FC = () => {
         onClose={() => setIsClearModalOpen(false)}
         onRefresh={loadState}
         onToast={showToast}
-        onOpenSlimModal={() => setIsSlimModalOpen(true)}
       />
 
       <MobileGuideModal
@@ -2321,13 +2316,6 @@ export const App: React.FC = () => {
       <AuditModal
         isOpen={isAuditModalOpen}
         onClose={() => setIsAuditModalOpen(false)}
-        onRefresh={loadState}
-        onToast={showToast}
-      />
-
-      <SlimModal
-        isOpen={isSlimModalOpen}
-        onClose={() => setIsSlimModalOpen(false)}
         onRefresh={loadState}
         onToast={showToast}
       />

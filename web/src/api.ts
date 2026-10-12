@@ -17,8 +17,6 @@ import {
   HealthResponse,
   RepairResponse,
   BreakdownResponse,
-  SearchResponse,
-  DeleteTargetEntry,
 } from './types'
 
 const BASE = ''
@@ -173,9 +171,8 @@ export async function slimCache(keep = 8, snapshotId?: string): Promise<any> {
   return res.json()
 }
 
-export async function fetchCacheBreakdown(keep?: number): Promise<BreakdownResponse> {
-  const qs = typeof keep === 'number' && keep > 0 ? `?keep=${keep}` : ''
-  const res = await fetch(`${BASE}/api/cache/breakdown${qs}`, { cache: 'no-store' })
+export async function fetchCacheBreakdown(): Promise<BreakdownResponse> {
+  const res = await fetch(`${BASE}/api/cache/breakdown`, { cache: 'no-store' })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     throw new Error(data.error || data.message || `HTTP ${res.status}`)
@@ -191,53 +188,6 @@ export async function startCacheBreakdownScan(): Promise<{
   message?: string
 }> {
   const res = await fetch(`${BASE}/api/cache/breakdown/scan`, { method: 'POST' })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    throw new Error(data.error || data.message || `HTTP ${res.status}`)
-  }
-  return data
-}
-
-export async function searchCacheSnapshot(params: {
-  q: string
-  limit?: number
-  snapshot_id?: string
-}): Promise<SearchResponse> {
-  const qs = new URLSearchParams()
-  qs.set('q', params.q)
-  if (typeof params.limit === 'number' && params.limit > 0) {
-    qs.set('limit', String(params.limit))
-  }
-  if (params.snapshot_id) {
-    qs.set('snapshot_id', params.snapshot_id)
-  }
-  const res = await fetch(`${BASE}/api/cache/search?${qs.toString()}`, { cache: 'no-store' })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    throw new Error(data.error || data.message || `HTTP ${res.status}`)
-  }
-  return data
-}
-
-export async function invalidateCacheEntries(
-  snapshotId: string,
-  entries: DeleteTargetEntry[]
-): Promise<{
-  ok: boolean
-  task_id: string
-  task: string
-  status: string
-  candidate_files: number
-  message?: string
-}> {
-  const res = await fetch(`${BASE}/api/cache/invalidate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      snapshot_id: snapshotId,
-      entries,
-    }),
-  })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     throw new Error(data.error || data.message || `HTTP ${res.status}`)

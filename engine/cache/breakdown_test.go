@@ -171,47 +171,17 @@ func TestBreakdownScanSearchAndRetentionPreview(t *testing.T) {
 		t.Fatalf("expected 2 excluded files, got %d", snap.ExcludedFiles)
 	}
 
-	// Check retention preview for keep=2:
-	// gbf:assets has 3 versions (300, 200, 100) -> keeps [300, 200], prunes [100] (1 dir, 1 asset file, 1 meta file)
+	// Check default retention preview for keep=8 and computeRetentionPreview for keep=2:
+	// gbf:assets has 3 versions (300, 200, 100) -> keep=2 keeps [300, 200], prunes [100] (1 dir, 1 asset file, 1 meta file)
 	// gbf:assets_en has 2 versions (20, 10) -> keeps [20, 10], prunes []
 	// sub.example.com:assets has 1 version (500) -> keeps [500], prunes []
-	prev2, ok := snap.RetentionPreviews["2"]
-	if !ok {
-		t.Fatalf("missing retention preview for keep=2")
+	prev8, ok := snap.RetentionPreviews["8"]
+	if !ok || prev8.Keep != 8 || prev8.TotalVersionDirs != 6 {
+		t.Fatalf("missing or unexpected default retention preview for keep=8: %+v", snap.RetentionPreviews)
 	}
+	prev2 := ComputeVersionRetentionPreview(snap.VersionGroups, 2)
 	if prev2.PruneDirs != 1 || prev2.PruneAssetFiles != 1 || prev2.PruneMetadataFiles != 1 {
 		t.Fatalf("unexpected keep=2 preview: %+v", prev2)
-	}
-
-	// Search by full URL with query string (query string must be ignored)
-	hostNorm := func(h string) (string, bool) {
-		if strings.Contains(h, "granbluefantasy.jp") {
-			return "gbf", true
-		}
-		return strings.ToLower(h), true
-	}
-	sr, err := mgr.SearchSnapshot(snap.SnapshotID, "https://prd-game-a-granbluefantasy.akamaized.net/assets/img/sp/ui/btn.png?v=999", 50, func(h string) (string, bool) {
-		if strings.Contains(h, "granbluefantasy") {
-			return "gbf", true
-		}
-		return hostNorm(h)
-	})
-	if err != nil {
-		t.Fatalf("SearchSnapshot URL failed: %v", err)
-	}
-	if sr.TotalMatches != 2 {
-		t.Fatalf("expected 2 matches (primary + fallback alias) for btn.png, got %d", sr.TotalMatches)
-	}
-	if !sr.Items[0].HasAlias || sr.Items[0].AliasKey == "" {
-		t.Fatalf("expected HasAlias=true on matched item, got %+v", sr.Items[0])
-	}
-
-	// Search bounds validation
-	if _, err := mgr.SearchSnapshot(snap.SnapshotID, "   ", 50, nil); !errors.Is(err, ErrEmptySearchQuery) {
-		t.Fatalf("expected ErrEmptySearchQuery, got %v", err)
-	}
-	if _, err := mgr.SearchSnapshot(snap.SnapshotID, "btn", 201, nil); !errors.Is(err, ErrInvalidSearchLimit) {
-		t.Fatalf("expected ErrInvalidSearchLimit, got %v", err)
 	}
 }
 
@@ -356,19 +326,17 @@ func TestControlledDeletionCategoryCleanupAndSlim(t *testing.T) {
 		t.Fatalf("modify story file failed: %v", err)
 	}
 
-	// Targeted deletion of dual.png should delete both physical files (primary + fallback alias)
-	delRes, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
-		{NS: "gbf", Key: "assets/img/sp/ui/dual.png"},
-	}, nil, nil)
+	// Clearing core_ui category should delete both physical files of dual.png (primary + fallback alias)
+	delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryCoreUI}, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("DeleteSnapshotEntriesWithProgress failed: %v", err)
+		t.Fatalf("ClearCategoriesWithProgress(core_ui) failed: %v", err)
 	}
 	if delRes.DeletedAssetFiles != 2 || delRes.DeletedMetaFiles != 2 {
 		t.Fatalf("expected 2 asset files and 2 meta files deleted for dual alias, got %+v", delRes)
 	}
 
 	// Snapshot must now be marked stale
-	latestSnap, _ := mgr.GetBreakdownSnapshot(0)
+	latestSnap, _ := mgr.GetBreakdownSnapshot()
 	if latestSnap == nil || latestSnap.Valid || !latestSnap.Stale {
 		t.Fatalf("expected snapshot to be marked stale after deletion, got %+v", latestSnap)
 	}
@@ -552,7 +520,7 @@ func TestConcurrentScanSetCacheBaseAndSearchNoDeadlockOrRace(t *testing.T) {
 		}
 	}()
 
-	// Concurrent searcher & snapshot reader worker
+	// Concurrent snapshot reader worker
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -561,8 +529,7 @@ func TestConcurrentScanSetCacheBaseAndSearchNoDeadlockOrRace(t *testing.T) {
 			case <-stopCh:
 				return
 			default:
-				_, _ = mgr.SearchSnapshot("", "file_", 20, nil)
-				_, _ = mgr.GetBreakdownSnapshot(4)
+				_, _ = mgr.GetBreakdownSnapshot()
 			}
 		}
 	}()
@@ -591,7 +558,7 @@ func TestSlimRootValidationErrorAndUnifiedVersionDiscovery(t *testing.T) {
 	}
 
 	snap := mgr.ScanBreakdownWithProgress(nil, nil)
-	previewKeep2 := snap.RetentionPreviews["2"]
+	previewKeep2 := ComputeVersionRetentionPreview(snap.VersionGroups, 2)
 	if previewKeep2.TotalVersionDirs != 3 || previewKeep2.PruneDirs != 1 {
 		t.Fatalf("expected preview with keep=2 to discover all 3 version dirs and mark 1 for pruning, got %+v", previewKeep2)
 	}
@@ -756,7 +723,7 @@ func TestOrphanExtInVersionDirsPreviewAndVerifiedPrune(t *testing.T) {
 	}
 
 	snap := mgr.ScanBreakdownWithProgress(nil, nil)
-	prev2 := snap.RetentionPreviews["2"]
+	prev2 := ComputeVersionRetentionPreview(snap.VersionGroups, 2)
 	// Version 100 has app.js + app.js.ext + newly_fetched.js.ext (2 meta files in version 100)
 	if len(prev2.Groups) != 1 {
 		t.Fatalf("expected 1 version group, got %d", len(prev2.Groups))
@@ -934,8 +901,8 @@ func TestNBSPAndHostsPrefixCanonicalIdentity(t *testing.T) {
 
 	headers := map[string]string{"content-type": "application/javascript"}
 
-	// Part 1: Unicode NBSP (\u00a0) in segment
-	nbspKey := "/assets/100/js/\u00a0app.js"
+	// Part 1: Unicode NBSP (\u00a0) in segment (non-versioned path classified as CategoryOther)
+	nbspKey := "/assets/js/\u00a0app.js"
 	if !mgr.SaveWithNamespace("gbf", nbspKey, headers, []byte("console.log('nbsp');")) {
 		t.Fatalf("SaveWithNamespace with NBSP failed")
 	}
@@ -951,7 +918,7 @@ func TestNBSPAndHostsPrefixCanonicalIdentity(t *testing.T) {
 	}
 
 	// Part 2: ("gbf", "/hosts/<subNS>/...") vs ("<subNS>", "...")
-	hostsURL := "/hosts/sub.example.com/assets/100/js/app.js"
+	hostsURL := "/hosts/sub.example.com/assets/js/app.js"
 	if !mgr.SaveWithNamespace("gbf", hostsURL, headers, []byte("console.log('hosts_prefixed');")) {
 		t.Fatalf("SaveWithNamespace with hosts/ prefix failed")
 	}
@@ -971,22 +938,9 @@ func TestNBSPAndHostsPrefixCanonicalIdentity(t *testing.T) {
 		t.Fatalf("expected valid snapshot")
 	}
 
-	searchRes, err := mgr.SearchSnapshot(snap.SnapshotID, "app.js", 50, nil)
-	if err != nil || len(searchRes.Items) != 2 {
-		t.Fatalf("expected 2 items in search result, got %d (err=%v)", len(searchRes.Items), err)
-	}
-
-	var targets []DeleteTargetEntry
-	for _, it := range searchRes.Items {
-		targets = append(targets, DeleteTargetEntry{
-			NS:  it.NS,
-			Key: it.Key,
-		})
-	}
-
-	delRes, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, targets, nil, nil)
+	delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, []string{"gbf", "sub.example.com"}, nil, nil)
 	if err != nil {
-		t.Fatalf("DeleteSnapshotEntriesWithProgress failed: %v", err)
+		t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
 	}
 	if delRes.DeletedAssetFiles != 2 {
 		t.Fatalf("expected 2 deleted asset files, got %+v", delRes)
@@ -1012,7 +966,7 @@ func TestNBSPAndHostsPrefixCanonicalIdentity(t *testing.T) {
 	if item, _ := mgr.GetWithNamespace("gbf", hostsURL); item != nil {
 		t.Fatalf("expected hosts-prefixed item to be absent after deletion, got %+v", item)
 	}
-	if item, _ := mgr.GetWithNamespace("sub.example.com", "/assets/100/js/app.js"); item != nil {
+	if item, _ := mgr.GetWithNamespace("sub.example.com", "/assets/js/app.js"); item != nil {
 		t.Fatalf("expected sub.example.com item to be absent after deletion, got %+v", item)
 	}
 
@@ -1036,10 +990,11 @@ func TestAncestorReparseAndRootReplacementRejected(t *testing.T) {
 
 	headers := map[string]string{"content-type": "application/javascript"}
 	payload := []byte("console.log('v100');")
-	mgr.SaveWithNamespace("gbf", "assets/100/js/victim.js", headers, payload)
+	mgr.SaveWithNamespace("gbf", "assets/js/victim.js", headers, payload)
+	mgr.SaveWithNamespace("gbf", "assets/100/js/old_ver.js", headers, payload)
 	mgr.SaveWithNamespace("gbf", "assets/200/js/keep.js", headers, payload)
 
-	origFi, err := os.Stat(filepath.Join(cacheRoot, "assets", "100", "js", "victim.js"))
+	origFi, err := os.Stat(filepath.Join(cacheRoot, "assets", "js", "victim.js"))
 	if err != nil {
 		t.Fatalf("Stat victim.js failed: %v", err)
 	}
@@ -1049,7 +1004,7 @@ func TestAncestorReparseAndRootReplacementRejected(t *testing.T) {
 		t.Fatalf("expected valid snapshot")
 	}
 
-	// 1. Replace intermediate directory assets/100/js with a symlink/junction to externalDir containing an identical file
+	// 1. Replace intermediate directory assets/js with a symlink/junction to externalDir containing an identical file
 	externalDir := filepath.Join(parentDir, "external_target")
 	if err := os.MkdirAll(externalDir, 0755); err != nil {
 		t.Fatalf("MkdirAll externalDir failed: %v", err)
@@ -1060,7 +1015,7 @@ func TestAncestorReparseAndRootReplacementRejected(t *testing.T) {
 	}
 	_ = os.Chtimes(extVictim, origFi.ModTime(), origFi.ModTime())
 
-	jsDir := filepath.Join(cacheRoot, "assets", "100", "js")
+	jsDir := filepath.Join(cacheRoot, "assets", "js")
 	if err := os.RemoveAll(jsDir); err != nil {
 		t.Fatalf("RemoveAll jsDir failed: %v", err)
 	}
@@ -1077,14 +1032,12 @@ func TestAncestorReparseAndRootReplacementRejected(t *testing.T) {
 	}
 
 	if linkCreated {
-		delRes, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
-			{NS: "gbf", Key: "assets/100/js/victim.js"},
-		}, nil, nil)
+		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
 		if err != nil {
-			t.Fatalf("DeleteSnapshotEntriesWithProgress returned unexpected error: %v", err)
+			t.Fatalf("ClearCategoriesWithProgress returned unexpected error: %v", err)
 		}
 		if delRes.FailedCount == 0 {
-			t.Fatalf("expected DeleteSnapshotEntriesWithProgress to fail closed on symlinked ancestor directory")
+			t.Fatalf("expected ClearCategoriesWithProgress to fail closed on symlinked ancestor directory")
 		}
 		if _, err := os.Stat(extVictim); err != nil {
 			t.Fatalf("external victim.js was deleted across symlinked ancestor: %v", err)
@@ -1097,23 +1050,21 @@ func TestAncestorReparseAndRootReplacementRejected(t *testing.T) {
 	if err := os.Rename(cacheRoot, backupRoot); err != nil {
 		t.Fatalf("Rename cacheRoot failed: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(cacheRoot, "assets", "100", "js"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(cacheRoot, "assets", "js"), 0755); err != nil {
 		t.Fatalf("MkdirAll new cacheRoot failed: %v", err)
 	}
-	newVictim := filepath.Join(cacheRoot, "assets", "100", "js", "victim.js")
+	newVictim := filepath.Join(cacheRoot, "assets", "js", "victim.js")
 	if err := os.WriteFile(newVictim, payload, 0644); err != nil {
 		t.Fatalf("WriteFile newVictim failed: %v", err)
 	}
 	_ = os.Chtimes(newVictim, origFi.ModTime(), origFi.ModTime())
 
-	delRes2, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
-		{NS: "gbf", Key: "assets/100/js/victim.js"},
-	}, nil, nil)
+	delRes2, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("DeleteSnapshotEntriesWithProgress returned unexpected error: %v", err)
+		t.Fatalf("ClearCategoriesWithProgress returned unexpected error: %v", err)
 	}
 	if delRes2 == nil || delRes2.Status != "failed" || delRes2.FailedCount == 0 {
-		t.Fatalf("expected DeleteSnapshotEntriesWithProgress to fail closed on replaced cache root directory, got %+v", delRes2)
+		t.Fatalf("expected ClearCategoriesWithProgress to fail closed on replaced cache root directory, got %+v", delRes2)
 	}
 	slimRes, err := mgr.PruneStaleVersionsDetailed(1, snap.SnapshotID, nil, nil)
 	if err != nil {
@@ -1251,11 +1202,11 @@ func TestPinnedParentRootPreventsCheckToUnlinkSwap(t *testing.T) {
 
 	headers := map[string]string{"content-type": "application/javascript"}
 	payload := []byte("console.log('pinned_unlink_test');")
-	if !mgr.SaveWithNamespace("gbf", "assets/100/js/target.js", headers, payload) {
+	if !mgr.SaveWithNamespace("gbf", "assets/js/target.js", headers, payload) {
 		t.Fatalf("SaveWithNamespace failed")
 	}
 
-	origPath := filepath.Join(cacheRoot, "assets", "100", "js", "target.js")
+	origPath := filepath.Join(cacheRoot, "assets", "js", "target.js")
 	origFi, err := os.Stat(origPath)
 	if err != nil {
 		t.Fatalf("Stat origPath failed: %v", err)
@@ -1269,7 +1220,7 @@ func TestPinnedParentRootPreventsCheckToUnlinkSwap(t *testing.T) {
 	// Prepare a replacement directory tree that will be swapped into the path string right before parentRoot.Remove()
 	swappedOutRoot := filepath.Join(parentDir, "cache_root_moved")
 	replacementRoot := filepath.Join(parentDir, "cache_root_replacement")
-	replacementFile := filepath.Join(replacementRoot, "assets", "100", "js", "target.js")
+	replacementFile := filepath.Join(replacementRoot, "assets", "js", "target.js")
 	if err := os.MkdirAll(filepath.Dir(replacementFile), 0755); err != nil {
 		t.Fatalf("MkdirAll replacement dir failed: %v", err)
 	}
@@ -1293,18 +1244,16 @@ func TestPinnedParentRootPreventsCheckToUnlinkSwap(t *testing.T) {
 		testBeforeUnlinkHook = nil
 	}()
 
-	_, err = mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
-		{NS: "gbf", Key: "assets/100/js/target.js"},
-	}, nil, nil)
+	_, err = mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("DeleteSnapshotEntriesWithProgress failed: %v", err)
+		t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
 	}
 
 	// Regardless of whether the OS allowed renaming the open parent directory (POSIX) or blocked the rename via handle sharing (Windows),
 	// the victim file in the replacement tree must NEVER be deleted!
 	victimPath := replacementFile
 	if swapped {
-		victimPath = filepath.Join(cacheRoot, "assets", "100", "js", "target.js")
+		victimPath = filepath.Join(cacheRoot, "assets", "js", "target.js")
 	}
 	if _, err := os.Stat(victimPath); err != nil {
 		t.Fatalf("victim file in replacement tree was deleted across check-to-unlink window (swapped=%v): %v", swapped, err)
@@ -1377,9 +1326,7 @@ func TestConcurrentEmptyDirPruneAndTempFileSave(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, _ = mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
-				{NS: "gbf", Key: "assets/img/sp/quest/scene/old_item.js"},
-			}, nil, nil)
+			_, _ = mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryStory}, nil, nil, nil)
 		}()
 		go func() {
 			defer wg.Done()
@@ -1574,52 +1521,15 @@ func TestDeleteSnapshotSkipsModifiedLingeringExtWhenDataMissing(t *testing.T) {
 		t.Fatalf("WriteFile extPath failed: %v", err)
 	}
 
-	res, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
-		{NS: "gbf", Key: "assets/js/lingering.js"},
-	}, nil, nil)
+	res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
 	if err != nil {
-		t.Fatalf("DeleteSnapshotEntriesWithProgress failed: %v", err)
+		t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
 	}
 	if res.SkippedChangedCount != 1 {
 		t.Fatalf("expected SkippedChangedCount=1 when lingering .ext was modified after scan, got %+v", res)
 	}
 	if _, err := os.Stat(extPath); err != nil {
 		t.Fatalf("expected modified .ext to remain on disk, got err=%v", err)
-	}
-}
-
-func TestSearchSnapshotFullURLHostsSubpath(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir, 32)
-	defer mgr.Close()
-
-	headers := map[string]string{"content-type": "application/javascript"}
-	body := []byte("console.log('hosts_url_search');")
-	if !mgr.SaveWithNamespace("gbf", "hosts/cdn.example.com/js/app.js", headers, body) {
-		t.Fatalf("SaveWithNamespace failed")
-	}
-
-	snap := mgr.ScanBreakdownWithProgress(nil, nil)
-	if snap == nil || !snap.Valid {
-		t.Fatalf("expected valid snapshot")
-	}
-
-	sr, err := mgr.SearchSnapshot(
-		snap.SnapshotID,
-		"https://prd-game-a-granbluefantasy.akamaized.net/hosts/cdn.example.com/js/app.js",
-		50,
-		func(host string) (string, bool) {
-			if host == "prd-game-a-granbluefantasy.akamaized.net" {
-				return "gbf", true
-			}
-			return "", false
-		},
-	)
-	if err != nil {
-		t.Fatalf("SearchSnapshot failed: %v", err)
-	}
-	if sr.TotalMatches != 1 || len(sr.Items) != 1 {
-		t.Fatalf("expected 1 match for full GBF hosts/... URL search, got total=%d items=%+v", sr.TotalMatches, sr.Items)
 	}
 }
 

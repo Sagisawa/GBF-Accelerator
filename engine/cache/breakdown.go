@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -152,26 +151,18 @@ var supportedAudioExts = map[string]struct{}{
 	".m4a": {},
 }
 
-// Validation errors for breakdown/search/cleanup operations.
+// Validation errors for breakdown and cleanup operations.
 var (
 	ErrSnapshotNotFound       = errors.New("未找到可用的缓存扫描快照，请先执行扫描")
 	ErrSnapshotStale          = errors.New("缓存扫描快照已过期，请重新扫描后再执行操作")
-	ErrEmptySearchQuery       = errors.New("搜索关键词不能为空")
-	ErrSearchQueryTooLong     = errors.New("搜索关键词长度超出上限 (最多 512 字符)")
-	ErrInvalidSearchLimit     = errors.New("搜索返回数量上限无效 (允许范围 1~200)")
 	ErrVersionedCatDisallowed = errors.New("versioned 类别不支持按类别直接清空，请使用版本保留策略清理")
 	ErrInvalidCategory        = errors.New("包含无效的缓存分类名称")
 	ErrEmptyCleanupSelection  = errors.New("未选择需要清理的缓存分类或条目")
-	ErrBatchLimitExceeded     = errors.New("单次定点删除条目数超出上限 (最多 200 项)")
 	ErrInvalidKeepCount       = errors.New("保留版本数量参数无效 (必须为正整数)")
 )
 
 const (
-	MaxSearchQueryLen      = 512
-	DefaultSearchLimit     = 50
-	MaxSearchLimit         = 200
-	MaxInvalidateBatchSize = 200
-	DefaultVersionKeep     = 8
+	DefaultVersionKeep = 8
 )
 
 // IsValidCategory reports whether cat is one of the 7 defined categories.
@@ -1364,34 +1355,6 @@ type ScanProgress struct {
 	Message      string `json:"message,omitempty"`
 }
 
-// SearchItem represents a single matched cache entry returned by SearchSnapshot.
-type SearchItem struct {
-	NS                   string `json:"ns"`
-	Key                  string `json:"key"`
-	Category             string `json:"category"`
-	CategoryLabel        string `json:"category_label"`
-	AssetBytes           int64  `json:"asset_bytes"`
-	MetadataBytes        int64  `json:"metadata_bytes"`
-	EstimatedDeleteBytes int64  `json:"estimated_delete_bytes"`
-	HasMetadata          bool   `json:"has_metadata"`
-	FileModifiedMS       int64  `json:"file_modified_ms"`
-	FileModifiedISO      string `json:"file_modified_iso"`
-	HasAlias             bool   `json:"has_alias,omitempty"`
-	AliasKey             string `json:"alias_key,omitempty"`
-}
-
-// SearchResponse represents the response of GET /api/cache/search.
-type SearchResponse struct {
-	OK            bool         `json:"ok"`
-	SnapshotID    string       `json:"snapshot_id"`
-	CompletedAtMS int64        `json:"completed_at_ms"`
-	Query         string       `json:"query"`
-	Limit         int          `json:"limit"`
-	TotalMatches  int          `json:"total_matches"`
-	Truncated     bool         `json:"truncated"`
-	Items         []SearchItem `json:"items"`
-}
-
 // DeleteFailure records why a specific entry failed to delete.
 type DeleteFailure struct {
 	NS     string `json:"ns"`
@@ -1399,7 +1362,7 @@ type DeleteFailure struct {
 	Reason string `json:"reason"`
 }
 
-// DeleteResult records detailed execution outcomes of targeted deletion, category cleanup, or version pruning.
+// DeleteResult records detailed execution outcomes of category cleanup or version pruning.
 type DeleteResult struct {
 	TaskType            string          `json:"task_type"`
 	SnapshotID          string          `json:"snapshot_id,omitempty"`
@@ -1423,7 +1386,7 @@ type DeleteResult struct {
 	Message             string          `json:"message,omitempty"`
 }
 
-// CleanupProgress reports progress during targeted deletion or category cleanup.
+// CleanupProgress reports progress during category cleanup.
 type CleanupProgress struct {
 	TaskType            string `json:"task_type"`
 	SnapshotID          string `json:"snapshot_id,omitempty"`
@@ -1559,7 +1522,7 @@ func (m *Manager) invalidateSnapshots(reason string) {
 
 // GetBreakdownSnapshot returns a copy of the latest completed snapshot (or active scan metadata)
 // with up-to-date validity flags. Lock order: persistMu.RLock -> mu.RLock -> snapshotMu.RLock.
-func (m *Manager) GetBreakdownSnapshot(customKeep int) (*BreakdownSnapshot, *BreakdownSnapshot) {
+func (m *Manager) GetBreakdownSnapshot() (*BreakdownSnapshot, *BreakdownSnapshot) {
 	m.persistMu.RLock()
 	curGen := m.generation
 	curBase := m.GetCacheBase()
@@ -1589,17 +1552,6 @@ func (m *Manager) GetBreakdownSnapshot(customKeep int) (*BreakdownSnapshot, *Bre
 			}
 		} else {
 			cp.Valid = (cp.Status == "completed" && !cp.Stale)
-		}
-		if customKeep > 0 {
-			revs := make(map[string]VersionRetentionPreview, len(cp.RetentionPreviews)+1)
-			for k, v := range cp.RetentionPreviews {
-				revs[k] = v
-			}
-			key := strconv.Itoa(customKeep)
-			if _, exists := revs[key]; !exists {
-				revs[key] = ComputeVersionRetentionPreview(cp.VersionGroups, customKeep)
-			}
-			cp.RetentionPreviews = revs
 		}
 		latest = &cp
 	}
@@ -2119,9 +2071,7 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 	})
 
 	retentionPreviews := map[string]VersionRetentionPreview{
-		"2": ComputeVersionRetentionPreview(versionGroups, 2),
-		"4": ComputeVersionRetentionPreview(versionGroups, 4),
-		"8": ComputeVersionRetentionPreview(versionGroups, 8),
+		strconv.Itoa(DefaultVersionKeep): ComputeVersionRetentionPreview(versionGroups, DefaultVersionKeep),
 	}
 
 	now := time.Now()
@@ -2228,258 +2178,7 @@ func (m *Manager) getValidatedSnapshot(snapshotID string) (*BreakdownSnapshot, e
 	return &cp, nil
 }
 
-// --- Search over Snapshot Index (Section 4.3) ---
-
-// SearchSnapshot searches the latest valid breakdown snapshot by full HTTP/HTTPS URL,
-// relative resource path, or filename/path fragment (plain substring match, no regex).
-func (m *Manager) SearchSnapshot(snapshotID, query string, limit int, hostNormalizer func(host string) (string, bool)) (*SearchResponse, error) {
-	if strings.TrimSpace(query) == "" {
-		return nil, ErrEmptySearchQuery
-	}
-	trimmed := trimTrailingASCIISpaceOrControl(trimLeadingASCIIControl(query))
-	trimmed = strings.Trim(trimmed, " ")
-	if trimmed == "" {
-		return nil, ErrEmptySearchQuery
-	}
-	if len(trimmed) > MaxSearchQueryLen {
-		return nil, ErrSearchQueryTooLong
-	}
-	if limit == 0 {
-		limit = DefaultSearchLimit
-	}
-	if limit < 1 || limit > MaxSearchLimit {
-		return nil, ErrInvalidSearchLimit
-	}
-
-	snap, err := m.getValidatedSnapshot(snapshotID)
-	if err != nil {
-		return nil, err
-	}
-
-	var filterNS string
-	var searchPathLower string
-	isURLQuery := false
-
-	lowerTrimmed := strings.ToLower(trimmed)
-	if strings.HasPrefix(lowerTrimmed, "http://") || strings.HasPrefix(lowerTrimmed, "https://") {
-		if u, parseErr := url.Parse(trimmed); parseErr == nil && u.Host != "" {
-			isURLQuery = true
-			host := u.Hostname()
-			if hostNormalizer != nil {
-				filterNS, _ = hostNormalizer(host)
-			} else {
-				filterNS = sanitizeNamespace(host)
-			}
-			cleanP := strings.TrimPrefix(strings.ReplaceAll(u.Path, "\\", "/"), "/")
-			segs := splitCleanSegments(cleanP)
-			searchPathLower = strings.ToLower(strings.Join(segs, "/"))
-			if filterNS == "gbf" && len(segs) >= 3 && strings.EqualFold(segs[0], "hosts") {
-				filterNS = sanitizeNamespace(segs[1])
-				searchPathLower = strings.ToLower(strings.Join(segs[2:], "/"))
-			}
-		}
-	}
-
-	if !isURLQuery {
-		noQuery, _, _ := strings.Cut(trimmed, "?")
-		norm := strings.TrimPrefix(strings.ReplaceAll(strings.Trim(noQuery, " \t\r\n"), "\\", "/"), "/")
-		if strings.HasPrefix(strings.ToLower(norm), "hosts/") {
-			parts := strings.SplitN(norm, "/", 3)
-			if len(parts) == 3 && parts[1] != "" && parts[2] != "" {
-				filterNS = sanitizeNamespace(parts[1])
-				norm = parts[2]
-			}
-		}
-		searchPathLower = strings.ToLower(norm)
-	}
-
-	if searchPathLower == "" {
-		return nil, ErrEmptySearchQuery
-	}
-
-	var altSearchLower string
-	if filterNS == "" || filterNS == "gbf" {
-		if alt, ok := gbfFallbackCleanKey(searchPathLower); ok {
-			altSearchLower = strings.ToLower(alt)
-		}
-	}
-
-	type matchedCandidate struct {
-		entry      SnapshotEntry
-		exactMatch bool
-	}
-
-	var matches []matchedCandidate
-	for _, entry := range snap.Entries {
-		if filterNS != "" && entry.NS != filterNS {
-			continue
-		}
-		keyLower := strings.ToLower(entry.Key)
-		exact := (keyLower == searchPathLower) || (entry.NS == "gbf" && altSearchLower != "" && keyLower == altSearchLower)
-		matched := exact
-		if !matched {
-			if strings.Contains(keyLower, searchPathLower) {
-				matched = true
-			} else if entry.NS == "gbf" && altSearchLower != "" && strings.Contains(keyLower, altSearchLower) {
-				matched = true
-			} else if filterNS == "" && strings.Contains(strings.ToLower(entry.NS+"/"+entry.Key), searchPathLower) {
-				matched = true
-			}
-		}
-		if matched {
-			matches = append(matches, matchedCandidate{
-				entry:      entry,
-				exactMatch: exact,
-			})
-		}
-	}
-
-	// Deterministic sort: exact matches first, then (NS, Key)
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].exactMatch != matches[j].exactMatch {
-			return matches[i].exactMatch
-		}
-		if matches[i].entry.NS != matches[j].entry.NS {
-			return matches[i].entry.NS < matches[j].entry.NS
-		}
-		return matches[i].entry.Key < matches[j].entry.Key
-	})
-
-	totalMatches := len(matches)
-	truncated := totalMatches > limit
-	if truncated {
-		matches = matches[:limit]
-	}
-
-	items := make([]SearchItem, 0, len(matches))
-	for _, mc := range matches {
-		e := mc.entry
-		estBytes := e.Size + e.MetaBytes
-		hasAlias := false
-		aliasKey := ""
-		if e.NS == "gbf" {
-			if altKey, ok := gbfFallbackCleanKey(e.Key); ok {
-				if altIdx, exists := snap.entryByNSKey[makeNSKey("gbf", altKey)]; exists {
-					altEntry := snap.Entries[altIdx]
-					hasAlias = true
-					aliasKey = altEntry.Key
-					estBytes += altEntry.Size + altEntry.MetaBytes
-				}
-			}
-		}
-		items = append(items, SearchItem{
-			NS:                   e.NS,
-			Key:                  e.Key,
-			Category:             e.Category,
-			CategoryLabel:        categoryMeta[e.Category].Label,
-			AssetBytes:           e.Size,
-			MetadataBytes:        e.MetaBytes,
-			EstimatedDeleteBytes: estBytes,
-			HasMetadata:          e.HasMeta,
-			FileModifiedMS:       e.MTimeMS,
-			FileModifiedISO:      time.Unix(0, e.MTimeNano).UTC().Format(time.RFC3339),
-			HasAlias:             hasAlias,
-			AliasKey:             aliasKey,
-		})
-	}
-
-	return &SearchResponse{
-		OK:            true,
-		SnapshotID:    snap.SnapshotID,
-		CompletedAtMS: snap.CompletedAtMS,
-		Query:         trimmed,
-		Limit:         limit,
-		TotalMatches:  totalMatches,
-		Truncated:     truncated,
-		Items:         items,
-	}, nil
-}
-
-// --- Controlled Deletion & Selective Cleanup (Section 5 & Section 6) ---
-
-// DeleteTargetEntry identifies a target cache item in a deletion request.
-type DeleteTargetEntry struct {
-	NS  string `json:"ns"`
-	Key string `json:"key"`
-}
-
-// ExpandSnapshotTargets validates requested (NS, Key) pairs against the snapshot,
-// expands GBF fallback aliases if both exist in the snapshot, and deduplicates by physical identity.
-func ExpandSnapshotTargets(snap *BreakdownSnapshot, targets []DeleteTargetEntry) ([]SnapshotEntry, []DeleteFailure) {
-	seen := make(map[string]struct{}, len(targets)*2)
-	var candidates []SnapshotEntry
-	var failures []DeleteFailure
-
-	for _, t := range targets {
-		normNS, normKey, ok := validateManagedNamespaceAndKey(t.NS, t.Key)
-		if !ok {
-			failures = append(failures, DeleteFailure{
-				NS:     t.NS,
-				Key:    t.Key,
-				Reason: "非法的缓存命名空间或资源路径",
-			})
-			continue
-		}
-
-		nsKey := makeNSKey(normNS, normKey)
-		idx, exists := snap.entryByNSKey[nsKey]
-		var matchedAny bool
-		if exists {
-			matchedAny = true
-			if _, dup := seen[nsKey]; !dup {
-				seen[nsKey] = struct{}{}
-				candidates = append(candidates, snap.Entries[idx])
-			}
-		}
-
-		if normNS == "gbf" {
-			if altKey, hasAlt := gbfFallbackCleanKey(normKey); hasAlt {
-				altNSKey := makeNSKey("gbf", altKey)
-				if altIdx, altExists := snap.entryByNSKey[altNSKey]; altExists {
-					matchedAny = true
-					if _, dup := seen[altNSKey]; !dup {
-						seen[altNSKey] = struct{}{}
-						candidates = append(candidates, snap.Entries[altIdx])
-					}
-				}
-			}
-		}
-
-		if !matchedAny {
-			failures = append(failures, DeleteFailure{
-				NS:     normNS,
-				Key:    normKey,
-				Reason: "目标条目不在当前有效扫描快照中",
-			})
-		}
-	}
-
-	return candidates, failures
-}
-
-// DeleteSnapshotEntriesWithProgress deletes a verified batch of snapshot entries using
-// per-key invalidation tokens and identity verification.
-func (m *Manager) DeleteSnapshotEntriesWithProgress(
-	snapshotID string,
-	targets []DeleteTargetEntry,
-	progressCb func(p CleanupProgress),
-	cancelCh <-chan struct{},
-) (*DeleteResult, error) {
-	if len(targets) == 0 {
-		return nil, ErrEmptyCleanupSelection
-	}
-	if len(targets) > MaxInvalidateBatchSize {
-		return nil, ErrBatchLimitExceeded
-	}
-	snap, err := m.getValidatedSnapshot(snapshotID)
-	if err != nil {
-		return nil, err
-	}
-
-	candidates, initialFailures := ExpandSnapshotTargets(snap, targets)
-	res := m.executeControlledDeletion("invalidate", snap, candidates, initialFailures, progressCb, cancelCh)
-	return &res, nil
-}
+// --- Controlled Selective Cleanup ---
 
 // ClearCategoriesWithProgress deletes all entries matching the selected non-versioned categories
 // and namespaces from the specified valid snapshot.

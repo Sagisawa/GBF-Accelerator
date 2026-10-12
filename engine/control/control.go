@@ -59,7 +59,6 @@ type ControlServer struct {
 	isSlimming          bool
 	isBoosting          bool
 	isScanning          bool
-	isInvalidating      bool
 	isClearingCategory  bool
 	activeTaskID        string
 	activeTaskType      string
@@ -495,16 +494,6 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleCacheBreakdownScan(w, req)
 			return
 		}
-	case "/api/cache/search":
-		if req.Method == http.MethodGet {
-			c.handleCacheSearch(w, req)
-			return
-		}
-	case "/api/cache/invalidate":
-		if req.Method == http.MethodPost {
-			c.handleCacheInvalidate(w, req)
-			return
-		}
 	case "/api/cache/clear-category":
 		if req.Method == http.MethodPost {
 			c.handleCacheClearCategory(w, req)
@@ -900,7 +889,6 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 	isSlimming := c.isSlimming
 	isBoosting := c.isBoosting
 	isScanning := c.isScanning
-	isInvalidating := c.isInvalidating
 	isClearingCategory := c.isClearingCategory
 	activeTaskID := c.activeTaskID
 	activeTaskType := c.activeTaskType
@@ -940,7 +928,6 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"is_slimming_cache":          isSlimming,
 		"is_boosting_cache":          isBoosting,
 		"is_scanning_cache":          isScanning,
-		"is_invalidating_cache":      isInvalidating,
 		"is_clearing_category_cache": isClearingCategory,
 		"active_cache_task_id":       activeTaskID,
 		"active_cache_task_type":     activeTaskType,
@@ -1542,7 +1529,7 @@ func (c *ControlServer) handleCacheSlim(w http.ResponseWriter, req *http.Request
 	}
 
 	if snapshotID != "" {
-		latest, _ := c.cacheMgr.GetBreakdownSnapshot(0)
+		latest, _ := c.cacheMgr.GetBreakdownSnapshot()
 		if latest == nil {
 			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 				"ok":    false,
@@ -1745,7 +1732,6 @@ func (c *ControlServer) handleCacheTaskStatus(w http.ResponseWriter, req *http.R
 		"is_slimming":            c.isSlimming,
 		"is_boosting":            c.isBoosting,
 		"is_scanning":            c.isScanning,
-		"is_invalidating":        c.isInvalidating,
 		"is_clearing_category":   c.isClearingCategory,
 		"audit_progress":         c.auditProgress,
 		"slim_progress":          c.slimProgress,

@@ -24,7 +24,6 @@ import {
 import {
   BreakdownResponse,
   CategoryStat,
-  SearchItem,
   DeleteResult,
   CleanupProgress,
   VersionRetentionPreview,
@@ -35,7 +34,6 @@ export interface ClearCacheModalProps {
   onClose: () => void
   onRefresh: () => void
   onToast: (msg: string, type?: 'success' | 'info' | 'error') => void
-  onOpenSlimModal?: () => void
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -60,37 +58,6 @@ const CATEGORY_SORT_ORDER: Record<string, number> = {
   other: 6,
 }
 
-const FRIENDLY_CATEGORY_META: Record<string, { label: string; description: string }> = {
-  versioned: {
-    label: '游戏历史版本文件',
-    description: '游戏每次更新后留下的旧版脚本与资源（清理时自动保留最新 8 个版本，不影响当前游玩）。',
-  },
-  story: {
-    label: '剧情与立绘漫画',
-    description: '主线/活动剧情对话背景、人物立绘、支线与小剧场漫画（看过的剧情一般不再需要）。',
-  },
-  event_gacha: {
-    label: '活动与卡池宣传图',
-    description: '往期活动页面、转盘/卡池横幅与登录宣传图（活动结束后即可清理）。',
-  },
-  audio: {
-    label: '语音与音乐音效',
-    description: '角色语音、背景音乐 (BGM) 与音效文件。',
-  },
-  battle_cjs: {
-    label: '战斗动画与特效',
-    description: '角色技能、奥义与 Boss 战斗动画，清理后进战斗需重新加载。',
-  },
-  core_ui: {
-    label: '常用界面与图标',
-    description: '主页、编成、共斗、商店等每天高频使用的界面素材，清理后切页需重新下载。',
-  },
-  other: {
-    label: '其它基础资源',
-    description: '其它游戏通用图片与公共静态资源。',
-  },
-}
-
 function sortCategoriesWithCautionLast(categories: CategoryStat[]): CategoryStat[] {
   return [...categories].sort((a, b) => {
     const aCaution = DEFAULT_CAUTION_CATEGORIES.has(a.category) ? 1 : 0
@@ -109,25 +76,6 @@ function formatTimestamp(ms?: number): string {
   } catch {
     return '--'
   }
-}
-
-export function computeDeduplicatedSearchDeleteBytes(items: SearchItem[]): number {
-  const physicalBytes = new Map<string, number>()
-  for (const item of items) {
-    const ownBytes = (item.asset_bytes || 0) + (item.metadata_bytes || 0)
-    const primaryKey = `${item.ns}:::${item.key}`
-    physicalBytes.set(primaryKey, ownBytes)
-    if (item.has_alias && item.alias_key) {
-      const aliasBytes = Math.max(0, (item.estimated_delete_bytes || 0) - ownBytes)
-      const aliasFullKey = `${item.ns}:::${item.alias_key}`
-      physicalBytes.set(aliasFullKey, aliasBytes)
-    }
-  }
-  let total = 0
-  for (const b of physicalBytes.values()) {
-    total += b
-  }
-  return total
 }
 
 export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
@@ -183,7 +131,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       setTaskStatus(data)
       const busy = Boolean(
         data?.is_scanning ||
-          data?.is_invalidating ||
           data?.is_clearing_category ||
           data?.is_slimming ||
           data?.is_auditing
@@ -234,7 +181,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
   const isScanning =
     taskStatus !== null ? Boolean(taskStatus?.is_scanning) : Boolean(breakdown?.is_scanning)
-  const isCleaning = Boolean(taskStatus?.is_invalidating || taskStatus?.is_clearing_category)
+  const isCleaning = Boolean(taskStatus?.is_clearing_category)
   const isSlimming = Boolean(taskStatus?.is_slimming)
   const isSubmittingAction =
     startingScan || submittingCategoryClean || busyRam || busyAll
@@ -724,18 +671,16 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                     </span>
                   </div>
                   <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden flex">
-                    {effectiveCategoryStats.map((cat) => {
-                      const friendly = FRIENDLY_CATEGORY_META[cat.category]
-                      const titleLabel = friendly?.label || cat.label
-                      return cat.percentage > 0 ? (
+                    {effectiveCategoryStats.map((cat) =>
+                      cat.percentage > 0 ? (
                         <div
                           key={cat.category}
                           className={`${CATEGORY_COLORS[cat.category] || 'bg-slate-400'} h-full transition-all duration-300`}
                           style={{ width: `${Math.max(cat.percentage, 0.5)}%` }}
-                          title={`${titleLabel}: ${formatBytesBinary(cat.asset_bytes)} (${cat.percentage}%)`}
+                          title={`${cat.label}: ${formatBytesBinary(cat.asset_bytes)} (${cat.percentage}%)`}
                         />
                       ) : null
-                    })}
+                    )}
                   </div>
                 </div>
 
@@ -774,9 +719,6 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                       const isChecked = selectedCategories.includes(cat.category)
                       const isCaution = DEFAULT_CAUTION_CATEGORIES.has(cat.category)
                       const isVersioned = cat.category === 'versioned'
-                      const friendly = FRIENDLY_CATEGORY_META[cat.category]
-                      const displayLabel = friendly?.label || cat.label
-                      const displayDesc = friendly?.description || cat.description
 
                       const versionedPruneFiles = preview?.prune_asset_files ?? 0
                       const versionedPruneDirs = preview?.prune_dirs ?? 0
@@ -808,7 +750,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                                     CATEGORY_COLORS[cat.category] || 'bg-slate-400'
                                   }`}
                                 />
-                                <span className="font-bold text-slate-900">{displayLabel}</span>
+                                <span className="font-bold text-slate-900">{cat.label}</span>
                                 {isCaution && (
                                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
                                     推荐不选
@@ -816,7 +758,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                                 )}
                               </div>
                               <p className="text-[11px] text-slate-500 leading-snug">
-                                {displayDesc}
+                                {cat.description}
                               </p>
                             </div>
                           </div>

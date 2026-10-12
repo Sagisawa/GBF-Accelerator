@@ -543,37 +543,6 @@ export interface BreakdownResponse {
   active_task_type?: string;
 }
 
-export interface SearchItem {
-  ns: string;
-  key: string;
-  category: string;
-  category_label: string;
-  asset_bytes: number;
-  metadata_bytes: number;
-  estimated_delete_bytes: number;
-  has_metadata: boolean;
-  file_modified_ms: number;
-  file_modified_iso: string;
-  has_alias?: boolean;
-  alias_key?: string;
-}
-
-export interface SearchResponse {
-  ok: boolean;
-  snapshot_id: string;
-  completed_at_ms: number;
-  query: string;
-  limit: number;
-  total_matches: number;
-  truncated: boolean;
-  items: SearchItem[];
-}
-
-export interface DeleteTargetEntry {
-  ns: string;
-  key: string;
-}
-
 export interface DeleteFailure {
   ns: string;
   key: string;

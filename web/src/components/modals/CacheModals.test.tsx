@@ -185,7 +185,6 @@ vi.mock('../common/Modal', () => ({
 }))
 
 import { ClearCacheModal } from './ClearCacheModal'
-import { SlimModal } from './SlimModal'
 
 const sampleSnapshot = (id: string) => ({
   snapshot_id: id,
@@ -208,7 +207,7 @@ const sampleSnapshot = (id: string) => ({
   categories: [
     {
       category: 'story',
-      label: '剧情与支线素材',
+      label: '剧情与立绘漫画',
       description: '剧情背景与立绘',
       selectable: true,
       asset_files: 5,
@@ -261,7 +260,7 @@ async function flushMicrotasks(ticks = 6) {
   }
 }
 
-describe('ClearCacheModal & SlimModal concurrency and state regressions', () => {
+describe('ClearCacheModal concurrency and state regressions', () => {
   const originalFetch = globalThis.fetch
 
   beforeEach(() => {
@@ -282,7 +281,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
       categories: [
         {
           category: 'versioned',
-          label: '版本化静态资源',
+          label: '游戏历史版本文件',
           description: '版本目录资源',
           selectable: false,
           asset_files: 2,
@@ -294,7 +293,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
         },
         {
           category: 'battle_cjs',
-          label: '战斗动画与特效 (CJS)',
+          label: '战斗动画与特效',
           description: '战斗帧动画',
           selectable: true,
           asset_files: 2,
@@ -306,7 +305,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
         },
         {
           category: 'story',
-          label: '剧情与支线素材',
+          label: '剧情与立绘漫画',
           description: '剧情背景与立绘',
           selectable: true,
           asset_files: 5,
@@ -318,7 +317,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
         },
         {
           category: 'core_ui',
-          label: '常驻 UI 与基础素材',
+          label: '常用界面与图标',
           description: '高频界面素材',
           selectable: true,
           asset_files: 2,
@@ -330,7 +329,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
         },
         {
           category: 'event_gacha',
-          label: '活动与宣发素材',
+          label: '活动与卡池宣传图',
           description: '活动与卡池',
           selectable: true,
           asset_files: 2,
@@ -342,7 +341,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
         },
         {
           category: 'audio',
-          label: '音频素材',
+          label: '语音与音乐音效',
           description: '语音与音效',
           selectable: true,
           asset_files: 2,
@@ -354,7 +353,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
         },
         {
           category: 'other',
-          label: '其它未归类素材',
+          label: '其它基础资源',
           description: '未归类文件',
           selectable: true,
           asset_files: 1,
@@ -482,7 +481,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
     expect(collectText(lastTree)).toContain('已选 0 个类别')
   })
 
-  it('does not starve or discard slow (>1s) status poll responses in ClearCacheModal and SlimModal', async () => {
+  it('does not starve or discard slow (>1s) status poll responses in ClearCacheModal', async () => {
     vi.useFakeTimers()
 
     let statusCallCount = 0
@@ -580,7 +579,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
 
     unmountComponent()
 
-    // Verify SlimModal slow polling (>1s) as well
+    // Verify slimming slow polling (>1s) inside ClearCacheModal as well
     statusCallCount = 0
     globalThis.fetch = vi.fn().mockImplementation((url: string) => {
       if (url.startsWith('/api/cache/breakdown')) {
@@ -629,7 +628,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
 
     const onSlimRefresh = vi.fn()
     mountComponent(() =>
-      SlimModal({
+      ClearCacheModal({
         isOpen: true,
         onClose: vi.fn(),
         onRefresh: onSlimRefresh,
@@ -644,7 +643,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
 
     await vi.advanceTimersByTimeAsync(500)
     await flushMicrotasks()
-    expect(collectText(lastTree)).toContain('正在清理历史版本目录...')
+    expect(collectText(lastTree)).toContain('正在清理历史版本目录:')
     expect(collectText(lastTree)).toContain('3 / 5')
 
     await vi.advanceTimersByTimeAsync(500)
@@ -656,7 +655,7 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
     expect(onSlimRefresh).toHaveBeenCalledTimes(1)
   })
 
-  it('displays scan failure banner when background scan fails in ClearCacheModal and SlimModal', async () => {
+  it('displays scan failure banner when background scan fails in ClearCacheModal', async () => {
     globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
       if (url.startsWith('/api/cache/breakdown')) {
         return {
@@ -694,20 +693,6 @@ describe('ClearCacheModal & SlimModal concurrency and state regressions', () => 
 
     mountComponent(() =>
       ClearCacheModal({
-        isOpen: true,
-        onClose: vi.fn(),
-        onRefresh: vi.fn(),
-        onToast: vi.fn(),
-      })
-    )
-    await flushMicrotasks()
-    expect(collectText(lastTree)).toContain('分类扫描失败：')
-    expect(collectText(lastTree)).toContain('缓存根目录不可访问')
-
-    unmountComponent()
-
-    mountComponent(() =>
-      SlimModal({
         isOpen: true,
         onClose: vi.fn(),
         onRefresh: vi.fn(),

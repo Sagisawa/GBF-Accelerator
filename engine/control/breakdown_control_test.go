@@ -72,7 +72,7 @@ func waitForControlCacheTaskIdle(t *testing.T, ctrl *ControlServer) map[string]i
 	return nil
 }
 
-func TestCacheBreakdownScanSearchAndTargetedDeleteAPIs(t *testing.T) {
+func TestCacheBreakdownScanAPI(t *testing.T) {
 	tempDir := t.TempDir()
 	cfgPath := filepath.Join(tempDir, "config.json")
 	cfgMgr := config.NewManager(cfgPath)
@@ -112,12 +112,6 @@ func TestCacheBreakdownScanSearchAndTargetedDeleteAPIs(t *testing.T) {
 		t.Fatalf("expected has_snapshot=false before scan, got %v", beforeData["has_snapshot"])
 	}
 
-	// Search before scan must return 409 Conflict
-	wSearchNoSnap := doReq(http.MethodGet, "/api/cache/search?q=3040001000", "")
-	if wSearchNoSnap.Code != http.StatusConflict {
-		t.Fatalf("expected 409 Conflict searching before scan, got %d", wSearchNoSnap.Code)
-	}
-
 	// 2. Start scan: POST /api/cache/breakdown/scan returns 202 Accepted + task_id
 	wScan := doReq(http.MethodPost, "/api/cache/breakdown/scan", "")
 	if wScan.Code != http.StatusAccepted {
@@ -134,8 +128,8 @@ func TestCacheBreakdownScanSearchAndTargetedDeleteAPIs(t *testing.T) {
 
 	waitForControlCacheTaskIdle(t, ctrl)
 
-	// 3. After scan: GET /api/cache/breakdown?keep=2 returns completed snapshot & custom preview
-	wAfter := doReq(http.MethodGet, "/api/cache/breakdown?keep=2", "")
+	// 3. After scan: GET /api/cache/breakdown returns completed snapshot with DefaultVersionKeep (8) preview
+	wAfter := doReq(http.MethodGet, "/api/cache/breakdown", "")
 	if wAfter.Code != http.StatusOK {
 		t.Fatalf("breakdown after scan expected 200, got %d", wAfter.Code)
 	}
@@ -150,65 +144,12 @@ func TestCacheBreakdownScanSearchAndTargetedDeleteAPIs(t *testing.T) {
 	if !afterData.HasSnapshot || afterData.Snapshot == nil || !afterData.Snapshot.Valid {
 		t.Fatalf("expected valid snapshot after scan, got %+v", afterData)
 	}
-	snapID := afterData.Snapshot.SnapshotID
 	if afterData.Snapshot.AssetFiles != 11 {
 		t.Fatalf("expected 11 asset files, got %d", afterData.Snapshot.AssetFiles)
 	}
-	prev2, ok := afterData.Snapshot.RetentionPreviews["2"]
-	if !ok || prev2.Keep != 2 || prev2.PruneDirs != 1 {
-		t.Fatalf("expected retention preview keep=2 with 1 pruned dir, got %+v", afterData.Snapshot.RetentionPreviews)
-	}
-
-	// 4. Search by URL and keyword
-	wSearch := doReq(http.MethodGet, "/api/cache/search?q=https://prd-game-a1-granbluefantasy.akamaized.net/assets/img/sp/quest/scene/character/body/3040001000.png%3Fv%3D1&limit=10", "")
-	if wSearch.Code != http.StatusOK {
-		t.Fatalf("search expected 200, got %d: %s", wSearch.Code, wSearch.Body.String())
-	}
-	var searchRes cache.SearchResponse
-	if err := json.Unmarshal(wSearch.Body.Bytes(), &searchRes); err != nil {
-		t.Fatalf("unmarshal search response: %v", err)
-	}
-	if searchRes.TotalMatches != 1 || len(searchRes.Items) != 1 {
-		t.Fatalf("expected 1 matched item, got %d", searchRes.TotalMatches)
-	}
-	targetItem := searchRes.Items[0]
-	if targetItem.Category != cache.CategoryStory {
-		t.Fatalf("expected story category, got %q", targetItem.Category)
-	}
-
-	// Empty query must be rejected with 400
-	if wEmpty := doReq(http.MethodGet, "/api/cache/search?q=", ""); wEmpty.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for empty search query, got %d", wEmpty.Code)
-	}
-	// Out-of-range limit must be rejected with 400
-	if wLimit := doReq(http.MethodGet, "/api/cache/search?q=png&limit=201", ""); wLimit.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for limit=201, got %d", wLimit.Code)
-	}
-
-	// 5. Targeted delete via POST /api/cache/invalidate
-	invBody, _ := json.Marshal(map[string]interface{}{
-		"snapshot_id": snapID,
-		"entries": []map[string]interface{}{
-			{
-				"ns":  targetItem.NS,
-				"key": targetItem.Key,
-			},
-		},
-	})
-	wInv := doReq(http.MethodPost, "/api/cache/invalidate", string(invBody))
-	if wInv.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 Accepted for invalidate, got %d: %s", wInv.Code, wInv.Body.String())
-	}
-	taskStatus := waitForControlCacheTaskIdle(t, ctrl)
-	summary, _ := taskStatus["last_task_summary"].(map[string]interface{})
-	if summary["task_type"] != "invalidate" || summary["status"] != "completed" {
-		t.Fatalf("expected completed invalidate task summary, got %+v", summary)
-	}
-
-	// Snapshot must now be marked stale (Valid=false), so repeating invalidate with old snapID returns 409 Conflict
-	wInvStale := doReq(http.MethodPost, "/api/cache/invalidate", string(invBody))
-	if wInvStale.Code != http.StatusConflict {
-		t.Fatalf("expected 409 Conflict when using invalidated snapshot_id, got %d", wInvStale.Code)
+	prev8, ok := afterData.Snapshot.RetentionPreviews["8"]
+	if !ok || prev8.Keep != 8 || prev8.TotalVersionDirs != 3 {
+		t.Fatalf("expected retention preview keep=8 with 3 total version dirs, got %+v", afterData.Snapshot.RetentionPreviews)
 	}
 }
 
@@ -245,7 +186,7 @@ func TestCacheCategoryCleanupAndSlimPreviewAPIs(t *testing.T) {
 	}
 	waitForControlCacheTaskIdle(t, ctrl)
 
-	latest, _ := cacheMgr.GetBreakdownSnapshot(0)
+	latest, _ := cacheMgr.GetBreakdownSnapshot()
 	if latest == nil {
 		t.Fatalf("expected snapshot")
 	}
@@ -282,7 +223,7 @@ func TestCacheCategoryCleanupAndSlimPreviewAPIs(t *testing.T) {
 		t.Fatalf("rescan failed: %d", w.Code)
 	}
 	waitForControlCacheTaskIdle(t, ctrl)
-	latest2, _ := cacheMgr.GetBreakdownSnapshot(0)
+	latest2, _ := cacheMgr.GetBreakdownSnapshot()
 
 	wSlim := doReq(http.MethodPost, "/api/cache/slim", fmt.Sprintf(`{"keep":2,"snapshot_id":%q}`, latest2.SnapshotID))
 	if wSlim.Code != http.StatusOK {
@@ -390,8 +331,6 @@ func TestCacheTaskMutualExclusionCancelAndSecurityBoundaries(t *testing.T) {
 	}{
 		{http.MethodGet, "/api/cache/breakdown"},
 		{http.MethodPost, "/api/cache/breakdown/scan"},
-		{http.MethodGet, "/api/cache/search?q=png"},
-		{http.MethodPost, "/api/cache/invalidate"},
 		{http.MethodPost, "/api/cache/clear-category"},
 	}
 	for _, ep := range newEndpoints {
@@ -417,21 +356,9 @@ func TestCacheTaskMutualExclusionCancelAndSecurityBoundaries(t *testing.T) {
 		}
 	}
 
-	// 3. Batch size > 200 and oversized body > 128 KiB must be rejected with 400 Bad Request
-	var entries201 []cache.DeleteTargetEntry
-	for i := 0; i < 201; i++ {
-		entries201 = append(entries201, cache.DeleteTargetEntry{NS: "gbf", Key: fmt.Sprintf("assets/img/%d.png", i)})
-	}
-	b201, _ := json.Marshal(map[string]interface{}{
-		"snapshot_id": "snap-1-1",
-		"entries":     entries201,
-	})
-	if w201 := doLoopback(http.MethodPost, "/api/cache/invalidate", b201); w201.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 Bad Request for 201 entries, got %d", w201.Code)
-	}
-
+	// 3. Oversized body > 128 KiB must be rejected with 400 Bad Request
 	oversized := bytes.Repeat([]byte("a"), 130*1024)
-	if wBig := doLoopback(http.MethodPost, "/api/cache/invalidate", oversized); wBig.Code != http.StatusBadRequest {
+	if wBig := doLoopback(http.MethodPost, "/api/cache/clear-category", oversized); wBig.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 Bad Request for >128KB payload, got %d", wBig.Code)
 	}
 }

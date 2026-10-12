@@ -7,14 +7,11 @@ import {
   formatBytesBinary,
   fetchCacheBreakdown,
   startCacheBreakdownScan,
-  searchCacheSnapshot,
-  invalidateCacheEntries,
   clearCacheCategories,
   slimCache,
   cancelCacheTask,
 } from './api'
-import { HealthResponse, RepairResponse, SearchItem } from './types'
-import { computeDeduplicatedSearchDeleteBytes } from './components/modals/ClearCacheModal'
+import { HealthResponse, RepairResponse } from './types'
 
 describe('fetchHealth API', () => {
   const originalFetch = globalThis.fetch
@@ -276,59 +273,50 @@ describe('cache breakdown & targeted management APIs', () => {
       json: async () => ({ ok: true, task_id: 'scan-100-1', task: 'scan', status: 'running' }),
     }) as any
 
-    const b = await fetchCacheBreakdown(4)
+    const b = await fetchCacheBreakdown()
     expect(b.has_snapshot).toBe(false)
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/breakdown?keep=4', { cache: 'no-store' })
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/breakdown', { cache: 'no-store' })
 
     const s = await startCacheBreakdownScan()
     expect(s.task_id).toBe('scan-100-1')
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/breakdown/scan', { method: 'POST' })
   })
 
-  it('searches snapshot and posts targeted invalidation and category cleanup', async () => {
+  it('posts category cleanup with optional slim_versioned flag', async () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        ok: true,
-        snapshot_id: 'snap-1-1',
-        total_matches: 1,
-        truncated: false,
-        items: [{ ns: 'gbf', key: 'assets/img/sp/quest/scene/1.png', category: 'story' }],
-      }),
-    }).mockResolvedValueOnce({
-      ok: true,
-      status: 202,
-      json: async () => ({ ok: true, task_id: 'invalidate-100-2', task: 'invalidate', status: 'running', candidate_files: 1 }),
-    }).mockResolvedValueOnce({
       ok: true,
       status: 202,
       json: async () => ({ ok: true, task_id: 'clear_category-100-3', task: 'clear_category', status: 'running', categories: ['story'] }),
     }) as any
 
-    const sr = await searchCacheSnapshot({ q: 'scene/1.png', limit: 50, snapshot_id: 'snap-1-1' })
-    expect(sr.total_matches).toBe(1)
-
-    const inv = await invalidateCacheEntries('snap-1-1', [{ ns: 'gbf', key: 'assets/img/sp/quest/scene/1.png' }])
-    expect(inv.task_id).toBe('invalidate-100-2')
-
-    const cat = await clearCacheCategories('snap-1-1', ['story'], ['gbf'])
+    const cat = await clearCacheCategories('snap-1-1', ['story'], ['gbf'], true)
     expect(cat.task_id).toBe('clear_category-100-3')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/clear-category', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snapshot_id: 'snap-1-1',
+        categories: ['story'],
+        namespaces: ['gbf'],
+        slim_versioned: true,
+      }),
+    })
   })
 
   it('passes snapshot_id in slimCache and task_id in cancelCacheTask', async () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ ok: true, task: 'slim', task_id: 'slim-1', keep: 2 }),
+      json: async () => ({ ok: true, task: 'slim', task_id: 'slim-1', keep: 8 }),
     }).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ ok: true, task_id: 'slim-1', cancelled: true }),
     }) as any
 
-    await slimCache(2, 'snap-1-1')
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/slim?keep=2', {
+    await slimCache(8, 'snap-1-1')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/slim?keep=8', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ keep: 2, snapshot_id: 'snap-1-1' }),
+      body: JSON.stringify({ keep: 8, snapshot_id: 'snap-1-1' }),
     })
 
     await cancelCacheTask('slim-1')
@@ -337,41 +325,6 @@ describe('cache breakdown & targeted management APIs', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ task_id: 'slim-1' }),
     })
-  })
-
-  it('deduplicates estimated delete bytes when both GBF fallback alias copies are selected', () => {
-    const copyA: SearchItem = {
-      ns: 'gbf',
-      key: 'img/sp/quest/scene/sample.png',
-      category: 'story',
-      category_label: '剧情与支线素材',
-      asset_bytes: 10,
-      metadata_bytes: 0,
-      estimated_delete_bytes: 20,
-      has_metadata: false,
-      file_modified_ms: 1700000000000,
-      file_modified_iso: '2023-11-14T22:13:20Z',
-      has_alias: true,
-      alias_key: 'assets/img/sp/quest/scene/sample.png',
-    }
-    const copyB: SearchItem = {
-      ns: 'gbf',
-      key: 'assets/img/sp/quest/scene/sample.png',
-      category: 'story',
-      category_label: '剧情与支线素材',
-      asset_bytes: 10,
-      metadata_bytes: 0,
-      estimated_delete_bytes: 20,
-      has_metadata: false,
-      file_modified_ms: 1700000000000,
-      file_modified_iso: '2023-11-14T22:13:20Z',
-      has_alias: true,
-      alias_key: 'img/sp/quest/scene/sample.png',
-    }
-
-    expect(computeDeduplicatedSearchDeleteBytes([copyA])).toBe(20)
-    expect(computeDeduplicatedSearchDeleteBytes([copyB])).toBe(20)
-    expect(computeDeduplicatedSearchDeleteBytes([copyA, copyB])).toBe(20)
   })
 })
 
