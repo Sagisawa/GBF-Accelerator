@@ -127,18 +127,21 @@ vi.mock('react', async () => {
       createElement: actual.createElement,
     },
     useState: (initial: any) => {
+      const states = hookStates
+      const render = currentRenderFn
       const idx = hookCursor++
-      if (!(idx in hookStates)) {
-        hookStates[idx] = typeof initial === 'function' ? initial() : initial
+      if (!(idx in states)) {
+        states[idx] = typeof initial === 'function' ? initial() : initial
       }
       const setState = (updater: any) => {
-        const next = typeof updater === 'function' ? updater(hookStates[idx]) : updater
-        if (!Object.is(hookStates[idx], next)) {
-          hookStates[idx] = next
+        if (hookStates !== states || currentRenderFn !== render) return
+        const next = typeof updater === 'function' ? updater(states[idx]) : updater
+        if (!Object.is(states[idx], next)) {
+          states[idx] = next
           renderTree()
         }
       }
-      return [hookStates[idx], setState]
+      return [states[idx], setState]
     },
     useRef: (initial: any) => {
       const idx = hookCursor++

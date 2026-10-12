@@ -1490,23 +1490,13 @@ export const App: React.FC = () => {
                     <span>🩺</span>
                     <span>一键体检缓存</span>
                   </button>
-                  {!isAndroid && (
-                    <button
-                      type="button"
-                      onClick={() => setIsSlimModalOpen(true)}
-                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                    >
-                      <span>🧹</span>
-                      <span>缓存安全瘦身</span>
-                    </button>
-                  )}
                   <button
                     type="button"
                     onClick={() => setIsClearModalOpen(true)}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
-                    <span>🗂️</span>
-                    <span>分类透视与管理</span>
+                    <span>🧹</span>
+                    <span>缓存清理与瘦身</span>
                   </button>
                 </div>
               </div>
