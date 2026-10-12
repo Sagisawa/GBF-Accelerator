@@ -129,6 +129,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const prevSnapshotIdRef = useRef<string | null>(null)
   const breakdownReqSeqRef = useRef<number>(0)
   const statusReqSeqRef = useRef<number>(0)
+  const statusInFlightCountRef = useRef<number>(0)
   const searchReqSeqRef = useRef<number>(0)
   const breakdownScanningRef = useRef<boolean>(false)
 
@@ -146,6 +147,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
   const loadTaskStatus = useCallback(async () => {
     const reqSeq = ++statusReqSeqRef.current
+    statusInFlightCountRef.current++
     try {
       const data = await fetchCacheTaskStatus()
       if (reqSeq !== statusReqSeqRef.current) return
@@ -158,12 +160,15 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           data?.is_auditing
       )
       if ((prevBusyRef.current && !busy) || (!data?.is_scanning && breakdownScanningRef.current)) {
+        breakdownScanningRef.current = false
         loadBreakdown()
         onRefresh()
       }
       prevBusyRef.current = busy
     } catch {
       // Ignore transient poll errors
+    } finally {
+      statusInFlightCountRef.current = Math.max(0, statusInFlightCountRef.current - 1)
     }
   }, [loadBreakdown, onRefresh])
 
@@ -174,10 +179,14 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       loadBreakdown()
       loadTaskStatus()
       pollTimerRef.current = setInterval(() => {
-        loadTaskStatus()
+        if (statusInFlightCountRef.current === 0) {
+          loadTaskStatus()
+        }
       }, 1000)
     } else {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current)
+      searchReqSeqRef.current++
+      setSearching(false)
     }
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current)
@@ -192,12 +201,14 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     if (prevSnapshotIdRef.current !== activeSnapshotId) {
       prevSnapshotIdRef.current = activeSnapshotId
       searchReqSeqRef.current++
+      setSearching(false)
       setConfirmingCategoryClean(false)
       setSelectedCategories([])
       setSearchResult(null)
       setSelectedSearchKeys({})
     } else if (searchResult && searchResult.snapshot_id !== activeSnapshotId) {
       searchReqSeqRef.current++
+      setSearching(false)
       setSearchResult(null)
       setSelectedSearchKeys({})
     }
@@ -206,8 +217,11 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const isScanning =
     taskStatus !== null ? Boolean(taskStatus?.is_scanning) : Boolean(breakdown?.is_scanning)
   const isCleaning = Boolean(taskStatus?.is_invalidating || taskStatus?.is_clearing_category)
+  const isSubmittingAction =
+    startingScan || submittingCategoryClean || submittingInvalidate || busyRam || busyAll
   const hasAnyActiveTask = Boolean(
-    taskStatus?.active_task_id ||
+    isSubmittingAction ||
+      taskStatus?.active_task_id ||
       isScanning ||
       isCleaning ||
       taskStatus?.is_slimming ||
@@ -288,6 +302,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     setStartingScan(true)
     setConfirmingCategoryClean(false)
     searchReqSeqRef.current++
+    setSearching(false)
     setSearchResult(null)
     setSelectedSearchKeys({})
     setSearchError(null)
@@ -378,10 +393,15 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
         snapshot_id: snapshot.snapshot_id,
       })
       if (reqSeq !== searchReqSeqRef.current) return
-      setSearchResult(res)
+      setSearching(false)
+      setSearchResult({
+        ...res,
+        snapshot_id: res.snapshot_id || snapshot.snapshot_id,
+      })
       setSelectedSearchKeys({})
     } catch (err: any) {
       if (reqSeq !== searchReqSeqRef.current) return
+      setSearching(false)
       setSearchError(err.message || '搜索失败')
     } finally {
       if (reqSeq === searchReqSeqRef.current) {
@@ -427,6 +447,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     const boundSnapshotId = searchResult?.snapshot_id
     if (!boundSnapshotId || !snapshot || !isSnapshotReady || snapshot.snapshot_id !== boundSnapshotId) {
       searchReqSeqRef.current++
+      setSearching(false)
       setSearchResult(null)
       setSelectedSearchKeys({})
       onToast('搜索结果对应的扫描快照已过期或已变更，请重新搜索后再执行删除本地缓存', 'error')
@@ -439,6 +460,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       await invalidateCacheEntries(boundSnapshotId, entries)
       prevBusyRef.current = true
       searchReqSeqRef.current++
+      setSearching(false)
       onToast(`已启动删除本地缓存任务（共 ${entries.length} 项）`, 'info')
       setSearchResult(null)
       setSelectedSearchKeys({})
@@ -486,6 +508,15 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     () => computeDeduplicatedSearchDeleteBytes(selectedSearchList),
     [selectedSearchList]
   )
+
+  const scanOutcomeStatus = !isScanning
+    ? scanProgress?.status === 'failed' || scanProgress?.status === 'cancelled'
+      ? scanProgress.status
+      : snapshot?.status === 'failed' || snapshot?.status === 'cancelled'
+        ? snapshot.status
+        : null
+    : null
+  const scanOutcomeMessage = scanProgress?.message || snapshot?.error
 
   return (
     <Modal
@@ -568,6 +599,29 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
               <span>
                 已统计体积: <strong>{formatBytesBinary(scanProgress?.scanned_bytes ?? 0)}</strong>
               </span>
+            </div>
+          )}
+
+          {/* Scan Failed / Cancelled Outcome Banner */}
+          {scanOutcomeStatus && (
+            <div
+              className={`p-2 border rounded text-[11px] flex items-center justify-between flex-wrap gap-2 ${
+                scanOutcomeStatus === 'failed'
+                  ? 'bg-red-50/90 border-red-200 text-red-900'
+                  : 'bg-amber-50/90 border-amber-200 text-amber-900'
+              }`}
+            >
+              <div className="font-medium flex items-center gap-1.5">
+                <AlertTriangle
+                  className={`w-3.5 h-3.5 shrink-0 ${
+                    scanOutcomeStatus === 'failed' ? 'text-red-600' : 'text-amber-600'
+                  }`}
+                />
+                <span>
+                  {scanOutcomeStatus === 'failed' ? '分类扫描失败：' : '分类扫描已取消：'}
+                  {scanOutcomeMessage || (scanOutcomeStatus === 'failed' ? '分类扫描未完成' : '任务已取消')}
+                </span>
+              </div>
             </div>
           )}
 
@@ -1096,6 +1150,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   variant="desktop"
                   size="sm"
                   loading={busyRam}
+                  disabled={hasAnyActiveTask}
                   onClick={handleClearRam}
                 >
                   清空 RAM SLRU

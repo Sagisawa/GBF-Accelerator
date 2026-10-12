@@ -27,6 +27,7 @@ const MaxDiskDirectReadSize = 2 * 1024 * 1024
 // diskMeta represents the persisted metadata stored in .ext files.
 // It maintains backward compatibility with Version 1 metadata schemas.
 type diskMeta struct {
+	Namespace         string `json:"ns,omitempty"`
 	LastModified      string `json:"LastModified,omitempty"`
 	ETag              string `json:"ETag,omitempty"`
 	AccessTime        int64  `json:"at,omitempty"`
@@ -124,6 +125,7 @@ const (
 )
 
 type diskMetaEntry struct {
+	namespace       string
 	mtimeNano       int64
 	size            int64
 	contentType     string
@@ -133,6 +135,26 @@ type diskMetaEntry struct {
 	exists          bool
 	hasMeta         bool
 	verified        bool
+}
+
+func isDiskFileOwnedByNamespace(ns, cleanKey string, extMeta diskMeta, hasExt bool) bool {
+	normNS := sanitizeNamespace(ns)
+	if hasExt && extMeta.Namespace != "" {
+		return sanitizeNamespace(extMeta.Namespace) == normNS
+	}
+	if normNS == "gbf" && (cleanKey == "hosts" || strings.HasPrefix(cleanKey, "hosts/")) {
+		return false
+	}
+	return true
+}
+
+func checkDiskFileOwnership(ns, cleanKey, filePath string) bool {
+	metaBytes, err := os.ReadFile(filePath + ".ext")
+	if err != nil {
+		return isDiskFileOwnedByNamespace(ns, cleanKey, diskMeta{}, false)
+	}
+	meta, ok := parseExtFile(metaBytes)
+	return isDiskFileOwnedByNamespace(ns, cleanKey, meta, ok)
 }
 
 type diskMetaShard struct {
@@ -219,6 +241,25 @@ func (m *Manager) deleteDiskMeta(key string) {
 	shard.mu.Lock()
 	delete(shard.items, key)
 	shard.mu.Unlock()
+}
+
+func (m *Manager) clearConflictingPhysicalPathState(ns, cleanKey string) {
+	normNS := sanitizeNamespace(ns)
+	if normNS == "gbf" && strings.HasPrefix(cleanKey, "hosts/") {
+		parts := strings.SplitN(cleanKey, "/", 3)
+		if len(parts) == 3 && parts[1] != "" && parts[2] != "" {
+			subNS := sanitizeNamespace(parts[1])
+			subKey := normalizeCleanKey(parts[2])
+			if subKey != "" {
+				otherRAMKey := makeRAMKey(subNS, subKey)
+				m.deleteDiskMeta(otherRAMKey)
+				m.deleteDiskMeta(subNS + "/" + subKey)
+			}
+		}
+	} else if normNS != "gbf" {
+		gbfHostsKey := "hosts/" + normNS + "/" + cleanKey
+		m.deleteDiskMeta(makeRAMKey("gbf", gbfHostsKey))
+	}
 }
 
 func (m *Manager) clearDiskMeta() {
@@ -351,13 +392,13 @@ func (m *Manager) persistWorker(wg *sync.WaitGroup) {
 			for {
 				select {
 				case task := <-m.persistQueue:
-					m.saveToDiskWithToken(task.filePath, task.headers, task.data, task.generation, task.token)
+					m.saveToDiskWithNSAndToken(task.ns, task.cleanKey, task.filePath, task.headers, task.data, task.generation, task.token)
 				default:
 					return
 				}
 			}
 		case task := <-m.persistQueue:
-			m.saveToDiskWithToken(task.filePath, task.headers, task.data, task.generation, task.token)
+			m.saveToDiskWithNSAndToken(task.ns, task.cleanKey, task.filePath, task.headers, task.data, task.generation, task.token)
 		}
 	}
 }
@@ -443,7 +484,7 @@ func makeRAMKey(ns, cleanKey string) string {
 		if normNS == "gbf" {
 			return normKey
 		}
-		return normNS + "/" + normKey
+		return normNS + "\x00" + normKey
 	}
 	if ns == "" || ns == "gbf" {
 		return cleanKey
@@ -452,7 +493,7 @@ func makeRAMKey(ns, cleanKey string) string {
 	if normNS == "gbf" {
 		return cleanKey
 	}
-	return normNS + "/" + cleanKey
+	return normNS + "\x00" + cleanKey
 }
 
 func extractNamespaceAndKey(base, path string) (ns string, cleanKey string, ramKey string, ok bool) {
@@ -473,7 +514,11 @@ func extractNamespaceAndKey(base, path string) (ns string, cleanKey string, ramK
 	if normKey := normalizeCleanKey(cleanKey); normKey != "" {
 		cleanKey = normKey
 	}
-	ramKey = makeRAMKey(ns, cleanKey)
+	if ns == "" || ns == "gbf" {
+		ramKey = cleanKey
+	} else {
+		ramKey = sanitizeNamespace(ns) + "/" + cleanKey
+	}
 	return ns, cleanKey, ramKey, true
 }
 
@@ -544,7 +589,7 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 		return false
 	}
 	tok := m.acquireOpToken(ns, cleanKey)
-	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 && checkDiskFileOwnership(ns, cleanKey, filePath) {
 		m.persistMu.RLock()
 		shard := m.tokenShardByCanon(tok.canonKey)
 		shard.mu.Lock()
@@ -560,7 +605,7 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 	if ns == "gbf" {
 		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
 			if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok && altPath != "" {
-				if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+				if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 && checkDiskFileOwnership("gbf", altKey, altPath) {
 					m.persistMu.RLock()
 					shard := m.tokenShardByCanon(tok.canonKey)
 					shard.mu.Lock()
@@ -674,9 +719,10 @@ func (m *Manager) IsRAMProtected(ns, urlPath string) bool {
 // If verified, it returns a CacheItem with Data == nil and ok == true.
 func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano, size int64, tok opToken) (*CacheItem, bool) {
 	ramKey := makeRAMKey(ns, cleanKey)
+	normNS := sanitizeNamespace(ns)
 
 	// 1. Check in-memory metadata index
-	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.verified && meta.mtimeNano == mtimeNano && meta.size == size {
+	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.verified && meta.mtimeNano == mtimeNano && meta.size == size && (meta.namespace == "" || meta.namespace == normNS) {
 		ct := resolveContentType(meta.contentType, filePath)
 		etag := meta.etag
 		if etag == "" {
@@ -701,7 +747,7 @@ func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano,
 	}
 
 	meta, ok := parseExtFile(metaBytes)
-	if !ok || !meta.Verified || meta.Size != size || meta.MTimeNano != mtimeNano {
+	if !ok || !meta.Verified || meta.Size != size || meta.MTimeNano != mtimeNano || !isDiskFileOwnedByNamespace(normNS, cleanKey, meta, true) {
 		return nil, false
 	}
 
@@ -722,6 +768,7 @@ func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano,
 		return nil, false
 	}
 	m.setDiskMeta(ramKey, diskMetaEntry{
+		namespace:       normNS,
 		mtimeNano:       mtimeNano,
 		size:            size,
 		contentType:     contentType,
@@ -864,6 +911,7 @@ func (m *Manager) VerifyAndGetMetadataWithNamespace(ns, urlPath string) (*CacheI
 						if isTokenValidLocked(shard, tok, m.generation) {
 							if altMeta, hasAlt := m.getDiskMeta(makeRAMKey("gbf", altKey)); hasAlt {
 								m.setDiskMeta(ramKey, diskMetaEntry{
+									namespace:       "gbf",
 									mtimeNano:       altMeta.mtimeNano,
 									size:            altMeta.size,
 									contentType:     item2.ContentType,
@@ -903,6 +951,7 @@ func (m *Manager) verifyDiskMetaOnly(ns, cleanKey, filePath string) (*CacheItem,
 
 func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok opToken) (*CacheItem, error) {
 	ramKey := makeRAMKey(ns, cleanKey)
+	normNS := sanitizeNamespace(ns)
 
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
 		if m.CheckAndQuarantineTamperedJS(filePath) {
@@ -936,13 +985,21 @@ func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok
 	contentEncoding := ""
 	etag := ""
 	lastMod := ""
+	var parsedMeta diskMeta
+	var hasExt bool
 	if metaBytes, err := os.ReadFile(extPath); err == nil {
 		if meta, ok := parseExtFile(metaBytes); ok {
+			parsedMeta = meta
+			hasExt = true
 			contentType = meta.ContentType
 			contentEncoding = meta.ContentEncoding
 			etag = meta.ETag
 			lastMod = meta.LastModified
 		}
+	}
+	if !isDiskFileOwnedByNamespace(normNS, cleanKey, parsedMeta, hasExt) {
+		m.deleteDiskMeta(ramKey)
+		return nil, fmt.Errorf("namespace mismatch for cache file: %s", filePath)
 	}
 	contentType = resolveContentType(contentType, filePath)
 
@@ -972,6 +1029,7 @@ func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok
 	shard.mu.Lock()
 	if isTokenValidLocked(shard, tok, m.generation) {
 		m.setDiskMeta(ramKey, diskMetaEntry{
+			namespace:       normNS,
 			mtimeNano:       mtimeNano,
 			size:            size,
 			contentType:     contentType,
@@ -983,6 +1041,7 @@ func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok
 			verified:        true,
 		})
 		_ = writeDiskExtFile(filePath, diskMeta{
+			Namespace:       normNS,
 			LastModified:    lastMod,
 			ETag:            etag,
 			AccessTime:      time.Now().Unix(),
@@ -1086,6 +1145,7 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 			if usedAltKey != "" {
 				if altMeta, hasAlt := m.getDiskMeta(makeRAMKey("gbf", usedAltKey)); hasAlt {
 					m.setDiskMeta(ramKey, diskMetaEntry{
+						namespace:       "gbf",
 						mtimeNano:       altMeta.mtimeNano,
 						size:            altMeta.size,
 						contentType:     item.ContentType,
@@ -1126,6 +1186,7 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 
 func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, filePath string, tok opToken) (*CacheItem, error) {
 	ramKey := makeRAMKey(ns, cleanKey)
+	normNS := sanitizeNamespace(ns)
 
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
 		if m.CheckAndQuarantineTamperedJS(filePath) {
@@ -1177,7 +1238,7 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 
 	needsIndexSave := false
 	extVerified := false
-	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.mtimeNano == mtimeNano && meta.size == size {
+	if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.mtimeNano == mtimeNano && meta.size == size && (meta.namespace == "" || meta.namespace == normNS) {
 		contentType = meta.contentType
 		contentEncoding = meta.contentEncoding
 		etag = meta.etag
@@ -1185,8 +1246,12 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 		extVerified = meta.verified
 	} else {
 		needsIndexSave = true
+		var parsedMeta diskMeta
+		var hasExt bool
 		if metaBytes, err := os.ReadFile(extPath); err == nil {
 			if meta, ok := parseExtFile(metaBytes); ok {
+				parsedMeta = meta
+				hasExt = true
 				contentType = meta.ContentType
 				contentEncoding = meta.ContentEncoding
 				etag = meta.ETag
@@ -1195,6 +1260,10 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 					extVerified = true
 				}
 			}
+		}
+		if !isDiskFileOwnedByNamespace(normNS, cleanKey, parsedMeta, hasExt) {
+			m.deleteDiskMeta(ramKey)
+			return nil, fmt.Errorf("namespace mismatch for cache file: %s", filePath)
 		}
 	}
 
@@ -1239,6 +1308,7 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 		shard.mu.Lock()
 		if isTokenValidLocked(shard, tok, m.generation) {
 			m.setDiskMeta(ramKey, diskMetaEntry{
+				namespace:       normNS,
 				mtimeNano:       mtimeNano,
 				size:            size,
 				contentType:     contentType,
@@ -1251,6 +1321,7 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 			})
 			if !extVerified {
 				_ = writeDiskExtFile(filePath, diskMeta{
+					Namespace:       normNS,
 					LastModified:    lastMod,
 					ETag:            etag,
 					AccessTime:      time.Now().Unix(),
@@ -1513,11 +1584,11 @@ func (m *Manager) SavePrefetchValidatedWithNamespace(ns, urlPath string, headers
 }
 
 func (m *Manager) saveRAMWithNamespaceAndValidation(ns, urlPath string, headers map[string]string, data []byte, isProbation bool, validated bool) (*CacheItem, bool) {
-	normNS, _, ok := canonicalizeNSAndKey(ns, urlPath)
+	normNS, normKey, ok := canonicalizeNSAndKey(ns, urlPath)
 	if !ok {
 		return nil, false
 	}
-	item, cleanKey, filePath, generation, tok, ok := m.saveRAMInternal(normNS, urlPath, headers, data, isProbation, validated)
+	item, cleanKey, filePath, generation, tok, ok := m.saveRAMInternal(normNS, normKey, headers, data, isProbation, validated)
 	if !ok || item == nil {
 		return nil, false
 	}
@@ -1556,11 +1627,15 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 // SaveWithNamespace saves an asset into RAM and synchronously persists it to disk,
 // enforcing mandatory IsValidCacheContent validation.
 func (m *Manager) SaveWithNamespace(ns, urlPath string, headers map[string]string, data []byte) bool {
-	item, _, filePath, generation, tok, ok := m.saveRAMInternal(ns, urlPath, headers, data, false, false)
+	normNS, normKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
+		return false
+	}
+	item, cleanKey, filePath, generation, tok, ok := m.saveRAMInternal(normNS, normKey, headers, data, false, false)
 	if !ok || item == nil {
 		return false
 	}
-	return m.saveToDiskWithToken(filePath, headers, data, generation, tok)
+	return m.saveToDiskWithNSAndToken(normNS, cleanKey, filePath, headers, data, generation, tok)
 }
 
 func renameWithRetry(src, dst string, maxAttempts int) error {
@@ -1580,18 +1655,40 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 	base := m.cacheBase
 	m.mu.RUnlock()
 	var tok opToken
-	if ns, cleanKey, _, ok := extractNamespaceAndKey(base, filePath); ok {
+	ns, cleanKey, _, ok := extractNamespaceAndKey(base, filePath)
+	if ok {
 		tok = m.acquireOpTokenWithGen(ns, cleanKey, generation)
 	}
-	return m.saveToDiskWithToken(filePath, headers, data, generation, tok)
+	return m.saveToDiskWithNSAndToken(ns, cleanKey, filePath, headers, data, generation, tok)
 }
 
 func (m *Manager) saveToDiskWithToken(filePath string, headers map[string]string, data []byte, generation uint64, tok opToken) bool {
+	return m.saveToDiskWithNSAndToken("", "", filePath, headers, data, generation, tok)
+}
+
+func (m *Manager) saveToDiskWithNSAndToken(ns, cleanKey, filePath string, headers map[string]string, data []byte, generation uint64, tok opToken) bool {
 	m.persistMu.RLock()
 	defer m.persistMu.RUnlock()
 	if generation != m.generation {
 		return false
 	}
+
+	m.mu.RLock()
+	base := m.cacheBase
+	m.mu.RUnlock()
+	if ns == "" || cleanKey == "" {
+		if extNS, extKey, _, ok := extractNamespaceAndKey(base, filePath); ok {
+			ns = extNS
+			cleanKey = extKey
+		}
+	}
+	normNS := sanitizeNamespace(ns)
+	normKey := cleanKey
+	if cNS, cKey, ok := canonicalizeNSAndKey(ns, cleanKey); ok {
+		normNS = cNS
+		normKey = cKey
+	}
+	ramKey := makeRAMKey(normNS, normKey)
 
 	var shard *tokenShard
 	if tok.canonKey != "" {
@@ -1625,10 +1722,7 @@ func (m *Manager) saveToDiskWithToken(filePath string, headers map[string]string
 	tmpDataPath := fmt.Sprintf("%s.tmp.%d.%d.%d", filePath, pid, ts, seq)
 	if err := os.WriteFile(tmpDataPath, data, 0644); err != nil {
 		_ = os.Remove(tmpDataPath)
-		m.mu.RLock()
-		base := m.cacheBase
-		m.mu.RUnlock()
-		if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
+		if ramKey != "" {
 			m.deleteDiskMeta(ramKey)
 		}
 		return false
@@ -1645,10 +1739,7 @@ func (m *Manager) saveToDiskWithToken(filePath string, headers map[string]string
 
 	if err := renameWithRetry(tmpDataPath, filePath, 3); err != nil {
 		_ = os.Remove(tmpDataPath)
-		m.mu.RLock()
-		base := m.cacheBase
-		m.mu.RUnlock()
-		if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
+		if ramKey != "" {
 			m.deleteDiskMeta(ramKey)
 		}
 		return false
@@ -1674,27 +1765,25 @@ func (m *Manager) saveToDiskWithToken(filePath string, headers map[string]string
 		Verified:        true,
 		Size:            fileSize,
 		MTimeNano:       mtimeNano,
+		Namespace:       normNS,
 	}
 	_ = writeDiskExtFile(filePath, meta)
 
-	m.mu.RLock()
-	base := m.cacheBase
-	m.mu.RUnlock()
-	if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
-		if fi != nil {
-			m.setDiskMeta(ramKey, diskMetaEntry{
-				mtimeNano:       mtimeNano,
-				size:            fileSize,
-				contentType:     ct,
-				contentEncoding: ce,
-				etag:            etag,
-				lastModified:    lastMod,
-				exists:          true,
-				hasMeta:         true,
-				verified:        true,
-			})
-		}
+	if ramKey != "" && fi != nil {
+		m.setDiskMeta(ramKey, diskMetaEntry{
+			mtimeNano:       mtimeNano,
+			size:            fileSize,
+			contentType:     ct,
+			contentEncoding: ce,
+			etag:            etag,
+			lastModified:    lastMod,
+			namespace:       normNS,
+			exists:          true,
+			hasMeta:         true,
+			verified:        true,
+		})
 	}
+	m.clearConflictingPhysicalPathState(normNS, normKey)
 
 	return true
 }
@@ -1738,10 +1827,16 @@ func (m *Manager) ReadDiskItemData(ns, urlPath string) ([]byte, error) {
 	if !ok {
 		return nil, fmt.Errorf("failed to resolve path for %s", urlPath)
 	}
-	data, err := os.ReadFile(filePath)
+	var data []byte
+	var err error
+	if checkDiskFileOwnership(ns, cleanKey, filePath) {
+		data, err = os.ReadFile(filePath)
+	} else {
+		err = os.ErrNotExist
+	}
 	if err != nil && ns == "gbf" {
 		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
-			if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
+			if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok && checkDiskFileOwnership("gbf", altKey, altPath) {
 				if altData, altErr := os.ReadFile(altPath); altErr == nil {
 					return altData, nil
 				}
@@ -1769,6 +1864,9 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 		if !ok {
 			return nil, 0, fmt.Errorf("failed to resolve path: %s", k)
 		}
+		if !checkDiskFileOwnership(ns, k, p) {
+			return nil, 0, fmt.Errorf("cache file namespace mismatch: %s", p)
+		}
 		f, err := os.Open(p)
 		if err != nil {
 			return nil, 0, err
@@ -1789,7 +1887,7 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 		// If inconsistent, treat as cache invalidation.
 		ramKey := makeRAMKey(ns, k)
 		matched := false
-		if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.verified {
+		if meta, ok := m.getDiskMeta(ramKey); ok && meta.hasMeta && meta.verified && (meta.namespace == "" || meta.namespace == ns) {
 			if actualSize == meta.size && actualMtime == meta.mtimeNano {
 				matched = true
 			} else {
@@ -1798,7 +1896,7 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 				return nil, 0, fmt.Errorf("cache file size/mtime modified after verification: %s (size %d vs %d, mtime %d vs %d)", p, actualSize, meta.size, actualMtime, meta.mtimeNano)
 			}
 		} else if metaBytes, err := os.ReadFile(p + ".ext"); err == nil {
-			if extMeta, ok := parseExtFile(metaBytes); ok && extMeta.Verified {
+			if extMeta, ok := parseExtFile(metaBytes); ok && extMeta.Verified && isDiskFileOwnedByNamespace(ns, k, extMeta, true) {
 				if actualSize == extMeta.Size && actualMtime == extMeta.MTimeNano {
 					m.persistMu.RLock()
 					shard := m.tokenShardByCanon(tok.canonKey)
@@ -1813,6 +1911,7 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 							contentEncoding: extMeta.ContentEncoding,
 							etag:            extMeta.ETag,
 							lastModified:    extMeta.LastModified,
+							namespace:       ns,
 							exists:          true,
 							hasMeta:         true,
 							verified:        true,
@@ -1834,7 +1933,7 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 
 		if !matched && k != cleanKey {
 			origKey := makeRAMKey(ns, cleanKey)
-			if meta, ok := m.getDiskMeta(origKey); ok && meta.hasMeta && meta.verified {
+			if meta, ok := m.getDiskMeta(origKey); ok && meta.hasMeta && meta.verified && (meta.namespace == "" || meta.namespace == ns) {
 				if actualSize == meta.size && actualMtime == meta.mtimeNano {
 					matched = true
 				} else {
@@ -1917,9 +2016,9 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 	ns = normNS
 
 	m.persistMu.RLock()
+	defer m.persistMu.RUnlock()
 	generation := m.generation
 	tok := m.acquireOpTokenWithGen(ns, cleanKey, generation)
-	m.persistMu.RUnlock()
 
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
@@ -1940,7 +2039,7 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 	if err != nil {
 		return nil, "", 0, err
 	}
-	if !m.registerTempFileToken(tmpDataPath, tok) {
+	if !m.registerTempFileTokenLocked(tmpDataPath, tok) {
 		_ = f.Close()
 		_ = os.Remove(tmpDataPath)
 		return nil, "", 0, fmt.Errorf("cache generation changed during temp file creation")
@@ -1982,14 +2081,10 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 		return nil, false
 	}
 
+	ramKey := makeRAMKey(ns, cleanKey)
 	if err := renameWithRetry(tmpFilePath, filePath, 3); err != nil {
 		_ = os.Remove(tmpFilePath)
-		m.mu.RLock()
-		base := m.cacheBase
-		m.mu.RUnlock()
-		if _, _, ramKey, ok := extractNamespaceAndKey(base, filePath); ok {
-			m.deleteDiskMeta(ramKey)
-		}
+		m.deleteDiskMeta(ramKey)
 		return nil, false
 	}
 
@@ -2029,28 +2124,25 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 		Verified:        true,
 		Size:            totalSize,
 		MTimeNano:       mtimeNano,
+		Namespace:       ns,
 	}
 	_ = writeDiskExtFile(filePath, meta)
 
-	ramKey := makeRAMKey(ns, cleanKey)
-	m.mu.RLock()
-	base := m.cacheBase
-	m.mu.RUnlock()
-	if _, _, rKey, ok := extractNamespaceAndKey(base, filePath); ok {
-		if fi != nil {
-			m.setDiskMeta(rKey, diskMetaEntry{
-				mtimeNano:       mtimeNano,
-				size:            fi.Size(),
-				contentType:     ct,
-				contentEncoding: ce,
-				etag:            etag,
-				lastModified:    lastMod,
-				exists:          true,
-				hasMeta:         true,
-				verified:        true,
-			})
-		}
+	if fi != nil {
+		m.setDiskMeta(ramKey, diskMetaEntry{
+			mtimeNano:       mtimeNano,
+			size:            fi.Size(),
+			contentType:     ct,
+			contentEncoding: ce,
+			etag:            etag,
+			lastModified:    lastMod,
+			namespace:       ns,
+			exists:          true,
+			hasMeta:         true,
+			verified:        true,
+		})
 	}
+	m.clearConflictingPhysicalPathState(ns, cleanKey)
 
 	m.ramCache.Delete(ramKey)
 	if m.residentPool != nil {

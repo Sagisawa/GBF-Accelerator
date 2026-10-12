@@ -32,8 +32,10 @@ export const SlimModal: React.FC<SlimModalProps> = ({
   const [startingScan, setStartingScan] = useState(false)
   const pollTimerRef = useRef<any>(null)
   const prevBusyRef = useRef<boolean>(false)
+  const keepCountRef = useRef<number>(8)
   const breakdownReqSeqRef = useRef<number>(0)
   const statusReqSeqRef = useRef<number>(0)
+  const statusInFlightCountRef = useRef<number>(0)
   const breakdownScanningRef = useRef<boolean>(false)
 
   const loadBreakdown = useCallback(async (k: number) => {
@@ -50,6 +52,7 @@ export const SlimModal: React.FC<SlimModalProps> = ({
 
   const fetchStatus = useCallback(async () => {
     const reqSeq = ++statusReqSeqRef.current
+    statusInFlightCountRef.current++
     try {
       const data = await fetchCacheTaskStatus()
       if (reqSeq !== statusReqSeqRef.current) return
@@ -63,21 +66,26 @@ export const SlimModal: React.FC<SlimModalProps> = ({
       )
       setRunning(Boolean(data?.is_slimming))
       if ((prevBusyRef.current && !busy) || (!data?.is_scanning && breakdownScanningRef.current)) {
-        loadBreakdown(keepCount)
+        breakdownScanningRef.current = false
+        loadBreakdown(keepCountRef.current)
         onRefresh()
       }
       prevBusyRef.current = busy
     } catch {
       // Ignore transient poll errors
+    } finally {
+      statusInFlightCountRef.current = Math.max(0, statusInFlightCountRef.current - 1)
     }
-  }, [keepCount, loadBreakdown, onRefresh])
+  }, [loadBreakdown, onRefresh])
 
   useEffect(() => {
     if (isOpen) {
-      loadBreakdown(keepCount)
+      loadBreakdown(keepCountRef.current)
       fetchStatus()
       pollTimerRef.current = setInterval(() => {
-        fetchStatus()
+        if (statusInFlightCountRef.current === 0) {
+          fetchStatus()
+        }
       }, 1000)
     } else {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current)
@@ -85,9 +93,10 @@ export const SlimModal: React.FC<SlimModalProps> = ({
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current)
     }
-  }, [isOpen, keepCount, loadBreakdown, fetchStatus])
+  }, [isOpen, loadBreakdown, fetchStatus])
 
   const handleSelectKeep = (num: number) => {
+    keepCountRef.current = num
     setKeepCount(num)
     loadBreakdown(num)
   }
@@ -99,7 +108,7 @@ export const SlimModal: React.FC<SlimModalProps> = ({
       prevBusyRef.current = true
       onToast('已启动后台分类扫描以生成版本保留预览', 'info')
       await fetchStatus()
-      await loadBreakdown(keepCount)
+      await loadBreakdown(keepCountRef.current)
     } catch (e: any) {
       onToast(`启动扫描失败: ${e.message}`, 'error')
     } finally {
@@ -118,7 +127,7 @@ export const SlimModal: React.FC<SlimModalProps> = ({
       prevBusyRef.current = true
       onToast(`版本清理任务已在后台启动（每组保留最新 ${keepCount} 个版本）`, 'info')
       await fetchStatus()
-      await loadBreakdown(keepCount)
+      await loadBreakdown(keepCountRef.current)
       onRefresh()
     } catch (e: any) {
       onToast(`版本清理启动失败: ${e.message}`, 'error')
@@ -132,7 +141,7 @@ export const SlimModal: React.FC<SlimModalProps> = ({
       await cancelCacheTask(activeId)
       onToast('已请求取消当前后台缓存任务', 'info')
       await fetchStatus()
-      await loadBreakdown(keepCount)
+      await loadBreakdown(keepCountRef.current)
     } catch (e: any) {
       onToast(`取消任务失败: ${e.message}`, 'error')
     }
@@ -141,6 +150,7 @@ export const SlimModal: React.FC<SlimModalProps> = ({
   const isSlimming = Boolean(taskStatus?.is_slimming)
   const isScanning =
     taskStatus !== null ? Boolean(taskStatus?.is_scanning) : Boolean(breakdown?.is_scanning)
+  const isSubmittingAction = startingScan || running
   const hasOtherTask = Boolean(
     taskStatus?.active_task_id &&
       !isSlimming &&
@@ -152,6 +162,15 @@ export const SlimModal: React.FC<SlimModalProps> = ({
   const snapshot = breakdown?.snapshot
   const preview: VersionRetentionPreview | undefined =
     snapshot?.retention_previews?.[String(keepCount)]
+
+  const scanOutcomeStatus = !isScanning
+    ? scanProgress?.status === 'failed' || scanProgress?.status === 'cancelled'
+      ? scanProgress.status
+      : snapshot?.status === 'failed' || snapshot?.status === 'cancelled'
+        ? snapshot.status
+        : null
+    : null
+  const scanOutcomeMessage = scanProgress?.message || snapshot?.error
 
   return (
     <Modal
@@ -185,13 +204,13 @@ export const SlimModal: React.FC<SlimModalProps> = ({
               <button
                 key={num}
                 type="button"
-                disabled={isSlimming}
+                disabled={isSlimming || isSubmittingAction}
                 onClick={() => handleSelectKeep(num)}
                 className={`px-3 py-1 rounded text-xs font-mono border transition-colors cursor-pointer ${
                   keepCount === num
                     ? 'bg-blue-600 text-white border-blue-600 font-bold'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
-                } ${isSlimming ? 'opacity-50 cursor-not-allowed' : ''}`}
+                } ${isSlimming || isSubmittingAction ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
                 保留 {num} 个{num === 8 ? ' (默认)' : ''}
               </button>
@@ -227,7 +246,7 @@ export const SlimModal: React.FC<SlimModalProps> = ({
                   variant="desktop"
                   size="xs"
                   loading={startingScan}
-                  disabled={isSlimming || hasOtherTask}
+                  disabled={isSlimming || hasOtherTask || isSubmittingAction}
                   onClick={handleStartScan}
                 >
                   {snapshot ? '重新扫描预览' : '扫描生成预览'}
@@ -235,6 +254,28 @@ export const SlimModal: React.FC<SlimModalProps> = ({
               )}
             </div>
           </div>
+
+          {scanOutcomeStatus && (
+            <div
+              className={`p-2 border rounded text-[11px] flex items-center justify-between flex-wrap gap-2 ${
+                scanOutcomeStatus === 'failed'
+                  ? 'bg-red-50/90 border-red-200 text-red-900'
+                  : 'bg-amber-50/90 border-amber-200 text-amber-900'
+              }`}
+            >
+              <div className="font-medium flex items-center gap-1.5">
+                <AlertTriangle
+                  className={`w-3.5 h-3.5 shrink-0 ${
+                    scanOutcomeStatus === 'failed' ? 'text-red-600' : 'text-amber-600'
+                  }`}
+                />
+                <span>
+                  {scanOutcomeStatus === 'failed' ? '分类扫描失败：' : '分类扫描已取消：'}
+                  {scanOutcomeMessage || (scanOutcomeStatus === 'failed' ? '分类扫描未完成' : '任务已取消')}
+                </span>
+              </div>
+            </div>
+          )}
 
           {!snapshot ? (
             <div className="text-[11px] text-slate-500 py-2">
@@ -409,7 +450,7 @@ export const SlimModal: React.FC<SlimModalProps> = ({
               variant="primary"
               size="sm"
               loading={running}
-              disabled={isScanning || hasOtherTask}
+              disabled={isScanning || hasOtherTask || isSubmittingAction}
               onClick={handleStartSlim}
             >
               {isScanning

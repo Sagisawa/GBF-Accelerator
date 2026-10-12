@@ -873,9 +873,9 @@ func BenchmarkDiskHitWithTokenValidation(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			item, src := mgr.GetMetadataWithNamespace("gbf", "/assets/1728446123/js/bench.js")
+			item, src := mgr.GetWithNamespace("gbf", "/assets/1728446123/js/bench.js")
 			if item == nil || src != "DISK" {
-				b.Fatalf("expected DISK metadata hit, got item=%v src=%q", item, src)
+				b.Fatalf("expected DISK hit, got item=%v src=%q", item, src)
 			}
 		}
 	})
@@ -1175,3 +1175,229 @@ func TestConcurrentOrphanExtPruneAndSave(t *testing.T) {
 	}
 }
 
+func TestAsyncSaveHostsPrefixAndCrossNamespaceIsolation(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	bodyCDN1 := []byte("console.log('from_cdn1_hosts_path');")
+	bodyCDN2 := []byte("console.log('from_cdn2_direct_path');")
+
+	// 1. Save via SaveRAMWithNamespace on external host with a "/hosts/cdn2.example.com/..." URL path
+	if _, ok := mgr.SaveRAMWithNamespace("cdn1.example.com", "/hosts/cdn2.example.com/assets/100/js/app.js", headers, bodyCDN1); !ok {
+		t.Fatalf("SaveRAMWithNamespace for cdn1.example.com failed")
+	}
+	// 2. Save via SavePrefetchWithNamespace on cdn2.example.com with "/assets/100/js/app.js"
+	if _, ok := mgr.SavePrefetchWithNamespace("cdn2.example.com", "/assets/100/js/app.js", headers, bodyCDN2); !ok {
+		t.Fatalf("SavePrefetchWithNamespace for cdn2.example.com failed")
+	}
+
+	// Verify RAM isolation
+	item1, _ := mgr.GetWithNamespace("cdn1.example.com", "/hosts/cdn2.example.com/assets/100/js/app.js")
+	item2, _ := mgr.GetWithNamespace("cdn2.example.com", "/assets/100/js/app.js")
+	if item1 == nil || !bytes.Equal(item1.Data, bodyCDN1) {
+		t.Fatalf("expected cdn1.example.com to return bodyCDN1, got %v", item1)
+	}
+	if item2 == nil || !bytes.Equal(item2.Data, bodyCDN2) {
+		t.Fatalf("expected cdn2.example.com to return bodyCDN2, got %v", item2)
+	}
+
+	// 3. Test GBF "/hosts/cdn2.example.com/..." vs external namespace "cdn2.example.com" "/..."
+	bodyGBFHosts := []byte("console.log('from_gbf_hosts_path');")
+	if _, ok := mgr.SaveRAMWithNamespace("gbf", "/hosts/cdn2.example.com/assets/100/js/shared.js", headers, bodyGBFHosts); !ok {
+		t.Fatalf("SaveRAMWithNamespace for gbf /hosts/... failed")
+	}
+
+	// External namespace "cdn2.example.com" must NOT hit GBF's "/hosts/cdn2.example.com/assets/100/js/shared.js" in RAM or Disk
+	if crossItem, _ := mgr.GetWithNamespace("cdn2.example.com", "/assets/100/js/shared.js"); crossItem != nil {
+		t.Fatalf("expected cdn2.example.com miss before saving its own copy, got %+v", crossItem)
+	}
+	if mgr.HasCacheWithNamespace("cdn2.example.com", "/assets/100/js/shared.js") {
+		t.Fatalf("expected HasCacheWithNamespace false for cdn2.example.com before saving its own copy")
+	}
+
+	// Wait for async disk persistence to complete, disable RAM, and verify disk ownership check rejects cross-namespace read
+	deadline := time.Now().Add(2 * time.Second)
+	sharedPath := filepath.Join(tmpDir, "hosts", "cdn2.example.com", "assets", "100", "js", "shared.js")
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sharedPath + ".ext"); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mgr.SetRAMEnabled(false)
+	mgr.ClearRAM()
+
+	if gbfDiskItem, _ := mgr.GetWithNamespace("gbf", "/hosts/cdn2.example.com/assets/100/js/shared.js"); gbfDiskItem == nil || !bytes.Equal(gbfDiskItem.Data, bodyGBFHosts) {
+		t.Fatalf("expected gbf disk hit for /hosts/cdn2.example.com/..., got %v", gbfDiskItem)
+	}
+	if crossDiskItem, _ := mgr.GetWithNamespace("cdn2.example.com", "/assets/100/js/shared.js"); crossDiskItem != nil {
+		t.Fatalf("expected cdn2.example.com disk lookup to reject file owned by gbf namespace, got %+v", crossDiskItem)
+	}
+	if crossMeta, _ := mgr.VerifyAndGetMetadataWithNamespace("cdn2.example.com", "/assets/100/js/shared.js"); crossMeta != nil {
+		t.Fatalf("expected cdn2.example.com VerifyAndGetMetadataWithNamespace to reject file owned by gbf namespace, got %+v", crossMeta)
+	}
+}
+
+func TestPinnedParentRootPreventsCheckToUnlinkSwap(t *testing.T) {
+	parentDir := t.TempDir()
+	cacheRoot := filepath.Join(parentDir, "cache_root")
+	if err := os.MkdirAll(cacheRoot, 0755); err != nil {
+		t.Fatalf("MkdirAll cacheRoot failed: %v", err)
+	}
+	mgr := NewManager(cacheRoot, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	payload := []byte("console.log('pinned_unlink_test');")
+	if !mgr.SaveWithNamespace("gbf", "assets/100/js/target.js", headers, payload) {
+		t.Fatalf("SaveWithNamespace failed")
+	}
+
+	origPath := filepath.Join(cacheRoot, "assets", "100", "js", "target.js")
+	origFi, err := os.Stat(origPath)
+	if err != nil {
+		t.Fatalf("Stat origPath failed: %v", err)
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snap == nil || !snap.Valid {
+		t.Fatalf("expected valid snapshot")
+	}
+
+	// Prepare a replacement directory tree that will be swapped into the path string right before parentRoot.Remove()
+	swappedOutRoot := filepath.Join(parentDir, "cache_root_moved")
+	replacementRoot := filepath.Join(parentDir, "cache_root_replacement")
+	replacementFile := filepath.Join(replacementRoot, "assets", "100", "js", "target.js")
+	if err := os.MkdirAll(filepath.Dir(replacementFile), 0755); err != nil {
+		t.Fatalf("MkdirAll replacement dir failed: %v", err)
+	}
+	if err := os.WriteFile(replacementFile, payload, 0644); err != nil {
+		t.Fatalf("WriteFile replacementFile failed: %v", err)
+	}
+	_ = os.Chtimes(replacementFile, origFi.ModTime(), origFi.ModTime())
+
+	swapped := false
+	testBeforeUnlinkHook = func(targetPath string) {
+		if !swapped && strings.HasSuffix(targetPath, "target.js") {
+			// Attempt to rename cacheRoot -> swappedOutRoot and replacementRoot -> cacheRoot right before unlink!
+			// On POSIX this succeeds even while parentRoot fd is open; on Windows os.Rename may fail with sharing violation because parentRoot holds the directory handle open (which itself blocks the swap!).
+			if err := os.Rename(cacheRoot, swappedOutRoot); err == nil {
+				_ = os.Rename(replacementRoot, cacheRoot)
+				swapped = true
+			}
+		}
+	}
+	defer func() {
+		testBeforeUnlinkHook = nil
+	}()
+
+	_, err = mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
+		{NS: "gbf", Key: "assets/100/js/target.js"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("DeleteSnapshotEntriesWithProgress failed: %v", err)
+	}
+
+	// Regardless of whether the OS allowed renaming the open parent directory (POSIX) or blocked the rename via handle sharing (Windows),
+	// the victim file in the replacement tree must NEVER be deleted!
+	victimPath := replacementFile
+	if swapped {
+		victimPath = filepath.Join(cacheRoot, "assets", "100", "js", "target.js")
+	}
+	if _, err := os.Stat(victimPath); err != nil {
+		t.Fatalf("victim file in replacement tree was deleted across check-to-unlink window (swapped=%v): %v", swapped, err)
+	}
+}
+
+func TestEpochMTimeOrphanExtModificationDetected(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('version_keep');")
+	mgr.SaveWithNamespace("gbf", "assets/100/js/old.js", headers, body)
+	mgr.SaveWithNamespace("gbf", "assets/200/js/new.js", headers, body)
+
+	orphanExt := filepath.Join(tmpDir, "assets", "100", "js", "epoch_orphan.js.ext")
+	if err := os.WriteFile(orphanExt, []byte(`{"ct":"application/javascript","v":1}`), 0644); err != nil {
+		t.Fatalf("WriteFile orphanExt failed: %v", err)
+	}
+	epoch := time.Unix(0, 0)
+	if err := os.Chtimes(orphanExt, epoch, epoch); err != nil {
+		t.Fatalf("Chtimes epoch failed: %v", err)
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snap == nil || !snap.Valid {
+		t.Fatalf("expected valid snapshot")
+	}
+
+	// Modify the epoch-timestamped orphan .ext after scan
+	newTime := time.Unix(1700000100, 0)
+	if err := os.Chtimes(orphanExt, newTime, newTime); err != nil {
+		t.Fatalf("Chtimes newTime failed: %v", err)
+	}
+
+	res, err := mgr.PruneStaleVersionsDetailed(1, snap.SnapshotID, nil, nil)
+	if err != nil {
+		t.Fatalf("PruneStaleVersionsDetailed failed: %v", err)
+	}
+	if res.SkippedChangedCount == 0 {
+		t.Fatalf("expected modified epoch orphan .ext to be counted in SkippedChangedCount, got %+v", res)
+	}
+	if _, err := os.Stat(orphanExt); err != nil {
+		t.Fatalf("expected modified epoch orphan .ext to remain on disk: %v", err)
+	}
+}
+
+func TestConcurrentEmptyDirPruneAndTempFileSave(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('concurrent_dir_prune_save');")
+
+	for iter := 0; iter < 15; iter++ {
+		if !mgr.SaveWithNamespace("gbf", "assets/img/sp/quest/scene/old_item.js", headers, body) {
+			t.Fatalf("iter %d: initial SaveWithNamespace failed", iter)
+		}
+		snap := mgr.ScanBreakdownWithProgress(nil, nil)
+		if snap == nil || !snap.Valid {
+			t.Fatalf("iter %d: expected valid snapshot", iter)
+		}
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		var createErr error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
+				{NS: "gbf", Key: "assets/img/sp/quest/scene/old_item.js"},
+			}, nil, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			f, tmpPath, gen, err := mgr.CreateDiskTempFile("gbf", "assets/img/sp/quest/scene/new_item.js")
+			if err != nil {
+				createErr = err
+				return
+			}
+			_, _ = f.Write(body)
+			_ = f.Close()
+			_, _ = mgr.CommitDiskTempFile("gbf", "assets/img/sp/quest/scene/new_item.js", headers, tmpPath, int64(len(body)), gen)
+		}()
+		close(start)
+		wg.Wait()
+
+		if createErr != nil {
+			t.Fatalf("iter %d: CreateDiskTempFile raced with empty directory cleanup: %v", iter, createErr)
+		}
+	}
+}
