@@ -127,10 +127,17 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const pollTimerRef = useRef<any>(null)
   const prevBusyRef = useRef<boolean>(false)
   const prevSnapshotIdRef = useRef<string | null>(null)
+  const breakdownReqSeqRef = useRef<number>(0)
+  const statusReqSeqRef = useRef<number>(0)
+  const searchReqSeqRef = useRef<number>(0)
+  const breakdownScanningRef = useRef<boolean>(false)
 
   const loadBreakdown = useCallback(async () => {
+    const reqSeq = ++breakdownReqSeqRef.current
     try {
       const data = await fetchCacheBreakdown()
+      if (reqSeq !== breakdownReqSeqRef.current) return
+      breakdownScanningRef.current = Boolean(data?.is_scanning)
       setBreakdown(data)
     } catch {
       // Ignore transient poll errors
@@ -138,8 +145,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   }, [])
 
   const loadTaskStatus = useCallback(async () => {
+    const reqSeq = ++statusReqSeqRef.current
     try {
       const data = await fetchCacheTaskStatus()
+      if (reqSeq !== statusReqSeqRef.current) return
       setTaskStatus(data)
       const busy = Boolean(
         data?.is_scanning ||
@@ -148,7 +157,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           data?.is_slimming ||
           data?.is_auditing
       )
-      if (prevBusyRef.current && !busy) {
+      if ((prevBusyRef.current && !busy) || (!data?.is_scanning && breakdownScanningRef.current)) {
         loadBreakdown()
         onRefresh()
       }
@@ -182,17 +191,20 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   useEffect(() => {
     if (prevSnapshotIdRef.current !== activeSnapshotId) {
       prevSnapshotIdRef.current = activeSnapshotId
+      searchReqSeqRef.current++
       setConfirmingCategoryClean(false)
       setSelectedCategories([])
       setSearchResult(null)
       setSelectedSearchKeys({})
     } else if (searchResult && searchResult.snapshot_id !== activeSnapshotId) {
+      searchReqSeqRef.current++
       setSearchResult(null)
       setSelectedSearchKeys({})
     }
   }, [activeSnapshotId, searchResult])
 
-  const isScanning = Boolean(taskStatus?.is_scanning || breakdown?.is_scanning)
+  const isScanning =
+    taskStatus !== null ? Boolean(taskStatus?.is_scanning) : Boolean(breakdown?.is_scanning)
   const isCleaning = Boolean(taskStatus?.is_invalidating || taskStatus?.is_clearing_category)
   const hasAnyActiveTask = Boolean(
     taskStatus?.active_task_id ||
@@ -275,11 +287,13 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const handleStartScan = async () => {
     setStartingScan(true)
     setConfirmingCategoryClean(false)
+    searchReqSeqRef.current++
     setSearchResult(null)
     setSelectedSearchKeys({})
     setSearchError(null)
     try {
       await startCacheBreakdownScan()
+      prevBusyRef.current = true
       onToast('磁盘缓存分类扫描已在后台启动', 'info')
       await loadTaskStatus()
       await loadBreakdown()
@@ -296,6 +310,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       await cancelCacheTask(activeId)
       onToast('已发送任务取消请求', 'info')
       await loadTaskStatus()
+      await loadBreakdown()
     } catch (e: any) {
       onToast(`取消任务失败: ${e.message}`, 'error')
     }
@@ -329,6 +344,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     try {
       const nsList = selectedNamespaces.length > 0 ? selectedNamespaces : ['gbf']
       await clearCacheCategories(snapshot.snapshot_id, selectedCategories, nsList)
+      prevBusyRef.current = true
       setConfirmingCategoryClean(false)
       setSelectedCategories([])
       onToast('按分类清理任务已在后台启动', 'info')
@@ -352,6 +368,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       setSearchError('当前无有效扫描快照，请先点击上方“开始扫描”建立索引')
       return
     }
+    const reqSeq = ++searchReqSeqRef.current
     setSearching(true)
     setSearchError(null)
     try {
@@ -360,12 +377,16 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
         limit: 100,
         snapshot_id: snapshot.snapshot_id,
       })
+      if (reqSeq !== searchReqSeqRef.current) return
       setSearchResult(res)
       setSelectedSearchKeys({})
     } catch (err: any) {
+      if (reqSeq !== searchReqSeqRef.current) return
       setSearchError(err.message || '搜索失败')
     } finally {
-      setSearching(false)
+      if (reqSeq === searchReqSeqRef.current) {
+        setSearching(false)
+      }
     }
   }
 
@@ -405,6 +426,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const handleDeleteSearchItems = async (items: SearchItem[]) => {
     const boundSnapshotId = searchResult?.snapshot_id
     if (!boundSnapshotId || !snapshot || !isSnapshotReady || snapshot.snapshot_id !== boundSnapshotId) {
+      searchReqSeqRef.current++
       setSearchResult(null)
       setSelectedSearchKeys({})
       onToast('搜索结果对应的扫描快照已过期或已变更，请重新搜索后再执行删除本地缓存', 'error')
@@ -415,6 +437,8 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     try {
       const entries = items.map((item) => ({ ns: item.ns, key: item.key }))
       await invalidateCacheEntries(boundSnapshotId, entries)
+      prevBusyRef.current = true
+      searchReqSeqRef.current++
       onToast(`已启动删除本地缓存任务（共 ${entries.length} 项）`, 'info')
       setSearchResult(null)
       setSelectedSearchKeys({})

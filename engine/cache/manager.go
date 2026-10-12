@@ -439,6 +439,12 @@ func sanitizeNamespace(ns string) string {
 }
 
 func makeRAMKey(ns, cleanKey string) string {
+	if normNS, normKey, ok := canonicalizeNSAndKey(ns, cleanKey); ok {
+		if normNS == "gbf" {
+			return normKey
+		}
+		return normNS + "/" + normKey
+	}
 	if ns == "" || ns == "gbf" {
 		return cleanKey
 	}
@@ -464,6 +470,9 @@ func extractNamespaceAndKey(base, path string) (ns string, cleanKey string, ramK
 			cleanKey = parts[2]
 		}
 	}
+	if normKey := normalizeCleanKey(cleanKey); normKey != "" {
+		cleanKey = normKey
+	}
 	ramKey = makeRAMKey(ns, cleanKey)
 	return ns, cleanKey, ramKey, true
 }
@@ -473,8 +482,8 @@ func (m *Manager) resolvePath(urlPath string) (string, bool) {
 }
 
 func (m *Manager) resolvePathWithNamespace(ns, urlPath string) (string, bool) {
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return "", false
 	}
 	clean := filepath.Clean(filepath.FromSlash(cleanKey))
@@ -493,14 +502,6 @@ func (m *Manager) resolvePathWithNamespace(ns, urlPath string) (string, bool) {
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
-
-	normNS := ns
-	if normNS != "" && normNS != "gbf" {
-		normNS = sanitizeNamespace(ns)
-	}
-	if normNS == "hosts" {
-		return "", false
-	}
 
 	var target string
 	if normNS == "" || normNS == "gbf" {
@@ -521,10 +522,11 @@ func (m *Manager) HasCache(urlPath string) bool {
 }
 
 func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
-	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return false
 	}
+	ns = normNS
 	ramKey := makeRAMKey(ns, cleanKey)
 	if m.residentPool != nil && m.residentPool.Enabled() {
 		if _, ok := m.residentPool.Get(ramKey); ok {
@@ -555,28 +557,21 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 		return valid
 	}
 	// Fallback check (only in gbf namespace)
-	if ns == "" || ns == "gbf" {
-		var altPath string
-		var altKey string
-		if !strings.HasPrefix(cleanKey, "assets") {
-			altKey = "assets/" + cleanKey
-			altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
-		} else {
-			altKey = strings.TrimPrefix(cleanKey, "assets/")
-			altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
-		}
-		if altPath != "" {
-			if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
-				m.persistMu.RLock()
-				shard := m.tokenShardByCanon(tok.canonKey)
-				shard.mu.Lock()
-				valid := isTokenValidLocked(shard, tok, m.generation)
-				if valid {
-					m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
+	if ns == "gbf" {
+		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
+			if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok && altPath != "" {
+				if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
+					m.persistMu.RLock()
+					shard := m.tokenShardByCanon(tok.canonKey)
+					shard.mu.Lock()
+					valid := isTokenValidLocked(shard, tok, m.generation)
+					if valid {
+						m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
+					}
+					shard.mu.Unlock()
+					m.persistMu.RUnlock()
+					return valid
 				}
-				shard.mu.Unlock()
-				m.persistMu.RUnlock()
-				return valid
 			}
 		}
 	}
@@ -634,8 +629,11 @@ func (m *Manager) CheckAndQuarantineTamperedJS(filePath string) bool {
 
 // PeekRAMWithNamespace returns an item from RAM cache without promoting it or updating LRU order.
 func (m *Manager) PeekRAMWithNamespace(ns, urlPath string) *CacheItem {
-	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
-	ramKey := makeRAMKey(ns, cleanKey)
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
+		return nil
+	}
+	ramKey := makeRAMKey(normNS, cleanKey)
 	if m.ramEnabled.Load() {
 		if item, ok := m.ramCache.Peek(ramKey); ok {
 			return item
@@ -649,8 +647,11 @@ func (m *Manager) TouchRAMWithNamespace(ns, urlPath string) {
 	if !m.ramEnabled.Load() {
 		return
 	}
-	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
-	ramKey := makeRAMKey(ns, cleanKey)
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
+		return
+	}
+	ramKey := makeRAMKey(normNS, cleanKey)
 	_, _ = m.ramCache.Get(ramKey)
 }
 
@@ -659,8 +660,11 @@ func (m *Manager) IsRAMProtected(ns, urlPath string) bool {
 	if !m.ramEnabled.Load() {
 		return false
 	}
-	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
-	ramKey := makeRAMKey(ns, cleanKey)
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
+		return false
+	}
+	ramKey := makeRAMKey(normNS, cleanKey)
 	return m.ramCache.IsProtected(ramKey)
 }
 
@@ -771,10 +775,11 @@ func (m *Manager) loadDiskMetaFast(ns, cleanKey, filePath string) (*CacheItem, b
 // If the asset is not in RAM and has not been verified on disk, it returns nil to allow the caller
 // to fall back to the standard GetWithNamespace path.
 func (m *Manager) GetMetadataWithNamespace(ns, urlPath string) (*CacheItem, string) {
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return nil, ""
 	}
+	ns = normNS
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	// 1. Check Resident Pool if Boost is active
@@ -807,7 +812,7 @@ func (m *Manager) GetMetadataWithNamespace(ns, urlPath string) (*CacheItem, stri
 	}
 
 	// Check fallback path for "gbf" namespace
-	if ns == "" || ns == "gbf" {
+	if ns == "gbf" {
 		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
 			if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
 				if item, ok := m.loadDiskMetaFast("gbf", altKey, altPath); ok {
@@ -829,10 +834,11 @@ func (m *Manager) VerifyAndGetMetadataWithNamespace(ns, urlPath string) (*CacheI
 		return item, src
 	}
 
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return nil, ""
 	}
+	ns = normNS
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	if m.isMissing(ramKey) {
@@ -847,39 +853,33 @@ func (m *Manager) VerifyAndGetMetadataWithNamespace(ns, urlPath string) (*CacheI
 	tok := m.acquireOpToken(ns, cleanKey)
 	item, err := m.verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath, tok)
 	if err != nil {
-		if ns == "" || ns == "gbf" {
-			var altPath, altKey string
-			if !strings.HasPrefix(cleanKey, "assets") {
-				altKey = "assets/" + cleanKey
-				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
-			} else {
-				altKey = strings.TrimPrefix(cleanKey, "assets/")
-				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
-			}
-			if altPath != "" {
-				if item2, err2 := m.verifyDiskMetaOnlyWithToken("gbf", altKey, altPath, tok); err2 == nil && item2 != nil {
-					item2.Key = ramKey
-					m.persistMu.RLock()
-					shard := m.tokenShardByCanon(tok.canonKey)
-					shard.mu.Lock()
-					if isTokenValidLocked(shard, tok, m.generation) {
-						if altMeta, hasAlt := m.getDiskMeta(makeRAMKey("gbf", altKey)); hasAlt {
-							m.setDiskMeta(ramKey, diskMetaEntry{
-								mtimeNano:       altMeta.mtimeNano,
-								size:            altMeta.size,
-								contentType:     item2.ContentType,
-								contentEncoding: item2.ContentEncoding,
-								etag:            item2.ETag,
-								lastModified:    item2.LastModified,
-								exists:          true,
-								hasMeta:         true,
-								verified:        altMeta.verified,
-							})
+		if ns == "gbf" {
+			if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
+				if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok && altPath != "" {
+					if item2, err2 := m.verifyDiskMetaOnlyWithToken("gbf", altKey, altPath, tok); err2 == nil && item2 != nil {
+						item2.Key = ramKey
+						m.persistMu.RLock()
+						shard := m.tokenShardByCanon(tok.canonKey)
+						shard.mu.Lock()
+						if isTokenValidLocked(shard, tok, m.generation) {
+							if altMeta, hasAlt := m.getDiskMeta(makeRAMKey("gbf", altKey)); hasAlt {
+								m.setDiskMeta(ramKey, diskMetaEntry{
+									mtimeNano:       altMeta.mtimeNano,
+									size:            altMeta.size,
+									contentType:     item2.ContentType,
+									contentEncoding: item2.ContentEncoding,
+									etag:            item2.ETag,
+									lastModified:    item2.LastModified,
+									exists:          true,
+									hasMeta:         true,
+									verified:        altMeta.verified,
+								})
+							}
 						}
+						shard.mu.Unlock()
+						m.persistMu.RUnlock()
+						return item2, "DISK"
 					}
-					shard.mu.Unlock()
-					m.persistMu.RUnlock()
-					return item2, "DISK"
 				}
 			}
 		}
@@ -1013,10 +1013,11 @@ func (m *Manager) Get(urlPath string) (*CacheItem, string) {
 }
 
 func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return nil, ""
 	}
+	ns = normNS
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	// 1. Check Resident Pool if Boost is active
@@ -1048,22 +1049,18 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 	usedAltKey := ""
 	item, err := m.loadAndValidateDiskItemWithToken(ns, cleanKey, filePath, tok)
 	if err != nil {
-		if ns == "" || ns == "gbf" {
+		if ns == "gbf" {
 			// Try fallback: prepend or strip "assets" for gbf namespace
-			var altPath string
-			var altKey string
-			if !strings.HasPrefix(cleanKey, "assets") {
-				altKey = "assets/" + cleanKey
-				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
-			} else {
-				altKey = strings.TrimPrefix(cleanKey, "assets/")
-				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
-			}
-			if altPath != "" {
-				if item2, err2 := m.loadAndValidateDiskItemWithToken("gbf", altKey, altPath, tok); err2 == nil && item2 != nil {
-					item2.Key = ramKey
-					item = item2
-					usedAltKey = altKey
+			if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
+				if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok && altPath != "" {
+					if item2, err2 := m.loadAndValidateDiskItemWithToken("gbf", altKey, altPath, tok); err2 == nil && item2 != nil {
+						item2.Key = ramKey
+						item = item2
+						usedAltKey = altKey
+					} else {
+						m.markMissingIfTokenValid(ramKey, tok)
+						return nil, ""
+					}
 				} else {
 					m.markMissingIfTokenValid(ramKey, tok)
 					return nil, ""
@@ -1382,10 +1379,11 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 	m.persistMu.RLock()
 	defer m.persistMu.RUnlock()
 	generation := m.generation
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" || len(data) == 0 {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok || len(data) == 0 {
 		return nil, "", "", 0, opToken{}, false
 	}
+	ns = normNS
 	ct := getHeader(headers, "content-type")
 	if !validated && !IsValidCacheContent(cleanKey, ct, data) {
 		return nil, "", "", 0, opToken{}, false
@@ -1439,7 +1437,7 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 	}
 	m.deleteMissingKey(ramKey)
 
-	if ns == "" || ns == "gbf" {
+	if ns == "gbf" {
 		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
 			altRamKey := makeRAMKey("gbf", altKey)
 			if m.ramCache != nil {
@@ -1515,7 +1513,11 @@ func (m *Manager) SavePrefetchValidatedWithNamespace(ns, urlPath string, headers
 }
 
 func (m *Manager) saveRAMWithNamespaceAndValidation(ns, urlPath string, headers map[string]string, data []byte, isProbation bool, validated bool) (*CacheItem, bool) {
-	item, cleanKey, filePath, generation, tok, ok := m.saveRAMInternal(ns, urlPath, headers, data, isProbation, validated)
+	normNS, _, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
+		return nil, false
+	}
+	item, cleanKey, filePath, generation, tok, ok := m.saveRAMInternal(normNS, urlPath, headers, data, isProbation, validated)
 	if !ok || item == nil {
 		return nil, false
 	}
@@ -1530,7 +1532,7 @@ func (m *Manager) saveRAMWithNamespaceAndValidation(ns, urlPath string, headers 
 	// Enqueue async disk persistence (bounded, non-blocking)
 	select {
 	case m.persistQueue <- &persistTask{
-		ns:         ns,
+		ns:         normNS,
 		cleanKey:   cleanKey,
 		filePath:   filePath,
 		headers:    headers,
@@ -1722,25 +1724,22 @@ func (m *Manager) MaxRAMItemSize() int64 {
 
 // ResolvePathWithNamespace returns the absolute disk cache path for an asset.
 func (m *Manager) ResolvePathWithNamespace(ns, urlPath string) (string, bool) {
-	clean := normalizeCleanKey(urlPath)
-	if clean == "" {
-		return "", false
-	}
-	return m.resolvePathWithNamespace(ns, clean)
+	return m.resolvePathWithNamespace(ns, urlPath)
 }
 
 // ReadDiskItemData loads raw bytes from disk for the given namespace and URL path.
 func (m *Manager) ReadDiskItemData(ns, urlPath string) ([]byte, error) {
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return nil, fmt.Errorf("failed to resolve path for %s", urlPath)
 	}
+	ns = normNS
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
 		return nil, fmt.Errorf("failed to resolve path for %s", urlPath)
 	}
 	data, err := os.ReadFile(filePath)
-	if err != nil && (ns == "" || ns == "gbf") {
+	if err != nil && ns == "gbf" {
 		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
 			if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
 				if altData, altErr := os.ReadFile(altPath); altErr == nil {
@@ -1758,10 +1757,11 @@ func (m *Manager) ReadDiskItemData(ns, urlPath string) ([]byte, error) {
 // It handles namespace resolution and the "assets/" fallback for the "gbf" namespace.
 // The caller is responsible for closing the returned ReadCloser.
 func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, error) {
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return nil, 0, fmt.Errorf("failed to resolve path: %s", urlPath)
 	}
+	ns = normNS
 	tok := m.acquireOpToken(ns, cleanKey)
 
 	openFileWithFallback := func(k string) (*os.File, int64, error) {
@@ -1858,7 +1858,7 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 		return f, size, nil
 	}
 
-	if ns == "" || ns == "gbf" {
+	if ns == "gbf" {
 		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
 			if altF, altSize, altErr := openFileWithFallback(altKey); altErr == nil {
 				return altF, altSize, nil
@@ -1870,10 +1870,11 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 
 // Invalidate removes an asset from memory cache and disk metadata, and deletes the cached file from disk.
 func (m *Manager) Invalidate(ns, urlPath string) {
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return
 	}
+	ns = normNS
 
 	m.persistMu.RLock()
 	shard, canonKey := m.tokenShardFor(ns, cleanKey)
@@ -1887,7 +1888,7 @@ func (m *Manager) Invalidate(ns, urlPath string) {
 		_ = os.Remove(p + ".ext")
 	}
 
-	if ns == "" || ns == "gbf" {
+	if ns == "gbf" {
 		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
 			if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
 				_ = os.Remove(altPath)
@@ -1909,10 +1910,11 @@ func (m *Manager) Invalidate(ns, urlPath string) {
 // The file is opened with O_CREATE|os.O_WRONLY|os.O_EXCL.
 // Returns the file handle, temporary path, cache generation, and error.
 func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint64, error) {
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		return nil, "", 0, fmt.Errorf("failed to resolve path for %s", urlPath)
 	}
+	ns = normNS
 
 	m.persistMu.RLock()
 	generation := m.generation
@@ -1959,11 +1961,12 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 		return nil, false
 	}
 
-	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
 		_ = os.Remove(tmpFilePath)
 		return nil, false
 	}
+	ns = normNS
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
 		_ = os.Remove(tmpFilePath)
@@ -2055,7 +2058,7 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 	}
 	m.deleteMissingKey(ramKey)
 
-	if ns == "" || ns == "gbf" {
+	if ns == "gbf" {
 		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
 			altRamKey := makeRAMKey("gbf", altKey)
 			m.ramCache.Delete(altRamKey)

@@ -1,10 +1,13 @@
 package cache
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -854,5 +857,321 @@ func BenchmarkCacheHitWithToken(b *testing.B) {
 			}
 		}
 	})
+}
+
+func BenchmarkDiskHitWithTokenValidation(b *testing.B) {
+	tmpDir := b.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('benchmark_disk_payload');")
+	mgr.Save("/assets/1728446123/js/bench.js", headers, body)
+	mgr.SetRAMEnabled(false)
+	mgr.ClearRAM()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			item, src := mgr.GetMetadataWithNamespace("gbf", "/assets/1728446123/js/bench.js")
+			if item == nil || src != "DISK" {
+				b.Fatalf("expected DISK metadata hit, got item=%v src=%q", item, src)
+			}
+		}
+	})
+}
+
+func BenchmarkNormalizeAndTokenCheck(b *testing.B) {
+	tmpDir := b.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			ns, key, ok := canonicalizeNSAndKey("gbf", "/assets/1728446123/js/bench.js")
+			if !ok {
+				b.Fatal("unexpected canonicalizeNSAndKey failure")
+			}
+			tok := mgr.acquireOpToken(ns, key)
+			if !mgr.isOpTokenValid(tok) {
+				b.Fatal("unexpected invalid token")
+			}
+		}
+	})
+}
+
+func TestSpacePrefixedSegmentDistinctFromUnspaced(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	spacedBody := []byte("console.log('leading_space');")
+	plainBody := []byte("console.log('plain_name');")
+
+	if !mgr.SaveWithNamespace("gbf", "/assets/js/ app.js", headers, spacedBody) {
+		t.Fatalf("expected SaveWithNamespace for '/assets/js/ app.js' to succeed")
+	}
+	if !mgr.SaveWithNamespace("gbf", "/assets/js/app.js", headers, plainBody) {
+		t.Fatalf("expected SaveWithNamespace for '/assets/js/app.js' to succeed")
+	}
+
+	itemSpaced, _ := mgr.GetWithNamespace("gbf", "/assets/js/ app.js")
+	itemPlain, _ := mgr.GetWithNamespace("gbf", "/assets/js/app.js")
+	if itemSpaced == nil || !bytes.Equal(itemSpaced.Data, spacedBody) {
+		t.Fatalf("expected '/assets/js/ app.js' to return spacedBody, got %v", itemSpaced)
+	}
+	if itemPlain == nil || !bytes.Equal(itemPlain.Data, plainBody) {
+		t.Fatalf("expected '/assets/js/app.js' to return plainBody, got %v", itemPlain)
+	}
+}
+
+func TestNBSPAndHostsPrefixCanonicalIdentity(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+
+	// Part 1: Unicode NBSP (\u00a0) in segment
+	nbspKey := "/assets/100/js/\u00a0app.js"
+	if !mgr.SaveWithNamespace("gbf", nbspKey, headers, []byte("console.log('nbsp');")) {
+		t.Fatalf("SaveWithNamespace with NBSP failed")
+	}
+	fNbsp, tmpNbsp, genNbsp, err := mgr.CreateDiskTempFile("gbf", nbspKey)
+	if err != nil {
+		t.Fatalf("CreateDiskTempFile with NBSP failed: %v", err)
+	}
+	_, _ = fNbsp.Write([]byte("console.log('stale_nbsp_temp');"))
+	_ = fNbsp.Close()
+	_, _, fileNbsp, genPersistNbsp, tokPersistNbsp, ok := mgr.saveRAMInternal("gbf", nbspKey, headers, []byte("console.log('stale_nbsp_persist');"), false, true)
+	if !ok {
+		t.Fatalf("saveRAMInternal with NBSP failed")
+	}
+
+	// Part 2: ("gbf", "/hosts/<subNS>/...") vs ("<subNS>", "...")
+	hostsURL := "/hosts/sub.example.com/assets/100/js/app.js"
+	if !mgr.SaveWithNamespace("gbf", hostsURL, headers, []byte("console.log('hosts_prefixed');")) {
+		t.Fatalf("SaveWithNamespace with hosts/ prefix failed")
+	}
+	fHosts, tmpHosts, genHosts, err := mgr.CreateDiskTempFile("gbf", hostsURL)
+	if err != nil {
+		t.Fatalf("CreateDiskTempFile with hosts/ prefix failed: %v", err)
+	}
+	_, _ = fHosts.Write([]byte("console.log('stale_hosts_temp');"))
+	_ = fHosts.Close()
+	_, _, fileHosts, genPersistHosts, tokPersistHosts, ok := mgr.saveRAMInternal("gbf", hostsURL, headers, []byte("console.log('stale_hosts_persist');"), false, true)
+	if !ok {
+		t.Fatalf("saveRAMInternal with hosts/ prefix failed")
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snap == nil || !snap.Valid {
+		t.Fatalf("expected valid snapshot")
+	}
+
+	searchRes, err := mgr.SearchSnapshot(snap.SnapshotID, "app.js", 50, nil)
+	if err != nil || len(searchRes.Items) != 2 {
+		t.Fatalf("expected 2 items in search result, got %d (err=%v)", len(searchRes.Items), err)
+	}
+
+	var targets []DeleteTargetEntry
+	for _, it := range searchRes.Items {
+		targets = append(targets, DeleteTargetEntry{
+			NS:  it.NS,
+			Key: it.Key,
+		})
+	}
+
+	delRes, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, targets, nil, nil)
+	if err != nil {
+		t.Fatalf("DeleteSnapshotEntriesWithProgress failed: %v", err)
+	}
+	if delRes.DeletedAssetFiles != 2 {
+		t.Fatalf("expected 2 deleted asset files, got %+v", delRes)
+	}
+
+	// Pre-deletion temp commits and async persist writes must all be rejected
+	if _, committed := mgr.CommitDiskTempFile("gbf", nbspKey, headers, tmpNbsp, 31, genNbsp); committed {
+		t.Fatalf("expected stale NBSP temp commit to be rejected after deletion")
+	}
+	if mgr.saveToDiskWithToken(fileNbsp, headers, []byte("console.log('stale_nbsp_persist');"), genPersistNbsp, tokPersistNbsp) {
+		t.Fatalf("expected stale NBSP persist write to be rejected after deletion")
+	}
+	if _, committed := mgr.CommitDiskTempFile("gbf", hostsURL, headers, tmpHosts, 32, genHosts); committed {
+		t.Fatalf("expected stale hosts-prefixed temp commit to be rejected after deletion")
+	}
+	if mgr.saveToDiskWithToken(fileHosts, headers, []byte("console.log('stale_hosts_persist');"), genPersistHosts, tokPersistHosts) {
+		t.Fatalf("expected stale hosts-prefixed persist write to be rejected after deletion")
+	}
+
+	if item, _ := mgr.GetWithNamespace("gbf", nbspKey); item != nil {
+		t.Fatalf("expected NBSP item to be absent after deletion, got %+v", item)
+	}
+	if item, _ := mgr.GetWithNamespace("gbf", hostsURL); item != nil {
+		t.Fatalf("expected hosts-prefixed item to be absent after deletion, got %+v", item)
+	}
+	if item, _ := mgr.GetWithNamespace("sub.example.com", "/assets/100/js/app.js"); item != nil {
+		t.Fatalf("expected sub.example.com item to be absent after deletion, got %+v", item)
+	}
+
+	// Verify reserved nested host namespaces ("hosts/gbf/..." and "hosts/hosts/...") are rejected by strict extraction
+	if _, _, _, ok := extractStrictNamespaceAndKey(tmpDir, filepath.Join(tmpDir, "hosts", "gbf", "assets", "a.js")); ok {
+		t.Fatalf("expected extractStrictNamespaceAndKey to reject hosts/gbf/...")
+	}
+	if _, _, _, ok := extractStrictNamespaceAndKey(tmpDir, filepath.Join(tmpDir, "hosts", "hosts", "assets", "a.js")); ok {
+		t.Fatalf("expected extractStrictNamespaceAndKey to reject hosts/hosts/...")
+	}
+}
+
+func TestAncestorReparseAndRootReplacementRejected(t *testing.T) {
+	parentDir := t.TempDir()
+	cacheRoot := filepath.Join(parentDir, "cache_root")
+	if err := os.MkdirAll(cacheRoot, 0755); err != nil {
+		t.Fatalf("MkdirAll cacheRoot failed: %v", err)
+	}
+	mgr := NewManager(cacheRoot, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	payload := []byte("console.log('v100');")
+	mgr.SaveWithNamespace("gbf", "assets/100/js/victim.js", headers, payload)
+	mgr.SaveWithNamespace("gbf", "assets/200/js/keep.js", headers, payload)
+
+	origFi, err := os.Stat(filepath.Join(cacheRoot, "assets", "100", "js", "victim.js"))
+	if err != nil {
+		t.Fatalf("Stat victim.js failed: %v", err)
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snap == nil || !snap.Valid {
+		t.Fatalf("expected valid snapshot")
+	}
+
+	// 1. Replace intermediate directory assets/100/js with a symlink/junction to externalDir containing an identical file
+	externalDir := filepath.Join(parentDir, "external_target")
+	if err := os.MkdirAll(externalDir, 0755); err != nil {
+		t.Fatalf("MkdirAll externalDir failed: %v", err)
+	}
+	extVictim := filepath.Join(externalDir, "victim.js")
+	if err := os.WriteFile(extVictim, payload, 0644); err != nil {
+		t.Fatalf("WriteFile extVictim failed: %v", err)
+	}
+	_ = os.Chtimes(extVictim, origFi.ModTime(), origFi.ModTime())
+
+	jsDir := filepath.Join(cacheRoot, "assets", "100", "js")
+	if err := os.RemoveAll(jsDir); err != nil {
+		t.Fatalf("RemoveAll jsDir failed: %v", err)
+	}
+
+	linkCreated := false
+	if err := os.Symlink(externalDir, jsDir); err == nil {
+		linkCreated = true
+	} else if runtime.GOOS == "windows" {
+		if out, jErr := exec.Command("cmd", "/c", "mklink", "/J", jsDir, externalDir).CombinedOutput(); jErr == nil {
+			linkCreated = true
+		} else {
+			t.Logf("skipping symlink/junction check (unable to create link: %v, %s)", jErr, string(out))
+		}
+	}
+
+	if linkCreated {
+		delRes, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
+			{NS: "gbf", Key: "assets/100/js/victim.js"},
+		}, nil, nil)
+		if err != nil {
+			t.Fatalf("DeleteSnapshotEntriesWithProgress returned unexpected error: %v", err)
+		}
+		if delRes.FailedCount == 0 {
+			t.Fatalf("expected DeleteSnapshotEntriesWithProgress to fail closed on symlinked ancestor directory")
+		}
+		if _, err := os.Stat(extVictim); err != nil {
+			t.Fatalf("external victim.js was deleted across symlinked ancestor: %v", err)
+		}
+		_ = os.Remove(jsDir)
+	}
+
+	// 2. Replace cacheRoot directory at the same path and verify root identity check rejects deletion/prune
+	backupRoot := filepath.Join(parentDir, "cache_root_old")
+	if err := os.Rename(cacheRoot, backupRoot); err != nil {
+		t.Fatalf("Rename cacheRoot failed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(cacheRoot, "assets", "100", "js"), 0755); err != nil {
+		t.Fatalf("MkdirAll new cacheRoot failed: %v", err)
+	}
+	newVictim := filepath.Join(cacheRoot, "assets", "100", "js", "victim.js")
+	if err := os.WriteFile(newVictim, payload, 0644); err != nil {
+		t.Fatalf("WriteFile newVictim failed: %v", err)
+	}
+	_ = os.Chtimes(newVictim, origFi.ModTime(), origFi.ModTime())
+
+	delRes2, err := mgr.DeleteSnapshotEntriesWithProgress(snap.SnapshotID, []DeleteTargetEntry{
+		{NS: "gbf", Key: "assets/100/js/victim.js"},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("DeleteSnapshotEntriesWithProgress returned unexpected error: %v", err)
+	}
+	if delRes2 == nil || delRes2.Status != "failed" || delRes2.FailedCount == 0 {
+		t.Fatalf("expected DeleteSnapshotEntriesWithProgress to fail closed on replaced cache root directory, got %+v", delRes2)
+	}
+	slimRes, err := mgr.PruneStaleVersionsDetailed(1, snap.SnapshotID, nil, nil)
+	if err != nil {
+		t.Fatalf("PruneStaleVersionsDetailed returned unexpected error: %v", err)
+	}
+	if slimRes == nil || slimRes.Status != "failed" || slimRes.FailedCount == 0 {
+		t.Fatalf("expected PruneStaleVersionsDetailed to fail closed on replaced cache root directory, got %+v", slimRes)
+	}
+	if _, err := os.Stat(newVictim); err != nil {
+		t.Fatalf("expected newVictim in replaced root directory to remain untouched: %v", err)
+	}
+}
+
+func TestConcurrentOrphanExtPruneAndSave(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('concurrent_ext_test');")
+
+	for iter := 0; iter < 15; iter++ {
+		mgr.SaveWithNamespace("gbf", "assets/100/js/base.js", headers, body)
+		mgr.SaveWithNamespace("gbf", "assets/200/js/base.js", headers, body)
+
+		raceDataPath := filepath.Join(tmpDir, "assets", "100", "js", "race.js")
+		raceExtPath := raceDataPath + ".ext"
+		_ = os.Remove(raceDataPath)
+		if err := os.WriteFile(raceExtPath, []byte(`{"ct":"application/javascript","v":1}`), 0644); err != nil {
+			t.Fatalf("WriteFile orphan .ext failed: %v", err)
+		}
+
+		snap := mgr.ScanBreakdownWithProgress(nil, nil)
+		if snap == nil || !snap.Valid {
+			t.Fatalf("expected valid snapshot on iter %d", iter)
+		}
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _ = mgr.PruneStaleVersionsDetailed(1, snap.SnapshotID, nil, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			mgr.SaveWithNamespace("gbf", "assets/100/js/race.js", headers, body)
+		}()
+		close(start)
+		wg.Wait()
+
+		if _, dataErr := os.Stat(raceDataPath); dataErr == nil {
+			if _, extErr := os.Stat(raceExtPath); extErr != nil {
+				t.Fatalf("iter %d: race.js exists after concurrent Save + Prune, but race.js.ext was deleted: %v", iter, extErr)
+			}
+		}
+	}
 }
 

@@ -32,10 +32,16 @@ export const SlimModal: React.FC<SlimModalProps> = ({
   const [startingScan, setStartingScan] = useState(false)
   const pollTimerRef = useRef<any>(null)
   const prevBusyRef = useRef<boolean>(false)
+  const breakdownReqSeqRef = useRef<number>(0)
+  const statusReqSeqRef = useRef<number>(0)
+  const breakdownScanningRef = useRef<boolean>(false)
 
   const loadBreakdown = useCallback(async (k: number) => {
+    const reqSeq = ++breakdownReqSeqRef.current
     try {
       const data = await fetchCacheBreakdown(k)
+      if (reqSeq !== breakdownReqSeqRef.current) return
+      breakdownScanningRef.current = Boolean(data?.is_scanning)
       setBreakdown(data)
     } catch {
       // Ignore transient poll errors
@@ -43,12 +49,20 @@ export const SlimModal: React.FC<SlimModalProps> = ({
   }, [])
 
   const fetchStatus = useCallback(async () => {
+    const reqSeq = ++statusReqSeqRef.current
     try {
       const data = await fetchCacheTaskStatus()
+      if (reqSeq !== statusReqSeqRef.current) return
       setTaskStatus(data)
-      const busy = Boolean(data?.is_slimming || data?.is_scanning)
+      const busy = Boolean(
+        data?.is_slimming ||
+          data?.is_scanning ||
+          data?.is_invalidating ||
+          data?.is_clearing_category ||
+          data?.is_auditing
+      )
       setRunning(Boolean(data?.is_slimming))
-      if (prevBusyRef.current && !busy) {
+      if ((prevBusyRef.current && !busy) || (!data?.is_scanning && breakdownScanningRef.current)) {
         loadBreakdown(keepCount)
         onRefresh()
       }
@@ -82,6 +96,7 @@ export const SlimModal: React.FC<SlimModalProps> = ({
     setStartingScan(true)
     try {
       await startCacheBreakdownScan()
+      prevBusyRef.current = true
       onToast('已启动后台分类扫描以生成版本保留预览', 'info')
       await fetchStatus()
       await loadBreakdown(keepCount)
@@ -100,8 +115,10 @@ export const SlimModal: React.FC<SlimModalProps> = ({
           ? breakdown.snapshot.snapshot_id
           : undefined
       await slimCache(keepCount, validSnapId)
+      prevBusyRef.current = true
       onToast(`版本清理任务已在后台启动（每组保留最新 ${keepCount} 个版本）`, 'info')
       await fetchStatus()
+      await loadBreakdown(keepCount)
       onRefresh()
     } catch (e: any) {
       onToast(`版本清理启动失败: ${e.message}`, 'error')
@@ -115,13 +132,15 @@ export const SlimModal: React.FC<SlimModalProps> = ({
       await cancelCacheTask(activeId)
       onToast('已请求取消当前后台缓存任务', 'info')
       await fetchStatus()
+      await loadBreakdown(keepCount)
     } catch (e: any) {
       onToast(`取消任务失败: ${e.message}`, 'error')
     }
   }
 
   const isSlimming = Boolean(taskStatus?.is_slimming)
-  const isScanning = Boolean(taskStatus?.is_scanning || breakdown?.is_scanning)
+  const isScanning =
+    taskStatus !== null ? Boolean(taskStatus?.is_scanning) : Boolean(breakdown?.is_scanning)
   const hasOtherTask = Boolean(
     taskStatus?.active_task_id &&
       !isSlimming &&

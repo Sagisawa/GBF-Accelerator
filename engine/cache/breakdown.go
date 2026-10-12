@@ -186,31 +186,72 @@ func IsSelectableCleanupCategory(cat string) bool {
 	return ok && meta.Selectable
 }
 
+func isASCIIControl(b byte) bool {
+	return b < 0x20 || b == 0x7f
+}
+
+func isASCIISpaceOrControl(b byte) bool {
+	return b <= ' ' || b == 0x7f
+}
+
+func trimLeadingASCIIControl(s string) string {
+	start := 0
+	for start < len(s) && isASCIIControl(s[start]) {
+		start++
+	}
+	return s[start:]
+}
+
+func trimTrailingASCIISpaceOrControl(s string) string {
+	end := len(s)
+	for end > 0 && isASCIISpaceOrControl(s[end-1]) {
+		end--
+	}
+	return s[:end]
+}
+
+func trimTrailingDotOrASCIISpaceOrControl(s string) string {
+	end := len(s)
+	for end > 0 && (s[end-1] == '.' || isASCIISpaceOrControl(s[end-1])) {
+		end--
+	}
+	return s[:end]
+}
+
 func splitCleanSegments(cleanKey string) []string {
-	if strings.IndexByte(cleanKey, 0) >= 0 {
+	rawKey, _, _ := strings.Cut(cleanKey, "?")
+	if strings.IndexByte(rawKey, 0) >= 0 {
 		return nil
 	}
-	trimmed := strings.TrimSpace(cleanKey)
-	if strings.HasPrefix(trimmed, `\\`) {
+	leadTrimmed := rawKey
+	for len(leadTrimmed) > 0 && isASCIISpaceOrControl(leadTrimmed[0]) {
+		leadTrimmed = leadTrimmed[1:]
+	}
+	if strings.HasPrefix(leadTrimmed, `\\`) {
+		return nil
+	}
+	trimmed := trimTrailingASCIISpaceOrControl(trimLeadingASCIIControl(rawKey))
+	if trimmed == "" {
 		return nil
 	}
 	norm := strings.ReplaceAll(trimmed, "\\", "/")
-	norm, _, _ = strings.Cut(norm, "?")
-	norm = strings.Trim(strings.TrimSpace(norm), "/")
-	if norm == "" {
-		return nil
-	}
 	raw := strings.Split(norm, "/")
 	segs := make([]string, 0, len(raw))
 	for _, s := range raw {
-		s = strings.TrimSpace(s)
+		s = trimLeadingASCIIControl(s)
+		s = trimTrailingASCIISpaceOrControl(s)
 		if s == "" || s == "." {
 			continue
+		}
+		for i := 0; i < len(s); i++ {
+			if isASCIIControl(s[i]) {
+				return nil
+			}
 		}
 		if s == ".." || strings.Contains(s, "..") || strings.Contains(s, ":") {
 			return nil
 		}
-		s = strings.TrimRight(s, ". ")
+		s = trimTrailingDotOrASCIISpaceOrControl(s)
 		if s == "" {
 			return nil
 		}
@@ -382,7 +423,7 @@ func isCleanRelativeSlashPath(s string) bool {
 	for i := 0; i <= len(s); i++ {
 		if i < len(s) {
 			c := s[i]
-			if c <= ' ' || c == '\\' || c == ':' || c == '?' || (c == '.' && i > 0 && s[i-1] == '.') {
+			if isASCIIControl(c) || c == '\\' || c == ':' || c == '?' || (c == '.' && i > 0 && s[i-1] == '.') {
 				return false
 			}
 			if c != '/' {
@@ -390,7 +431,7 @@ func isCleanRelativeSlashPath(s string) bool {
 			}
 		}
 		segLen := i - segStart
-		if segLen == 0 || s[i-1] == '.' {
+		if segLen == 0 || s[i-1] == '.' || s[i-1] == ' ' {
 			return false
 		}
 		segStart = i + 1
@@ -400,38 +441,75 @@ func isCleanRelativeSlashPath(s string) bool {
 
 // normalizeCleanKey canonicalizes a URL path or cache key into a clean relative
 // forward-slash path with zero heap allocations on the common clean path.
+// It preserves interior and leading filename spaces (e.g. "/assets/js/ app.js")
+// and Unicode non-breaking spaces while stripping ASCII control chars and trailing dots/spaces.
 func normalizeCleanKey(urlPath string) string {
 	s, _, _ := strings.Cut(urlPath, "?")
-	start := 0
-	end := len(s)
-	for start < end && (s[start] <= ' ' || s[start] == '/') {
-		start++
-	}
-	for end > start && (s[end-1] <= ' ' || s[end-1] == '/') {
-		end--
-	}
-	s = s[start:end]
-	if s == "" {
-		return ""
+	if s != "" && s[0] == '/' {
+		s = s[1:]
 	}
 	if isCleanRelativeSlashPath(s) {
 		return s
 	}
-	segs := splitCleanSegments(s)
+	segs := splitCleanSegments(urlPath)
 	if len(segs) == 0 {
 		return ""
 	}
 	return strings.Join(segs, "/")
 }
 
-func canonicalTokenKey(ns, cleanKey string) string {
-	normKey := normalizeCleanKey(cleanKey)
-	if normKey == "" {
-		return ""
+// canonicalizeNSAndKey normalizes a (namespace, urlPath) pair and folds any
+// ("gbf", "hosts/<subNS>/<subKey>") path into its canonical ("<subNS>", "<subKey>") identity
+// so data-plane, scan-plane, RAM/diskMeta, and invalidation tokens never split identity.
+func canonicalizeNSAndKey(ns, urlPath string) (string, string, bool) {
+	cleanKey := normalizeCleanKey(urlPath)
+	if cleanKey == "" {
+		return "", "", false
 	}
+	rawNS := strings.TrimSpace(ns)
 	normNS := "gbf"
-	if ns != "" && ns != "gbf" {
-		normNS = sanitizeNamespace(ns)
+	if rawNS != "" && !strings.EqualFold(rawNS, "gbf") {
+		if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) {
+			return "", "", false
+		}
+		normNS = sanitizeNamespace(rawNS)
+	}
+	if normNS == "" || normNS == "hosts" {
+		return "", "", false
+	}
+	if normNS == "gbf" && (cleanKey == "hosts" || strings.HasPrefix(cleanKey, "hosts/")) {
+		parts := strings.SplitN(cleanKey, "/", 3)
+		if len(parts) < 3 || parts[1] == "" || parts[2] == "" {
+			return "", "", false
+		}
+		rawSubNS := parts[1]
+		if strings.Contains(rawSubNS, "..") || strings.ContainsAny(rawSubNS, `/\:`) {
+			return "", "", false
+		}
+		subNS := sanitizeNamespace(rawSubNS)
+		if subNS == "" || subNS == "hosts" || subNS == "gbf" || subNS != strings.ToLower(rawSubNS) {
+			return "", "", false
+		}
+		subKey := normalizeCleanKey(parts[2])
+		if subKey == "" {
+			return "", "", false
+		}
+		return subNS, subKey, true
+	}
+	return normNS, cleanKey, true
+}
+
+func canonicalTokenKey(ns, cleanKey string) string {
+	normNS, normKey, ok := canonicalizeNSAndKey(ns, cleanKey)
+	if !ok {
+		normKey = normalizeCleanKey(cleanKey)
+		if normKey == "" {
+			return ""
+		}
+		normNS = "gbf"
+		if ns != "" && ns != "gbf" {
+			normNS = sanitizeNamespace(ns)
+		}
 	}
 	if normNS == "gbf" {
 		if strings.HasPrefix(normKey, "assets/") {
@@ -450,7 +528,7 @@ func canonicalTokenKey(ns, cleanKey string) string {
 
 func gbfFallbackCleanKey(cleanKey string) (string, bool) {
 	normKey := normalizeCleanKey(cleanKey)
-	if normKey == "" {
+	if normKey == "" || normKey == "hosts" || strings.HasPrefix(normKey, "hosts/") {
 		return "", false
 	}
 	if !strings.HasPrefix(normKey, "assets") {
@@ -458,7 +536,7 @@ func gbfFallbackCleanKey(cleanKey string) (string, bool) {
 	}
 	if strings.HasPrefix(normKey, "assets/") {
 		rem := normKey[len("assets/"):]
-		if rem != "" && !strings.HasPrefix(rem, "assets") {
+		if rem != "" && !strings.HasPrefix(rem, "assets") && rem != "hosts" && !strings.HasPrefix(rem, "hosts/") {
 			return rem, true
 		}
 	}
@@ -583,8 +661,12 @@ func bumpInvalidateTokenLocked(shard *tokenShard, canonKey string) uint64 {
 }
 
 func (m *Manager) clearKeyMemoryState(ns, cleanKey string) {
-	normNS := sanitizeNamespace(ns)
-	ramKey := makeRAMKey(normNS, cleanKey)
+	normNS, normKey, ok := canonicalizeNSAndKey(ns, cleanKey)
+	if !ok {
+		normNS = sanitizeNamespace(ns)
+		normKey = normalizeCleanKey(cleanKey)
+	}
+	ramKey := makeRAMKey(normNS, normKey)
 	m.deleteDiskMeta(ramKey)
 	if m.residentPool != nil {
 		m.residentPool.Delete(ramKey)
@@ -595,7 +677,7 @@ func (m *Manager) clearKeyMemoryState(ns, cleanKey string) {
 	m.deleteMissingKey(ramKey)
 
 	if normNS == "gbf" {
-		if altKey, ok := gbfFallbackCleanKey(cleanKey); ok {
+		if altKey, ok := gbfFallbackCleanKey(normKey); ok {
 			altRamKey := makeRAMKey("gbf", altKey)
 			m.deleteDiskMeta(altRamKey)
 			if m.residentPool != nil {
@@ -617,7 +699,9 @@ func (m *Manager) deleteMissingKey(ramKey string) {
 }
 
 func (m *Manager) registerTempFileToken(tmpPath string, tok opToken) bool {
-	curGen := m.currentGeneration()
+	m.persistMu.RLock()
+	defer m.persistMu.RUnlock()
+	curGen := m.generation
 	if tok.gen == 0 || tok.gen != curGen {
 		return false
 	}
@@ -685,26 +769,61 @@ func (m *Manager) clearTempTokens() {
 
 // --- Symlink / Junction Containment Verification (Section 5.4) ---
 
-func resolveContainedRealBase(baseDir string) (absBase string, realBase string, exists bool, err error) {
+func resolveContainedRealBaseWithInfo(baseDir string) (absBase string, realBase string, rootInfo os.FileInfo, exists bool, err error) {
 	absBase, err = filepath.Abs(baseDir)
 	if err != nil {
-		return "", "", false, err
+		return "", "", nil, false, err
 	}
-	fi, statErr := os.Stat(absBase)
-	if statErr != nil {
-		if os.IsNotExist(statErr) {
-			return absBase, absBase, false, nil
+	lfi, lstatErr := os.Lstat(absBase)
+	if lstatErr != nil {
+		if os.IsNotExist(lstatErr) {
+			return absBase, absBase, nil, false, nil
 		}
-		return absBase, "", false, statErr
+		return absBase, "", nil, false, lstatErr
 	}
-	if !fi.IsDir() {
-		return absBase, "", false, fmt.Errorf("cache base is not a directory: %s", absBase)
+	if lfi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+		return absBase, "", nil, true, fmt.Errorf("cache base cannot be a symlink or reparse point: %s", absBase)
+	}
+	if !lfi.IsDir() {
+		return absBase, "", nil, true, fmt.Errorf("cache base is not a directory: %s", absBase)
 	}
 	realBase, err = filepath.EvalSymlinks(absBase)
 	if err != nil {
-		return absBase, "", true, err
+		return absBase, "", nil, true, err
 	}
-	return absBase, realBase, true, nil
+	realFi, statErr := os.Stat(realBase)
+	if statErr != nil {
+		return absBase, "", nil, true, statErr
+	}
+	if !os.SameFile(lfi, realFi) {
+		return absBase, "", nil, true, fmt.Errorf("cache base resolved identity mismatch: %s", absBase)
+	}
+	return absBase, realBase, realFi, true, nil
+}
+
+func resolveContainedRealBase(baseDir string) (absBase string, realBase string, exists bool, err error) {
+	absBase, realBase, _, exists, err = resolveContainedRealBaseWithInfo(baseDir)
+	return absBase, realBase, exists, err
+}
+
+func verifyStrictRootIdentity(absBase, expectedRealBase string, expectedRootFi os.FileInfo) error {
+	curAbs, curReal, curRootFi, exists, err := resolveContainedRealBaseWithInfo(absBase)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return os.ErrNotExist
+	}
+	if curAbs != absBase {
+		return fmt.Errorf("cache base path mismatch: %s vs %s", curAbs, absBase)
+	}
+	if expectedRealBase != "" && curReal != expectedRealBase {
+		return fmt.Errorf("cache base real path changed: %s vs %s", curReal, expectedRealBase)
+	}
+	if expectedRootFi != nil && !os.SameFile(expectedRootFi, curRootFi) {
+		return fmt.Errorf("cache root directory identity changed: %s", absBase)
+	}
+	return nil
 }
 
 func isRealPathWithinBase(realBase, candidateRealPath string) bool {
@@ -721,7 +840,13 @@ func isRealPathWithinBase(realBase, candidateRealPath string) bool {
 	return true
 }
 
-func verifyTargetContainment(absBase, realBase, targetPath string) error {
+// verifyStrictPathChain verifies that absBase has not been replaced or redirected by a symlink/junction,
+// and walks every path component from absBase to targetPath using os.Lstat so that no intermediate
+// directory or leaf entry is a symlink or reparse point.
+func verifyStrictPathChain(absBase, realBase string, expectedRootFi os.FileInfo, targetPath string) error {
+	if err := verifyStrictRootIdentity(absBase, realBase, expectedRootFi); err != nil {
+		return err
+	}
 	absTarget, err := filepath.Abs(targetPath)
 	if err != nil {
 		return err
@@ -731,34 +856,64 @@ func verifyTargetContainment(absBase, realBase, targetPath string) error {
 		return fmt.Errorf("path escapes cache base: %s", targetPath)
 	}
 
-	lfi, err := os.Lstat(absTarget)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Verify parent directory containment if file is already absent
-			parentDir := filepath.Dir(absTarget)
-			if realParent, pErr := filepath.EvalSymlinks(parentDir); pErr == nil {
-				if !isRealPathWithinBase(realBase, realParent) {
-					return fmt.Errorf("parent directory redirects outside cache base: %s", targetPath)
-				}
-			}
-			return nil
+	parts := strings.Split(lexRel, string(filepath.Separator))
+	cur := absBase
+	var leafFi os.FileInfo
+	for i, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("invalid path component in %s", targetPath)
 		}
-		return err
+		cur = filepath.Join(cur, part)
+		fi, lErr := os.Lstat(cur)
+		if lErr != nil {
+			if os.IsNotExist(lErr) {
+				// All existing ancestor segments up to this missing component have been verified by Lstat
+				return nil
+			}
+			return lErr
+		}
+		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return fmt.Errorf("refusing symlink or reparse component in path chain: %s", cur)
+		}
+		if i < len(parts)-1 && !fi.IsDir() {
+			return fmt.Errorf("ancestor in path chain is not a directory: %s", cur)
+		}
+		if i == len(parts)-1 {
+			leafFi = fi
+		}
 	}
-	if lfi.Mode()&os.ModeSymlink != 0 || lfi.Mode()&os.ModeIrregular != 0 {
-		return fmt.Errorf("refusing symlink or reparse target: %s", targetPath)
-	}
-	realTarget, err := filepath.EvalSymlinks(absTarget)
-	if err != nil {
-		return err
-	}
-	if !isRealPathWithinBase(realBase, realTarget) {
-		return fmt.Errorf("resolved path escapes cache base: %s", targetPath)
-	}
-	if realTarget == realBase {
-		return fmt.Errorf("resolved path equals cache root: %s", targetPath)
+
+	if leafFi != nil && realBase != "" {
+		realTarget, evalErr := filepath.EvalSymlinks(absTarget)
+		if evalErr != nil {
+			return evalErr
+		}
+		if !isRealPathWithinBase(realBase, realTarget) {
+			return fmt.Errorf("resolved path escapes cache base: %s", targetPath)
+		}
+		if realTarget == realBase {
+			return fmt.Errorf("resolved path equals cache root: %s", targetPath)
+		}
 	}
 	return nil
+}
+
+func verifyStrictDirChain(absBase, realBase string, expectedRootFi os.FileInfo, dirPath string) error {
+	if err := verifyStrictPathChain(absBase, realBase, expectedRootFi, dirPath); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(dirPath)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !fi.IsDir() {
+		return fmt.Errorf("target is not a regular directory: %s", dirPath)
+	}
+	return nil
+}
+
+func verifyTargetContainment(absBase, realBase, targetPath string) error {
+	return verifyStrictPathChain(absBase, realBase, nil, targetPath)
 }
 
 func validateManagedNamespaceAndKey(ns, cleanKey string) (string, string, bool) {
@@ -766,7 +921,7 @@ func validateManagedNamespaceAndKey(ns, cleanKey string) (string, string, bool) 
 	if rawNS == "" {
 		rawNS = "gbf"
 	}
-	if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) || rawNS == "hosts" {
+	if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) || strings.EqualFold(rawNS, "hosts") {
 		return "", "", false
 	}
 	normNS := sanitizeNamespace(rawNS)
@@ -774,13 +929,13 @@ func validateManagedNamespaceAndKey(ns, cleanKey string) (string, string, bool) 
 		return "", "", false
 	}
 
-	if strings.TrimSpace(cleanKey) == "" {
+	if cleanKey == "" || strings.Contains(cleanKey, "?") {
 		return "", "", false
 	}
-	if strings.Contains(cleanKey, "?") {
+	trimmed := trimTrailingASCIISpaceOrControl(trimLeadingASCIIControl(cleanKey))
+	if trimmed == "" {
 		return "", "", false
 	}
-	trimmed := strings.TrimSpace(cleanKey)
 	if strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, `\`) || (len(trimmed) >= 2 && trimmed[1] == ':') {
 		return "", "", false
 	}
@@ -932,6 +1087,10 @@ type BreakdownSnapshot struct {
 	Entries              []SnapshotEntry                    `json:"-"`
 	entryByNSKey         map[string]int
 	orphanExts           map[string]orphanExtCandidate
+	absBase              string
+	realBase             string
+	rootInfo             os.FileInfo
+	baseExists           bool
 }
 
 // ScanProgress reports background breakdown scan progress.
@@ -1046,6 +1205,9 @@ func extractStrictNamespaceAndKey(base, path string) (ns string, cleanKey string
 	if strings.HasPrefix(slashRel, "hosts/") {
 		parts := strings.SplitN(slashRel, "/", 3)
 		if len(parts) < 3 || parts[1] == "" || parts[2] == "" {
+			return "", "", "", false
+		}
+		if strings.EqualFold(parts[1], "gbf") || strings.EqualFold(parts[1], "hosts") {
 			return "", "", "", false
 		}
 		ns = parts[1]
@@ -1218,7 +1380,7 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		m.snapshotMu.Unlock()
 	}()
 
-	absBase, realBase, baseExists, err := resolveContainedRealBase(base)
+	absBase, realBase, rootInfo, baseExists, err := resolveContainedRealBaseWithInfo(base)
 	if err != nil {
 		now := time.Now()
 		failed := &BreakdownSnapshot{
@@ -1303,8 +1465,7 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 			}
 
 			if d.IsDir() {
-				realDir, evalErr := filepath.EvalSymlinks(p)
-				if evalErr != nil || !isRealPathWithinBase(realBase, realDir) {
+				if err := verifyStrictDirChain(absBase, realBase, rootInfo, p); err != nil {
 					skippedCount++
 					return filepath.SkipDir
 				}
@@ -1382,6 +1543,14 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 	}
 
 	curGenAfterWalk, curBaseAfterWalk := m.currentGenAndBase()
+	if !cancelled && !rootChanged {
+		absAfter, realAfter, rootInfoAfter, existsAfter, afterErr := resolveContainedRealBaseWithInfo(base)
+		if afterErr != nil || existsAfter != baseExists {
+			rootChanged = true
+		} else if baseExists && (absAfter != absBase || realAfter != realBase || (rootInfo != nil && rootInfoAfter != nil && !os.SameFile(rootInfo, rootInfoAfter))) {
+			rootChanged = true
+		}
+	}
 	if cancelled || rootChanged || curGenAfterWalk != startGen || curBaseAfterWalk != base {
 		now := time.Now()
 		status := "cancelled"
@@ -1704,14 +1873,27 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		Entries:             entries,
 		entryByNSKey:        entryByNSKey,
 		orphanExts:          orphanExts,
+		absBase:             absBase,
+		realBase:            realBase,
+		rootInfo:            rootInfo,
+		baseExists:          baseExists,
 	}
 
 	// Enforce strict lock hierarchy: persistMu.RLock -> mu.RLock -> snapshotMu.Lock
 	m.persistMu.RLock()
 	curGenFinal := m.generation
 	curBaseFinal := m.GetCacheBase()
-	m.snapshotMu.Lock()
+	rootStillValid := true
 	if curGenFinal == startGen && curBaseFinal == base {
+		absPub, realPub, rootInfoPub, existsPub, pubErr := resolveContainedRealBaseWithInfo(base)
+		if pubErr != nil || existsPub != baseExists {
+			rootStillValid = false
+		} else if baseExists && (absPub != absBase || realPub != realBase || (rootInfo != nil && rootInfoPub != nil && !os.SameFile(rootInfo, rootInfoPub))) {
+			rootStillValid = false
+		}
+	}
+	m.snapshotMu.Lock()
+	if curGenFinal == startGen && curBaseFinal == base && rootStillValid {
 		stored := *completed
 		m.lastSnapshot = &stored
 	} else {
@@ -1771,7 +1953,11 @@ func (m *Manager) getValidatedSnapshot(snapshotID string) (*BreakdownSnapshot, e
 // SearchSnapshot searches the latest valid breakdown snapshot by full HTTP/HTTPS URL,
 // relative resource path, or filename/path fragment (plain substring match, no regex).
 func (m *Manager) SearchSnapshot(snapshotID, query string, limit int, hostNormalizer func(host string) (string, bool)) (*SearchResponse, error) {
-	trimmed := strings.TrimSpace(query)
+	if strings.TrimSpace(query) == "" {
+		return nil, ErrEmptySearchQuery
+	}
+	trimmed := trimTrailingASCIISpaceOrControl(trimLeadingASCIIControl(query))
+	trimmed = strings.Trim(trimmed, " ")
 	if trimmed == "" {
 		return nil, ErrEmptySearchQuery
 	}
@@ -1812,7 +1998,7 @@ func (m *Manager) SearchSnapshot(snapshotID, query string, limit int, hostNormal
 
 	if !isURLQuery {
 		noQuery, _, _ := strings.Cut(trimmed, "?")
-		norm := strings.TrimPrefix(strings.ReplaceAll(strings.TrimSpace(noQuery), "\\", "/"), "/")
+		norm := strings.TrimPrefix(strings.ReplaceAll(strings.Trim(noQuery, " \t\r\n"), "\\", "/"), "/")
 		if strings.HasPrefix(strings.ToLower(norm), "hosts/") {
 			parts := strings.SplitN(norm, "/", 3)
 			if len(parts) == 3 && parts[1] != "" && parts[2] != "" {
@@ -2122,7 +2308,12 @@ func (m *Manager) executeControlledDeletion(
 		}
 	}
 
-	absBase, realBase, baseExists, baseErr := resolveContainedRealBase(snap.CacheBase)
+	absBase, realBase, rootInfo, baseExists, baseErr := resolveContainedRealBaseWithInfo(snap.CacheBase)
+	if baseErr == nil && baseExists && snap.baseExists && snap.rootInfo != nil {
+		if !os.SameFile(snap.rootInfo, rootInfo) || (snap.realBase != "" && snap.realBase != realBase) {
+			baseErr = fmt.Errorf("缓存根目录物理身份已变更: %s", snap.CacheBase)
+		}
+	}
 	if baseErr != nil || !baseExists {
 		if baseErr != nil {
 			if len(candidates) > 0 {
@@ -2167,7 +2358,7 @@ func (m *Manager) executeControlledDeletion(
 			break
 		}
 
-		m.deleteSingleVerifiedEntry(absBase, realBase, snap.Generation, snap.CacheBase, cand, &res, touchedDirs)
+		m.deleteSingleVerifiedEntryWithRootInfo(absBase, realBase, rootInfo, snap.Generation, snap.CacheBase, cand, &res, touchedDirs)
 
 		now := time.Now()
 		if progressCb != nil && ((idx+1)%100 == 0 || now.Sub(lastReport) >= 150*time.Millisecond || idx+1 == total) {
@@ -2197,8 +2388,12 @@ func (m *Manager) executeControlledDeletion(
 	}
 
 	// Best-effort removal of empty parent directories up to cache root
-	if len(touchedDirs) > 0 && absBase != "" {
-		res.DeletedDirs += removeEmptyParentDirs(absBase, touchedDirs)
+	if !res.Cancelled && len(touchedDirs) > 0 && absBase != "" {
+		removedDirs, dirCancelled := m.removeEmptyParentDirsControlled(absBase, realBase, rootInfo, snap.Generation, snap.CacheBase, touchedDirs, cancelCh)
+		res.DeletedDirs += removedDirs
+		if dirCancelled {
+			res.Cancelled = true
+		}
 	}
 
 	res.DeletedFiles = res.DeletedAssetFiles + res.DeletedMetaFiles
@@ -2269,6 +2464,19 @@ func (m *Manager) deleteSingleVerifiedEntry(
 	res *DeleteResult,
 	touchedDirs map[string]struct{},
 ) {
+	m.deleteSingleVerifiedEntryWithRootInfo(absBase, realBase, nil, expectedGen, expectedBase, cand, res, touchedDirs)
+}
+
+func (m *Manager) deleteSingleVerifiedEntryWithRootInfo(
+	absBase string,
+	realBase string,
+	expectedRootFi os.FileInfo,
+	expectedGen uint64,
+	expectedBase string,
+	cand SnapshotEntry,
+	res *DeleteResult,
+	touchedDirs map[string]struct{},
+) {
 	normNS, normKey, valid := validateManagedNamespaceAndKey(cand.NS, cand.Key)
 	if !valid {
 		res.FailedCount++
@@ -2290,21 +2498,7 @@ func (m *Manager) deleteSingleVerifiedEntry(
 		appendBoundedFailure(res, normNS, normKey, "无法解析缓存文件路径")
 		return
 	}
-
-	if err := verifyTargetContainment(absBase, realBase, filePath); err != nil {
-		m.persistMu.RUnlock()
-		res.FailedCount++
-		appendBoundedFailure(res, normNS, normKey, fmt.Sprintf("路径边界校验未通过: %v", err))
-		return
-	}
-
 	extPath := filePath + ".ext"
-	if err := verifyTargetContainment(absBase, realBase, extPath); err != nil {
-		m.persistMu.RUnlock()
-		res.FailedCount++
-		appendBoundedFailure(res, normNS, normKey, fmt.Sprintf("元数据路径边界校验未通过: %v", err))
-		return
-	}
 
 	shard, canonKey := m.tokenShardFor(normNS, normKey)
 	shard.mu.Lock()
@@ -2313,19 +2507,46 @@ func (m *Manager) deleteSingleVerifiedEntry(
 	bumpInvalidateTokenLocked(shard, canonKey)
 	m.clearKeyMemoryState(normNS, normKey)
 
-	// 2. Verify physical file identity (size + mtime) inside the synchronized boundary
+	// 2. Verify full path chain (root identity + every intermediate directory + leaf) inside the synchronized boundary
+	if err := verifyStrictPathChain(absBase, realBase, expectedRootFi, filePath); err != nil {
+		res.FailedCount++
+		appendBoundedFailure(res, normNS, normKey, fmt.Sprintf("路径边界校验未通过: %v", err))
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+		return
+	}
+	if err := verifyStrictPathChain(absBase, realBase, expectedRootFi, extPath); err != nil {
+		res.FailedCount++
+		appendBoundedFailure(res, normNS, normKey, fmt.Sprintf("元数据路径边界校验未通过: %v", err))
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+		return
+	}
+
+	// 3. Verify physical file identity (size + mtime) inside the synchronized boundary
 	lfi, statErr := os.Lstat(filePath)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			res.AlreadyMissingCount++
 			// Clean up paired .ext if it still lingers after data file disappeared
-			if extFi, extErr := os.Lstat(extPath); extErr == nil && extFi.Mode().IsRegular() {
-				extSize := extFi.Size()
-				if rmErr := os.Remove(extPath); rmErr == nil {
-					res.DeletedMetaFiles++
-					res.DeletedMetaBytes += extSize
-					touchedDirs[filepath.Dir(filePath)] = struct{}{}
+			if extFi, extErr := os.Lstat(extPath); extErr == nil {
+				if extFi.IsDir() || extFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !extFi.Mode().IsRegular() {
+					res.FailedCount++
+					appendBoundedFailure(res, normNS, normKey+".ext", "残留元数据路径不是普通文件")
+				} else {
+					extSize := extFi.Size()
+					if rmErr := os.Remove(extPath); rmErr == nil {
+						res.DeletedMetaFiles++
+						res.DeletedMetaBytes += extSize
+						touchedDirs[filepath.Dir(filePath)] = struct{}{}
+					} else if !os.IsNotExist(rmErr) {
+						res.FailedCount++
+						appendBoundedFailure(res, normNS, normKey+".ext", rmErr.Error())
+					}
 				}
+			} else if !os.IsNotExist(extErr) {
+				res.FailedCount++
+				appendBoundedFailure(res, normNS, normKey+".ext", extErr.Error())
 			}
 		} else {
 			res.FailedCount++
@@ -2352,7 +2573,7 @@ func (m *Manager) deleteSingleVerifiedEntry(
 		return
 	}
 
-	// 3. Delete verified data file
+	// 4. Delete verified data file
 	if rmErr := os.Remove(filePath); rmErr != nil {
 		if os.IsNotExist(rmErr) {
 			res.AlreadyMissingCount++
@@ -2369,23 +2590,39 @@ func (m *Manager) deleteSingleVerifiedEntry(
 	res.DeletedAssetBytes += cand.Size
 	touchedDirs[filepath.Dir(filePath)] = struct{}{}
 
-	// 4. Delete paired .ext metadata file if present
-	if extFi, extErr := os.Lstat(extPath); extErr == nil && extFi.Mode().IsRegular() {
-		extSize := extFi.Size()
-		if rmExtErr := os.Remove(extPath); rmExtErr == nil {
-			res.DeletedMetaFiles++
-			res.DeletedMetaBytes += extSize
-		} else if !os.IsNotExist(rmExtErr) {
+	// 5. Delete paired .ext metadata file if present
+	if extFi, extErr := os.Lstat(extPath); extErr == nil {
+		if extFi.IsDir() || extFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !extFi.Mode().IsRegular() {
 			res.FailedCount++
-			appendBoundedFailure(res, normNS, normKey+".ext", rmExtErr.Error())
+			appendBoundedFailure(res, normNS, normKey+".ext", "配对元数据路径不是普通文件")
+		} else {
+			extSize := extFi.Size()
+			if rmExtErr := os.Remove(extPath); rmExtErr == nil {
+				res.DeletedMetaFiles++
+				res.DeletedMetaBytes += extSize
+			} else if !os.IsNotExist(rmExtErr) {
+				res.FailedCount++
+				appendBoundedFailure(res, normNS, normKey+".ext", rmExtErr.Error())
+			}
 		}
+	} else if !os.IsNotExist(extErr) {
+		res.FailedCount++
+		appendBoundedFailure(res, normNS, normKey+".ext", extErr.Error())
 	}
 
 	shard.mu.Unlock()
 	m.persistMu.RUnlock()
 }
 
-func removeEmptyParentDirs(absBase string, touchedDirs map[string]struct{}) int {
+func (m *Manager) removeEmptyParentDirsControlled(
+	absBase string,
+	realBase string,
+	expectedRootFi os.FileInfo,
+	expectedGen uint64,
+	expectedBase string,
+	touchedDirs map[string]struct{},
+	cancelCh <-chan struct{},
+) (int, bool) {
 	hostsRoot := filepath.Join(absBase, "hosts")
 	allDirs := make(map[string]struct{}, len(touchedDirs)*2)
 	for d := range touchedDirs {
@@ -2412,34 +2649,112 @@ func removeEmptyParentDirs(absBase string, touchedDirs map[string]struct{}) int 
 	})
 	removed := 0
 	for _, d := range sortedDirs {
+		select {
+		case <-cancelCh:
+			return removed, true
+		default:
+		}
+		if m != nil {
+			curGen, curBase := m.currentGenAndBase()
+			if curGen != expectedGen || (expectedBase != "" && curBase != expectedBase) {
+				return removed, true
+			}
+		}
+		if err := verifyStrictDirChain(absBase, realBase, expectedRootFi, d); err != nil {
+			continue
+		}
 		if err := os.Remove(d); err == nil {
 			removed++
 		}
 	}
-	return removed
+	return removed, false
 }
 
-// pruneEmptyDirTree walks dirRoot bottom-up and removes only genuinely empty directories
-// using os.Remove (never os.RemoveAll). Returns (removedRoot, firstRemovalOrReadError).
-func pruneEmptyDirTree(dirRoot string) (bool, error) {
+// pruneEmptyDirTreeControlled walks dirRoot bottom-up and removes only genuinely empty directories
+// using os.Remove (never os.RemoveAll), verifying cancelCh, generation/root binding, and strict path chain
+// on every directory before ReadDir and Remove.
+func (m *Manager) pruneEmptyDirTreeControlled(
+	absBase string,
+	realBase string,
+	expectedRootFi os.FileInfo,
+	expectedGen uint64,
+	expectedBase string,
+	dirRoot string,
+	cancelCh <-chan struct{},
+) (removedRoot bool, cancelled bool, firstErr error) {
+	if err := verifyStrictDirChain(absBase, realBase, expectedRootFi, dirRoot); err != nil {
+		if os.IsNotExist(err) {
+			return true, false, nil
+		}
+		return false, false, err
+	}
+
 	var subDirs []string
-	var firstErr error
 	_ = filepath.WalkDir(dirRoot, func(p string, d os.DirEntry, err error) error {
+		select {
+		case <-cancelCh:
+			cancelled = true
+			return filepath.SkipAll
+		default:
+		}
+		if m != nil {
+			curGen, curBase := m.currentGenAndBase()
+			if curGen != expectedGen || (expectedBase != "" && curBase != expectedBase) {
+				cancelled = true
+				return filepath.SkipAll
+			}
+		}
 		if err != nil {
 			if !os.IsNotExist(err) && firstErr == nil {
 				firstErr = err
 			}
 			return nil
 		}
-		if d.IsDir() && d.Type()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+		if d.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("拒绝处理符号链接或重解析点: %s", p)
+			}
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if chainErr := verifyStrictDirChain(absBase, realBase, expectedRootFi, p); chainErr != nil {
+				if firstErr == nil {
+					firstErr = chainErr
+				}
+				return filepath.SkipDir
+			}
 			subDirs = append(subDirs, p)
 		}
 		return nil
 	})
+	if cancelled {
+		return false, true, firstErr
+	}
+
 	sort.Slice(subDirs, func(i, j int) bool {
 		return len(subDirs[i]) > len(subDirs[j])
 	})
 	for _, d := range subDirs {
+		select {
+		case <-cancelCh:
+			return false, true, firstErr
+		default:
+		}
+		if m != nil {
+			curGen, curBase := m.currentGenAndBase()
+			if curGen != expectedGen || (expectedBase != "" && curBase != expectedBase) {
+				return false, true, firstErr
+			}
+		}
+		if chainErr := verifyStrictDirChain(absBase, realBase, expectedRootFi, d); chainErr != nil {
+			if !os.IsNotExist(chainErr) && firstErr == nil {
+				firstErr = chainErr
+			}
+			continue
+		}
 		entries, readErr := os.ReadDir(d)
 		if readErr != nil {
 			if !os.IsNotExist(readErr) && firstErr == nil {
@@ -2450,6 +2765,12 @@ func pruneEmptyDirTree(dirRoot string) (bool, error) {
 		if len(entries) > 0 {
 			continue
 		}
+		if chainErr := verifyStrictDirChain(absBase, realBase, expectedRootFi, d); chainErr != nil {
+			if !os.IsNotExist(chainErr) && firstErr == nil {
+				firstErr = chainErr
+			}
+			continue
+		}
 		if rmErr := os.Remove(d); rmErr != nil && !os.IsNotExist(rmErr) {
 			if entriesAfter, readErr2 := os.ReadDir(d); readErr2 != nil || len(entriesAfter) == 0 {
 				if firstErr == nil {
@@ -2458,8 +2779,8 @@ func pruneEmptyDirTree(dirRoot string) (bool, error) {
 			}
 		}
 	}
-	_, err := os.Stat(dirRoot)
-	return os.IsNotExist(err), firstErr
+	_, err := os.Lstat(dirRoot)
+	return os.IsNotExist(err), false, firstErr
 }
 
 type discoveredStaleVersionDir struct {
@@ -2703,7 +3024,12 @@ func (m *Manager) PruneStaleVersionsDetailed(
 		startGen, base = m.currentGenAndBase()
 	}
 
-	absBase, realBase, baseExists, baseErr := resolveContainedRealBase(base)
+	absBase, realBase, rootInfo, baseExists, baseErr := resolveContainedRealBaseWithInfo(base)
+	if snap != nil && baseErr == nil && baseExists && snap.baseExists && snap.rootInfo != nil {
+		if !os.SameFile(snap.rootInfo, rootInfo) || (snap.realBase != "" && snap.realBase != realBase) {
+			baseErr = fmt.Errorf("缓存根目录物理身份已变更: %s", base)
+		}
+	}
 	if baseErr != nil {
 		msg := fmt.Sprintf("缓存根目录校验失败: %v", baseErr)
 		res := &DeleteResult{
@@ -2799,6 +3125,8 @@ func (m *Manager) PruneStaleVersionsDetailed(
 					k := ns + "\x00" + prefix + "\x00" + verStr
 					if d, shouldPrune := pruneVerSet[k]; shouldPrune {
 						cand := oext
+						cand.ns = ns
+						cand.cleanKey = cleanKey
 						cand.fullPath = fullExtPath
 						snapOrphanExtsByDir[d.fullPath] = append(snapOrphanExtsByDir[d.fullPath], cand)
 					}
@@ -2848,33 +3176,18 @@ func (m *Manager) PruneStaleVersionsDetailed(
 			})
 		}
 
-		// Verify version directory still exists and is a regular contained directory before walking/deleting
-		dirFi, dirStatErr := os.Lstat(s.fullPath)
-		if dirStatErr != nil {
-			if os.IsNotExist(dirStatErr) {
+		// Verify version directory and its entire ancestor chain from absBase before walking/deleting
+		if chainErr := verifyStrictDirChain(absBase, realBase, rootInfo, s.fullPath); chainErr != nil {
+			if os.IsNotExist(chainErr) {
 				if snap != nil {
 					res.AlreadyMissingCount += len(snapCandidatesByDir[s.fullPath])
 				}
 				continue
 			}
 			res.FailedCount++
-			appendBoundedFailure(res, s.ns, s.display, dirStatErr.Error())
+			appendBoundedFailure(res, s.ns, s.display, chainErr.Error())
 			res.RemainingDirs++
 			continue
-		}
-		if dirFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !dirFi.IsDir() {
-			res.FailedCount++
-			appendBoundedFailure(res, s.ns, s.display, "目标版本路径不是普通目录")
-			res.RemainingDirs++
-			continue
-		}
-		if realBase != "" {
-			if realVerDir, evalErr := filepath.EvalSymlinks(s.fullPath); evalErr != nil || !isRealPathWithinBase(realBase, realVerDir) {
-				res.FailedCount++
-				appendBoundedFailure(res, s.ns, s.display, "版本目录超出缓存根目录安全边界")
-				res.RemainingDirs++
-				continue
-			}
 		}
 
 		var dirCandidates []SnapshotEntry
@@ -2894,12 +3207,19 @@ func (m *Manager) PruneStaleVersionsDetailed(
 					return nil
 				}
 				if d.Type()&os.ModeSymlink != 0 || d.Type()&os.ModeIrregular != 0 {
+					res.FailedCount++
+					appendBoundedFailure(res, s.ns, p, "拒绝处理符号链接或重解析点")
 					if d.IsDir() {
 						return filepath.SkipDir
 					}
 					return nil
 				}
 				if d.IsDir() {
+					if chainErr := verifyStrictDirChain(absBase, realBase, rootInfo, p); chainErr != nil {
+						res.FailedCount++
+						appendBoundedFailure(res, s.ns, p, chainErr.Error())
+						return filepath.SkipDir
+					}
 					return nil
 				}
 				if strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
@@ -2956,7 +3276,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 			if res.Cancelled {
 				break
 			}
-			m.deleteSingleVerifiedEntry(absBase, realBase, startGen, base, cand, res, touchedDirs)
+			m.deleteSingleVerifiedEntryWithRootInfo(absBase, realBase, rootInfo, startGen, base, cand, res, touchedDirs)
 		}
 
 		for _, oext := range dirOrphanExts {
@@ -2977,7 +3297,26 @@ func (m *Manager) PruneStaleVersionsDetailed(
 				break
 			}
 
-			if err := verifyTargetContainment(absBase, realBase, oext.fullPath); err != nil {
+			ns := oext.ns
+			cleanKey := oext.cleanKey
+			if ns == "" || cleanKey == "" {
+				var ok bool
+				ns, cleanKey, _, ok = extractStrictNamespaceAndKey(absBase, oext.fullPath)
+				if !ok {
+					m.persistMu.RUnlock()
+					res.FailedCount++
+					appendBoundedFailure(res, s.ns, oext.fullPath, "无效的孤立元数据路径")
+					continue
+				}
+			}
+			baseKey := strings.TrimSuffix(cleanKey, ".ext")
+
+			// Synchronize with Save / CommitDiskTempFile via per-key tokenShard mutex
+			shard, _ := m.tokenShardFor(ns, baseKey)
+			shard.mu.Lock()
+
+			if err := verifyStrictPathChain(absBase, realBase, rootInfo, oext.fullPath); err != nil {
+				shard.mu.Unlock()
 				m.persistMu.RUnlock()
 				res.FailedCount++
 				appendBoundedFailure(res, s.ns, oext.fullPath, err.Error())
@@ -2987,6 +3326,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 			// Verify that a paired data file did not appear after scan/discovery
 			dataPath := strings.TrimSuffix(oext.fullPath, ".ext")
 			if _, dataErr := os.Lstat(dataPath); dataErr == nil || !os.IsNotExist(dataErr) {
+				shard.mu.Unlock()
 				m.persistMu.RUnlock()
 				res.SkippedChangedCount++
 				continue
@@ -2995,6 +3335,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 			// Verify orphan .ext file identity (regular file + size + mtimeNano)
 			extFi, extStatErr := os.Lstat(oext.fullPath)
 			if extStatErr != nil {
+				shard.mu.Unlock()
 				m.persistMu.RUnlock()
 				if os.IsNotExist(extStatErr) {
 					res.AlreadyMissingCount++
@@ -3005,12 +3346,14 @@ func (m *Manager) PruneStaleVersionsDetailed(
 				continue
 			}
 			if extFi.IsDir() || extFi.Mode()&os.ModeSymlink != 0 || !extFi.Mode().IsRegular() {
+				shard.mu.Unlock()
 				m.persistMu.RUnlock()
 				res.FailedCount++
 				appendBoundedFailure(res, s.ns, oext.fullPath, "目标 .ext 不是普通文件")
 				continue
 			}
 			if extFi.Size() != oext.size || (oext.mtimeNano != 0 && extFi.ModTime().UnixNano() != oext.mtimeNano) {
+				shard.mu.Unlock()
 				m.persistMu.RUnlock()
 				res.SkippedChangedCount++
 				continue
@@ -3025,18 +3368,23 @@ func (m *Manager) PruneStaleVersionsDetailed(
 				res.FailedCount++
 				appendBoundedFailure(res, s.ns, oext.fullPath, rmErr.Error())
 			}
+			shard.mu.Unlock()
 			m.persistMu.RUnlock()
 		}
 
 		if !res.Cancelled {
-			removedRoot, pruneDirErr := pruneEmptyDirTree(s.fullPath)
+			removedRoot, dirCancelled, pruneDirErr := m.pruneEmptyDirTreeControlled(absBase, realBase, rootInfo, startGen, base, s.fullPath, cancelCh)
+			if dirCancelled {
+				res.Cancelled = true
+				break
+			}
 			if pruneDirErr != nil {
 				res.FailedCount++
 				appendBoundedFailure(res, s.ns, s.display, fmt.Sprintf("移除空版本目录失败: %v", pruneDirErr))
 			}
 			if removedRoot {
 				res.DeletedDirs++
-			} else if _, err := os.Stat(s.fullPath); err == nil {
+			} else if _, err := os.Lstat(s.fullPath); err == nil {
 				res.RemainingDirs++
 			}
 		}
