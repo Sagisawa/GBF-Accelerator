@@ -2557,6 +2557,19 @@ func (m *Manager) deleteSingleVerifiedEntry(
 	m.deleteSingleVerifiedEntryWithDirInfos(absBase, realBase, nil, nil, expectedGen, expectedBase, cand, res, touchedDirs)
 }
 
+func isPairedExtChangedSinceSnapshot(cand SnapshotEntry, extFi os.FileInfo) bool {
+	if !cand.HasMeta && cand.fileInfo != nil {
+		return true
+	}
+	if cand.extFileInfo != nil && (extFi.Size() != cand.MetaBytes || extFi.ModTime().UnixNano() != cand.extMTimeNano || !os.SameFile(cand.extFileInfo, extFi)) {
+		return true
+	}
+	if cand.HasMeta && (extFi.Size() != cand.MetaBytes || (cand.extMTimeNano != 0 && extFi.ModTime().UnixNano() != cand.extMTimeNano)) {
+		return true
+	}
+	return false
+}
+
 func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	absBase string,
 	realBase string,
@@ -2625,7 +2638,7 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 				if extFi.IsDir() || extFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !extFi.Mode().IsRegular() {
 					res.FailedCount++
 					appendBoundedFailure(res, normNS, normKey+".ext", "残留元数据路径不是普通文件")
-				} else if (cand.extFileInfo != nil && (extFi.Size() != cand.MetaBytes || extFi.ModTime().UnixNano() != cand.extMTimeNano || !os.SameFile(cand.extFileInfo, extFi))) || (!cand.HasMeta && cand.fileInfo != nil) {
+				} else if isPairedExtChangedSinceSnapshot(cand, extFi) {
 					res.SkippedChangedCount++
 				} else {
 					extSize := extFi.Size()
@@ -2696,6 +2709,8 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 		if extFi.IsDir() || extFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !extFi.Mode().IsRegular() {
 			res.FailedCount++
 			appendBoundedFailure(res, normNS, normKey+".ext", "配对元数据路径不是普通文件")
+		} else if isPairedExtChangedSinceSnapshot(cand, extFi) {
+			res.SkippedChangedCount++
 		} else {
 			extSize := extFi.Size()
 			if testBeforeUnlinkHook != nil {

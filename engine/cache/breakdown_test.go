@@ -1533,3 +1533,145 @@ func TestDeleteSnapshotSkipsModifiedLingeringExtWhenDataMissing(t *testing.T) {
 	}
 }
 
+func TestDeleteSnapshotSkipsModifiedOrReplacedPairedExtWhenDataPresent(t *testing.T) {
+	t.Run("ModifiedInPlace", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 32)
+		defer mgr.Close()
+
+		headers := map[string]string{"content-type": "application/javascript"}
+		body := []byte("console.log('mod_in_place_test');")
+		if !mgr.SaveWithNamespace("gbf", "assets/js/mod_ext.js", headers, body) {
+			t.Fatalf("SaveWithNamespace failed")
+		}
+
+		snap := mgr.ScanBreakdownWithProgress(nil, nil)
+		if snap == nil || !snap.Valid {
+			t.Fatalf("expected valid snapshot")
+		}
+
+		dataPath := filepath.Join(tmpDir, "assets", "js", "mod_ext.js")
+		extPath := dataPath + ".ext"
+
+		// Modify .ext content, size, and mtime after snapshot
+		time.Sleep(10 * time.Millisecond)
+		newMeta := []byte(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true,"extra":"large_payload_to_change_size"}`)
+		if err := os.WriteFile(extPath, newMeta, 0644); err != nil {
+			t.Fatalf("WriteFile extPath failed: %v", err)
+		}
+
+		res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+		}
+		if res.DeletedAssetFiles != 1 {
+			t.Fatalf("expected data file to be deleted (DeletedAssetFiles=1), got %+v", res)
+		}
+		if res.DeletedMetaFiles != 0 {
+			t.Fatalf("expected modified .ext NOT to be deleted (DeletedMetaFiles=0), got %+v", res)
+		}
+		if res.SkippedChangedCount != 1 {
+			t.Fatalf("expected SkippedChangedCount=1 for modified .ext, got %+v", res)
+		}
+		if _, err := os.Stat(dataPath); !os.IsNotExist(err) {
+			t.Fatalf("expected data file to be removed from disk, got err=%v", err)
+		}
+		if data, err := os.ReadFile(extPath); err != nil || !bytes.Equal(data, newMeta) {
+			t.Fatalf("expected modified .ext to remain intact on disk, got err=%v, data=%s", err, string(data))
+		}
+	})
+
+	t.Run("ReplacedWithNewFile", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 32)
+		defer mgr.Close()
+
+		headers := map[string]string{"content-type": "application/javascript"}
+		body := []byte("console.log('replace_ext_test');")
+		if !mgr.SaveWithNamespace("gbf", "assets/js/replace_ext.js", headers, body) {
+			t.Fatalf("SaveWithNamespace failed")
+		}
+
+		snap := mgr.ScanBreakdownWithProgress(nil, nil)
+		if snap == nil || !snap.Valid {
+			t.Fatalf("expected valid snapshot")
+		}
+
+		dataPath := filepath.Join(tmpDir, "assets", "js", "replace_ext.js")
+		extPath := dataPath + ".ext"
+
+		// Read existing ext, remove it, and recreate as a new file so physical file identity changes
+		origMeta, err := os.ReadFile(extPath)
+		if err != nil {
+			t.Fatalf("ReadFile extPath failed: %v", err)
+		}
+		if err := os.Remove(extPath); err != nil {
+			t.Fatalf("Remove extPath failed: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+		if err := os.WriteFile(extPath, origMeta, 0644); err != nil {
+			t.Fatalf("WriteFile extPath failed: %v", err)
+		}
+
+		res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+		}
+		if res.DeletedAssetFiles != 1 {
+			t.Fatalf("expected data file to be deleted (DeletedAssetFiles=1), got %+v", res)
+		}
+		if res.DeletedMetaFiles != 0 {
+			t.Fatalf("expected replaced .ext NOT to be deleted, got %+v", res)
+		}
+		if res.SkippedChangedCount != 1 {
+			t.Fatalf("expected SkippedChangedCount=1 for replaced .ext, got %+v", res)
+		}
+		if _, err := os.Stat(extPath); err != nil {
+			t.Fatalf("expected replaced .ext to remain on disk, got err=%v", err)
+		}
+	})
+
+	t.Run("ExtAppearedAfterSnapshot", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 32)
+		defer mgr.Close()
+
+		dataPath := filepath.Join(tmpDir, "assets", "js", "no_ext.js")
+		if err := os.MkdirAll(filepath.Dir(dataPath), 0755); err != nil {
+			t.Fatalf("MkdirAll failed: %v", err)
+		}
+		if err := os.WriteFile(dataPath, []byte("console.log('no_ext');"), 0644); err != nil {
+			t.Fatalf("WriteFile dataPath failed: %v", err)
+		}
+
+		snap := mgr.ScanBreakdownWithProgress(nil, nil)
+		if snap == nil || !snap.Valid {
+			t.Fatalf("expected valid snapshot")
+		}
+
+		// Create a .ext file after snapshot was taken
+		extPath := dataPath + ".ext"
+		if err := os.WriteFile(extPath, []byte(`{"ct":"application/javascript","v":1}`), 0644); err != nil {
+			t.Fatalf("WriteFile extPath failed: %v", err)
+		}
+
+		res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+		}
+		if res.DeletedAssetFiles != 1 {
+			t.Fatalf("expected data file to be deleted, got %+v", res)
+		}
+		if res.DeletedMetaFiles != 0 {
+			t.Fatalf("expected newly appeared .ext NOT to be deleted, got %+v", res)
+		}
+		if res.SkippedChangedCount != 1 {
+			t.Fatalf("expected SkippedChangedCount=1 for new .ext, got %+v", res)
+		}
+		if _, err := os.Stat(extPath); err != nil {
+			t.Fatalf("expected new .ext to remain on disk, got err=%v", err)
+		}
+	})
+}
+
+
