@@ -1951,7 +1951,7 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 
-	if hasTok && !isTokenValidLocked(shard, tok, m.generation) {
+	if !hasTok || !isTokenValidLocked(shard, tok, m.generation) {
 		_ = os.Remove(tmpFilePath)
 		return nil, false
 	}

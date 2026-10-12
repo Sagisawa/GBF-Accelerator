@@ -362,16 +362,50 @@ type tokenShard struct {
 	ringPos     int
 }
 
+func isCleanRelativeSlashPath(s string) bool {
+	if s == "" || s[0] == '/' || s[len(s)-1] == '/' {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' {
+			return false
+		}
+		if c == '/' && i+1 < len(s) && s[i+1] == '/' {
+			return false
+		}
+		if c == '.' {
+			prevSlash := i == 0 || s[i-1] == '/'
+			nextSlash := i+1 == len(s) || s[i+1] == '/'
+			if prevSlash && nextSlash {
+				return false
+			}
+			if prevSlash && i+1 < len(s) && s[i+1] == '.' && (i+2 == len(s) || s[i+2] == '/') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func canonicalTokenKey(ns, cleanKey string) string {
-	segs := splitCleanSegments(cleanKey)
-	normKey := strings.Join(segs, "/")
-	normNS := sanitizeNamespace(ns)
+	normKey := cleanKey
+	if !isCleanRelativeSlashPath(cleanKey) {
+		normKey = strings.Join(splitCleanSegments(cleanKey), "/")
+	}
+	normNS := "gbf"
+	if ns != "" && ns != "gbf" {
+		normNS = sanitizeNamespace(ns)
+	}
 	if normNS == "gbf" {
 		if strings.HasPrefix(normKey, "assets/") {
-			rem := strings.TrimPrefix(normKey, "assets/")
+			rem := normKey[len("assets/"):]
 			if rem != "" && !strings.HasPrefix(rem, "assets") {
 				normKey = rem
 			}
+		}
+		if !strings.Contains(normKey, ":") {
+			return normKey
 		}
 		return "gbf:" + normKey
 	}
@@ -379,16 +413,22 @@ func canonicalTokenKey(ns, cleanKey string) string {
 }
 
 func gbfFallbackCleanKey(cleanKey string) (string, bool) {
-	segs := splitCleanSegments(cleanKey)
-	if len(segs) == 0 {
+	normKey := cleanKey
+	if !isCleanRelativeSlashPath(cleanKey) {
+		segs := splitCleanSegments(cleanKey)
+		if len(segs) == 0 {
+			return "", false
+		}
+		normKey = strings.Join(segs, "/")
+	}
+	if normKey == "" {
 		return "", false
 	}
-	normKey := strings.Join(segs, "/")
 	if !strings.HasPrefix(normKey, "assets") {
 		return "assets/" + normKey, true
 	}
 	if strings.HasPrefix(normKey, "assets/") {
-		rem := strings.TrimPrefix(normKey, "assets/")
+		rem := normKey[len("assets/"):]
 		if rem != "" && !strings.HasPrefix(rem, "assets") {
 			return rem, true
 		}
@@ -431,6 +471,14 @@ func (m *Manager) currentGeneration() uint64 {
 	gen := m.generation
 	m.persistMu.RUnlock()
 	return gen
+}
+
+func (m *Manager) currentGenAndBase() (uint64, string) {
+	m.persistMu.RLock()
+	gen := m.generation
+	base := m.GetCacheBase()
+	m.persistMu.RUnlock()
+	return gen, base
 }
 
 func (m *Manager) acquireOpTokenWithGen(ns, cleanKey string, gen uint64) opToken {
@@ -545,6 +593,19 @@ func (m *Manager) registerTempFileToken(tmpPath string, tok opToken) {
 		m.tempTokens = make(map[string]opToken)
 	}
 	if len(m.tempTokens) >= 1024 {
+		// First sweep entries whose generation doesn't match or whose temp file was already removed
+		for k, v := range m.tempTokens {
+			if v.gen != tok.gen {
+				delete(m.tempTokens, k)
+				continue
+			}
+			if _, err := os.Stat(k); os.IsNotExist(err) {
+				delete(m.tempTokens, k)
+			}
+		}
+	}
+	if len(m.tempTokens) >= 1024 {
+		// Evict excess entries; CommitDiskTempFile fails closed when a token is missing (!hasTok)
 		count := 0
 		for k := range m.tempTokens {
 			delete(m.tempTokens, k)
@@ -570,6 +631,16 @@ func (m *Manager) popTempFileToken(tmpPath string) (opToken, bool) {
 	}
 	m.tempTokensMu.Unlock()
 	return tok, ok
+}
+
+// DiscardDiskTempFile removes a temporary download file's token registration
+// and deletes the temporary file from disk if present.
+func (m *Manager) DiscardDiskTempFile(tmpPath string) {
+	if tmpPath == "" {
+		return
+	}
+	m.popTempFileToken(tmpPath)
+	_ = os.Remove(tmpPath)
 }
 
 func (m *Manager) clearTempTokens() {
@@ -1012,27 +1083,41 @@ func (m *Manager) InvalidateSnapshots(reason string) {
 func (m *Manager) invalidateSnapshots(reason string) {
 	m.snapshotMu.Lock()
 	if m.lastSnapshot != nil && !m.lastSnapshot.Stale {
-		m.lastSnapshot.Stale = true
-		m.lastSnapshot.Valid = false
+		cp := *m.lastSnapshot
+		cp.Stale = true
+		cp.Valid = false
 		if reason != "" {
-			m.lastSnapshot.StaleReason = reason
+			cp.StaleReason = reason
 		}
+		m.lastSnapshot = &cp
 	}
 	m.snapshotMu.Unlock()
 }
 
 // GetBreakdownSnapshot returns a copy of the latest completed snapshot (or active scan metadata)
-// with up-to-date validity flags.
+// with up-to-date validity flags. Lock order: persistMu.RLock -> mu.RLock -> snapshotMu.RLock.
 func (m *Manager) GetBreakdownSnapshot(customKeep int) (*BreakdownSnapshot, *BreakdownSnapshot) {
-	curGen := m.currentGeneration()
+	m.persistMu.RLock()
+	curGen := m.generation
 	curBase := m.GetCacheBase()
 
 	m.snapshotMu.RLock()
-	defer m.snapshotMu.RUnlock()
-
-	var latest *BreakdownSnapshot
+	var rawLatest *BreakdownSnapshot
 	if m.lastSnapshot != nil {
 		cp := *m.lastSnapshot
+		rawLatest = &cp
+	}
+	var active *BreakdownSnapshot
+	if m.activeScanSnapshot != nil {
+		cpActive := *m.activeScanSnapshot
+		active = &cpActive
+	}
+	m.snapshotMu.RUnlock()
+	m.persistMu.RUnlock()
+
+	var latest *BreakdownSnapshot
+	if rawLatest != nil {
+		cp := *rawLatest
 		if cp.Generation != curGen || cp.CacheBase != curBase {
 			cp.Stale = true
 			cp.Valid = false
@@ -1056,11 +1141,6 @@ func (m *Manager) GetBreakdownSnapshot(customKeep int) (*BreakdownSnapshot, *Bre
 		latest = &cp
 	}
 
-	var active *BreakdownSnapshot
-	if m.activeScanSnapshot != nil {
-		cpActive := *m.activeScanSnapshot
-		active = &cpActive
-	}
 	return latest, active
 }
 
@@ -1068,9 +1148,10 @@ func (m *Manager) GetBreakdownSnapshot(customKeep int) (*BreakdownSnapshot, *Bre
 // It strictly reads directory entries and file attributes without reading file bodies, parsing .ext files,
 // populating RAM/ResidentPool/DiskMeta, or issuing upstream requests.
 func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), cancelCh <-chan struct{}) *BreakdownSnapshot {
-	startGen := m.currentGeneration()
-	base := m.GetCacheBase()
 	startTime := time.Now()
+	m.persistMu.RLock()
+	startGen := m.generation
+	base := m.GetCacheBase()
 	snapID := fmt.Sprintf("snap-%d-%d", startGen, m.snapshotSeq.Add(1))
 
 	activeSnap := &BreakdownSnapshot{
@@ -1084,6 +1165,7 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 	m.snapshotMu.Lock()
 	m.activeScanSnapshot = activeSnap
 	m.snapshotMu.Unlock()
+	m.persistMu.RUnlock()
 
 	defer func() {
 		m.snapshotMu.Lock()
@@ -1152,7 +1234,8 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 				return filepath.SkipAll
 			default:
 			}
-			if m.currentGeneration() != startGen || m.GetCacheBase() != base {
+			curGen, curBase := m.currentGenAndBase()
+			if curGen != startGen || curBase != base {
 				rootChanged = true
 				return filepath.SkipAll
 			}
@@ -1249,11 +1332,12 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		})
 	}
 
-	if cancelled || rootChanged || m.currentGeneration() != startGen || m.GetCacheBase() != base {
+	curGenAfterWalk, curBaseAfterWalk := m.currentGenAndBase()
+	if cancelled || rootChanged || curGenAfterWalk != startGen || curBaseAfterWalk != base {
 		now := time.Now()
 		status := "cancelled"
 		msg := "扫描任务已取消"
-		if rootChanged || m.currentGeneration() != startGen || m.GetCacheBase() != base {
+		if rootChanged || curGenAfterWalk != startGen || curBaseAfterWalk != base {
 			msg = "扫描期间缓存根目录或代数发生变化，扫描已中止"
 		}
 		incomplete := &BreakdownSnapshot{
@@ -1303,6 +1387,26 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		verNum  int
 	}
 	versionDirMap := make(map[versionDirKey]*VersionDirStat)
+
+	// Seed versionDirMap from shared directory discovery so empty version dirs,
+	// dirs with only .tmp.* files, or dirs with only orphan .ext files are included
+	// consistently with live slimming discovery.
+	if baseExists {
+		for _, d := range discoverAllVersionDirs(absBase, realBase) {
+			vk := versionDirKey{ns: d.ns, prefix: d.prefix, version: d.version, verNum: d.verNum}
+			if _, exists := versionDirMap[vk]; !exists {
+				relDir := d.prefix + "/" + d.version
+				if d.ns != "gbf" {
+					relDir = "hosts/" + d.ns + "/" + relDir
+				}
+				versionDirMap[vk] = &VersionDirStat{
+					Version:     d.version,
+					VersionNum:  d.verNum,
+					RelativeDir: relDir,
+				}
+			}
+		}
+	}
 
 	entries := make([]SnapshotEntry, 0, len(rawFiles))
 	entryByNSKey := make(map[string]int, len(rawFiles))
@@ -1468,7 +1572,10 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 	versionGroups := make([]VersionGroupStat, 0, len(groupMap))
 	for _, grp := range groupMap {
 		sort.Slice(grp.Versions, func(i, j int) bool {
-			return grp.Versions[i].VersionNum > grp.Versions[j].VersionNum
+			if grp.Versions[i].VersionNum != grp.Versions[j].VersionNum {
+				return grp.Versions[i].VersionNum > grp.Versions[j].VersionNum
+			}
+			return grp.Versions[i].Version > grp.Versions[j].Version
 		})
 		grp.TotalDirs = len(grp.Versions)
 		versionGroups = append(versionGroups, *grp)
@@ -1494,43 +1601,49 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 
 	now := time.Now()
 	completed := &BreakdownSnapshot{
-		SnapshotID:           snapID,
-		Generation:           startGen,
-		CacheBase:            base,
-		Status:               "completed",
-		Valid:                true,
-		Stale:                false,
-		StartedAtMS:          startTime.UnixMilli(),
-		CompletedAtMS:        now.UnixMilli(),
-		DurationMS:           now.Sub(startTime).Milliseconds(),
-		AssetFiles:           totalAssetFiles,
-		AssetBytes:           totalAssetBytes,
-		MetadataFiles:        totalMetaFiles,
-		MetadataBytes:        totalMetaBytes,
-		OrphanMetadataFiles:  orphanExtFiles,
-		OrphanMetadataBytes:  orphanExtBytes,
-		ExcludedFiles:        excludedFiles,
-		ExcludedBytes:        excludedBytes,
-		SkippedCount:         skippedCount,
-		ReadErrors:           readErrors,
-		Categories:           catStats,
-		Namespaces:           namespaces,
-		VersionGroups:        versionGroups,
-		RetentionPreviews:    retentionPreviews,
-		Entries:              entries,
-		entryByNSKey:         entryByNSKey,
-		orphanExtPaths:       orphanExtPaths,
+		SnapshotID:          snapID,
+		Generation:          startGen,
+		CacheBase:           base,
+		Status:              "completed",
+		Valid:               true,
+		Stale:               false,
+		StartedAtMS:         startTime.UnixMilli(),
+		CompletedAtMS:       now.UnixMilli(),
+		DurationMS:          now.Sub(startTime).Milliseconds(),
+		AssetFiles:          totalAssetFiles,
+		AssetBytes:          totalAssetBytes,
+		MetadataFiles:       totalMetaFiles,
+		MetadataBytes:       totalMetaBytes,
+		OrphanMetadataFiles: orphanExtFiles,
+		OrphanMetadataBytes: orphanExtBytes,
+		ExcludedFiles:       excludedFiles,
+		ExcludedBytes:       excludedBytes,
+		SkippedCount:        skippedCount,
+		ReadErrors:          readErrors,
+		Categories:          catStats,
+		Namespaces:          namespaces,
+		VersionGroups:       versionGroups,
+		RetentionPreviews:   retentionPreviews,
+		Entries:             entries,
+		entryByNSKey:        entryByNSKey,
+		orphanExtPaths:      orphanExtPaths,
 	}
 
+	// Enforce strict lock hierarchy: persistMu.RLock -> mu.RLock -> snapshotMu.Lock
+	m.persistMu.RLock()
+	curGenFinal := m.generation
+	curBaseFinal := m.GetCacheBase()
 	m.snapshotMu.Lock()
-	if m.currentGeneration() == startGen && m.GetCacheBase() == base {
-		m.lastSnapshot = completed
+	if curGenFinal == startGen && curBaseFinal == base {
+		stored := *completed
+		m.lastSnapshot = &stored
 	} else {
 		completed.Stale = true
 		completed.Valid = false
 		completed.StaleReason = "扫描完成时缓存根目录或代数已变更"
 	}
 	m.snapshotMu.Unlock()
+	m.persistMu.RUnlock()
 
 	if progressCb != nil {
 		progressCb(ScanProgress{
@@ -1549,23 +1662,31 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 }
 
 func (m *Manager) getValidatedSnapshot(snapshotID string) (*BreakdownSnapshot, error) {
-	curGen := m.currentGeneration()
+	m.persistMu.RLock()
+	curGen := m.generation
 	curBase := m.GetCacheBase()
 
 	m.snapshotMu.RLock()
 	snap := m.lastSnapshot
-	m.snapshotMu.RUnlock()
-
 	if snap == nil || snap.Status != "completed" {
+		m.snapshotMu.RUnlock()
+		m.persistMu.RUnlock()
 		return nil, ErrSnapshotNotFound
 	}
 	if snapshotID != "" && snap.SnapshotID != snapshotID {
+		m.snapshotMu.RUnlock()
+		m.persistMu.RUnlock()
 		return nil, ErrSnapshotStale
 	}
-	if snap.Stale || snap.Generation != curGen || snap.CacheBase != curBase {
+	if snap.Stale || !snap.Valid || snap.Generation != curGen || snap.CacheBase != curBase {
+		m.snapshotMu.RUnlock()
+		m.persistMu.RUnlock()
 		return nil, ErrSnapshotStale
 	}
-	return snap, nil
+	cp := *snap
+	m.snapshotMu.RUnlock()
+	m.persistMu.RUnlock()
+	return &cp, nil
 }
 
 // --- Search over Snapshot Index (Section 4.3) ---
@@ -1919,10 +2040,24 @@ func (m *Manager) executeControlledDeletion(
 	absBase, realBase, baseExists, baseErr := resolveContainedRealBase(snap.CacheBase)
 	if baseErr != nil || !baseExists {
 		if baseErr != nil {
-			res.FailedCount += len(candidates)
+			if len(candidates) > 0 {
+				res.FailedCount += len(candidates)
+			} else {
+				res.FailedCount++
+			}
 			res.Status = "failed"
 			res.Done = true
 			res.Message = fmt.Sprintf("缓存根目录校验失败: %v", baseErr)
+			appendBoundedFailure(&res, "", snap.CacheBase, res.Message)
+			if progressCb != nil {
+				progressCb(CleanupProgress{
+					TaskType:    taskType,
+					SnapshotID:  snap.SnapshotID,
+					TotalFiles:  len(candidates),
+					FailedCount: res.FailedCount,
+					Done:        true,
+				})
+			}
 			return res
 		}
 	}
@@ -1940,7 +2075,8 @@ func (m *Manager) executeControlledDeletion(
 		if res.Cancelled {
 			break
 		}
-		if m.currentGeneration() != snap.Generation || m.GetCacheBase() != snap.CacheBase {
+		curGen, curBase := m.currentGenAndBase()
+		if curGen != snap.Generation || curBase != snap.CacheBase {
 			res.Cancelled = true
 			res.Message = "清理期间缓存根目录已切换，操作已中止"
 			break
@@ -1995,6 +2131,9 @@ func (m *Manager) executeControlledDeletion(
 		if res.Message == "" {
 			res.Message = fmt.Sprintf("操作已取消（已删除 %d 个素材文件）", res.DeletedAssetFiles)
 		}
+	case res.FailedCount > 0 && res.DeletedFiles == 0:
+		res.Status = "failed"
+		res.Message = fmt.Sprintf("删除本地缓存失败（%d 项失败，%d 项变化跳过）", res.FailedCount, res.SkippedChangedCount)
 	case res.FailedCount > 0:
 		res.Status = "partial_failed"
 		res.Message = fmt.Sprintf("完成删除 %d 个素材文件，%d 项失败，%d 项变化跳过", res.DeletedAssetFiles, res.FailedCount, res.SkippedChangedCount)
@@ -2223,8 +2362,11 @@ type discoveredStaleVersionDir struct {
 	display  string
 }
 
-func discoverStaleVersionDirs(base string, keepCount int) []discoveredStaleVersionDir {
-	var allStales []discoveredStaleVersionDir
+// discoverAllVersionDirs discovers all valid positive numeric version directories across
+// "gbf" and "hosts/<ns>" for SupportedVersionPrefixes, enforcing containment within realBase.
+// Both ScanBreakdownWithProgress and discoverStaleVersionDirs share this exact discovery logic.
+func discoverAllVersionDirs(absBase, realBase string) []discoveredStaleVersionDir {
+	var allDirs []discoveredStaleVersionDir
 
 	collectForRoot := func(ns, root string) {
 		for _, prefix := range SupportedVersionPrefixes {
@@ -2233,53 +2375,90 @@ func discoverStaleVersionDirs(base string, keepCount int) []discoveredStaleVersi
 			if err != nil {
 				continue
 			}
-			type verItem struct {
-				name string
-				num  int
-			}
-			var versions []verItem
+			var groupDirs []discoveredStaleVersionDir
 			for _, e := range entries {
-				if e.IsDir() && e.Type()&os.ModeSymlink == 0 {
-					if vNum, ok := parsePositiveVersionSegment(e.Name()); ok {
-						versions = append(versions, verItem{name: e.Name(), num: vNum})
+				if !e.IsDir() || e.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+					continue
+				}
+				vNum, ok := parsePositiveVersionSegment(e.Name())
+				if !ok {
+					continue
+				}
+				fullP := filepath.Join(prefixDir, e.Name())
+				if realBase != "" {
+					realDir, evalErr := filepath.EvalSymlinks(fullP)
+					if evalErr != nil || !isRealPathWithinBase(realBase, realDir) {
+						continue
 					}
 				}
+				disp := filepath.Join(prefix, e.Name())
+				if ns != "gbf" {
+					disp = filepath.Join("hosts", ns, prefix, e.Name())
+				}
+				groupDirs = append(groupDirs, discoveredStaleVersionDir{
+					ns:       ns,
+					prefix:   prefix,
+					version:  e.Name(),
+					verNum:   vNum,
+					fullPath: fullP,
+					display:  disp,
+				})
 			}
-			sort.Slice(versions, func(i, j int) bool {
-				return versions[i].num > versions[j].num
+			sort.Slice(groupDirs, func(i, j int) bool {
+				if groupDirs[i].verNum != groupDirs[j].verNum {
+					return groupDirs[i].verNum > groupDirs[j].verNum
+				}
+				return groupDirs[i].version > groupDirs[j].version
 			})
-			if len(versions) > keepCount {
-				for _, v := range versions[keepCount:] {
-					disp := filepath.Join(prefix, v.name)
-					if ns != "gbf" {
-						disp = filepath.Join("hosts", ns, prefix, v.name)
-					}
-					allStales = append(allStales, discoveredStaleVersionDir{
-						ns:       ns,
-						prefix:   prefix,
-						version:  v.name,
-						verNum:   v.num,
-						fullPath: filepath.Join(prefixDir, v.name),
-						display:  disp,
-					})
-				}
-			}
+			allDirs = append(allDirs, groupDirs...)
 		}
 	}
 
-	collectForRoot("gbf", base)
+	collectForRoot("gbf", absBase)
 
-	hostsDir := filepath.Join(base, "hosts")
+	hostsDir := filepath.Join(absBase, "hosts")
 	if hostEntries, err := os.ReadDir(hostsDir); err == nil {
 		var hostNames []string
 		for _, he := range hostEntries {
-			if he.IsDir() && he.Type()&os.ModeSymlink == 0 {
+			if he.IsDir() && he.Type()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+				if realBase != "" {
+					realHostDir, evalErr := filepath.EvalSymlinks(filepath.Join(hostsDir, he.Name()))
+					if evalErr != nil || !isRealPathWithinBase(realBase, realHostDir) {
+						continue
+					}
+				}
 				hostNames = append(hostNames, he.Name())
 			}
 		}
 		sort.Strings(hostNames)
 		for _, hn := range hostNames {
 			collectForRoot(sanitizeNamespace(hn), filepath.Join(hostsDir, hn))
+		}
+	}
+
+	return allDirs
+}
+
+func discoverStaleVersionDirs(absBase, realBase string, keepCount int) []discoveredStaleVersionDir {
+	allDirs := discoverAllVersionDirs(absBase, realBase)
+	type groupKey struct {
+		ns     string
+		prefix string
+	}
+	var groupOrder []groupKey
+	grouped := make(map[groupKey][]discoveredStaleVersionDir)
+	for _, d := range allDirs {
+		gk := groupKey{ns: d.ns, prefix: d.prefix}
+		if _, exists := grouped[gk]; !exists {
+			groupOrder = append(groupOrder, gk)
+		}
+		grouped[gk] = append(grouped[gk], d)
+	}
+	var allStales []discoveredStaleVersionDir
+	for _, gk := range groupOrder {
+		vers := grouped[gk]
+		if len(vers) > keepCount {
+			allStales = append(allStales, vers[keepCount:]...)
 		}
 	}
 	return allStales
@@ -2309,15 +2488,31 @@ func (m *Manager) PruneStaleVersionsDetailed(
 		}
 	}
 
-	base := m.GetCacheBase()
-	startGen := m.currentGeneration()
+	startGen, base := m.currentGenAndBase()
 	absBase, realBase, baseExists, baseErr := resolveContainedRealBase(base)
-	if baseErr != nil || !baseExists {
+	if baseErr != nil {
+		msg := fmt.Sprintf("缓存根目录校验失败: %v", baseErr)
+		res := &DeleteResult{
+			TaskType:    "slim",
+			SnapshotID:  snapshotID,
+			FailedCount: 1,
+			Done:        true,
+			Status:      "failed",
+			Message:     msg,
+		}
+		appendBoundedFailure(res, "", base, msg)
+		if progressCb != nil {
+			progressCb(SlimProgress{Done: true})
+		}
+		return res, nil
+	}
+	if !baseExists {
 		res := &DeleteResult{
 			TaskType:   "slim",
 			SnapshotID: snapshotID,
 			Done:       true,
 			Status:     "completed",
+			Message:    "缓存目录尚不存在，无需清理",
 		}
 		if progressCb != nil {
 			progressCb(SlimProgress{Done: true})
@@ -2327,9 +2522,17 @@ func (m *Manager) PruneStaleVersionsDetailed(
 
 	var stales []discoveredStaleVersionDir
 	var snapCandidatesByDir map[string][]SnapshotEntry
+	var snapOrphanExtsByDir map[string][]struct {
+		path string
+		size int64
+	}
 
 	if snap != nil {
 		snapCandidatesByDir = make(map[string][]SnapshotEntry)
+		snapOrphanExtsByDir = make(map[string][]struct {
+			path string
+			size int64
+		})
 		pruneVerSet := make(map[string]discoveredStaleVersionDir)
 		for _, grp := range snap.VersionGroups {
 			if len(grp.Versions) <= keepCount {
@@ -2369,8 +2572,23 @@ func (m *Manager) PruneStaleVersionsDetailed(
 				}
 			}
 		}
+		for slashRel, extSize := range snap.orphanExtPaths {
+			fullExtPath := filepath.Join(absBase, filepath.FromSlash(slashRel))
+			if ns, cleanKey, _, ok := extractStrictNamespaceAndKey(absBase, fullExtPath); ok && strings.HasSuffix(cleanKey, ".ext") {
+				baseKey := strings.TrimSuffix(cleanKey, ".ext")
+				if prefix, verStr, _, okVer := ParseVersionedEntry(ns, baseKey); okVer {
+					k := ns + "\x00" + prefix + "\x00" + verStr
+					if d, shouldPrune := pruneVerSet[k]; shouldPrune {
+						snapOrphanExtsByDir[d.fullPath] = append(snapOrphanExtsByDir[d.fullPath], struct {
+							path string
+							size int64
+						}{path: fullExtPath, size: extSize})
+					}
+				}
+			}
+		}
 	} else {
-		stales = discoverStaleVersionDirs(absBase, keepCount)
+		stales = discoverStaleVersionDirs(absBase, realBase, keepCount)
 	}
 
 	res := &DeleteResult{
@@ -2389,7 +2607,8 @@ func (m *Manager) PruneStaleVersionsDetailed(
 		if res.Cancelled {
 			break
 		}
-		if m.currentGeneration() != startGen || m.GetCacheBase() != base {
+		curGen, curBase := m.currentGenAndBase()
+		if curGen != startGen || curBase != base {
 			res.Cancelled = true
 			res.Message = "版本清理期间缓存根目录已切换，操作已中止"
 			break
@@ -2414,6 +2633,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 
 		if snap != nil {
 			dirCandidates = snapCandidatesByDir[s.fullPath]
+			dirOrphanExts = snapOrphanExtsByDir[s.fullPath]
 		} else {
 			// Live discovery of managed files within s.fullPath without holding locks
 			pairedExts := make(map[string]struct{})
@@ -2424,6 +2644,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 			_ = filepath.WalkDir(s.fullPath, func(p string, d os.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					res.FailedCount++
+					appendBoundedFailure(res, s.ns, s.display, walkErr.Error())
 					return nil
 				}
 				if d.Type()&os.ModeSymlink != 0 || d.Type()&os.ModeIrregular != 0 {
@@ -2484,11 +2705,17 @@ func (m *Manager) PruneStaleVersionsDetailed(
 		}
 
 		for _, oext := range dirOrphanExts {
-			if verifyTargetContainment(absBase, realBase, oext.path) == nil {
-				if rmErr := os.Remove(oext.path); rmErr == nil {
-					res.DeletedMetaFiles++
-					res.DeletedMetaBytes += oext.size
-				}
+			if err := verifyTargetContainment(absBase, realBase, oext.path); err != nil {
+				res.FailedCount++
+				appendBoundedFailure(res, s.ns, oext.path, err.Error())
+				continue
+			}
+			if rmErr := os.Remove(oext.path); rmErr == nil {
+				res.DeletedMetaFiles++
+				res.DeletedMetaBytes += oext.size
+			} else if !os.IsNotExist(rmErr) {
+				res.FailedCount++
+				appendBoundedFailure(res, s.ns, oext.path, rmErr.Error())
 			}
 		}
 
@@ -2517,8 +2744,16 @@ func (m *Manager) PruneStaleVersionsDetailed(
 	switch {
 	case res.Cancelled:
 		res.Status = "cancelled"
-		res.Message = fmt.Sprintf("版本清理已取消（已清理 %d 个目录，%d 个文件）", res.DeletedDirs, res.DeletedFiles)
-	case res.FailedCount > 0 || res.RemainingDirs > 0:
+		if res.Message == "" {
+			res.Message = fmt.Sprintf("版本清理已取消（已清理 %d 个目录，%d 个文件）", res.DeletedDirs, res.DeletedFiles)
+		}
+	case res.FailedCount > 0 && res.DeletedFiles == 0 && res.DeletedDirs == 0:
+		res.Status = "failed"
+		res.Message = fmt.Sprintf("版本清理失败（%d 项失败，%d 个目录保留）", res.FailedCount, res.RemainingDirs)
+	case res.FailedCount > 0:
+		res.Status = "partial_failed"
+		res.Message = fmt.Sprintf("部分完成：已清理 %d 个版本目录，%d 项删除失败（%d 个目录保留），释放 %.2f MiB", res.DeletedDirs, res.FailedCount, res.RemainingDirs, res.FreedMB)
+	case res.RemainingDirs > 0:
 		res.Status = "completed"
 		res.Message = fmt.Sprintf("已清理 %d 个版本目录（%d 个目录因包含未删/在途文件保留），释放 %.2f MiB", res.DeletedDirs, res.RemainingDirs, res.FreedMB)
 	default:

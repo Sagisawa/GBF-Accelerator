@@ -72,6 +72,25 @@ function formatTimestamp(ms?: number): string {
   }
 }
 
+export function computeDeduplicatedSearchDeleteBytes(items: SearchItem[]): number {
+  const physicalBytes = new Map<string, number>()
+  for (const item of items) {
+    const ownBytes = (item.asset_bytes || 0) + (item.metadata_bytes || 0)
+    const primaryKey = `${item.ns}:::${item.key}`
+    physicalBytes.set(primaryKey, ownBytes)
+    if (item.has_alias && item.alias_key) {
+      const aliasBytes = Math.max(0, (item.estimated_delete_bytes || 0) - ownBytes)
+      const aliasFullKey = `${item.ns}:::${item.alias_key}`
+      physicalBytes.set(aliasFullKey, aliasBytes)
+    }
+  }
+  let total = 0
+  for (const b of physicalBytes.values()) {
+    total += b
+  }
+  return total
+}
+
 export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   isOpen,
   onClose,
@@ -107,6 +126,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
   const pollTimerRef = useRef<any>(null)
   const prevBusyRef = useRef<boolean>(false)
+  const prevSnapshotIdRef = useRef<string | null>(null)
 
   const loadBreakdown = useCallback(async () => {
     try {
@@ -157,6 +177,21 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
   const snapshot = breakdown?.snapshot
   const isSnapshotReady = Boolean(snapshot && snapshot.status === 'completed' && snapshot.valid && !snapshot.stale)
+  const activeSnapshotId = isSnapshotReady && snapshot ? snapshot.snapshot_id : null
+
+  useEffect(() => {
+    if (prevSnapshotIdRef.current !== activeSnapshotId) {
+      prevSnapshotIdRef.current = activeSnapshotId
+      setConfirmingCategoryClean(false)
+      setSelectedCategories([])
+      setSearchResult(null)
+      setSelectedSearchKeys({})
+    } else if (searchResult && searchResult.snapshot_id !== activeSnapshotId) {
+      setSearchResult(null)
+      setSelectedSearchKeys({})
+    }
+  }, [activeSnapshotId, searchResult])
+
   const isScanning = Boolean(taskStatus?.is_scanning || breakdown?.is_scanning)
   const isCleaning = Boolean(taskStatus?.is_invalidating || taskStatus?.is_clearing_category)
   const hasAnyActiveTask = Boolean(
@@ -239,6 +274,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
   const handleStartScan = async () => {
     setStartingScan(true)
+    setConfirmingCategoryClean(false)
+    setSearchResult(null)
+    setSelectedSearchKeys({})
+    setSearchError(null)
     try {
       await startCacheBreakdownScan()
       onToast('磁盘缓存分类扫描已在后台启动', 'info')
@@ -364,16 +403,20 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   }
 
   const handleDeleteSearchItems = async (items: SearchItem[]) => {
-    if (!snapshot || !isSnapshotReady) {
-      onToast('当前扫描快照已过期，请重新扫描后再执行删除本地缓存', 'error')
+    const boundSnapshotId = searchResult?.snapshot_id
+    if (!boundSnapshotId || !snapshot || !isSnapshotReady || snapshot.snapshot_id !== boundSnapshotId) {
+      setSearchResult(null)
+      setSelectedSearchKeys({})
+      onToast('搜索结果对应的扫描快照已过期或已变更，请重新搜索后再执行删除本地缓存', 'error')
       return
     }
     if (items.length === 0) return
     setSubmittingInvalidate(true)
     try {
       const entries = items.map((item) => ({ ns: item.ns, key: item.key }))
-      await invalidateCacheEntries(snapshot.snapshot_id, entries)
+      await invalidateCacheEntries(boundSnapshotId, entries)
       onToast(`已启动删除本地缓存任务（共 ${entries.length} 项）`, 'info')
+      setSearchResult(null)
       setSelectedSearchKeys({})
       await loadTaskStatus()
       await loadBreakdown()
@@ -415,9 +458,9 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   }
 
   const selectedSearchList = Object.values(selectedSearchKeys)
-  const selectedSearchEstBytes = selectedSearchList.reduce(
-    (acc, item) => acc + item.estimated_delete_bytes,
-    0
+  const selectedSearchEstBytes = useMemo(
+    () => computeDeduplicatedSearchDeleteBytes(selectedSearchList),
+    [selectedSearchList]
   )
 
   return (

@@ -13,7 +13,8 @@ import {
   slimCache,
   cancelCacheTask,
 } from './api'
-import { HealthResponse, RepairResponse } from './types'
+import { HealthResponse, RepairResponse, SearchItem } from './types'
+import { computeDeduplicatedSearchDeleteBytes } from './components/modals/ClearCacheModal'
 
 describe('fetchHealth API', () => {
   const originalFetch = globalThis.fetch
@@ -336,6 +337,41 @@ describe('cache breakdown & targeted management APIs', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ task_id: 'slim-1' }),
     })
+  })
+
+  it('deduplicates estimated delete bytes when both GBF fallback alias copies are selected', () => {
+    const copyA: SearchItem = {
+      ns: 'gbf',
+      key: 'img/sp/quest/scene/sample.png',
+      category: 'story',
+      category_label: '剧情与支线素材',
+      asset_bytes: 10,
+      metadata_bytes: 0,
+      estimated_delete_bytes: 20,
+      has_metadata: false,
+      file_modified_ms: 1700000000000,
+      file_modified_iso: '2023-11-14T22:13:20Z',
+      has_alias: true,
+      alias_key: 'assets/img/sp/quest/scene/sample.png',
+    }
+    const copyB: SearchItem = {
+      ns: 'gbf',
+      key: 'assets/img/sp/quest/scene/sample.png',
+      category: 'story',
+      category_label: '剧情与支线素材',
+      asset_bytes: 10,
+      metadata_bytes: 0,
+      estimated_delete_bytes: 20,
+      has_metadata: false,
+      file_modified_ms: 1700000000000,
+      file_modified_iso: '2023-11-14T22:13:20Z',
+      has_alias: true,
+      alias_key: 'img/sp/quest/scene/sample.png',
+    }
+
+    expect(computeDeduplicatedSearchDeleteBytes([copyA])).toBe(20)
+    expect(computeDeduplicatedSearchDeleteBytes([copyB])).toBe(20)
+    expect(computeDeduplicatedSearchDeleteBytes([copyA, copyB])).toBe(20)
   })
 })
 

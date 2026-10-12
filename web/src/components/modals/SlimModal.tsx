@@ -322,14 +322,37 @@ export const SlimModal: React.FC<SlimModalProps> = ({
         )}
 
         {!isSlimming && taskStatus?.last_slim_result && (
-          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 space-y-1">
-            <div className="font-bold flex items-center gap-1.5 text-emerald-900">
-              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+          <div
+            className={`p-3 rounded-lg space-y-1 border ${
+              taskStatus.last_slim_result.status === 'failed'
+                ? 'bg-red-50 border-red-200 text-red-800'
+                : taskStatus.last_slim_result.status === 'partial_failed' ||
+                    taskStatus.last_slim_result.cancelled
+                  ? 'bg-amber-50 border-amber-200 text-amber-800'
+                  : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            }`}
+          >
+            <div className="font-bold flex items-center gap-1.5">
+              {taskStatus.last_slim_result.status === 'failed' ||
+              taskStatus.last_slim_result.status === 'partial_failed' ? (
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+              )}
               <span>
-                最近一次版本清理{taskStatus.last_slim_result.cancelled ? '已部分完成 (用户取消)' : '完成'}
+                {taskStatus.last_slim_result.status === 'failed'
+                  ? '最近一次版本清理失败'
+                  : taskStatus.last_slim_result.status === 'partial_failed'
+                    ? '最近一次版本清理部分完成（含失败项）'
+                    : taskStatus.last_slim_result.cancelled
+                      ? '最近一次版本清理已部分完成 (用户取消)'
+                      : '最近一次版本清理完成'}
               </span>
             </div>
-            <div className="text-[11px] text-emerald-700 font-mono flex flex-wrap gap-x-3 gap-y-1">
+            {taskStatus.last_slim_result.message && (
+              <div className="text-[11px]">{taskStatus.last_slim_result.message}</div>
+            )}
+            <div className="text-[11px] font-mono flex flex-wrap gap-x-3 gap-y-1">
               <span>清理版本目录: {taskStatus.last_slim_result.deleted_dirs ?? 0} 个</span>
               <span>
                 删除数据文件: {taskStatus.last_slim_result.deleted_asset_files ?? taskStatus.last_slim_result.deleted_files ?? 0} 个

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -416,6 +417,204 @@ func TestControlledDeletionCategoryCleanupAndSlim(t *testing.T) {
 	}
 	if _, err := os.Stat(tmpInVer100); err != nil {
 		t.Fatalf("expected .tmp. file in version 100 to be preserved: %v", err)
+	}
+}
+
+func TestTempTokenEvictionAndDiscardFailClosed(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	validJS := []byte("console.log('stale_temp_payload');")
+
+	type tx struct {
+		key     string
+		tmpPath string
+		gen     uint64
+	}
+
+	// 1. Verify DiscardDiskTempFile reclaims token registration on aborted downloads
+	for i := 0; i < 1100; i++ {
+		k := fmt.Sprintf("/assets/js/aborted_%d.js", i)
+		f, tp, _, err := mgr.CreateDiskTempFile("gbf", k)
+		if err != nil {
+			t.Fatalf("CreateDiskTempFile failed at %d: %v", i, err)
+		}
+		_ = f.Close()
+		mgr.DiscardDiskTempFile(tp)
+	}
+	mgr.tempTokensMu.Lock()
+	remainingAfterDiscard := len(mgr.tempTokens)
+	mgr.tempTokensMu.Unlock()
+	if remainingAfterDiscard != 0 {
+		t.Fatalf("expected 0 registered temp tokens after DiscardDiskTempFile, got %d", remainingAfterDiscard)
+	}
+
+	// 2. Create 1025 simultaneous active temp transactions to force eviction in tempTokens
+	txs := make([]tx, 0, 1025)
+	for i := 0; i < 1025; i++ {
+		k := fmt.Sprintf("/assets/js/overflow_%d.js", i)
+		f, tp, g, err := mgr.CreateDiskTempFile("gbf", k)
+		if err != nil {
+			t.Fatalf("CreateDiskTempFile overflow failed at %d: %v", i, err)
+		}
+		_, _ = f.Write(validJS)
+		_ = f.Close()
+		txs = append(txs, tx{key: k, tmpPath: tp, gen: g})
+	}
+
+	// Find an evicted transaction
+	var evictedTx *tx
+	mgr.tempTokensMu.Lock()
+	for i := range txs {
+		if _, exists := mgr.tempTokens[txs[i].tmpPath]; !exists {
+			evictedTx = &txs[i]
+			break
+		}
+	}
+	mgr.tempTokensMu.Unlock()
+
+	if evictedTx == nil {
+		t.Fatalf("expected at least one evicted temp token after 1025 simultaneous creations")
+	}
+
+	// Invalidate the evicted key and attempt to commit: MUST fail closed and remove temp file
+	mgr.Invalidate("gbf", evictedTx.key)
+	if item, committed := mgr.CommitDiskTempFile("gbf", evictedTx.key, headers, evictedTx.tmpPath, int64(len(validJS)), evictedTx.gen); committed || item != nil {
+		t.Fatalf("expected CommitDiskTempFile to reject evicted/missing token transaction for %s", evictedTx.key)
+	}
+	if got, _ := mgr.GetWithNamespace("gbf", evictedTx.key); got != nil {
+		t.Fatalf("stale payload was written to cache after token eviction for %s", evictedTx.key)
+	}
+
+	// Clean up remaining temp files
+	for _, item := range txs {
+		mgr.DiscardDiskTempFile(item.tmpPath)
+	}
+}
+
+func TestConcurrentScanSetCacheBaseAndSearchNoDeadlockOrRace(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	mgr := NewManager(dirA, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('concurrent_race_test');")
+	for i := 0; i < 20; i++ {
+		mgr.SaveWithNamespace("gbf", fmt.Sprintf("assets/100/js/file_%d.js", i), headers, body)
+	}
+	mgr.SetCacheBase(dirB)
+	for i := 0; i < 20; i++ {
+		mgr.SaveWithNamespace("gbf", fmt.Sprintf("assets/200/js/file_%d.js", i), headers, body)
+	}
+	mgr.SetCacheBase(dirA)
+
+	stopCh := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Scanner worker
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+				_ = mgr.ScanBreakdownWithProgress(nil, nil)
+			}
+		}
+	}()
+
+	// Directory switcher & invalidator worker
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		toggle := false
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+				if toggle {
+					mgr.SetCacheBase(dirA)
+				} else {
+					mgr.SetCacheBase(dirB)
+				}
+				toggle = !toggle
+				mgr.InvalidateSnapshots("concurrent test invalidation")
+			}
+		}
+	}()
+
+	// Concurrent searcher & snapshot reader worker
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stopCh:
+				return
+			default:
+				_, _ = mgr.SearchSnapshot("", "file_", 20, nil)
+				_, _ = mgr.GetBreakdownSnapshot(4)
+			}
+		}
+	}()
+
+	time.Sleep(250 * time.Millisecond)
+	close(stopCh)
+	wg.Wait()
+}
+
+func TestSlimRootValidationErrorAndUnifiedVersionDiscovery(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	// 1. Create 3 versions where newest version 300 only contains a .tmp. file
+	jsHeaders := map[string]string{"content-type": "application/javascript"}
+	jsBody := []byte("console.log('v');")
+	mgr.SaveWithNamespace("gbf", "assets/100/js/app.js", jsHeaders, jsBody)
+	mgr.SaveWithNamespace("gbf", "assets/200/js/app.js", jsHeaders, jsBody)
+	ver300Dir := filepath.Join(tmpDir, "assets", "300", "js")
+	if err := os.MkdirAll(ver300Dir, 0755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ver300Dir, "app.js.tmp.1.2.3"), []byte("partial"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	previewKeep2 := snap.RetentionPreviews["2"]
+	if previewKeep2.TotalVersionDirs != 3 || previewKeep2.PruneDirs != 1 {
+		t.Fatalf("expected preview with keep=2 to discover all 3 version dirs and mark 1 for pruning, got %+v", previewKeep2)
+	}
+
+	// Live slim with keep=2 should prune version 100 (1 dir) matching the preview
+	slimRes, err := mgr.PruneStaleVersionsDetailed(2, "", nil, nil)
+	if err != nil {
+		t.Fatalf("PruneStaleVersionsDetailed live failed: %v", err)
+	}
+	if slimRes.Status != "completed" || slimRes.DeletedDirs != 1 {
+		t.Fatalf("expected live slim to delete 1 stale version dir (100), got %+v", slimRes)
+	}
+
+	// 2. Point cache base to a regular file and verify PruneStaleVersionsDetailed reports Status="failed"
+	regularFile := filepath.Join(tmpDir, "not_a_dir.bin")
+	if err := os.WriteFile(regularFile, []byte("file"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	mgr.SetCacheBase(regularFile)
+
+	badRes, err := mgr.PruneStaleVersionsDetailed(2, "", nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error return: %v", err)
+	}
+	if badRes.Status != "failed" || badRes.FailedCount == 0 || len(badRes.Failures) == 0 {
+		t.Fatalf("expected Status=failed and FailedCount>0 when cache base is a regular file, got %+v", badRes)
 	}
 }
 

@@ -2257,7 +2257,7 @@ func (s *ProxyServer) serveStaticAssetCore(w io.Writer, req *http.Request, targe
 					tmpFile = nil
 				}
 				if tmpPath != "" {
-					_ = os.Remove(tmpPath)
+					s.cacheMgr.DiscardDiskTempFile(tmpPath)
 					tmpPath = ""
 				}
 				memBuf = nil
@@ -2269,7 +2269,7 @@ func (s *ProxyServer) serveStaticAssetCore(w io.Writer, req *http.Request, targe
 				_ = tmpFile.Close()
 			}
 			if tmpPath != "" && !committed {
-				_ = os.Remove(tmpPath)
+				s.cacheMgr.DiscardDiskTempFile(tmpPath)
 			}
 		}()
 
@@ -3586,7 +3586,7 @@ func (s *ProxyServer) streamAndCacheUpstream200(
 				tmpFile = nil
 			}
 			if tmpPath != "" {
-				_ = os.Remove(tmpPath)
+				s.cacheMgr.DiscardDiskTempFile(tmpPath)
 				tmpPath = ""
 			}
 			memBuf = nil
@@ -3598,7 +3598,7 @@ func (s *ProxyServer) streamAndCacheUpstream200(
 			_ = tmpFile.Close()
 		}
 		if tmpPath != "" && !committed {
-			_ = os.Remove(tmpPath)
+			s.cacheMgr.DiscardDiskTempFile(tmpPath)
 		}
 	}()
 
