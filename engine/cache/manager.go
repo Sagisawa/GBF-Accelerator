@@ -480,16 +480,13 @@ func sanitizeNamespace(ns string) string {
 }
 
 func makeRAMKey(ns, cleanKey string) string {
-	if normNS, normKey, ok := canonicalizeNSAndKey(ns, cleanKey); ok {
-		if normNS == "gbf" {
-			return normKey
-		}
-		return normNS + "\x00" + normKey
-	}
 	if ns == "" || ns == "gbf" {
 		return cleanKey
 	}
-	normNS := sanitizeNamespace(ns)
+	normNS := ns
+	if strings.IndexAny(ns, " \t\r\n:/\\.") >= 0 || strings.ToLower(ns) != ns {
+		normNS = sanitizeNamespace(ns)
+	}
 	if normNS == "gbf" {
 		return cleanKey
 	}
@@ -623,7 +620,7 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 	}
 	tok := m.acquireOpToken(ns, cleanKey)
 	isSharedHostsPath := ns != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
-	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 && checkDiskFileOwnership(ns, cleanKey, filePath) {
+	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 && (!isSharedHostsPath || checkDiskFileOwnership(ns, cleanKey, filePath)) {
 		m.persistMu.RLock()
 		shard := m.tokenShardByCanon(tok.canonKey)
 		shard.mu.Lock()
@@ -2093,9 +2090,6 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 		p, ok := m.resolvePathWithNamespace(ns, k)
 		if !ok {
 			return nil, 0, fmt.Errorf("failed to resolve path: %s", k)
-		}
-		if !checkDiskFileOwnership(ns, k, p) {
-			return nil, 0, fmt.Errorf("cache file namespace mismatch: %s", p)
 		}
 		f, err := os.Open(p)
 		if err != nil {

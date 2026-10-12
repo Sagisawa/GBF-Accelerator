@@ -416,25 +416,23 @@ type tokenShard struct {
 }
 
 func isCleanRelativeSlashPath(s string) bool {
-	if s == "" || s[0] == '/' || s[len(s)-1] == '/' {
+	n := len(s)
+	if n == 0 || s[0] == '/' || s[n-1] == '/' || s[n-1] == '.' || s[n-1] == ' ' {
 		return false
 	}
-	segStart := 0
-	for i := 0; i <= len(s); i++ {
-		if i < len(s) {
-			c := s[i]
-			if isASCIIControl(c) || c == '\\' || c == ':' || c == '?' || (c == '.' && i > 0 && s[i-1] == '.') {
-				return false
-			}
-			if c != '/' {
-				continue
-			}
-		}
-		segLen := i - segStart
-		if segLen == 0 || s[i-1] == '.' || s[i-1] == ' ' {
+	prev := byte('/')
+	for i := 0; i < n; i++ {
+		c := s[i]
+		if c <= 0x1f || c == 0x7f || c == '\\' || c == ':' || c == '?' {
 			return false
 		}
-		segStart = i + 1
+		if c == '/' && (prev == '/' || prev == '.' || prev == ' ') {
+			return false
+		}
+		if c == '.' && prev == '.' {
+			return false
+		}
+		prev = c
 	}
 	return true
 }
@@ -444,12 +442,15 @@ func isCleanRelativeSlashPath(s string) bool {
 // It preserves interior and leading filename spaces (e.g. "/assets/js/ app.js")
 // and Unicode non-breaking spaces while stripping ASCII control chars and trailing dots/spaces.
 func normalizeCleanKey(urlPath string) string {
-	s, _, _ := strings.Cut(urlPath, "?")
+	s := urlPath
 	if s != "" && s[0] == '/' {
 		s = s[1:]
 	}
 	if isCleanRelativeSlashPath(s) {
 		return s
+	}
+	if q := strings.IndexByte(s, '?'); q > 0 && isCleanRelativeSlashPath(s[:q]) {
+		return s[:q]
 	}
 	segs := splitCleanSegments(urlPath)
 	if len(segs) == 0 {
@@ -466,18 +467,20 @@ func canonicalizeNSAndKey(ns, urlPath string) (string, string, bool) {
 	if cleanKey == "" {
 		return "", "", false
 	}
-	rawNS := strings.TrimSpace(ns)
 	normNS := "gbf"
-	if rawNS != "" && !strings.EqualFold(rawNS, "gbf") {
-		if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) {
-			return "", "", false
+	if ns != "" && ns != "gbf" {
+		rawNS := strings.TrimSpace(ns)
+		if rawNS != "" && !strings.EqualFold(rawNS, "gbf") {
+			if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) {
+				return "", "", false
+			}
+			normNS = sanitizeNamespace(rawNS)
+			if normNS == "" || normNS == "hosts" {
+				return "", "", false
+			}
 		}
-		normNS = sanitizeNamespace(rawNS)
 	}
-	if normNS == "" || normNS == "hosts" {
-		return "", "", false
-	}
-	if normNS == "gbf" && (cleanKey == "hosts" || strings.HasPrefix(cleanKey, "hosts/")) {
+	if normNS == "gbf" && len(cleanKey) >= 5 && cleanKey[0] == 'h' && (cleanKey == "hosts" || strings.HasPrefix(cleanKey, "hosts/")) {
 		parts := strings.SplitN(cleanKey, "/", 3)
 		if len(parts) < 3 || parts[1] == "" || parts[2] == "" {
 			return "", "", false
