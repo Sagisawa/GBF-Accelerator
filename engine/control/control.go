@@ -1593,6 +1593,19 @@ func (c *ControlServer) handleCacheSlim(w http.ResponseWriter, req *http.Request
 		if slimErr != nil {
 			finalStatus = "failed"
 			finalErr = slimErr.Error()
+			if delRes == nil {
+				delRes = &cache.DeleteResult{
+					TaskType:    "slim",
+					SnapshotID:  snapshotID,
+					Status:      "failed",
+					FailedCount: 1,
+					Failures: []cache.DeleteFailure{{
+						Reason: slimErr.Error(),
+					}},
+					Done:    true,
+					Message: slimErr.Error(),
+				}
+			}
 		}
 		res := buildSlimResultMap(delRes)
 		if delRes != nil {

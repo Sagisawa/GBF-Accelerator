@@ -435,3 +435,42 @@ func TestCacheTaskMutualExclusionCancelAndSecurityBoundaries(t *testing.T) {
 		t.Errorf("expected 400 Bad Request for >128KB payload, got %d", wBig.Code)
 	}
 }
+
+func TestControlAsyncFailureResultSynthesis(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	cacheDir := filepath.Join(tempDir, "cache")
+	seedControlTestCache(t, cacheDir)
+
+	cacheMgr := cache.NewManager(cacheDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+
+	// Point cacheMgr to a regular file so live /api/cache/slim fails inside the background goroutine
+	notADir := filepath.Join(tempDir, "not_a_dir.bin")
+	if err := os.WriteFile(notADir, []byte("file"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	cacheMgr.SetCacheBase(notADir)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/slim?keep=2", nil)
+	req.Host = "127.0.0.1:8125"
+	req.RemoteAddr = "127.0.0.1:12345"
+	w := httptest.NewRecorder()
+	ctrl.handleRoute(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK starting slim, got %d", w.Code)
+	}
+
+	taskStatus := waitForControlCacheTaskIdle(t, ctrl)
+	slimRes, _ := taskStatus["last_slim_result"].(map[string]interface{})
+	if slimRes == nil || slimRes["status"] != "failed" {
+		t.Fatalf("expected last_slim_result status=failed when cache root is invalid, got %+v", slimRes)
+	}
+	if slimRes["failed_count"] != float64(1) {
+		t.Fatalf("expected last_slim_result failed_count=1, got %+v", slimRes)
+	}
+}
+

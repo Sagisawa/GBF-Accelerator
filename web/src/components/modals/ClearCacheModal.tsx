@@ -592,14 +592,44 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
           {/* Last Cleanup Outcome Banner */}
           {!isCleaning && lastCleanupResult && (
-            <div className="p-2 bg-emerald-50/90 border border-emerald-200 rounded text-[11px] text-emerald-900 flex items-center justify-between flex-wrap gap-2">
+            <div
+              className={`p-2 border rounded text-[11px] flex items-center justify-between flex-wrap gap-2 ${
+                lastCleanupResult.status === 'failed'
+                  ? 'bg-red-50/90 border-red-200 text-red-900'
+                  : lastCleanupResult.status === 'partial_failed' ||
+                      lastCleanupResult.cancelled
+                    ? 'bg-amber-50/90 border-amber-200 text-amber-900'
+                    : 'bg-emerald-50/90 border-emerald-200 text-emerald-900'
+              }`}
+            >
               <div className="font-medium flex items-center gap-1.5">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                {lastCleanupResult.status === 'failed' ||
+                lastCleanupResult.status === 'partial_failed' ||
+                lastCleanupResult.cancelled ? (
+                  <AlertTriangle
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      lastCleanupResult.status === 'failed'
+                        ? 'text-red-600'
+                        : 'text-amber-600'
+                    }`}
+                  />
+                ) : (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                )}
                 <span>
                   最近一次清理结果：{lastCleanupResult.message || '执行完成'}
                 </span>
               </div>
-              <div className="font-mono text-[11px] text-emerald-800 flex items-center gap-2 flex-wrap">
+              <div
+                className={`font-mono text-[11px] flex items-center gap-2 flex-wrap ${
+                  lastCleanupResult.status === 'failed'
+                    ? 'text-red-800'
+                    : lastCleanupResult.status === 'partial_failed' ||
+                        lastCleanupResult.cancelled
+                      ? 'text-amber-800'
+                      : 'text-emerald-800'
+                }`}
+              >
                 <span>数据文件 {lastCleanupResult.deleted_asset_files} 项</span>
                 <span>.ext {lastCleanupResult.deleted_meta_files} 项</span>
                 <span>释放 {formatBytesBinary(lastCleanupResult.freed_bytes)}</span>

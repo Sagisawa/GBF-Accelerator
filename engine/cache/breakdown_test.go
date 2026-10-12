@@ -618,6 +618,222 @@ func TestSlimRootValidationErrorAndUnifiedVersionDiscovery(t *testing.T) {
 	}
 }
 
+func TestPathNormalizationConsistencyForInvalidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	// 1. In-flight disk stream created with unclean path (whitespace, trailing dot, mixed-case namespace)
+	uncleanPath := "//assets/img/sp/quest/\t3040001000.png."
+	cleanPath := "assets/img/sp/quest/3040001000.png"
+	f, tmpPath, gen, err := mgr.CreateDiskTempFile("GBF", uncleanPath)
+	if err != nil {
+		t.Fatalf("CreateDiskTempFile failed: %v", err)
+	}
+	_, _ = f.Write([]byte("stale_unclean_payload"))
+	_ = f.Close()
+
+	// Targeted invalidation using clean canonical path
+	mgr.Invalidate("gbf", cleanPath)
+
+	// Commit with the unclean path must be rejected because both map to the same canonical key
+	headers := map[string]string{"content-type": "image/png"}
+	if _, ok := mgr.CommitDiskTempFile("GBF", uncleanPath, headers, tmpPath, 21, gen); ok {
+		t.Fatalf("expected CommitDiskTempFile with unclean path to be rejected after Invalidate on canonical path")
+	}
+	if item, _ := mgr.GetWithNamespace("gbf", cleanPath); item != nil {
+		t.Fatalf("stale unclean temp file should not have been committed to cache")
+	}
+
+	// 2. acquireOpToken with unclean path must also be invalidated by canonical Invalidate
+	tok := mgr.acquireOpToken("GBF", "/assets//img/./sp/quest/\n999.png.")
+	mgr.Invalidate("gbf", "assets/img/sp/quest/999.png")
+	if mgr.isOpTokenValid(tok) {
+		t.Fatalf("expected opToken acquired with unclean path to be invalidated by canonical Invalidate")
+	}
+}
+
+func TestPruneStaleVersionsSnapshotRootBindingAndCacheBaseSwitch(t *testing.T) {
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	mgr := NewManager(dirA, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('version_payload');")
+	for _, d := range []string{dirA, dirB} {
+		mgr.SetCacheBase(d)
+		mgr.SaveWithNamespace("gbf", "assets/100/js/app.js", headers, body)
+		mgr.SaveWithNamespace("gbf", "assets/200/js/app.js", headers, body)
+		mgr.SaveWithNamespace("gbf", "assets/300/js/app.js", headers, body)
+	}
+
+	// Switch back to dirA and scan snapshot
+	mgr.SetCacheBase(dirA)
+	snapA := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snapA == nil || !snapA.Valid {
+		t.Fatalf("expected valid snapshot on dirA")
+	}
+
+	// Switch to dirB before attempting to prune using snapA
+	mgr.SetCacheBase(dirB)
+	if _, err := mgr.PruneStaleVersionsDetailed(2, snapA.SnapshotID, nil, nil); err == nil {
+		t.Fatalf("expected PruneStaleVersionsDetailed with snapA after SetCacheBase(dirB) to fail")
+	}
+
+	// Also verify deleteSingleVerifiedEntry directly rejects deletion if CacheBase/gen changed
+	idx, ok := snapA.entryByNSKey[makeNSKey("gbf", "assets/100/js/app.js")]
+	if !ok {
+		t.Fatalf("expected entryFromA in snapA")
+	}
+	entryFromA := snapA.Entries[idx]
+	absBaseA, realBaseA, _, _ := resolveContainedRealBase(snapA.CacheBase)
+	res := &DeleteResult{}
+	mgr.deleteSingleVerifiedEntry(absBaseA, realBaseA, snapA.Generation, snapA.CacheBase, entryFromA, res, make(map[string]struct{}))
+	if !res.Cancelled || res.DeletedAssetFiles != 0 {
+		t.Fatalf("expected deleteSingleVerifiedEntry to cancel and delete 0 files when cache base switched, got %+v", res)
+	}
+
+	// Verify dirB's assets/100/js/app.js is completely intact
+	if _, err := os.Stat(filepath.Join(dirB, "assets", "100", "js", "app.js")); err != nil {
+		t.Fatalf("dirB assets/100/js/app.js must remain untouched: %v", err)
+	}
+}
+
+func TestClearCategoriesPreservesVersionedFallbackPartner(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	// Write legacy unprefixed path 300/js/app.js (classified as CategoryOther)
+	mgr.SaveWithNamespace("gbf", "300/js/app.js", headers, []byte("legacy_other"))
+	// Write standard versioned path assets/300/js/app.js (classified as CategoryVersioned)
+	mgr.SaveWithNamespace("gbf", "assets/300/js/app.js", headers, []byte("versioned_asset"))
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snap == nil || !snap.Valid {
+		t.Fatalf("expected valid snapshot")
+	}
+
+	res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, []string{"gbf"}, nil, nil)
+	if err != nil {
+		t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+	}
+	if res.DeletedAssetFiles != 1 {
+		t.Fatalf("expected exactly 1 asset file (300/js/app.js) deleted, got %d", res.DeletedAssetFiles)
+	}
+
+	// 300/js/app.js must be gone
+	if _, err := os.Stat(filepath.Join(tmpDir, "300", "js", "app.js")); !os.IsNotExist(err) {
+		t.Fatalf("expected 300/js/app.js to be deleted, stat err: %v", err)
+	}
+	// assets/300/js/app.js (versioned) must be preserved!
+	if _, err := os.Stat(filepath.Join(tmpDir, "assets", "300", "js", "app.js")); err != nil {
+		t.Fatalf("expected versioned assets/300/js/app.js to be preserved, stat err: %v", err)
+	}
+}
+
+func TestOrphanExtInVersionDirsPreviewAndVerifiedPrune(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	body := []byte("console.log('v');")
+	mgr.SaveWithNamespace("gbf", "assets/100/js/app.js", headers, body)
+	mgr.SaveWithNamespace("gbf", "assets/200/js/app.js", headers, body)
+	mgr.SaveWithNamespace("gbf", "assets/300/js/app.js", headers, body)
+
+	// Create an orphan .ext inside version 100
+	orphanExtPath := filepath.Join(tmpDir, "assets", "100", "js", "newly_fetched.js.ext")
+	orphanExtData := []byte(`{"ct":"application/javascript","cl":123}`)
+	if err := os.WriteFile(orphanExtPath, orphanExtData, 0644); err != nil {
+		t.Fatalf("WriteFile orphan .ext failed: %v", err)
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	prev2 := snap.RetentionPreviews["2"]
+	// Version 100 has app.js + app.js.ext + newly_fetched.js.ext (2 meta files in version 100)
+	if len(prev2.Groups) != 1 {
+		t.Fatalf("expected 1 version group, got %d", len(prev2.Groups))
+	}
+	if prev2.EstimatedDeleteBytes < int64(len(body)+len(orphanExtData)) {
+		t.Fatalf("expected RetentionPreview EstimatedDeleteBytes to include orphan .ext bytes, got %d", prev2.EstimatedDeleteBytes)
+	}
+
+	// Simulate a new data file arriving for newly_fetched.js after scan before prune
+	pairedDataPath := filepath.Join(tmpDir, "assets", "100", "js", "newly_fetched.js")
+	if err := os.WriteFile(pairedDataPath, []byte("fresh_data"), 0644); err != nil {
+		t.Fatalf("WriteFile paired data failed: %v", err)
+	}
+
+	slimRes, err := mgr.PruneStaleVersionsDetailed(2, snap.SnapshotID, nil, nil)
+	if err != nil {
+		t.Fatalf("PruneStaleVersionsDetailed failed: %v", err)
+	}
+	if slimRes.SkippedChangedCount < 1 {
+		t.Fatalf("expected orphan .ext with newly created paired data file to be skipped, got %+v", slimRes)
+	}
+	// Both newly_fetched.js and newly_fetched.js.ext must still exist
+	if _, err := os.Stat(pairedDataPath); err != nil {
+		t.Fatalf("expected paired data file to survive: %v", err)
+	}
+	if _, err := os.Stat(orphanExtPath); err != nil {
+		t.Fatalf("expected .ext paired with new data file to survive: %v", err)
+	}
+}
+
+func TestVersionDirDiscoveryErrorsAndLateOldGenTempToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	mgr.SaveWithNamespace("gbf", "assets/100/js/app.js", headers, []byte("v100"))
+	mgr.SaveWithNamespace("gbf", "assets/200/js/app.js", headers, []byte("v200"))
+
+	// Create a regular file named "assets_en" where a directory is expected
+	badPrefixPath := filepath.Join(tmpDir, "assets_en")
+	if err := os.WriteFile(badPrefixPath, []byte("not_a_directory"), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	snap := mgr.ScanBreakdownWithProgress(nil, nil)
+	if snap.ReadErrors == 0 {
+		t.Fatalf("expected ScanBreakdownWithProgress to record ReadErrors when assets_en is a regular file")
+	}
+
+	slimRes, err := mgr.PruneStaleVersionsDetailed(1, snap.SnapshotID, nil, nil)
+	if err != nil {
+		t.Fatalf("PruneStaleVersionsDetailed returned unexpected error: %v", err)
+	}
+	if slimRes.FailedCount == 0 || slimRes.Status == "completed" {
+		t.Fatalf("expected PruneStaleVersionsDetailed to report failure when assets_en is a regular file, got %+v", slimRes)
+	}
+
+	// Verify late old-generation temp token registration is rejected and never sweeps current-generation tokens
+	curGen := mgr.currentGeneration()
+	mgr.registerTempFileToken("tmp-current", opToken{
+		canonKey: "gbf:assets/200/js/live.js",
+		seq:      1,
+		gen:      curGen,
+	})
+	if ok := mgr.registerTempFileToken("tmp-stale-gen", opToken{
+		canonKey: "gbf:assets/200/js/old.js",
+		seq:      1,
+		gen:      curGen - 1,
+	}); ok {
+		t.Fatalf("expected registerTempFileToken with stale generation to be rejected")
+	}
+	mgr.tempTokensMu.Lock()
+	_, curStillExists := mgr.tempTokens["tmp-current"]
+	mgr.tempTokensMu.Unlock()
+	if !curStillExists {
+		t.Fatalf("expected current-generation temp token to remain intact after stale-gen registration attempt")
+	}
+}
+
 func BenchmarkCacheHitWithToken(b *testing.B) {
 	tmpDir := b.TempDir()
 	mgr := NewManager(tmpDir, 64)
@@ -639,3 +855,4 @@ func BenchmarkCacheHitWithToken(b *testing.B) {
 		}
 	})
 }
+

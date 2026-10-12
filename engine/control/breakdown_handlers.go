@@ -419,7 +419,19 @@ func (c *ControlServer) handleCacheInvalidate(w http.ResponseWriter, req *http.R
 		if err != nil {
 			finalStatus = "failed"
 			finalErr = err.Error()
-			return
+			if res == nil {
+				res = &cache.DeleteResult{
+					TaskType:    "invalidate",
+					SnapshotID:  payload.SnapshotID,
+					Status:      "failed",
+					FailedCount: 1,
+					Failures: []cache.DeleteFailure{{
+						Reason: err.Error(),
+					}},
+					Done:    true,
+					Message: err.Error(),
+				}
+			}
 		}
 		if res != nil {
 			finalStatus = res.Status
@@ -577,7 +589,19 @@ func (c *ControlServer) handleCacheClearCategory(w http.ResponseWriter, req *htt
 		if err != nil {
 			finalStatus = "failed"
 			finalErr = err.Error()
-			return
+			if res == nil {
+				res = &cache.DeleteResult{
+					TaskType:    "clear_category",
+					SnapshotID:  payload.SnapshotID,
+					Status:      "failed",
+					FailedCount: 1,
+					Failures: []cache.DeleteFailure{{
+						Reason: err.Error(),
+					}},
+					Done:    true,
+					Message: err.Error(),
+				}
+			}
 		}
 		if res != nil {
 			finalStatus = res.Status
@@ -658,8 +682,11 @@ func buildSlimResultMap(res *cache.DeleteResult) map[string]interface{} {
 		return map[string]interface{}{
 			"deleted_dirs":  0,
 			"deleted_files": 0,
+			"failed_count":  1,
 			"freed_bytes":   int64(0),
 			"freed_mb":      0.0,
+			"status":        "failed",
+			"message":       "版本清理任务未返回结果",
 		}
 	}
 	freedMB := math.Round(float64(res.FreedBytes)/(1024*1024)*100) / 100

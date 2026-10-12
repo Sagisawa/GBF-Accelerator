@@ -187,19 +187,31 @@ func IsSelectableCleanupCategory(cat string) bool {
 }
 
 func splitCleanSegments(cleanKey string) []string {
-	norm := strings.ReplaceAll(strings.TrimSpace(cleanKey), "\\", "/")
+	if strings.IndexByte(cleanKey, 0) >= 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(cleanKey)
+	if strings.HasPrefix(trimmed, `\\`) {
+		return nil
+	}
+	norm := strings.ReplaceAll(trimmed, "\\", "/")
 	norm, _, _ = strings.Cut(norm, "?")
-	norm = strings.Trim(norm, "/")
+	norm = strings.Trim(strings.TrimSpace(norm), "/")
 	if norm == "" {
 		return nil
 	}
 	raw := strings.Split(norm, "/")
 	segs := make([]string, 0, len(raw))
 	for _, s := range raw {
+		s = strings.TrimSpace(s)
 		if s == "" || s == "." {
 			continue
 		}
-		if s == ".." {
+		if s == ".." || strings.Contains(s, "..") || strings.Contains(s, ":") {
+			return nil
+		}
+		s = strings.TrimRight(s, ". ")
+		if s == "" {
 			return nil
 		}
 		segs = append(segs, s)
@@ -366,32 +378,56 @@ func isCleanRelativeSlashPath(s string) bool {
 	if s == "" || s[0] == '/' || s[len(s)-1] == '/' {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '\\' {
-			return false
-		}
-		if c == '/' && i+1 < len(s) && s[i+1] == '/' {
-			return false
-		}
-		if c == '.' {
-			prevSlash := i == 0 || s[i-1] == '/'
-			nextSlash := i+1 == len(s) || s[i+1] == '/'
-			if prevSlash && nextSlash {
+	segStart := 0
+	for i := 0; i <= len(s); i++ {
+		if i < len(s) {
+			c := s[i]
+			if c <= ' ' || c == '\\' || c == ':' || c == '?' || (c == '.' && i > 0 && s[i-1] == '.') {
 				return false
 			}
-			if prevSlash && i+1 < len(s) && s[i+1] == '.' && (i+2 == len(s) || s[i+2] == '/') {
-				return false
+			if c != '/' {
+				continue
 			}
 		}
+		segLen := i - segStart
+		if segLen == 0 || s[i-1] == '.' {
+			return false
+		}
+		segStart = i + 1
 	}
 	return true
 }
 
+// normalizeCleanKey canonicalizes a URL path or cache key into a clean relative
+// forward-slash path with zero heap allocations on the common clean path.
+func normalizeCleanKey(urlPath string) string {
+	s, _, _ := strings.Cut(urlPath, "?")
+	start := 0
+	end := len(s)
+	for start < end && (s[start] <= ' ' || s[start] == '/') {
+		start++
+	}
+	for end > start && (s[end-1] <= ' ' || s[end-1] == '/') {
+		end--
+	}
+	s = s[start:end]
+	if s == "" {
+		return ""
+	}
+	if isCleanRelativeSlashPath(s) {
+		return s
+	}
+	segs := splitCleanSegments(s)
+	if len(segs) == 0 {
+		return ""
+	}
+	return strings.Join(segs, "/")
+}
+
 func canonicalTokenKey(ns, cleanKey string) string {
-	normKey := cleanKey
-	if !isCleanRelativeSlashPath(cleanKey) {
-		normKey = strings.Join(splitCleanSegments(cleanKey), "/")
+	normKey := normalizeCleanKey(cleanKey)
+	if normKey == "" {
+		return ""
 	}
 	normNS := "gbf"
 	if ns != "" && ns != "gbf" {
@@ -413,14 +449,7 @@ func canonicalTokenKey(ns, cleanKey string) string {
 }
 
 func gbfFallbackCleanKey(cleanKey string) (string, bool) {
-	normKey := cleanKey
-	if !isCleanRelativeSlashPath(cleanKey) {
-		segs := splitCleanSegments(cleanKey)
-		if len(segs) == 0 {
-			return "", false
-		}
-		normKey = strings.Join(segs, "/")
-	}
+	normKey := normalizeCleanKey(cleanKey)
 	if normKey == "" {
 		return "", false
 	}
@@ -587,15 +616,20 @@ func (m *Manager) deleteMissingKey(ramKey string) {
 	shard.mu.Unlock()
 }
 
-func (m *Manager) registerTempFileToken(tmpPath string, tok opToken) {
+func (m *Manager) registerTempFileToken(tmpPath string, tok opToken) bool {
+	curGen := m.currentGeneration()
+	if tok.gen == 0 || tok.gen != curGen {
+		return false
+	}
 	m.tempTokensMu.Lock()
+	defer m.tempTokensMu.Unlock()
 	if m.tempTokens == nil {
 		m.tempTokens = make(map[string]opToken)
 	}
 	if len(m.tempTokens) >= 1024 {
-		// First sweep entries whose generation doesn't match or whose temp file was already removed
+		// First sweep entries whose generation doesn't match the current generation or whose temp file was already removed
 		for k, v := range m.tempTokens {
-			if v.gen != tok.gen {
+			if v.gen != curGen {
 				delete(m.tempTokens, k)
 				continue
 			}
@@ -616,7 +650,7 @@ func (m *Manager) registerTempFileToken(tmpPath string, tok opToken) {
 		}
 	}
 	m.tempTokens[tmpPath] = tok
-	m.tempTokensMu.Unlock()
+	return true
 }
 
 func (m *Manager) popTempFileToken(tmpPath string) (opToken, bool) {
@@ -859,6 +893,15 @@ type SnapshotEntry struct {
 	MTimeMS   int64  `json:"mtime_ms"`
 }
 
+type orphanExtCandidate struct {
+	ns        string
+	cleanKey  string
+	slashRel  string
+	fullPath  string
+	size      int64
+	mtimeNano int64
+}
+
 // BreakdownSnapshot holds the full result of a background cache breakdown scan.
 type BreakdownSnapshot struct {
 	SnapshotID           string                             `json:"snapshot_id"`
@@ -888,7 +931,7 @@ type BreakdownSnapshot struct {
 	ErrorMessage         string                             `json:"error,omitempty"`
 	Entries              []SnapshotEntry                    `json:"-"`
 	entryByNSKey         map[string]int
-	orphanExtPaths       map[string]int64
+	orphanExts           map[string]orphanExtCandidate
 }
 
 // ScanProgress reports background breakdown scan progress.
@@ -1209,9 +1252,12 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		mtimeNano int64
 	}
 	type rawExtFile struct {
-		slashRel string
-		size     int64
-		paired   bool
+		ns        string
+		cleanKey  string
+		slashRel  string
+		size      int64
+		mtimeNano int64
+		paired    bool
 	}
 
 	var rawFiles []rawDataFile
@@ -1301,8 +1347,11 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 			if strings.HasSuffix(cleanKey, ".ext") {
 				baseRel := strings.TrimSuffix(slashRel, ".ext")
 				extMap[baseRel] = &rawExtFile{
-					slashRel: slashRel,
-					size:     info.Size(),
+					ns:        ns,
+					cleanKey:  cleanKey,
+					slashRel:  slashRel,
+					size:      info.Size(),
+					mtimeNano: info.ModTime().UnixNano(),
 				}
 			} else {
 				rawFiles = append(rawFiles, rawDataFile{
@@ -1392,7 +1441,9 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 	// dirs with only .tmp.* files, or dirs with only orphan .ext files are included
 	// consistently with live slimming discovery.
 	if baseExists {
-		for _, d := range discoverAllVersionDirs(absBase, realBase) {
+		discoveredDirs, dirFailures := discoverAllVersionDirsWithErrors(absBase, realBase)
+		readErrors += len(dirFailures)
+		for _, d := range discoveredDirs {
 			vk := versionDirKey{ns: d.ns, prefix: d.prefix, version: d.version, verNum: d.verNum}
 			if _, exists := versionDirMap[vk]; !exists {
 				relDir := d.prefix + "/" + d.version
@@ -1517,15 +1568,41 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		}
 	}
 
-	// Collect orphan .ext files
+	// Collect orphan .ext files and attribute version-directory orphan .ext files to VersionDirStat
 	var orphanExtFiles int
 	var orphanExtBytes int64
-	orphanExtPaths := make(map[string]int64)
+	orphanExts := make(map[string]orphanExtCandidate)
 	for _, ext := range extMap {
 		if !ext.paired {
 			orphanExtFiles++
 			orphanExtBytes += ext.size
-			orphanExtPaths[ext.slashRel] = ext.size
+			orphanExts[ext.slashRel] = orphanExtCandidate{
+				ns:        ext.ns,
+				cleanKey:  ext.cleanKey,
+				slashRel:  ext.slashRel,
+				size:      ext.size,
+				mtimeNano: ext.mtimeNano,
+			}
+			baseKey := strings.TrimSuffix(ext.cleanKey, ".ext")
+			if prefix, verStr, verNum, ok := ParseVersionedEntry(ext.ns, baseKey); ok {
+				vk := versionDirKey{ns: ext.ns, prefix: prefix, version: verStr, verNum: verNum}
+				vd, exists := versionDirMap[vk]
+				if !exists {
+					relDir := prefix + "/" + verStr
+					if ext.ns != "gbf" {
+						relDir = "hosts/" + ext.ns + "/" + relDir
+					}
+					vd = &VersionDirStat{
+						Version:     verStr,
+						VersionNum:  verNum,
+						RelativeDir: relDir,
+					}
+					versionDirMap[vk] = vd
+				}
+				vd.MetadataFiles++
+				vd.MetadataBytes += ext.size
+				vd.EstimatedDeleteBytes = vd.AssetBytes + vd.MetadataBytes
+			}
 		}
 	}
 
@@ -1626,7 +1703,7 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		RetentionPreviews:   retentionPreviews,
 		Entries:             entries,
 		entryByNSKey:        entryByNSKey,
-		orphanExtPaths:      orphanExtPaths,
+		orphanExts:          orphanExts,
 	}
 
 	// Enforce strict lock hierarchy: persistMu.RLock -> mu.RLock -> snapshotMu.Lock
@@ -1989,6 +2066,9 @@ func (m *Manager) ClearCategoriesWithProgress(
 		if _, ok := nsSet[entry.NS]; !ok {
 			continue
 		}
+		if entry.Category == CategoryVersioned {
+			continue
+		}
 		if _, ok := catSet[entry.Category]; !ok {
 			continue
 		}
@@ -1997,14 +2077,19 @@ func (m *Manager) ClearCategoriesWithProgress(
 			seen[nsKey] = struct{}{}
 			candidates = append(candidates, entry)
 		}
-		// Include GBF fallback alias if present in snapshot
+		// Include GBF fallback alias only if it exists in snapshot AND belongs to a selected non-versioned category
 		if entry.NS == "gbf" {
 			if altKey, hasAlt := gbfFallbackCleanKey(entry.Key); hasAlt {
 				altNSKey := makeNSKey("gbf", altKey)
 				if altIdx, altExists := snap.entryByNSKey[altNSKey]; altExists {
-					if _, dup := seen[altNSKey]; !dup {
-						seen[altNSKey] = struct{}{}
-						candidates = append(candidates, snap.Entries[altIdx])
+					altEntry := snap.Entries[altIdx]
+					if altEntry.Category != CategoryVersioned {
+						if _, catOK := catSet[altEntry.Category]; catOK {
+							if _, dup := seen[altNSKey]; !dup {
+								seen[altNSKey] = struct{}{}
+								candidates = append(candidates, altEntry)
+							}
+						}
 					}
 				}
 			}
@@ -2082,7 +2167,7 @@ func (m *Manager) executeControlledDeletion(
 			break
 		}
 
-		m.deleteSingleVerifiedEntry(absBase, realBase, snap.Generation, cand, &res, touchedDirs)
+		m.deleteSingleVerifiedEntry(absBase, realBase, snap.Generation, snap.CacheBase, cand, &res, touchedDirs)
 
 		now := time.Now()
 		if progressCb != nil && ((idx+1)%100 == 0 || now.Sub(lastReport) >= 150*time.Millisecond || idx+1 == total) {
@@ -2179,6 +2264,7 @@ func (m *Manager) deleteSingleVerifiedEntry(
 	absBase string,
 	realBase string,
 	expectedGen uint64,
+	expectedBase string,
 	cand SnapshotEntry,
 	res *DeleteResult,
 	touchedDirs map[string]struct{},
@@ -2190,14 +2276,23 @@ func (m *Manager) deleteSingleVerifiedEntry(
 		return
 	}
 
+	m.persistMu.RLock()
+	if m.generation != expectedGen || (expectedBase != "" && m.GetCacheBase() != expectedBase) {
+		m.persistMu.RUnlock()
+		res.Cancelled = true
+		return
+	}
+
 	filePath, ok := m.resolvePathWithNamespace(normNS, normKey)
 	if !ok {
+		m.persistMu.RUnlock()
 		res.FailedCount++
 		appendBoundedFailure(res, normNS, normKey, "无法解析缓存文件路径")
 		return
 	}
 
 	if err := verifyTargetContainment(absBase, realBase, filePath); err != nil {
+		m.persistMu.RUnlock()
 		res.FailedCount++
 		appendBoundedFailure(res, normNS, normKey, fmt.Sprintf("路径边界校验未通过: %v", err))
 		return
@@ -2205,15 +2300,9 @@ func (m *Manager) deleteSingleVerifiedEntry(
 
 	extPath := filePath + ".ext"
 	if err := verifyTargetContainment(absBase, realBase, extPath); err != nil {
+		m.persistMu.RUnlock()
 		res.FailedCount++
 		appendBoundedFailure(res, normNS, normKey, fmt.Sprintf("元数据路径边界校验未通过: %v", err))
-		return
-	}
-
-	m.persistMu.RLock()
-	if m.generation != expectedGen {
-		m.persistMu.RUnlock()
-		res.Cancelled = true
 		return
 	}
 
@@ -2331,14 +2420,18 @@ func removeEmptyParentDirs(absBase string, touchedDirs map[string]struct{}) int 
 }
 
 // pruneEmptyDirTree walks dirRoot bottom-up and removes only genuinely empty directories
-// using os.Remove (never os.RemoveAll). Returns true if dirRoot itself was removed.
-func pruneEmptyDirTree(dirRoot string) bool {
+// using os.Remove (never os.RemoveAll). Returns (removedRoot, firstRemovalOrReadError).
+func pruneEmptyDirTree(dirRoot string) (bool, error) {
 	var subDirs []string
+	var firstErr error
 	_ = filepath.WalkDir(dirRoot, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
+			if !os.IsNotExist(err) && firstErr == nil {
+				firstErr = err
+			}
 			return nil
 		}
-		if d.IsDir() && d.Type()&os.ModeSymlink == 0 {
+		if d.IsDir() && d.Type()&(os.ModeSymlink|os.ModeIrregular) == 0 {
 			subDirs = append(subDirs, p)
 		}
 		return nil
@@ -2347,10 +2440,26 @@ func pruneEmptyDirTree(dirRoot string) bool {
 		return len(subDirs[i]) > len(subDirs[j])
 	})
 	for _, d := range subDirs {
-		_ = os.Remove(d)
+		entries, readErr := os.ReadDir(d)
+		if readErr != nil {
+			if !os.IsNotExist(readErr) && firstErr == nil {
+				firstErr = readErr
+			}
+			continue
+		}
+		if len(entries) > 0 {
+			continue
+		}
+		if rmErr := os.Remove(d); rmErr != nil && !os.IsNotExist(rmErr) {
+			if entriesAfter, readErr2 := os.ReadDir(d); readErr2 != nil || len(entriesAfter) == 0 {
+				if firstErr == nil {
+					firstErr = rmErr
+				}
+			}
+		}
 	}
 	_, err := os.Stat(dirRoot)
-	return os.IsNotExist(err)
+	return os.IsNotExist(err), firstErr
 }
 
 type discoveredStaleVersionDir struct {
@@ -2364,36 +2473,91 @@ type discoveredStaleVersionDir struct {
 
 // discoverAllVersionDirs discovers all valid positive numeric version directories across
 // "gbf" and "hosts/<ns>" for SupportedVersionPrefixes, enforcing containment within realBase.
-// Both ScanBreakdownWithProgress and discoverStaleVersionDirs share this exact discovery logic.
 func discoverAllVersionDirs(absBase, realBase string) []discoveredStaleVersionDir {
+	dirs, _ := discoverAllVersionDirsWithErrors(absBase, realBase)
+	return dirs
+}
+
+func discoverAllVersionDirsWithErrors(absBase, realBase string) ([]discoveredStaleVersionDir, []DeleteFailure) {
 	var allDirs []discoveredStaleVersionDir
+	var failures []DeleteFailure
 
 	collectForRoot := func(ns, root string) {
 		for _, prefix := range SupportedVersionPrefixes {
 			prefixDir := filepath.Join(root, prefix)
+			lfi, statErr := os.Lstat(prefixDir)
+			if statErr != nil {
+				if !os.IsNotExist(statErr) {
+					failures = append(failures, DeleteFailure{
+						NS:     ns,
+						Key:    prefix,
+						Reason: fmt.Sprintf("读取资源前缀目录失败: %v", statErr),
+					})
+				}
+				continue
+			}
+			if lfi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !lfi.IsDir() {
+				failures = append(failures, DeleteFailure{
+					NS:     ns,
+					Key:    prefix,
+					Reason: fmt.Sprintf("资源前缀路径不是普通目录: %s", prefixDir),
+				})
+				continue
+			}
+			if realBase != "" {
+				realPrefixDir, evalErr := filepath.EvalSymlinks(prefixDir)
+				if evalErr != nil || !isRealPathWithinBase(realBase, realPrefixDir) {
+					failures = append(failures, DeleteFailure{
+						NS:     ns,
+						Key:    prefix,
+						Reason: fmt.Sprintf("资源前缀目录安全边界校验失败: %s", prefixDir),
+					})
+					continue
+				}
+			}
 			entries, err := os.ReadDir(prefixDir)
 			if err != nil {
+				if !os.IsNotExist(err) {
+					failures = append(failures, DeleteFailure{
+						NS:     ns,
+						Key:    prefix,
+						Reason: fmt.Sprintf("遍历资源前缀目录失败: %v", err),
+					})
+				}
 				continue
 			}
 			var groupDirs []discoveredStaleVersionDir
 			for _, e := range entries {
-				if !e.IsDir() || e.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-					continue
-				}
-				vNum, ok := parsePositiveVersionSegment(e.Name())
-				if !ok {
+				vNum, isVerName := parsePositiveVersionSegment(e.Name())
+				if !isVerName {
 					continue
 				}
 				fullP := filepath.Join(prefixDir, e.Name())
-				if realBase != "" {
-					realDir, evalErr := filepath.EvalSymlinks(fullP)
-					if evalErr != nil || !isRealPathWithinBase(realBase, realDir) {
-						continue
-					}
-				}
 				disp := filepath.Join(prefix, e.Name())
 				if ns != "gbf" {
 					disp = filepath.Join("hosts", ns, prefix, e.Name())
+				}
+				if e.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+					failures = append(failures, DeleteFailure{
+						NS:     ns,
+						Key:    disp,
+						Reason: "版本目录为符号链接或重解析点，已拒绝处理",
+					})
+					continue
+				}
+				if !e.IsDir() {
+					continue
+				}
+				if realBase != "" {
+					realDir, evalErr := filepath.EvalSymlinks(fullP)
+					if evalErr != nil || !isRealPathWithinBase(realBase, realDir) {
+						failures = append(failures, DeleteFailure{
+							NS:     ns,
+							Key:    disp,
+							Reason: "版本目录超出缓存根目录安全边界",
+						})
+						continue
+					}
 				}
 				groupDirs = append(groupDirs, discoveredStaleVersionDir{
 					ns:       ns,
@@ -2417,30 +2581,71 @@ func discoverAllVersionDirs(absBase, realBase string) []discoveredStaleVersionDi
 	collectForRoot("gbf", absBase)
 
 	hostsDir := filepath.Join(absBase, "hosts")
-	if hostEntries, err := os.ReadDir(hostsDir); err == nil {
-		var hostNames []string
-		for _, he := range hostEntries {
-			if he.IsDir() && he.Type()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+	if lfi, statErr := os.Lstat(hostsDir); statErr == nil {
+		if lfi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !lfi.IsDir() {
+			failures = append(failures, DeleteFailure{
+				NS:     "hosts",
+				Key:    "hosts",
+				Reason: fmt.Sprintf("hosts 路径不是普通目录: %s", hostsDir),
+			})
+		} else if hostEntries, err := os.ReadDir(hostsDir); err != nil {
+			if !os.IsNotExist(err) {
+				failures = append(failures, DeleteFailure{
+					NS:     "hosts",
+					Key:    "hosts",
+					Reason: fmt.Sprintf("读取 hosts 目录失败: %v", err),
+				})
+			}
+		} else {
+			var hostNames []string
+			for _, he := range hostEntries {
+				if he.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+					failures = append(failures, DeleteFailure{
+						NS:     he.Name(),
+						Key:    filepath.Join("hosts", he.Name()),
+						Reason: "hosts 子目录为符号链接或重解析点，已拒绝处理",
+					})
+					continue
+				}
+				if !he.IsDir() {
+					continue
+				}
 				if realBase != "" {
 					realHostDir, evalErr := filepath.EvalSymlinks(filepath.Join(hostsDir, he.Name()))
 					if evalErr != nil || !isRealPathWithinBase(realBase, realHostDir) {
+						failures = append(failures, DeleteFailure{
+							NS:     he.Name(),
+							Key:    filepath.Join("hosts", he.Name()),
+							Reason: "hosts 子目录超出缓存根目录安全边界",
+						})
 						continue
 					}
 				}
 				hostNames = append(hostNames, he.Name())
 			}
+			sort.Strings(hostNames)
+			for _, hn := range hostNames {
+				collectForRoot(sanitizeNamespace(hn), filepath.Join(hostsDir, hn))
+			}
 		}
-		sort.Strings(hostNames)
-		for _, hn := range hostNames {
-			collectForRoot(sanitizeNamespace(hn), filepath.Join(hostsDir, hn))
-		}
+	} else if !os.IsNotExist(statErr) {
+		failures = append(failures, DeleteFailure{
+			NS:     "hosts",
+			Key:    "hosts",
+			Reason: fmt.Sprintf("访问 hosts 目录失败: %v", statErr),
+		})
 	}
 
-	return allDirs
+	return allDirs, failures
 }
 
 func discoverStaleVersionDirs(absBase, realBase string, keepCount int) []discoveredStaleVersionDir {
-	allDirs := discoverAllVersionDirs(absBase, realBase)
+	stales, _ := discoverStaleVersionDirsWithErrors(absBase, realBase, keepCount)
+	return stales
+}
+
+func discoverStaleVersionDirsWithErrors(absBase, realBase string, keepCount int) ([]discoveredStaleVersionDir, []DeleteFailure) {
+	allDirs, failures := discoverAllVersionDirsWithErrors(absBase, realBase)
 	type groupKey struct {
 		ns     string
 		prefix string
@@ -2461,12 +2666,12 @@ func discoverStaleVersionDirs(absBase, realBase string, keepCount int) []discove
 			allStales = append(allStales, vers[keepCount:]...)
 		}
 	}
-	return allStales
+	return allStales, failures
 }
 
 // PruneStaleVersionsDetailed prunes stale numeric version directories keeping the newest keepCount
 // per (namespace, resource_prefix) group. If snapshotID is non-empty, it validates and binds
-// the candidate set to that snapshot; otherwise it performs live directory discovery.
+// the candidate set, generation, and cache root to that snapshot; otherwise it performs live directory discovery.
 // In both modes it uses controlled per-file deletion (never blind os.RemoveAll), preserving
 // .tmp.*, .quarantine, and concurrently modified files while removing only confirmed empty directories.
 func (m *Manager) PruneStaleVersionsDetailed(
@@ -2480,15 +2685,24 @@ func (m *Manager) PruneStaleVersionsDetailed(
 	}
 
 	var snap *BreakdownSnapshot
+	var startGen uint64
+	var base string
 	if snapshotID != "" {
 		var err error
 		snap, err = m.getValidatedSnapshot(snapshotID)
 		if err != nil {
 			return nil, err
 		}
+		startGen = snap.Generation
+		base = snap.CacheBase
+		curGen, curBase := m.currentGenAndBase()
+		if curGen != startGen || curBase != base {
+			return nil, ErrSnapshotStale
+		}
+	} else {
+		startGen, base = m.currentGenAndBase()
 	}
 
-	startGen, base := m.currentGenAndBase()
 	absBase, realBase, baseExists, baseErr := resolveContainedRealBase(base)
 	if baseErr != nil {
 		msg := fmt.Sprintf("缓存根目录校验失败: %v", baseErr)
@@ -2521,18 +2735,14 @@ func (m *Manager) PruneStaleVersionsDetailed(
 	}
 
 	var stales []discoveredStaleVersionDir
+	var discoveryFailures []DeleteFailure
 	var snapCandidatesByDir map[string][]SnapshotEntry
-	var snapOrphanExtsByDir map[string][]struct {
-		path string
-		size int64
-	}
+	var snapOrphanExtsByDir map[string][]orphanExtCandidate
 
 	if snap != nil {
+		_, discoveryFailures = discoverAllVersionDirsWithErrors(absBase, realBase)
 		snapCandidatesByDir = make(map[string][]SnapshotEntry)
-		snapOrphanExtsByDir = make(map[string][]struct {
-			path string
-			size int64
-		})
+		snapOrphanExtsByDir = make(map[string][]orphanExtCandidate)
 		pruneVerSet := make(map[string]discoveredStaleVersionDir)
 		for _, grp := range snap.VersionGroups {
 			if len(grp.Versions) <= keepCount {
@@ -2572,29 +2782,42 @@ func (m *Manager) PruneStaleVersionsDetailed(
 				}
 			}
 		}
-		for slashRel, extSize := range snap.orphanExtPaths {
+		for slashRel, oext := range snap.orphanExts {
 			fullExtPath := filepath.Join(absBase, filepath.FromSlash(slashRel))
-			if ns, cleanKey, _, ok := extractStrictNamespaceAndKey(absBase, fullExtPath); ok && strings.HasSuffix(cleanKey, ".ext") {
+			ns := oext.ns
+			cleanKey := oext.cleanKey
+			if ns == "" || cleanKey == "" {
+				var ok bool
+				ns, cleanKey, _, ok = extractStrictNamespaceAndKey(absBase, fullExtPath)
+				if !ok {
+					continue
+				}
+			}
+			if strings.HasSuffix(cleanKey, ".ext") {
 				baseKey := strings.TrimSuffix(cleanKey, ".ext")
 				if prefix, verStr, _, okVer := ParseVersionedEntry(ns, baseKey); okVer {
 					k := ns + "\x00" + prefix + "\x00" + verStr
 					if d, shouldPrune := pruneVerSet[k]; shouldPrune {
-						snapOrphanExtsByDir[d.fullPath] = append(snapOrphanExtsByDir[d.fullPath], struct {
-							path string
-							size int64
-						}{path: fullExtPath, size: extSize})
+						cand := oext
+						cand.fullPath = fullExtPath
+						snapOrphanExtsByDir[d.fullPath] = append(snapOrphanExtsByDir[d.fullPath], cand)
 					}
 				}
 			}
 		}
 	} else {
-		stales = discoverStaleVersionDirs(absBase, realBase, keepCount)
+		stales, discoveryFailures = discoverStaleVersionDirsWithErrors(absBase, realBase, keepCount)
 	}
 
 	res := &DeleteResult{
-		TaskType:   "slim",
-		SnapshotID: snapshotID,
+		TaskType:    "slim",
+		SnapshotID:  snapshotID,
+		FailedCount: len(discoveryFailures),
 	}
+	for _, df := range discoveryFailures {
+		appendBoundedFailure(res, df.NS, df.Key, df.Reason)
+	}
+
 	totalDirs := len(stales)
 	touchedDirs := make(map[string]struct{})
 
@@ -2625,11 +2848,37 @@ func (m *Manager) PruneStaleVersionsDetailed(
 			})
 		}
 
-		var dirCandidates []SnapshotEntry
-		var dirOrphanExts []struct {
-			path string
-			size int64
+		// Verify version directory still exists and is a regular contained directory before walking/deleting
+		dirFi, dirStatErr := os.Lstat(s.fullPath)
+		if dirStatErr != nil {
+			if os.IsNotExist(dirStatErr) {
+				if snap != nil {
+					res.AlreadyMissingCount += len(snapCandidatesByDir[s.fullPath])
+				}
+				continue
+			}
+			res.FailedCount++
+			appendBoundedFailure(res, s.ns, s.display, dirStatErr.Error())
+			res.RemainingDirs++
+			continue
 		}
+		if dirFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !dirFi.IsDir() {
+			res.FailedCount++
+			appendBoundedFailure(res, s.ns, s.display, "目标版本路径不是普通目录")
+			res.RemainingDirs++
+			continue
+		}
+		if realBase != "" {
+			if realVerDir, evalErr := filepath.EvalSymlinks(s.fullPath); evalErr != nil || !isRealPathWithinBase(realBase, realVerDir) {
+				res.FailedCount++
+				appendBoundedFailure(res, s.ns, s.display, "版本目录超出缓存根目录安全边界")
+				res.RemainingDirs++
+				continue
+			}
+		}
+
+		var dirCandidates []SnapshotEntry
+		var dirOrphanExts []orphanExtCandidate
 
 		if snap != nil {
 			dirCandidates = snapCandidatesByDir[s.fullPath]
@@ -2637,10 +2886,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 		} else {
 			// Live discovery of managed files within s.fullPath without holding locks
 			pairedExts := make(map[string]struct{})
-			var foundExts []struct {
-				path string
-				size int64
-			}
+			var foundExts []orphanExtCandidate
 			_ = filepath.WalkDir(s.fullPath, func(p string, d os.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					res.FailedCount++
@@ -2660,18 +2906,27 @@ func (m *Manager) PruneStaleVersionsDetailed(
 					return nil
 				}
 				info, infoErr := d.Info()
-				if infoErr != nil || !info.Mode().IsRegular() {
+				if infoErr != nil {
+					res.FailedCount++
+					appendBoundedFailure(res, s.ns, p, infoErr.Error())
 					return nil
 				}
-				ns, cleanKey, _, ok := extractStrictNamespaceAndKey(absBase, p)
+				if !info.Mode().IsRegular() {
+					return nil
+				}
+				ns, cleanKey, slashRel, ok := extractStrictNamespaceAndKey(absBase, p)
 				if !ok {
 					return nil
 				}
 				if strings.HasSuffix(cleanKey, ".ext") {
-					foundExts = append(foundExts, struct {
-						path string
-						size int64
-					}{path: p, size: info.Size()})
+					foundExts = append(foundExts, orphanExtCandidate{
+						ns:        ns,
+						cleanKey:  cleanKey,
+						slashRel:  slashRel,
+						fullPath:  p,
+						size:      info.Size(),
+						mtimeNano: info.ModTime().UnixNano(),
+					})
 					return nil
 				}
 				pairedExts[p+".ext"] = struct{}{}
@@ -2685,7 +2940,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 				return nil
 			})
 			for _, ext := range foundExts {
-				if _, paired := pairedExts[ext.path]; !paired {
+				if _, paired := pairedExts[ext.fullPath]; !paired {
 					dirOrphanExts = append(dirOrphanExts, ext)
 				}
 			}
@@ -2701,26 +2956,85 @@ func (m *Manager) PruneStaleVersionsDetailed(
 			if res.Cancelled {
 				break
 			}
-			m.deleteSingleVerifiedEntry(absBase, realBase, startGen, cand, res, touchedDirs)
+			m.deleteSingleVerifiedEntry(absBase, realBase, startGen, base, cand, res, touchedDirs)
 		}
 
 		for _, oext := range dirOrphanExts {
-			if err := verifyTargetContainment(absBase, realBase, oext.path); err != nil {
+			select {
+			case <-cancelCh:
+				res.Cancelled = true
+			default:
+			}
+			if res.Cancelled {
+				break
+			}
+
+			m.persistMu.RLock()
+			if m.generation != startGen || m.GetCacheBase() != base {
+				m.persistMu.RUnlock()
+				res.Cancelled = true
+				res.Message = "版本清理期间缓存根目录已切换，操作已中止"
+				break
+			}
+
+			if err := verifyTargetContainment(absBase, realBase, oext.fullPath); err != nil {
+				m.persistMu.RUnlock()
 				res.FailedCount++
-				appendBoundedFailure(res, s.ns, oext.path, err.Error())
+				appendBoundedFailure(res, s.ns, oext.fullPath, err.Error())
 				continue
 			}
-			if rmErr := os.Remove(oext.path); rmErr == nil {
+
+			// Verify that a paired data file did not appear after scan/discovery
+			dataPath := strings.TrimSuffix(oext.fullPath, ".ext")
+			if _, dataErr := os.Lstat(dataPath); dataErr == nil || !os.IsNotExist(dataErr) {
+				m.persistMu.RUnlock()
+				res.SkippedChangedCount++
+				continue
+			}
+
+			// Verify orphan .ext file identity (regular file + size + mtimeNano)
+			extFi, extStatErr := os.Lstat(oext.fullPath)
+			if extStatErr != nil {
+				m.persistMu.RUnlock()
+				if os.IsNotExist(extStatErr) {
+					res.AlreadyMissingCount++
+				} else {
+					res.FailedCount++
+					appendBoundedFailure(res, s.ns, oext.fullPath, extStatErr.Error())
+				}
+				continue
+			}
+			if extFi.IsDir() || extFi.Mode()&os.ModeSymlink != 0 || !extFi.Mode().IsRegular() {
+				m.persistMu.RUnlock()
+				res.FailedCount++
+				appendBoundedFailure(res, s.ns, oext.fullPath, "目标 .ext 不是普通文件")
+				continue
+			}
+			if extFi.Size() != oext.size || (oext.mtimeNano != 0 && extFi.ModTime().UnixNano() != oext.mtimeNano) {
+				m.persistMu.RUnlock()
+				res.SkippedChangedCount++
+				continue
+			}
+
+			if rmErr := os.Remove(oext.fullPath); rmErr == nil {
 				res.DeletedMetaFiles++
 				res.DeletedMetaBytes += oext.size
-			} else if !os.IsNotExist(rmErr) {
+			} else if os.IsNotExist(rmErr) {
+				res.AlreadyMissingCount++
+			} else {
 				res.FailedCount++
-				appendBoundedFailure(res, s.ns, oext.path, rmErr.Error())
+				appendBoundedFailure(res, s.ns, oext.fullPath, rmErr.Error())
 			}
+			m.persistMu.RUnlock()
 		}
 
 		if !res.Cancelled {
-			if pruneEmptyDirTree(s.fullPath) {
+			removedRoot, pruneDirErr := pruneEmptyDirTree(s.fullPath)
+			if pruneDirErr != nil {
+				res.FailedCount++
+				appendBoundedFailure(res, s.ns, s.display, fmt.Sprintf("移除空版本目录失败: %v", pruneDirErr))
+			}
+			if removedRoot {
 				res.DeletedDirs++
 			} else if _, err := os.Stat(s.fullPath); err == nil {
 				res.RemainingDirs++
@@ -2737,7 +3051,7 @@ func (m *Manager) PruneStaleVersionsDetailed(
 	res.FreedMB = math.Round(float64(res.FreedBytes)/(1024*1024)*100) / 100
 	res.Done = true
 
-	if res.DeletedFiles > 0 || res.DeletedDirs > 0 || res.AlreadyMissingCount > 0 {
+	if res.DeletedFiles > 0 || res.DeletedDirs > 0 || res.AlreadyMissingCount > 0 || res.SkippedChangedCount > 0 {
 		m.invalidateSnapshots("已执行历史版本清理，请重新扫描以刷新统计")
 	}
 
