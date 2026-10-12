@@ -416,3 +416,178 @@ export interface RepairResponse {
   health: HealthResponse;
 }
 
+export interface CategoryStat {
+  category: 'versioned' | 'battle_cjs' | 'story' | 'core_ui' | 'event_gacha' | 'audio' | 'other' | string;
+  label: string;
+  description: string;
+  selectable: boolean;
+  asset_files: number;
+  asset_bytes: number;
+  metadata_files: number;
+  metadata_bytes: number;
+  estimated_delete_bytes: number;
+  percentage: number;
+}
+
+export interface NamespaceStat {
+  namespace: string;
+  asset_files: number;
+  asset_bytes: number;
+  metadata_files: number;
+  metadata_bytes: number;
+  estimated_delete_bytes: number;
+  categories?: Record<string, CategoryStat>;
+}
+
+export interface VersionDirStat {
+  version: string;
+  version_num: number;
+  relative_dir: string;
+  asset_files: number;
+  asset_bytes: number;
+  metadata_files: number;
+  metadata_bytes: number;
+  estimated_delete_bytes: number;
+}
+
+export interface VersionGroupStat {
+  namespace: string;
+  resource_prefix: string;
+  group_key: string;
+  total_dirs: number;
+  asset_files: number;
+  asset_bytes: number;
+  metadata_files: number;
+  metadata_bytes: number;
+  estimated_delete_bytes: number;
+  versions: VersionDirStat[];
+}
+
+export interface VersionGroupRetentionPreview {
+  namespace: string;
+  resource_prefix: string;
+  group_key: string;
+  total_dirs: number;
+  kept_versions: string[];
+  prune_versions: string[];
+  prune_dirs: number;
+  prune_asset_files: number;
+  prune_asset_bytes: number;
+  prune_metadata_files: number;
+  prune_metadata_bytes: number;
+  estimated_delete_bytes: number;
+}
+
+export interface VersionRetentionPreview {
+  keep: number;
+  total_groups: number;
+  total_version_dirs: number;
+  prune_dirs: number;
+  prune_asset_files: number;
+  prune_asset_bytes: number;
+  prune_metadata_files: number;
+  prune_metadata_bytes: number;
+  estimated_delete_bytes: number;
+  groups: VersionGroupRetentionPreview[];
+}
+
+export interface BreakdownSnapshot {
+  snapshot_id: string;
+  generation: number;
+  cache_base: string;
+  status: 'running' | 'completed' | 'cancelled' | 'failed' | string;
+  valid: boolean;
+  stale: boolean;
+  stale_reason?: string;
+  started_at_ms: number;
+  completed_at_ms: number;
+  duration_ms: number;
+  asset_files: number;
+  asset_bytes: number;
+  metadata_files: number;
+  metadata_bytes: number;
+  orphan_metadata_files: number;
+  orphan_metadata_bytes: number;
+  excluded_files: number;
+  excluded_bytes: number;
+  skipped_count: number;
+  read_errors: number;
+  categories: CategoryStat[];
+  namespaces: NamespaceStat[];
+  version_groups: VersionGroupStat[];
+  retention_previews?: Record<string, VersionRetentionPreview>;
+  error?: string;
+}
+
+export interface ScanProgress {
+  snapshot_id: string;
+  phase: string;
+  scanned_files: number;
+  scanned_bytes: number;
+  skipped_count: number;
+  read_errors: number;
+  done: boolean;
+  status: string;
+  message?: string;
+}
+
+export interface BreakdownResponse {
+  ok: boolean;
+  cache_base: string;
+  has_snapshot: boolean;
+  snapshot: BreakdownSnapshot | null;
+  is_scanning: boolean;
+  scan_progress: ScanProgress;
+  active_scan?: ScanProgress | null;
+  active_task_id?: string;
+  active_task_type?: string;
+}
+
+export interface DeleteFailure {
+  ns: string;
+  key: string;
+  reason: string;
+}
+
+export interface DeleteResult {
+  task_type: string;
+  snapshot_id?: string;
+  candidate_files: number;
+  deleted_asset_files: number;
+  deleted_asset_bytes: number;
+  deleted_meta_files: number;
+  deleted_meta_bytes: number;
+  deleted_files: number;
+  freed_bytes: number;
+  freed_mb: number;
+  deleted_dirs: number;
+  remaining_dirs: number;
+  already_missing_count: number;
+  skipped_changed_count: number;
+  failed_count: number;
+  failures?: DeleteFailure[];
+  cancelled: boolean;
+  done: boolean;
+  status: string;
+  message?: string;
+}
+
+export interface CleanupProgress {
+  task_type: string;
+  snapshot_id?: string;
+  processed_files: number;
+  total_files: number;
+  deleted_asset_files: number;
+  deleted_asset_bytes: number;
+  deleted_meta_files: number;
+  deleted_meta_bytes: number;
+  deleted_files: number;
+  freed_bytes: number;
+  already_missing_count: number;
+  skipped_changed_count: number;
+  failed_count: number;
+  cancelled: boolean;
+  done: boolean;
+}
+
+

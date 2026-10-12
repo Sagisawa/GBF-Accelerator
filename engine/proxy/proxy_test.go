@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
@@ -1042,3 +1043,82 @@ func BenchmarkDynamicAPIForward(b *testing.B) {
 	}
 }
 
+func TestProxyHostsPathAndNamespaceIsolation(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tempDir, 32)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	defer srv.Stop()
+
+	var hitsMu sync.Mutex
+	var upstreamHits int
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hitsMu.Lock()
+		upstreamHits++
+		hitsMu.Unlock()
+		body := []byte("console.log('host=" + r.Host + ",path=" + r.URL.Path + "');")
+		w.Header().Set("Content-Type", "application/javascript")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL)
+	tr := ts.Client().Transport.(*http.Transport).Clone()
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return net.Dial("tcp", u.Host)
+	}
+	tr.TLSClientConfig.InsecureSkipVerify = true
+	srv.assetClient.Store(&http.Client{Transport: tr})
+
+	doAssetReq := func(host, reqPath string) string {
+		req, _ := http.NewRequest(http.MethodGet, "https://"+host+reqPath, nil)
+		req.Host = host
+		var buf bytes.Buffer
+		srv.handleDecryptedRequest(&buf, req, host)
+		resp, err := http.ReadResponse(bufio.NewReader(&buf), req)
+		if err != nil {
+			t.Fatalf("ReadResponse for %s%s failed: %v", host, reqPath, err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+
+	// 1. GBF host requesting /hosts/cdn-b.example.com/assets/100/js/app.js
+	gbfHost := "prd-game-a-granbluefantasy.akamaized.net"
+	got1 := doAssetReq(gbfHost, "/hosts/cdn-b.example.com/assets/100/js/app.js")
+	want1 := "console.log('host=" + gbfHost + ",path=/hosts/cdn-b.example.com/assets/100/js/app.js');"
+	if got1 != want1 {
+		t.Fatalf("req 1 body mismatch: got %q, want %q", got1, want1)
+	}
+
+	// 2. External host cdn-a.example.com requesting /hosts/cdn-b.example.com/assets/100/js/app.js
+	got2 := doAssetReq("cdn-a.example.com", "/hosts/cdn-b.example.com/assets/100/js/app.js")
+	want2 := "console.log('host=cdn-a.example.com,path=/hosts/cdn-b.example.com/assets/100/js/app.js');"
+	if got2 != want2 {
+		t.Fatalf("req 2 body mismatch: got %q, want %q", got2, want2)
+	}
+
+	// 3. External host cdn-b.example.com requesting /assets/100/js/app.js
+	got3 := doAssetReq("cdn-b.example.com", "/assets/100/js/app.js")
+	want3 := "console.log('host=cdn-b.example.com,path=/assets/100/js/app.js');"
+	if got3 != want3 {
+		t.Fatalf("req 3 body mismatch: got %q, want %q", got3, want3)
+	}
+
+	hitsMu.Lock()
+	hits := upstreamHits
+	hitsMu.Unlock()
+	if hits != 3 {
+		t.Fatalf("expected 3 distinct upstream fetches, got %d", hits)
+	}
+}

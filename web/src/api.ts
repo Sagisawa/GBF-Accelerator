@@ -16,6 +16,7 @@ import {
   AdbListBrowsersResponse,
   HealthResponse,
   RepairResponse,
+  BreakdownResponse,
 } from './types'
 
 const BASE = ''
@@ -127,22 +128,106 @@ export async function fetchCacheStats(): Promise<CacheStats> {
   return res.json()
 }
 
+export function formatBytesBinary(bytes: number | undefined | null): string {
+  const b = typeof bytes === 'number' && Number.isFinite(bytes) && bytes > 0 ? bytes : 0
+  if (b < 1024) return `${b} B`
+  const kib = b / 1024
+  if (kib < 1024) return `${kib.toFixed(1)} KiB`
+  const mib = kib / 1024
+  if (mib < 1024) return `${mib.toFixed(2)} MiB`
+  const gib = mib / 1024
+  return `${gib.toFixed(2)} GiB`
+}
+
 export async function clearCache(ramOnly = false): Promise<any> {
   const res = await fetch(`${BASE}/api/cache/clear?ram_only=${ramOnly}`, { method: 'POST' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
   return res.json()
 }
 
 export async function auditCache(): Promise<any> {
   const res = await fetch(`${BASE}/api/cache/audit`, { method: 'POST' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
   return res.json()
 }
 
-export async function slimCache(keep = 8): Promise<any> {
-  const res = await fetch(`${BASE}/api/cache/slim?keep=${keep}`, { method: 'POST' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+export async function slimCache(keep = 8, snapshotId?: string): Promise<any> {
+  const init: RequestInit = { method: 'POST' }
+  if (snapshotId) {
+    init.headers = { 'Content-Type': 'application/json' }
+    init.body = JSON.stringify({ keep, snapshot_id: snapshotId })
+  }
+  const res = await fetch(`${BASE}/api/cache/slim?keep=${keep}`, init)
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
   return res.json()
+}
+
+export async function fetchCacheBreakdown(): Promise<BreakdownResponse> {
+  const res = await fetch(`${BASE}/api/cache/breakdown`, { cache: 'no-store' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function startCacheBreakdownScan(): Promise<{
+  ok: boolean
+  task_id: string
+  task: string
+  status: string
+  message?: string
+}> {
+  const res = await fetch(`${BASE}/api/cache/breakdown/scan`, { method: 'POST' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+export async function clearCacheCategories(
+  snapshotId: string,
+  categories: string[],
+  namespaces?: string[],
+  slimVersioned?: boolean
+): Promise<{
+  ok: boolean
+  task_id: string
+  task: string
+  status: string
+  categories: string[]
+  message?: string
+}> {
+  const body: Record<string, any> = {
+    snapshot_id: snapshotId,
+    categories,
+  }
+  if (namespaces && namespaces.length > 0) {
+    body.namespaces = namespaces
+  }
+  if (slimVersioned) {
+    body.slim_versioned = true
+  }
+  const res = await fetch(`${BASE}/api/cache/clear-category`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
 }
 
 export async function startBoost(): Promise<any> {
@@ -324,9 +409,17 @@ export async function fetchCacheTaskStatus(): Promise<any> {
   return res.json()
 }
 
-export async function cancelCacheTask(): Promise<any> {
-  const res = await fetch(`${BASE}/api/cache/cancel-task`, { method: 'POST' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+export async function cancelCacheTask(taskId?: string): Promise<any> {
+  const init: RequestInit = { method: 'POST' }
+  if (taskId) {
+    init.headers = { 'Content-Type': 'application/json' }
+    init.body = JSON.stringify({ task_id: taskId })
+  }
+  const res = await fetch(`${BASE}/api/cache/cancel-task`, init)
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
   return res.json()
 }
 

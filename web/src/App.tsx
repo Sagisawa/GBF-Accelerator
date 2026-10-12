@@ -31,7 +31,6 @@ import { ShortcutsModal } from './components/modals/ShortcutsModal'
 import { RoutingGuideModal } from './components/modals/RoutingGuideModal'
 import { LatencyTestModal } from './components/modals/LatencyTestModal'
 import { AuditModal } from './components/modals/AuditModal'
-import { SlimModal } from './components/modals/SlimModal'
 import { BoostModal } from './components/modals/BoostModal'
 import { CaCertModal } from './components/modals/CaCertModal'
 import { UpdateModal } from './components/modals/UpdateModal'
@@ -220,7 +219,6 @@ export const App: React.FC = () => {
   const [isLatencyModalOpen, setIsLatencyModalOpen] = useState<boolean>(false)
   const [isHealthModalOpen, setIsHealthModalOpen] = useState<boolean>(false)
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false)
-  const [isSlimModalOpen, setIsSlimModalOpen] = useState<boolean>(false)
   const [isBoostModalOpen, setIsBoostModalOpen] = useState<boolean>(false)
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false)
   const [isUpstreamSelectModalOpen, setIsUpstreamSelectModalOpen] = useState<boolean>(false)
@@ -1050,7 +1048,6 @@ export const App: React.FC = () => {
     setIsLatencyModalOpen(false)
     setIsHealthModalOpen(false)
     setIsAuditModalOpen(false)
-    setIsSlimModalOpen(false)
     setIsUpdateModalOpen(false)
     setCaModalAction(null)
   }
@@ -1064,7 +1061,6 @@ export const App: React.FC = () => {
     isLatencyModalOpen ||
     isHealthModalOpen ||
     isAuditModalOpen ||
-    isSlimModalOpen ||
     isUpdateModalOpen ||
     caModalAction !== null ||
     isStandaloneLogsPage
@@ -1490,16 +1486,14 @@ export const App: React.FC = () => {
                     <span>🩺</span>
                     <span>一键体检缓存</span>
                   </button>
-                  {!isAndroid && (
-                    <button
-                      type="button"
-                      onClick={() => setIsSlimModalOpen(true)}
-                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                    >
-                      <span>🧹</span>
-                      <span>缓存安全瘦身</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsClearModalOpen(true)}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                  >
+                    <span>🧹</span>
+                    <span>缓存清理与瘦身</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -2322,13 +2316,6 @@ export const App: React.FC = () => {
       <AuditModal
         isOpen={isAuditModalOpen}
         onClose={() => setIsAuditModalOpen(false)}
-        onRefresh={loadState}
-        onToast={showToast}
-      />
-
-      <SlimModal
-        isOpen={isSlimModalOpen}
-        onClose={() => setIsSlimModalOpen(false)}
         onRefresh={loadState}
         onToast={showToast}
       />

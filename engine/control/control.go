@@ -54,17 +54,28 @@ type ControlServer struct {
 	quitFunc    func()
 
 	// Background Cache Task state
-	cacheTaskMu     sync.Mutex
-	isAuditing      bool
-	isSlimming      bool
-	isBoosting      bool
-	auditProgress   cache.AuditProgress
-	slimProgress    cache.SlimProgress
-	boostProgress   cache.BoostProgress
-	lastAuditResult map[string]interface{}
-	lastSlimResult  map[string]interface{}
-	lastBoostResult cache.BoostProgress
-	cacheCancelCh   chan struct{}
+	cacheTaskMu         sync.Mutex
+	isAuditing          bool
+	isSlimming          bool
+	isBoosting          bool
+	isScanning          bool
+	isClearingCategory  bool
+	activeTaskID        string
+	activeTaskType      string
+	activeTaskStartedMS int64
+	taskSeq             uint64
+	auditProgress       cache.AuditProgress
+	slimProgress        cache.SlimProgress
+	boostProgress       cache.BoostProgress
+	scanProgress        cache.ScanProgress
+	cleanupProgress     cache.CleanupProgress
+	lastAuditResult     map[string]interface{}
+	lastSlimResult      map[string]interface{}
+	lastBoostResult     cache.BoostProgress
+	lastScanResult      map[string]interface{}
+	lastCleanupResult   *cache.DeleteResult
+	lastTaskSummary     map[string]interface{}
+	cacheCancelCh       chan struct{}
 
 	// Background Download state
 	dlMu       sync.Mutex
@@ -473,6 +484,21 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleCacheAudit(w, req)
 			return
 		}
+	case "/api/cache/breakdown":
+		if req.Method == http.MethodGet {
+			c.handleCacheBreakdown(w, req)
+			return
+		}
+	case "/api/cache/breakdown/scan":
+		if req.Method == http.MethodPost {
+			c.handleCacheBreakdownScan(w, req)
+			return
+		}
+	case "/api/cache/clear-category":
+		if req.Method == http.MethodPost {
+			c.handleCacheClearCategory(w, req)
+			return
+		}
 	case "/ca.crt", "/ca.pem":
 		if (req.Method == http.MethodGet || req.Method == http.MethodHead) && c.certMgr != nil {
 			caBytes := c.certMgr.GetCAPEM()
@@ -862,6 +888,10 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 	isAuditing := c.isAuditing
 	isSlimming := c.isSlimming
 	isBoosting := c.isBoosting
+	isScanning := c.isScanning
+	isClearingCategory := c.isClearingCategory
+	activeTaskID := c.activeTaskID
+	activeTaskType := c.activeTaskType
 	c.cacheTaskMu.Unlock()
 
 	effectiveUpstreamProxy := c.cfgMgr.GetEffectiveUpstreamProxy()
@@ -875,30 +905,34 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"pid":                      os.Getpid(),
-		"version":                  config.AppVersion,
-		"engine":                   "go",
-		"platform":                 runtime.GOOS,
-		"arch":                     runtime.GOARCH,
-		"proxy_running":            proxyRunning,
-		"listen_host":              c.cfgMgr.GetEffectiveListenHost(),
-		"listen_port":              cfg.ListenPort,
-		"control_port":             cfg.ControlPort,
-		"upstream_proxy":           effectiveUpstreamProxy,
-		"direct_mode":              cfg.DirectMode,
-		"allow_lan":                cfg.AllowLAN,
-		"lan_ip":                   lanIP,
-		"system_proxy_enabled":     sysproxy.IsPACProxyEnabled(cfg.ListenPort),
-		"system_proxy_conflict":    sysproxyConflict,
-		"ca_installed":             caInstalled,
-		"ca_fingerprint":           caFingerprint,
-		"startup_enabled":          startup.IsStartupEnabled(),
-		"startup_supported":        startup.IsStartupSupported(),
-		"is_auditing_cache":        isAuditing,
-		"is_slimming_cache":        isSlimming,
-		"is_boosting_cache":        isBoosting,
-		"active_api_count":         c.stats.ActiveAPICount.Load(),
-		"active_foreground_assets": c.stats.ActiveForegroundAssets.Load(),
+		"pid":                        os.Getpid(),
+		"version":                    config.AppVersion,
+		"engine":                     "go",
+		"platform":                   runtime.GOOS,
+		"arch":                       runtime.GOARCH,
+		"proxy_running":              proxyRunning,
+		"listen_host":                c.cfgMgr.GetEffectiveListenHost(),
+		"listen_port":                cfg.ListenPort,
+		"control_port":               cfg.ControlPort,
+		"upstream_proxy":             effectiveUpstreamProxy,
+		"direct_mode":                cfg.DirectMode,
+		"allow_lan":                  cfg.AllowLAN,
+		"lan_ip":                     lanIP,
+		"system_proxy_enabled":       sysproxy.IsPACProxyEnabled(cfg.ListenPort),
+		"system_proxy_conflict":      sysproxyConflict,
+		"ca_installed":               caInstalled,
+		"ca_fingerprint":             caFingerprint,
+		"startup_enabled":            startup.IsStartupEnabled(),
+		"startup_supported":          startup.IsStartupSupported(),
+		"is_auditing_cache":          isAuditing,
+		"is_slimming_cache":          isSlimming,
+		"is_boosting_cache":          isBoosting,
+		"is_scanning_cache":          isScanning,
+		"is_clearing_category_cache": isClearingCategory,
+		"active_cache_task_id":       activeTaskID,
+		"active_cache_task_type":     activeTaskType,
+		"active_api_count":           c.stats.ActiveAPICount.Load(),
+		"active_foreground_assets":   c.stats.ActiveForegroundAssets.Load(),
 		"uptime_seconds":           uptime,
 		"requests":                 c.stats.RequestsMap(),
 		"telemetry":                c.getTelemetrySummary(),
@@ -1123,6 +1157,15 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		(candidate.AllowLAN != oldCandidate.AllowLAN || candidate.ListenPort != oldCandidate.ListenPort)
 	controlNeedsReload := candidate.ControlPort != oldCandidate.ControlPort
 
+	if candidate.CacheDir != oldCandidate.CacheDir {
+		cacheSwitchTaskID, _, ok := c.tryBeginCacheTask("cache_dir_switch")
+		if !ok {
+			c.sendTaskConflict(w)
+			return
+		}
+		defer c.finishCacheTask(cacheSwitchTaskID, "cache_dir_switch", "completed", false, nil, "")
+	}
+
 	// 1. Persist and commit configuration BEFORE mutating listeners.
 	// A failed disk write must leave all runtime listeners untouched.
 	if err := c.cfgMgr.Commit(candidate); err != nil {
@@ -1344,29 +1387,48 @@ func (c *ControlServer) handleCacheStats(w http.ResponseWriter, req *http.Reques
 
 func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Request) {
 	ramOnly := req.URL.Query().Get("ram_only") == "true"
-	c.cacheMgr.ClearRAM()
-
-	var diskDeleted int
-	var diskFreed int64
-	if !ramOnly {
-		diskDeleted, diskFreed = c.cacheMgr.ClearAll()
-		c.cacheTaskMu.Lock()
-		c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
-		c.lastBoostResult = c.boostProgress
-		c.cacheTaskMu.Unlock()
-		c.broadcastEvent("boost_disabled", map[string]interface{}{
-			"state":          cache.BoostStateDisabled,
-			"resident_bytes": 0,
+	if ramOnly {
+		c.cacheMgr.ClearRAM()
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":                 true,
+			"ram_cleared":        true,
+			"disk_cleared":       false,
+			"disk_files_deleted": 0,
+			"disk_bytes_freed":   0,
 		})
+		return
 	}
 
-	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+	taskID, _, ok := c.tryBeginCacheTask("clear_all")
+	if !ok {
+		c.sendTaskConflict(w)
+		return
+	}
+	var clearRes map[string]interface{}
+	defer func() {
+		c.finishCacheTask(taskID, "clear_all", "completed", false, clearRes, "")
+	}()
+
+	c.cacheMgr.ClearRAM()
+	diskDeleted, diskFreed := c.cacheMgr.ClearAll()
+	c.cacheTaskMu.Lock()
+	c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
+	c.lastBoostResult = c.boostProgress
+	c.cacheTaskMu.Unlock()
+	c.broadcastEvent("boost_disabled", map[string]interface{}{
+		"state":          cache.BoostStateDisabled,
+		"resident_bytes": 0,
+	})
+
+	clearRes = map[string]interface{}{
 		"ok":                 true,
+		"task_id":            taskID,
 		"ram_cleared":        true,
-		"disk_cleared":       !ramOnly,
+		"disk_cleared":       true,
 		"disk_files_deleted": diskDeleted,
 		"disk_bytes_freed":   diskFreed,
-	})
+	}
+	c.sendJSON(w, http.StatusOK, clearRes)
 }
 
 func (c *ControlServer) handleOpenCacheFolder(w http.ResponseWriter, req *http.Request) {
@@ -1401,39 +1463,45 @@ func (c *ControlServer) broadcastEvent(event string, data interface{}) {
 }
 
 func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Request) {
-	c.cacheTaskMu.Lock()
-	if c.isAuditing || c.isSlimming || c.isBoosting {
-		c.cacheTaskMu.Unlock()
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-			"ok":    false,
-			"error": "当前有缓存维护任务（体检、瘦身或全量载入）正在进行中，请稍候完成",
-		})
+	taskID, cancelCh, ok := c.tryBeginCacheTask("audit")
+	if !ok {
+		c.sendTaskConflict(w)
 		return
 	}
-	c.isAuditing = true
+
+	c.cacheTaskMu.Lock()
 	c.auditProgress = cache.AuditProgress{}
-	c.cacheCancelCh = make(chan struct{})
-	cancelCh := c.cacheCancelCh
 	c.cacheTaskMu.Unlock()
 
-	c.stats.Log("INFO", "[CACHE-AUDIT] Starting static cache audit and repair task...")
+	c.stats.Log("INFO", fmt.Sprintf("[CACHE-AUDIT] Starting static cache audit and repair task (task_id=%s)...", taskID))
 
 	go func() {
+		var finalStatus = "completed"
+		var finalCancelled = false
+		var finalRes map[string]interface{}
+
 		defer func() {
-			c.cacheTaskMu.Lock()
-			c.isAuditing = false
-			c.cacheTaskMu.Unlock()
+			c.finishCacheTask(taskID, "audit", finalStatus, finalCancelled, finalRes, "")
 		}()
 
 		res := c.cacheMgr.AuditAndRepairWithProgress(func(p cache.AuditProgress) {
 			c.cacheTaskMu.Lock()
-			c.auditProgress = p
+			if c.activeTaskID == taskID {
+				c.auditProgress = p
+			}
 			c.cacheTaskMu.Unlock()
 			c.broadcastEvent("audit_progress", p)
 		}, cancelCh)
 
+		select {
+		case <-cancelCh:
+			finalStatus = "cancelled"
+			finalCancelled = true
+		default:
+		}
+		finalRes = res
+
 		c.cacheTaskMu.Lock()
-		c.isAuditing = false
 		c.lastAuditResult = res
 		c.cacheTaskMu.Unlock()
 		c.broadcastEvent("audit_done", res)
@@ -1446,101 +1514,139 @@ func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Reques
 		"ok":      true,
 		"message": "Cache audit started in background",
 		"task":    "audit",
+		"task_id": taskID,
 	})
 }
 
 func (c *ControlServer) handleCacheSlim(w http.ResponseWriter, req *http.Request) {
-	keep := 8
-	if kStr := req.URL.Query().Get("keep"); kStr != "" {
-		if k, err := strconv.Atoi(kStr); err == nil && k > 0 {
-			keep = k
-		}
-	}
-
-	c.cacheTaskMu.Lock()
-	if c.isAuditing || c.isSlimming || c.isBoosting {
-		c.cacheTaskMu.Unlock()
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+	keep, snapshotID, err := parseSlimKeepAndSnapshot(req)
+	if err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
 			"ok":    false,
-			"error": "当前有缓存维护任务（体检、瘦身或全量载入）正在进行中，请稍候完成",
+			"error": err.Error(),
 		})
 		return
 	}
-	c.isSlimming = true
+
+	if snapshotID != "" {
+		latest, _ := c.cacheMgr.GetBreakdownSnapshot()
+		if latest == nil {
+			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+				"ok":    false,
+				"error": cache.ErrSnapshotNotFound.Error(),
+			})
+			return
+		}
+		if !latest.Valid || latest.SnapshotID != snapshotID {
+			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+				"ok":    false,
+				"error": cache.ErrSnapshotStale.Error(),
+			})
+			return
+		}
+	}
+
+	taskID, cancelCh, ok := c.tryBeginCacheTask("slim")
+	if !ok {
+		c.sendTaskConflict(w)
+		return
+	}
+
+	c.cacheTaskMu.Lock()
 	c.slimProgress = cache.SlimProgress{}
-	c.cacheCancelCh = make(chan struct{})
-	cancelCh := c.cacheCancelCh
 	c.cacheTaskMu.Unlock()
 
-	c.stats.Log("INFO", fmt.Sprintf("[CACHE-SLIM] Starting cache pruning (keeping newest %d versions)...", keep))
+	c.stats.Log("INFO", fmt.Sprintf("[CACHE-SLIM] Starting cache pruning (task_id=%s, keeping newest %d versions)...", taskID, keep))
 
 	go func() {
+		var finalStatus = "completed"
+		var finalCancelled = false
+		var finalRes map[string]interface{}
+		var finalErr string
+
 		defer func() {
-			c.cacheTaskMu.Lock()
-			c.isSlimming = false
-			c.cacheTaskMu.Unlock()
+			c.finishCacheTask(taskID, "slim", finalStatus, finalCancelled, finalRes, finalErr)
 		}()
 
-		delDirs, delFiles, freedBytes := c.cacheMgr.PruneStaleVersionsWithProgress(keep, func(p cache.SlimProgress) {
+		delRes, slimErr := c.cacheMgr.PruneStaleVersionsDetailed(keep, snapshotID, func(p cache.SlimProgress) {
 			c.cacheTaskMu.Lock()
-			c.slimProgress = p
+			if c.activeTaskID == taskID {
+				c.slimProgress = p
+			}
 			c.cacheTaskMu.Unlock()
 			c.broadcastEvent("slim_progress", p)
 		}, cancelCh)
 
-		freedMB := math.Round(float64(freedBytes)/(1024*1024)*100) / 100
-		res := map[string]interface{}{
-			"deleted_dirs":  delDirs,
-			"deleted_files": delFiles,
-			"freed_bytes":   freedBytes,
-			"freed_mb":      freedMB,
+		if slimErr != nil {
+			finalStatus = "failed"
+			finalErr = slimErr.Error()
+			if delRes == nil {
+				delRes = &cache.DeleteResult{
+					TaskType:    "slim",
+					SnapshotID:  snapshotID,
+					Status:      "failed",
+					FailedCount: 1,
+					Failures: []cache.DeleteFailure{{
+						Reason: slimErr.Error(),
+					}},
+					Done:    true,
+					Message: slimErr.Error(),
+				}
+			}
 		}
+		res := buildSlimResultMap(delRes)
+		if delRes != nil {
+			finalStatus = delRes.Status
+			finalCancelled = delRes.Cancelled
+		}
+		finalRes = res
+
 		c.cacheTaskMu.Lock()
-		c.isSlimming = false
 		c.lastSlimResult = res
+		if delRes != nil {
+			c.lastCleanupResult = delRes
+		}
 		c.cacheTaskMu.Unlock()
 		c.broadcastEvent("slim_done", res)
 
-		c.stats.Log("INFO", fmt.Sprintf("[CACHE-SLIM] Completed: pruned %d version dirs, deleted %d stale files, freed %.2f MB",
-			delDirs, delFiles, freedMB))
+		c.stats.Log("INFO", fmt.Sprintf("[CACHE-SLIM] Completed: pruned %v version dirs, deleted %v stale files, freed %v MB",
+			res["deleted_dirs"], res["deleted_files"], res["freed_mb"]))
 	}()
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "Cache slim started in background",
 		"task":    "slim",
+		"task_id": taskID,
 		"keep":    keep,
 	})
 }
 
 func (c *ControlServer) handleCacheBoost(w http.ResponseWriter, req *http.Request) {
-	c.cacheTaskMu.Lock()
-	if c.isAuditing || c.isSlimming || c.isBoosting {
-		c.cacheTaskMu.Unlock()
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-			"ok":    false,
-			"error": "当前有缓存维护任务（体检、瘦身或全量载入）正在进行中，请稍候完成",
-		})
+	taskID, cancelCh, ok := c.tryBeginCacheTask("boost")
+	if !ok {
+		c.sendTaskConflict(w)
 		return
 	}
-	c.isBoosting = true
+
+	c.cacheTaskMu.Lock()
 	c.boostProgress = cache.BoostProgress{State: cache.BoostStateLoading}
-	c.cacheCancelCh = make(chan struct{})
-	cancelCh := c.cacheCancelCh
 	c.cacheTaskMu.Unlock()
 
-	c.stats.Log("INFO", "[CACHE-BOOST] Starting RAM Boost snapshot prewarm task...")
+	c.stats.Log("INFO", fmt.Sprintf("[CACHE-BOOST] Starting RAM Boost snapshot prewarm task (task_id=%s)...", taskID))
 
 	go func() {
+		var finalStatus = "completed"
+		var finalCancelled = false
+		var finalRes cache.BoostProgress
+
 		defer func() {
-			c.cacheTaskMu.Lock()
-			c.isBoosting = false
-			c.cacheTaskMu.Unlock()
+			c.finishCacheTask(taskID, "boost", finalStatus, finalCancelled, finalRes, "")
 		}()
 
 		res := c.cacheMgr.PrewarmBoostPoolWithProgress(c.stats, func(p cache.BoostProgress) {
 			c.cacheTaskMu.Lock()
-			if c.boostProgress.State != cache.BoostStateDisabled {
+			if c.activeTaskID == taskID && c.boostProgress.State != cache.BoostStateDisabled {
 				c.boostProgress = p
 				c.cacheTaskMu.Unlock()
 				c.broadcastEvent("boost_progress", p)
@@ -1549,16 +1655,22 @@ func (c *ControlServer) handleCacheBoost(w http.ResponseWriter, req *http.Reques
 			}
 		}, cancelCh)
 
+		if res.State == cache.BoostStateCancelled {
+			finalStatus = "cancelled"
+			finalCancelled = true
+		}
+
 		c.cacheTaskMu.Lock()
-		c.isBoosting = false
 		if c.boostProgress.State != cache.BoostStateDisabled && res.State != cache.BoostStateDisabled {
 			c.lastBoostResult = res
 			c.boostProgress = res
+			finalRes = res
 			c.cacheTaskMu.Unlock()
 			c.broadcastEvent("boost_done", res)
 		} else {
 			c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
 			c.lastBoostResult = c.boostProgress
+			finalRes = c.boostProgress
 			c.cacheTaskMu.Unlock()
 		}
 
@@ -1570,6 +1682,7 @@ func (c *ControlServer) handleCacheBoost(w http.ResponseWriter, req *http.Reques
 		"ok":      true,
 		"message": "RAM Boost prewarm started in background",
 		"task":    "boost",
+		"task_id": taskID,
 	})
 }
 
@@ -1611,34 +1724,83 @@ func (c *ControlServer) handleCacheTaskStatus(w http.ResponseWriter, req *http.R
 	defer c.cacheTaskMu.Unlock()
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":                true,
-		"is_auditing":       c.isAuditing,
-		"is_slimming":       c.isSlimming,
-		"is_boosting":       c.isBoosting,
-		"audit_progress":    c.auditProgress,
-		"slim_progress":     c.slimProgress,
-		"boost_progress":    c.boostProgress,
-		"last_audit_result": c.lastAuditResult,
-		"last_slim_result":  c.lastSlimResult,
-		"last_boost_result": c.lastBoostResult,
+		"ok":                     true,
+		"active_task_id":         c.activeTaskID,
+		"active_task_type":       c.activeTaskType,
+		"active_task_started_ms": c.activeTaskStartedMS,
+		"is_auditing":            c.isAuditing,
+		"is_slimming":            c.isSlimming,
+		"is_boosting":            c.isBoosting,
+		"is_scanning":            c.isScanning,
+		"is_clearing_category":   c.isClearingCategory,
+		"audit_progress":         c.auditProgress,
+		"slim_progress":          c.slimProgress,
+		"boost_progress":         c.boostProgress,
+		"scan_progress":          c.scanProgress,
+		"cleanup_progress":       c.cleanupProgress,
+		"last_audit_result":      c.lastAuditResult,
+		"last_slim_result":       c.lastSlimResult,
+		"last_boost_result":      c.lastBoostResult,
+		"last_scan_result":       c.lastScanResult,
+		"last_cleanup_result":    c.lastCleanupResult,
+		"last_task_summary":      c.lastTaskSummary,
 	})
 }
 
 func (c *ControlServer) handleCacheCancelTask(w http.ResponseWriter, req *http.Request) {
+	reqTaskID := strings.TrimSpace(req.URL.Query().Get("task_id"))
+	if reqTaskID == "" && req.Body != nil && req.ContentLength != 0 {
+		var bodyPayload struct {
+			TaskID string `json:"task_id"`
+		}
+		raw, err := io.ReadAll(io.LimitReader(req.Body, 8*1024))
+		if err == nil && len(strings.TrimSpace(string(raw))) > 0 {
+			if jsonErr := json.Unmarshal(raw, &bodyPayload); jsonErr == nil {
+				reqTaskID = strings.TrimSpace(bodyPayload.TaskID)
+			}
+		}
+	}
+
 	c.cacheTaskMu.Lock()
 	defer c.cacheTaskMu.Unlock()
 
+	if reqTaskID != "" {
+		if c.activeTaskID != "" && c.activeTaskID != reqTaskID {
+			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+				"ok":             false,
+				"error":          "请求取消的 task_id 与当前活动任务不匹配",
+				"requested_id":   reqTaskID,
+				"active_task_id": c.activeTaskID,
+			})
+			return
+		}
+		if c.activeTaskID == "" {
+			c.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":               true,
+				"task_id":          reqTaskID,
+				"cancelled":        false,
+				"already_finished": true,
+				"message":          "指定任务已结束",
+			})
+			return
+		}
+	}
+
+	cancelled := false
 	if c.cacheCancelCh != nil {
 		select {
 		case <-c.cacheCancelCh:
 		default:
 			close(c.cacheCancelCh)
+			cancelled = true
 		}
 	}
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"ok":      true,
-		"message": "Active cache task cancellation requested",
+		"ok":        true,
+		"task_id":   c.activeTaskID,
+		"cancelled": cancelled,
+		"message":   "Active cache task cancellation requested",
 	})
 }
 
