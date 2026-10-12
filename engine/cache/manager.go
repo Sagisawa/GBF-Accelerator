@@ -1021,11 +1021,6 @@ func (m *Manager) VerifyAndGetMetadataWithNamespace(ns, urlPath string) (*CacheI
 	return item, "DISK"
 }
 
-func (m *Manager) verifyDiskMetaOnly(ns, cleanKey, filePath string) (*CacheItem, error) {
-	tok := m.acquireOpToken(ns, cleanKey)
-	return m.verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath, tok)
-}
-
 func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok opToken) (*CacheItem, error) {
 	ramKey := makeRAMKey(ns, cleanKey)
 	normNS := sanitizeNamespace(ns)

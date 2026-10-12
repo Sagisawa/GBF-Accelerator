@@ -165,12 +165,6 @@ const (
 	DefaultVersionKeep = 8
 )
 
-// IsValidCategory reports whether cat is one of the 7 defined categories.
-func IsValidCategory(cat string) bool {
-	_, ok := categoryMeta[cat]
-	return ok
-}
-
 // IsSelectableCleanupCategory reports whether cat can be cleared via ClearCategories.
 func IsSelectableCleanupCategory(cat string) bool {
 	meta, ok := categoryMeta[cat]
@@ -917,10 +911,6 @@ func verifyStrictPathChain(absBase, realBase string, expectedRootFi os.FileInfo,
 	return nil
 }
 
-func verifyStrictDirChain(absBase, realBase string, expectedRootFi os.FileInfo, dirPath string) error {
-	return verifyStrictDirChainWithDirInfos(absBase, realBase, expectedRootFi, nil, dirPath)
-}
-
 func verifyStrictDirChainWithDirInfos(absBase, realBase string, expectedRootFi os.FileInfo, dirInfos map[string]os.FileInfo, dirPath string) error {
 	if err := verifyStrictPathChain(absBase, realBase, expectedRootFi, dirPath); err != nil {
 		return err
@@ -958,10 +948,6 @@ func verifyStrictDirChainWithDirInfos(absBase, realBase string, expectedRootFi o
 		}
 	}
 	return nil
-}
-
-func verifyTargetContainment(absBase, realBase, targetPath string) error {
-	return verifyStrictPathChain(absBase, realBase, nil, targetPath)
 }
 
 // openPinnedParentRoot opens and verifies each directory component from absBase down to the immediate
@@ -2189,6 +2175,19 @@ func (m *Manager) ClearCategoriesWithProgress(
 	progressCb func(p CleanupProgress),
 	cancelCh <-chan struct{},
 ) (*DeleteResult, error) {
+	return m.ClearCategoriesAndSlimWithProgress(snapshotID, categories, namespaces, false, progressCb, cancelCh)
+}
+
+// ClearCategoriesAndSlimWithProgress deletes all entries matching the selected non-versioned categories
+// and optionally prunes stale version directories using the same validated snapshot and unified progress callback.
+func (m *Manager) ClearCategoriesAndSlimWithProgress(
+	snapshotID string,
+	categories []string,
+	namespaces []string,
+	slimVersioned bool,
+	progressCb func(p CleanupProgress),
+	cancelCh <-chan struct{},
+) (*DeleteResult, error) {
 	if len(categories) == 0 {
 		return nil, ErrEmptyCleanupSelection
 	}
@@ -2265,7 +2264,115 @@ func (m *Manager) ClearCategoriesWithProgress(
 		}
 	}
 
-	res := m.executeControlledDeletion("clear_category", snap, candidates, nil, progressCb, cancelCh)
+	if !slimVersioned {
+		res := m.executeControlledDeletion("clear_category", snap, candidates, nil, progressCb, cancelCh)
+		return &res, nil
+	}
+
+	estSlimFiles := 0
+	if p, ok := snap.RetentionPreviews[strconv.Itoa(DefaultVersionKeep)]; ok {
+		estSlimFiles = p.PruneAssetFiles
+	}
+	catTotal := len(candidates)
+	combinedTotal := catTotal + estSlimFiles
+
+	var catProgressCb func(p CleanupProgress)
+	if progressCb != nil {
+		catProgressCb = func(p CleanupProgress) {
+			p.TotalFiles = combinedTotal
+			p.Done = false
+			progressCb(p)
+		}
+	}
+
+	res := m.executeControlledDeletion("clear_category", snap, candidates, nil, catProgressCb, cancelCh)
+	if !res.Cancelled {
+		var slimProgressCb func(sp SlimProgress)
+		if progressCb != nil {
+			slimProgressCb = func(sp SlimProgress) {
+				if sp.Done {
+					return
+				}
+				progressCb(CleanupProgress{
+					TaskType:            "clear_category",
+					SnapshotID:          snap.SnapshotID,
+					ProcessedFiles:      catTotal + sp.DeletedFiles,
+					TotalFiles:          combinedTotal,
+					DeletedAssetFiles:   res.DeletedAssetFiles + sp.DeletedFiles,
+					DeletedAssetBytes:   res.DeletedAssetBytes + sp.FreedBytes,
+					DeletedMetaFiles:    res.DeletedMetaFiles,
+					DeletedMetaBytes:    res.DeletedMetaBytes,
+					DeletedFiles:        res.DeletedFiles + sp.DeletedFiles,
+					FreedBytes:          res.FreedBytes + sp.FreedBytes,
+					AlreadyMissingCount: res.AlreadyMissingCount,
+					SkippedChangedCount: res.SkippedChangedCount,
+					FailedCount:         res.FailedCount,
+					Cancelled:           false,
+					Done:                false,
+				})
+			}
+		}
+
+		slimRes, slimErr := m.pruneStaleVersionsWithSnap(DefaultVersionKeep, snap.SnapshotID, snap, slimProgressCb, cancelCh)
+		if slimRes != nil {
+			res.CandidateFiles += slimRes.CandidateFiles
+			res.DeletedDirs += slimRes.DeletedDirs
+			res.RemainingDirs += slimRes.RemainingDirs
+			res.DeletedFiles += slimRes.DeletedFiles
+			res.DeletedAssetFiles += slimRes.DeletedAssetFiles
+			res.DeletedAssetBytes += slimRes.DeletedAssetBytes
+			res.DeletedMetaFiles += slimRes.DeletedMetaFiles
+			res.DeletedMetaBytes += slimRes.DeletedMetaBytes
+			res.FreedBytes += slimRes.FreedBytes
+			res.FreedMB = math.Round(float64(res.FreedBytes)/(1024*1024)*100) / 100
+			res.AlreadyMissingCount += slimRes.AlreadyMissingCount
+			res.SkippedChangedCount += slimRes.SkippedChangedCount
+			res.FailedCount += slimRes.FailedCount
+			for _, f := range slimRes.Failures {
+				appendBoundedFailure(&res, f.NS, f.Key, f.Reason)
+			}
+			if slimRes.Cancelled {
+				res.Cancelled = true
+				res.Status = "cancelled"
+			} else if slimRes.Status == "failed" || slimRes.Status == "partial_failed" {
+				if res.DeletedFiles > 0 || res.DeletedDirs > 0 {
+					res.Status = "partial_failed"
+				} else {
+					res.Status = "failed"
+				}
+			}
+			res.Message = fmt.Sprintf("分类与旧版本清理完成：共删除 %d 个文件，释放 %.2f MiB", res.DeletedAssetFiles, res.FreedMB)
+		} else if slimErr != nil {
+			res.FailedCount++
+			appendBoundedFailure(&res, "", "", slimErr.Error())
+			if res.DeletedFiles > 0 || res.DeletedDirs > 0 {
+				res.Status = "partial_failed"
+			} else {
+				res.Status = "failed"
+			}
+		}
+	}
+
+	if progressCb != nil {
+		progressCb(CleanupProgress{
+			TaskType:            "clear_category",
+			SnapshotID:          snap.SnapshotID,
+			ProcessedFiles:      res.CandidateFiles,
+			TotalFiles:          res.CandidateFiles,
+			DeletedAssetFiles:   res.DeletedAssetFiles,
+			DeletedAssetBytes:   res.DeletedAssetBytes,
+			DeletedMetaFiles:    res.DeletedMetaFiles,
+			DeletedMetaBytes:    res.DeletedMetaBytes,
+			DeletedFiles:        res.DeletedFiles,
+			FreedBytes:          res.FreedBytes,
+			AlreadyMissingCount: res.AlreadyMissingCount,
+			SkippedChangedCount: res.SkippedChangedCount,
+			FailedCount:         res.FailedCount,
+			Cancelled:           res.Cancelled,
+			Done:                true,
+		})
+	}
+
 	return &res, nil
 }
 
@@ -2450,19 +2557,6 @@ func (m *Manager) deleteSingleVerifiedEntry(
 	m.deleteSingleVerifiedEntryWithDirInfos(absBase, realBase, nil, nil, expectedGen, expectedBase, cand, res, touchedDirs)
 }
 
-func (m *Manager) deleteSingleVerifiedEntryWithRootInfo(
-	absBase string,
-	realBase string,
-	expectedRootFi os.FileInfo,
-	expectedGen uint64,
-	expectedBase string,
-	cand SnapshotEntry,
-	res *DeleteResult,
-	touchedDirs map[string]struct{},
-) {
-	m.deleteSingleVerifiedEntryWithDirInfos(absBase, realBase, expectedRootFi, nil, expectedGen, expectedBase, cand, res, touchedDirs)
-}
-
 func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	absBase string,
 	realBase string,
@@ -2624,18 +2718,6 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	m.persistMu.RUnlock()
 }
 
-func (m *Manager) removeEmptyParentDirsControlled(
-	absBase string,
-	realBase string,
-	expectedRootFi os.FileInfo,
-	expectedGen uint64,
-	expectedBase string,
-	touchedDirs map[string]struct{},
-	cancelCh <-chan struct{},
-) (int, bool) {
-	return m.removeEmptyParentDirsControlledWithDirInfos(absBase, realBase, expectedRootFi, nil, expectedGen, expectedBase, touchedDirs, cancelCh)
-}
-
 func (m *Manager) removeEmptyParentDirsControlledWithDirInfos(
 	absBase string,
 	realBase string,
@@ -2697,21 +2779,9 @@ func (m *Manager) removeEmptyParentDirsControlledWithDirInfos(
 	return removed, false
 }
 
-// pruneEmptyDirTreeControlled walks dirRoot bottom-up and removes only genuinely empty directories
+// pruneEmptyDirTreeControlledWithDirInfos walks dirRoot bottom-up and removes only genuinely empty directories
 // using handle-relative parentRoot.Remove (never os.RemoveAll), verifying cancelCh, generation/root binding,
 // and directory identity on every directory before ReadDir and Remove.
-func (m *Manager) pruneEmptyDirTreeControlled(
-	absBase string,
-	realBase string,
-	expectedRootFi os.FileInfo,
-	expectedGen uint64,
-	expectedBase string,
-	dirRoot string,
-	cancelCh <-chan struct{},
-) (removedRoot bool, cancelled bool, firstErr error) {
-	return m.pruneEmptyDirTreeControlledWithDirInfos(absBase, realBase, expectedRootFi, nil, expectedGen, expectedBase, dirRoot, cancelCh)
-}
-
 func (m *Manager) pruneEmptyDirTreeControlledWithDirInfos(
 	absBase string,
 	realBase string,
@@ -2831,17 +2901,8 @@ type discoveredStaleVersionDir struct {
 	display  string
 }
 
-// discoverAllVersionDirs discovers all valid positive numeric version directories across
+// discoverAllVersionDirsWithErrorsAndDirInfos discovers all valid positive numeric version directories across
 // "gbf" and "hosts/<ns>" for SupportedVersionPrefixes, enforcing containment within realBase.
-func discoverAllVersionDirs(absBase, realBase string) []discoveredStaleVersionDir {
-	dirs, _ := discoverAllVersionDirsWithErrors(absBase, realBase)
-	return dirs
-}
-
-func discoverAllVersionDirsWithErrors(absBase, realBase string) ([]discoveredStaleVersionDir, []DeleteFailure) {
-	return discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase, nil)
-}
-
 func discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase string, dirInfos map[string]os.FileInfo) ([]discoveredStaleVersionDir, []DeleteFailure) {
 	var allDirs []discoveredStaleVersionDir
 	var failures []DeleteFailure
@@ -3028,15 +3089,6 @@ func discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase string, dirIn
 	return allDirs, failures
 }
 
-func discoverStaleVersionDirs(absBase, realBase string, keepCount int) []discoveredStaleVersionDir {
-	stales, _ := discoverStaleVersionDirsWithErrors(absBase, realBase, keepCount)
-	return stales
-}
-
-func discoverStaleVersionDirsWithErrors(absBase, realBase string, keepCount int) ([]discoveredStaleVersionDir, []DeleteFailure) {
-	return discoverStaleVersionDirsWithErrorsAndDirInfos(absBase, realBase, keepCount, nil)
-}
-
 func discoverStaleVersionDirsWithErrorsAndDirInfos(absBase, realBase string, keepCount int, dirInfos map[string]os.FileInfo) ([]discoveredStaleVersionDir, []DeleteFailure) {
 	allDirs, failures := discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase, dirInfos)
 	type groupKey struct {
@@ -3078,14 +3130,26 @@ func (m *Manager) PruneStaleVersionsDetailed(
 	}
 
 	var snap *BreakdownSnapshot
-	var startGen uint64
-	var base string
 	if snapshotID != "" {
 		var err error
 		snap, err = m.getValidatedSnapshot(snapshotID)
 		if err != nil {
 			return nil, err
 		}
+	}
+	return m.pruneStaleVersionsWithSnap(keepCount, snapshotID, snap, progressCb, cancelCh)
+}
+
+func (m *Manager) pruneStaleVersionsWithSnap(
+	keepCount int,
+	snapshotID string,
+	snap *BreakdownSnapshot,
+	progressCb func(p SlimProgress),
+	cancelCh <-chan struct{},
+) (*DeleteResult, error) {
+	var startGen uint64
+	var base string
+	if snap != nil {
 		startGen = snap.Generation
 		base = snap.CacheBase
 		curGen, curBase := m.currentGenAndBase()

@@ -199,8 +199,11 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const cleanupProgress: CleanupProgress | undefined = taskStatus?.cleanup_progress
   const slimProgress = taskStatus?.slim_progress
   const lastCleanupResult: DeleteResult | undefined = taskStatus?.last_cleanup_result
-  const preview: VersionRetentionPreview | undefined =
-    snapshot?.retention_previews?.['8']
+  const isGbfNamespaceSelected =
+    selectedNamespaces.length === 0 || selectedNamespaces.includes('gbf')
+  const preview: VersionRetentionPreview | undefined = isGbfNamespaceSelected
+    ? snapshot?.retention_previews?.['8']
+    : undefined
 
   // Compute per-category stats filtered by currently selected namespaces (defaulting to ['gbf'])
   const effectiveCategoryStats = useMemo<CategoryStat[]>(() => {
@@ -255,17 +258,19 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     const sel = new Set(selectedCategories)
     let assetFiles = 0
     let estDeleteBytes = 0
+    let pruneDirs = 0
     for (const c of effectiveCategoryStats) {
       if (!sel.has(c.category)) continue
       if (c.category === 'versioned') {
         assetFiles += preview?.prune_asset_files ?? 0
         estDeleteBytes += preview?.estimated_delete_bytes ?? 0
+        pruneDirs += preview?.prune_dirs ?? 0
       } else if (c.selectable) {
         assetFiles += c.asset_files
         estDeleteBytes += c.estimated_delete_bytes
       }
     }
-    return { assetFiles, estDeleteBytes }
+    return { assetFiles, estDeleteBytes, pruneDirs }
   }, [effectiveCategoryStats, selectedCategories, preview])
 
   const handleStartScan = async () => {
@@ -307,7 +312,11 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     setConfirmingCategoryClean(false)
     setSelectedNamespaces((prev) => {
       const next = prev.includes(ns) ? prev.filter((item) => item !== ns) : [...prev, ns]
-      return next.length > 0 ? next : ['gbf']
+      const resolved = next.length > 0 ? next : ['gbf']
+      if (!resolved.includes('gbf')) {
+        setSelectedCategories((cats) => cats.filter((c) => c !== 'versioned'))
+      }
+      return resolved
     })
   }
 
@@ -725,7 +734,9 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                       const versionedEstBytes = preview?.estimated_delete_bytes ?? 0
 
                       const canCheck = isVersioned
-                        ? isSnapshotReady && !hasAnyActiveTask && versionedPruneFiles > 0
+                        ? isSnapshotReady &&
+                          !hasAnyActiveTask &&
+                          (versionedPruneFiles > 0 || versionedPruneDirs > 0)
                         : isSnapshotReady && !hasAnyActiveTask && cat.selectable && cat.asset_files > 0
 
                       return (
@@ -777,12 +788,16 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                             {isVersioned ? (
                               <div
                                 className={`text-[11px] font-semibold ${
-                                  versionedEstBytes > 0 ? 'text-sky-700' : 'text-slate-400'
+                                  versionedEstBytes > 0 || versionedPruneDirs > 0
+                                    ? 'text-sky-700'
+                                    : 'text-slate-400'
                                 }`}
                               >
                                 {versionedEstBytes > 0
                                   ? `可释放旧版本: ${formatBytesBinary(versionedEstBytes)}`
-                                  : '无过期旧版本可清理'}
+                                  : versionedPruneDirs > 0
+                                    ? `可清理 ${versionedPruneDirs} 个空旧版目录`
+                                    : '无过期旧版本可清理'}
                               </div>
                             ) : (
                               <div className="text-[11px] text-sky-700 font-semibold">
@@ -842,7 +857,8 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                           !isSnapshotReady ||
                           hasAnyActiveTask ||
                           selectedCategories.length === 0 ||
-                          selectedCategorySummary.assetFiles === 0
+                          (selectedCategorySummary.assetFiles === 0 &&
+                            selectedCategorySummary.pruneDirs === 0)
                         }
                         onClick={() => setConfirmingCategoryClean(true)}
                       >
