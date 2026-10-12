@@ -1,5 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fetchHealth, repairHealth, applyConfig, cancelAndroidPatch } from './api'
+import {
+  fetchHealth,
+  repairHealth,
+  applyConfig,
+  cancelAndroidPatch,
+  formatBytesBinary,
+  fetchCacheBreakdown,
+  startCacheBreakdownScan,
+  searchCacheSnapshot,
+  invalidateCacheEntries,
+  clearCacheCategories,
+  slimCache,
+  cancelCacheTask,
+} from './api'
 import { HealthResponse, RepairResponse } from './types'
 
 describe('fetchHealth API', () => {
@@ -232,4 +245,98 @@ describe('applyConfig port migration & cancelAndroidPatch API', () => {
     })
   })
 })
+
+describe('cache breakdown & targeted management APIs', () => {
+  const originalFetch = globalThis.fetch
+
+  beforeEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
+  it('formats binary byte units accurately in B, KiB, MiB, and GiB', () => {
+    expect(formatBytesBinary(0)).toBe('0 B')
+    expect(formatBytesBinary(512)).toBe('512 B')
+    expect(formatBytesBinary(2048)).toBe('2.0 KiB')
+    expect(formatBytesBinary(1048576 * 3.5)).toBe('3.50 MiB')
+    expect(formatBytesBinary(1073741824 * 1.25)).toBe('1.25 GiB')
+  })
+
+  it('fetches breakdown snapshot and starts background scan', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, has_snapshot: false, snapshot: null, is_scanning: false }),
+    }).mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: async () => ({ ok: true, task_id: 'scan-100-1', task: 'scan', status: 'running' }),
+    }) as any
+
+    const b = await fetchCacheBreakdown(4)
+    expect(b.has_snapshot).toBe(false)
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/breakdown?keep=4', { cache: 'no-store' })
+
+    const s = await startCacheBreakdownScan()
+    expect(s.task_id).toBe('scan-100-1')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/breakdown/scan', { method: 'POST' })
+  })
+
+  it('searches snapshot and posts targeted invalidation and category cleanup', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        snapshot_id: 'snap-1-1',
+        total_matches: 1,
+        truncated: false,
+        items: [{ ns: 'gbf', key: 'assets/img/sp/quest/scene/1.png', category: 'story' }],
+      }),
+    }).mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: async () => ({ ok: true, task_id: 'invalidate-100-2', task: 'invalidate', status: 'running', candidate_files: 1 }),
+    }).mockResolvedValueOnce({
+      ok: true,
+      status: 202,
+      json: async () => ({ ok: true, task_id: 'clear_category-100-3', task: 'clear_category', status: 'running', categories: ['story'] }),
+    }) as any
+
+    const sr = await searchCacheSnapshot({ q: 'scene/1.png', limit: 50, snapshot_id: 'snap-1-1' })
+    expect(sr.total_matches).toBe(1)
+
+    const inv = await invalidateCacheEntries('snap-1-1', [{ ns: 'gbf', key: 'assets/img/sp/quest/scene/1.png' }])
+    expect(inv.task_id).toBe('invalidate-100-2')
+
+    const cat = await clearCacheCategories('snap-1-1', ['story'], ['gbf'])
+    expect(cat.task_id).toBe('clear_category-100-3')
+  })
+
+  it('passes snapshot_id in slimCache and task_id in cancelCacheTask', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, task: 'slim', task_id: 'slim-1', keep: 2 }),
+    }).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ ok: true, task_id: 'slim-1', cancelled: true }),
+    }) as any
+
+    await slimCache(2, 'snap-1-1')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/slim?keep=2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keep: 2, snapshot_id: 'snap-1-1' }),
+    })
+
+    await cancelCacheTask('slim-1')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/cancel-task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: 'slim-1' }),
+    })
+  })
+})
+
 

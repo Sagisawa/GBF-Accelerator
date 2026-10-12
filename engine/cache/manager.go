@@ -53,25 +53,33 @@ type persistTask struct {
 	headers    map[string]string
 	data       []byte
 	generation uint64
+	token      opToken
 }
 
 type Manager struct {
-	mu             sync.RWMutex
-	cacheBase      string
-	ramCache       *LRUCache
-	ramBudget      *RAMBudget
-	residentPool   *ResidentPool
-	sf             *SingleFlight
-	missingShards  [missingCacheShardCount]missingCacheShard
-	diskMetaShards [diskMetaShardCount]diskMetaShard
-	persistQueue   chan *persistTask
-	stopPersist    chan struct{}
-	persistDone    chan struct{}
-	stopOnce       sync.Once
-	persistMu      sync.RWMutex
-	generation     uint64
-	ramEnabled     atomic.Bool
-	autoRepair     atomic.Bool
+	mu                 sync.RWMutex
+	cacheBase          string
+	ramCache           *LRUCache
+	ramBudget          *RAMBudget
+	residentPool       *ResidentPool
+	sf                 *SingleFlight
+	missingShards      [missingCacheShardCount]missingCacheShard
+	diskMetaShards     [diskMetaShardCount]diskMetaShard
+	tokenShards        [tokenShardCount]tokenShard
+	tempTokensMu       sync.Mutex
+	tempTokens         map[string]opToken
+	snapshotMu         sync.RWMutex
+	lastSnapshot       *BreakdownSnapshot
+	activeScanSnapshot *BreakdownSnapshot
+	snapshotSeq        atomic.Uint64
+	persistQueue       chan *persistTask
+	stopPersist        chan struct{}
+	persistDone        chan struct{}
+	stopOnce           sync.Once
+	persistMu          sync.RWMutex
+	generation         uint64
+	ramEnabled         atomic.Bool
+	autoRepair         atomic.Bool
 }
 
 var mimeFallbacks = map[string]string{
@@ -302,6 +310,7 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 		residentPool: resident,
 		ramCache:     ramCache,
 		sf:           NewSingleFlight(),
+		tempTokens:   make(map[string]opToken),
 		persistQueue: make(chan *persistTask, 1024),
 		stopPersist:  make(chan struct{}),
 		persistDone:  make(chan struct{}),
@@ -309,6 +318,7 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 	}
 	m.initMissingCacheShards()
 	m.initDiskMetaShards()
+	m.initTokenShards()
 	m.ramEnabled.Store(true)
 	m.autoRepair.Store(true)
 	var wg sync.WaitGroup
@@ -341,13 +351,13 @@ func (m *Manager) persistWorker(wg *sync.WaitGroup) {
 			for {
 				select {
 				case task := <-m.persistQueue:
-					m.saveToDisk(task.filePath, task.headers, task.data, task.generation)
+					m.saveToDiskWithToken(task.filePath, task.headers, task.data, task.generation, task.token)
 				default:
 					return
 				}
 			}
 		case task := <-m.persistQueue:
-			m.saveToDisk(task.filePath, task.headers, task.data, task.generation)
+			m.saveToDiskWithToken(task.filePath, task.headers, task.data, task.generation, task.token)
 		}
 	}
 }
@@ -365,6 +375,9 @@ func (m *Manager) SetCacheBase(base string) {
 	m.DisableBoost()
 	m.clearMissing()
 	m.clearDiskMeta()
+	m.clearTokenShards()
+	m.clearTempTokens()
+	m.invalidateSnapshots("缓存目录已变更")
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {
@@ -514,9 +527,18 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 	if !ok {
 		return false
 	}
+	tok := m.acquireOpToken(ns, cleanKey)
 	if fi, err := os.Stat(filePath); err == nil && !fi.IsDir() && fi.Size() > 0 {
-		m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
-		return true
+		m.persistMu.RLock()
+		shard := m.tokenShardByCanon(tok.canonKey)
+		shard.mu.Lock()
+		valid := isTokenValidLocked(shard, tok, m.generation)
+		if valid {
+			m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
+		}
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+		return valid
 	}
 	// Fallback check (only in gbf namespace)
 	if ns == "" || ns == "gbf" {
@@ -531,13 +553,28 @@ func (m *Manager) HasCacheWithNamespace(ns, urlPath string) bool {
 		}
 		if altPath != "" {
 			if fi, err := os.Stat(altPath); err == nil && !fi.IsDir() && fi.Size() > 0 {
-				m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
-				return true
+				m.persistMu.RLock()
+				shard := m.tokenShardByCanon(tok.canonKey)
+				shard.mu.Lock()
+				valid := isTokenValidLocked(shard, tok, m.generation)
+				if valid {
+					m.recordDiskPresence(ramKey, fi.ModTime().UnixNano(), fi.Size())
+				}
+				shard.mu.Unlock()
+				m.persistMu.RUnlock()
+				return valid
 			}
 		}
 	}
-	m.deleteDiskMeta(ramKey)
-	m.markMissing(ramKey)
+	m.persistMu.RLock()
+	shard := m.tokenShardByCanon(tok.canonKey)
+	shard.mu.Lock()
+	if isTokenValidLocked(shard, tok, m.generation) {
+		m.deleteDiskMeta(ramKey)
+		m.markMissing(ramKey)
+	}
+	shard.mu.Unlock()
+	m.persistMu.RUnlock()
 	return false
 }
 
@@ -617,7 +654,7 @@ func (m *Manager) IsRAMProtected(ns, urlPath string) bool {
 // without reading the asset file body.
 // loadDiskMetaWithStat checks if an item has verified metadata matching the provided mtimeNano and size.
 // If verified, it returns a CacheItem with Data == nil and ok == true.
-func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano, size int64) (*CacheItem, bool) {
+func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano, size int64, tok opToken) (*CacheItem, bool) {
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	// 1. Check in-memory metadata index
@@ -657,7 +694,15 @@ func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano,
 		etag = fmt.Sprintf("\"%x-%x\"", mtimeNano/1e9, size)
 	}
 
-	// Populate in-memory index for future fast lookups
+	// Populate in-memory index for future fast lookups only if opToken is still valid
+	m.persistMu.RLock()
+	shard := m.tokenShardByCanon(tok.canonKey)
+	shard.mu.Lock()
+	if !isTokenValidLocked(shard, tok, m.generation) {
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+		return nil, false
+	}
 	m.setDiskMeta(ramKey, diskMetaEntry{
 		mtimeNano:       mtimeNano,
 		size:            size,
@@ -669,6 +714,8 @@ func (m *Manager) loadDiskMetaWithStat(ns, cleanKey, filePath string, mtimeNano,
 		hasMeta:         true,
 		verified:        true,
 	})
+	shard.mu.Unlock()
+	m.persistMu.RUnlock()
 
 	return &CacheItem{
 		Key:             ramKey,
@@ -694,12 +741,14 @@ func (m *Manager) loadDiskMetaFast(ns, cleanKey, filePath string) (*CacheItem, b
 		return nil, false
 	}
 
+	tok := m.acquireOpToken(ns, cleanKey)
+
 	fi, err := os.Stat(filePath)
 	if err != nil || fi.IsDir() || fi.Size() == 0 {
 		return nil, false
 	}
 
-	return m.loadDiskMetaWithStat(ns, cleanKey, filePath, fi.ModTime().UnixNano(), fi.Size())
+	return m.loadDiskMetaWithStat(ns, cleanKey, filePath, fi.ModTime().UnixNano(), fi.Size(), tok)
 }
 
 // GetMetadataWithNamespace returns a CacheItem containing metadata (ContentType, ContentEncoding,
@@ -746,7 +795,7 @@ func (m *Manager) GetMetadataWithNamespace(ns, urlPath string) (*CacheItem, stri
 		var altKey string
 		if !strings.HasPrefix(cleanKey, "assets") {
 			altKey = "assets/" + cleanKey
-		} else {
+			} else {
 			altKey = strings.TrimPrefix(cleanKey, "assets/")
 		}
 		if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
@@ -781,7 +830,8 @@ func (m *Manager) VerifyAndGetMetadataWithNamespace(ns, urlPath string) (*CacheI
 		return nil, ""
 	}
 
-	item, err := m.verifyDiskMetaOnly(ns, cleanKey, filePath)
+	tok := m.acquireOpToken(ns, cleanKey)
+	item, err := m.verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath, tok)
 	if err != nil {
 		if ns == "" || ns == "gbf" {
 			var altPath, altKey string
@@ -793,31 +843,51 @@ func (m *Manager) VerifyAndGetMetadataWithNamespace(ns, urlPath string) (*CacheI
 				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
 			}
 			if altPath != "" {
-				if item2, err2 := m.verifyDiskMetaOnly("gbf", altKey, altPath); err2 == nil && item2 != nil {
+				if item2, err2 := m.verifyDiskMetaOnlyWithToken("gbf", altKey, altPath, tok); err2 == nil && item2 != nil {
 					item2.Key = ramKey
-					altMeta, _ := m.getDiskMeta(makeRAMKey("gbf", altKey))
-					m.setDiskMeta(ramKey, diskMetaEntry{
-						mtimeNano:       altMeta.mtimeNano,
-						size:            altMeta.size,
-						contentType:     item2.ContentType,
-						contentEncoding: item2.ContentEncoding,
-						etag:            item2.ETag,
-						lastModified:    item2.LastModified,
-						exists:          true,
-						hasMeta:         true,
-						verified:        altMeta.verified,
-					})
+					m.persistMu.RLock()
+					shard := m.tokenShardByCanon(tok.canonKey)
+					shard.mu.Lock()
+					if isTokenValidLocked(shard, tok, m.generation) {
+						if altMeta, hasAlt := m.getDiskMeta(makeRAMKey("gbf", altKey)); hasAlt {
+							m.setDiskMeta(ramKey, diskMetaEntry{
+								mtimeNano:       altMeta.mtimeNano,
+								size:            altMeta.size,
+								contentType:     item2.ContentType,
+								contentEncoding: item2.ContentEncoding,
+								etag:            item2.ETag,
+								lastModified:    item2.LastModified,
+								exists:          true,
+								hasMeta:         true,
+								verified:        altMeta.verified,
+							})
+						}
+					}
+					shard.mu.Unlock()
+					m.persistMu.RUnlock()
 					return item2, "DISK"
 				}
 			}
 		}
-		m.markMissing(ramKey)
+		m.persistMu.RLock()
+		shard := m.tokenShardByCanon(tok.canonKey)
+		shard.mu.Lock()
+		if isTokenValidLocked(shard, tok, m.generation) {
+			m.markMissing(ramKey)
+		}
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
 		return nil, ""
 	}
 	return item, "DISK"
 }
 
 func (m *Manager) verifyDiskMetaOnly(ns, cleanKey, filePath string) (*CacheItem, error) {
+	tok := m.acquireOpToken(ns, cleanKey)
+	return m.verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath, tok)
+}
+
+func (m *Manager) verifyDiskMetaOnlyWithToken(ns, cleanKey, filePath string, tok opToken) (*CacheItem, error) {
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
@@ -883,28 +953,35 @@ func (m *Manager) verifyDiskMetaOnly(ns, cleanKey, filePath string) (*CacheItem,
 		contentEncoding = ""
 	}
 
-	m.setDiskMeta(ramKey, diskMetaEntry{
-		mtimeNano:       mtimeNano,
-		size:            size,
-		contentType:     contentType,
-		contentEncoding: contentEncoding,
-		etag:            etag,
-		lastModified:    lastMod,
-		exists:          true,
-		hasMeta:         true,
-		verified:        true,
-	})
-	_ = writeDiskExtFile(filePath, diskMeta{
-		LastModified:    lastMod,
-		ETag:            etag,
-		AccessTime:      time.Now().Unix(),
-		ContentEncoding: contentEncoding,
-		ContentType:     contentType,
-		Version:         1,
-		Verified:        true,
-		Size:            size,
-		MTimeNano:       mtimeNano,
-	})
+	m.persistMu.RLock()
+	shard := m.tokenShardByCanon(tok.canonKey)
+	shard.mu.Lock()
+	if isTokenValidLocked(shard, tok, m.generation) {
+		m.setDiskMeta(ramKey, diskMetaEntry{
+			mtimeNano:       mtimeNano,
+			size:            size,
+			contentType:     contentType,
+			contentEncoding: contentEncoding,
+			etag:            etag,
+			lastModified:    lastMod,
+			exists:          true,
+			hasMeta:         true,
+			verified:        true,
+		})
+		_ = writeDiskExtFile(filePath, diskMeta{
+			LastModified:    lastMod,
+			ETag:            etag,
+			AccessTime:      time.Now().Unix(),
+			ContentEncoding: contentEncoding,
+			ContentType:     contentType,
+			Version:         1,
+			Verified:        true,
+			Size:            size,
+			MTimeNano:       mtimeNano,
+		})
+	}
+	shard.mu.Unlock()
+	m.persistMu.RUnlock()
 
 	return &CacheItem{
 		Key:             ramKey,
@@ -951,7 +1028,9 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 		return nil, ""
 	}
 
-	item, err := m.loadAndValidateDiskItem(ns, cleanKey, filePath)
+	tok := m.acquireOpToken(ns, cleanKey)
+	usedAltKey := ""
+	item, err := m.loadAndValidateDiskItemWithToken(ns, cleanKey, filePath, tok)
 	if err != nil {
 		if ns == "" || ns == "gbf" {
 			// Try fallback: prepend or strip "assets" for gbf namespace
@@ -965,47 +1044,74 @@ func (m *Manager) GetWithNamespace(ns, urlPath string) (*CacheItem, string) {
 				altPath, _ = m.resolvePathWithNamespace("gbf", altKey)
 			}
 			if altPath != "" {
-				if item2, err2 := m.loadAndValidateDiskItem("gbf", altKey, altPath); err2 == nil && item2 != nil {
+				if item2, err2 := m.loadAndValidateDiskItemWithToken("gbf", altKey, altPath, tok); err2 == nil && item2 != nil {
 					item2.Key = ramKey
 					item = item2
-					altMeta, _ := m.getDiskMeta(makeRAMKey("gbf", altKey))
-					m.setDiskMeta(ramKey, diskMetaEntry{
-						mtimeNano:       altMeta.mtimeNano,
-						size:            altMeta.size,
-						contentType:     item2.ContentType,
-						contentEncoding: item2.ContentEncoding,
-						etag:            item2.ETag,
-						lastModified:    item2.LastModified,
-						exists:          true,
-						hasMeta:         true,
-						verified:        altMeta.verified,
-					})
+					usedAltKey = altKey
 				} else {
-					m.markMissing(ramKey)
+					m.markMissingIfTokenValid(ramKey, tok)
 					return nil, ""
 				}
 			} else {
-				m.markMissing(ramKey)
+				m.markMissingIfTokenValid(ramKey, tok)
 				return nil, ""
 			}
 		} else {
-			m.markMissing(ramKey)
+			m.markMissingIfTokenValid(ramKey, tok)
 			return nil, ""
 		}
 	}
 
-	// Store into RAM cache only when enabled.
-	// SLRU: Admitted to Probationary segment on first disk hit (cold access).
-	// A subsequent hit via Get() will promote it to Protected.
-	// Large objects (> MaxDiskDirectReadSize) are read fully into memory for client response
-	// but are strictly excluded from RAM SLRU admission to protect RAM cache capacity.
-	if m.ramEnabled.Load() && item != nil && len(item.Data) > 0 && item.Size <= MaxDiskDirectReadSize {
-		m.ramCache.SetProbation(ramKey, item)
+	// Store into RAM cache and alias diskMeta only when opToken is still valid.
+	// If the entry was invalidated while disk read was in flight, the in-flight request
+	// completes using the loaded bytes, but MUST NOT backfill stale state into RAM or diskMeta.
+	if item != nil {
+		m.persistMu.RLock()
+		shard := m.tokenShardByCanon(tok.canonKey)
+		shard.mu.Lock()
+		if isTokenValidLocked(shard, tok, m.generation) {
+			if usedAltKey != "" {
+				if altMeta, hasAlt := m.getDiskMeta(makeRAMKey("gbf", usedAltKey)); hasAlt {
+					m.setDiskMeta(ramKey, diskMetaEntry{
+						mtimeNano:       altMeta.mtimeNano,
+						size:            altMeta.size,
+						contentType:     item.ContentType,
+						contentEncoding: item.ContentEncoding,
+						etag:            item.ETag,
+						lastModified:    item.LastModified,
+						exists:          true,
+						hasMeta:         true,
+						verified:        altMeta.verified,
+					})
+				}
+			}
+			if m.ramEnabled.Load() && len(item.Data) > 0 && item.Size <= MaxDiskDirectReadSize {
+				m.ramCache.SetProbation(ramKey, item)
+			}
+		}
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
 	}
 	return item, "DISK"
 }
 
+func (m *Manager) markMissingIfTokenValid(ramKey string, tok opToken) {
+	m.persistMu.RLock()
+	shard := m.tokenShardByCanon(tok.canonKey)
+	shard.mu.Lock()
+	if isTokenValidLocked(shard, tok, m.generation) {
+		m.markMissing(ramKey)
+	}
+	shard.mu.Unlock()
+	m.persistMu.RUnlock()
+}
+
 func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath string) (*CacheItem, error) {
+	tok := m.acquireOpToken(ns, cleanKey)
+	return m.loadAndValidateDiskItemWithToken(ns, cleanKey, filePath, tok)
+}
+
+func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, filePath string, tok opToken) (*CacheItem, error) {
 	ramKey := makeRAMKey(ns, cleanKey)
 
 	if m.autoRepair.Load() && strings.HasSuffix(cleanKey, "set-error-handler.js") {
@@ -1115,30 +1221,37 @@ func (m *Manager) loadAndValidateDiskItem(ns string, cleanKey string, filePath s
 	}
 
 	if needsIndexSave || !extVerified {
-		m.setDiskMeta(ramKey, diskMetaEntry{
-			mtimeNano:       mtimeNano,
-			size:            size,
-			contentType:     contentType,
-			contentEncoding: contentEncoding,
-			etag:            etag,
-			lastModified:    lastMod,
-			exists:          true,
-			hasMeta:         true,
-			verified:        true,
-		})
-		if !extVerified {
-			_ = writeDiskExtFile(filePath, diskMeta{
-				LastModified:    lastMod,
-				ETag:            etag,
-				AccessTime:      time.Now().Unix(),
-				ContentEncoding: contentEncoding,
-				ContentType:     contentType,
-				Version:         1,
-				Verified:        true,
-				Size:            size,
-				MTimeNano:       mtimeNano,
+		m.persistMu.RLock()
+		shard := m.tokenShardByCanon(tok.canonKey)
+		shard.mu.Lock()
+		if isTokenValidLocked(shard, tok, m.generation) {
+			m.setDiskMeta(ramKey, diskMetaEntry{
+				mtimeNano:       mtimeNano,
+				size:            size,
+				contentType:     contentType,
+				contentEncoding: contentEncoding,
+				etag:            etag,
+				lastModified:    lastMod,
+				exists:          true,
+				hasMeta:         true,
+				verified:        true,
 			})
+			if !extVerified {
+				_ = writeDiskExtFile(filePath, diskMeta{
+					LastModified:    lastMod,
+					ETag:            etag,
+					AccessTime:      time.Now().Unix(),
+					ContentEncoding: contentEncoding,
+					ContentType:     contentType,
+					Version:         1,
+					Verified:        true,
+					Size:            size,
+					MTimeNano:       mtimeNano,
+				})
+			}
 		}
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
 	}
 
 	return &CacheItem{
@@ -1249,22 +1362,22 @@ func getHeader(h map[string]string, key string) string {
 	return ""
 }
 
-func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte, isProbation bool, validated bool) (*CacheItem, string, string, uint64, bool) {
+func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string, data []byte, isProbation bool, validated bool) (*CacheItem, string, string, uint64, opToken, bool) {
 	m.persistMu.RLock()
 	defer m.persistMu.RUnlock()
 	generation := m.generation
 	cleanKey := strings.TrimPrefix(strings.Split(urlPath, "?")[0], "/")
 	if len(data) == 0 {
-		return nil, "", "", 0, false
+		return nil, "", "", 0, opToken{}, false
 	}
 	ct := getHeader(headers, "content-type")
 	if !validated && !IsValidCacheContent(cleanKey, ct, data) {
-		return nil, "", "", 0, false
+		return nil, "", "", 0, opToken{}, false
 	}
 
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
-		return nil, "", "", 0, false
+		return nil, "", "", 0, opToken{}, false
 	}
 
 	ce := getHeader(headers, "content-encoding")
@@ -1288,6 +1401,14 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 		Size:            int64(len(data)),
 	}
 
+	shard, canonKey := m.tokenShardFor(ns, cleanKey)
+	shard.mu.Lock()
+	tok := opToken{
+		gen:      generation,
+		seq:      shard.seq,
+		canonKey: canonKey,
+	}
+
 	if m.ramEnabled.Load() {
 		if isProbation {
 			m.ramCache.SetProbation(ramKey, item)
@@ -1300,13 +1421,23 @@ func (m *Manager) saveRAMInternal(ns, urlPath string, headers map[string]string,
 	if m.residentPool != nil {
 		m.residentPool.Delete(ramKey)
 	}
+	m.deleteMissingKey(ramKey)
 
-	shard := m.missingShard(ramKey)
-	shard.mu.Lock()
-	delete(shard.items, ramKey)
+	if ns == "" || ns == "gbf" {
+		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
+			altRamKey := makeRAMKey("gbf", altKey)
+			if m.ramCache != nil {
+				m.ramCache.Delete(altRamKey)
+			}
+			if m.residentPool != nil {
+				m.residentPool.Delete(altRamKey)
+			}
+			m.deleteMissingKey(altRamKey)
+		}
+	}
 	shard.mu.Unlock()
 
-	return item, cleanKey, filePath, generation, true
+	return item, cleanKey, filePath, generation, tok, true
 }
 
 // SaveRAM saves an asset into RAM (Protected segment) with mandatory IsValidCacheContent validation,
@@ -1368,7 +1499,7 @@ func (m *Manager) SavePrefetchValidatedWithNamespace(ns, urlPath string, headers
 }
 
 func (m *Manager) saveRAMWithNamespaceAndValidation(ns, urlPath string, headers map[string]string, data []byte, isProbation bool, validated bool) (*CacheItem, bool) {
-	item, cleanKey, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, isProbation, validated)
+	item, cleanKey, filePath, generation, tok, ok := m.saveRAMInternal(ns, urlPath, headers, data, isProbation, validated)
 	if !ok || item == nil {
 		return nil, false
 	}
@@ -1389,6 +1520,7 @@ func (m *Manager) saveRAMWithNamespaceAndValidation(ns, urlPath string, headers 
 		headers:    headers,
 		data:       data,
 		generation: generation,
+		token:      tok,
 	}:
 	default:
 		// Queue full, drop disk persist without delaying foreground
@@ -1406,11 +1538,11 @@ func (m *Manager) Save(urlPath string, headers map[string]string, data []byte) b
 // SaveWithNamespace saves an asset into RAM and synchronously persists it to disk,
 // enforcing mandatory IsValidCacheContent validation.
 func (m *Manager) SaveWithNamespace(ns, urlPath string, headers map[string]string, data []byte) bool {
-	item, _, filePath, generation, ok := m.saveRAMInternal(ns, urlPath, headers, data, false, false)
+	item, _, filePath, generation, tok, ok := m.saveRAMInternal(ns, urlPath, headers, data, false, false)
 	if !ok || item == nil {
 		return false
 	}
-	return m.saveToDisk(filePath, headers, data, generation)
+	return m.saveToDiskWithToken(filePath, headers, data, generation, tok)
 }
 
 func renameWithRetry(src, dst string, maxAttempts int) error {
@@ -1426,11 +1558,34 @@ func renameWithRetry(src, dst string, maxAttempts int) error {
 }
 
 func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []byte, generation uint64) bool {
+	m.mu.RLock()
+	base := m.cacheBase
+	m.mu.RUnlock()
+	var tok opToken
+	if ns, cleanKey, _, ok := extractNamespaceAndKey(base, filePath); ok {
+		tok = m.acquireOpTokenWithGen(ns, cleanKey, generation)
+	}
+	return m.saveToDiskWithToken(filePath, headers, data, generation, tok)
+}
+
+func (m *Manager) saveToDiskWithToken(filePath string, headers map[string]string, data []byte, generation uint64, tok opToken) bool {
 	m.persistMu.RLock()
 	defer m.persistMu.RUnlock()
 	if generation != m.generation {
 		return false
 	}
+
+	var shard *tokenShard
+	if tok.canonKey != "" {
+		shard = m.tokenShardByCanon(tok.canonKey)
+		shard.mu.Lock()
+		valid := isTokenValidLocked(shard, tok, m.generation)
+		shard.mu.Unlock()
+		if !valid {
+			return false
+		}
+	}
+
 	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
 		return false
 	}
@@ -1460,6 +1615,16 @@ func (m *Manager) saveToDisk(filePath string, headers map[string]string, data []
 		}
 		return false
 	}
+
+	if shard != nil {
+		shard.mu.Lock()
+		defer shard.mu.Unlock()
+		if !isTokenValidLocked(shard, tok, m.generation) {
+			_ = os.Remove(tmpDataPath)
+			return false
+		}
+	}
+
 	if err := renameWithRetry(tmpDataPath, filePath, 3); err != nil {
 		_ = os.Remove(tmpDataPath)
 		m.mu.RLock()
@@ -1578,6 +1743,7 @@ func (m *Manager) ReadDiskItemData(ns, urlPath string) ([]byte, error) {
 func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, error) {
 	basePath, _, _ := strings.Cut(urlPath, "?")
 	cleanKey := strings.TrimPrefix(basePath, "/")
+	tok := m.acquireOpToken(ns, cleanKey)
 
 	openFileWithFallback := func(k string) (*os.File, int64, error) {
 		p, ok := m.resolvePathWithNamespace(ns, k)
@@ -1615,18 +1781,30 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 		} else if metaBytes, err := os.ReadFile(p + ".ext"); err == nil {
 			if extMeta, ok := parseExtFile(metaBytes); ok && extMeta.Verified {
 				if actualSize == extMeta.Size && actualMtime == extMeta.MTimeNano {
-					matched = true
-					m.setDiskMeta(ramKey, diskMetaEntry{
-						mtimeNano:       actualMtime,
-						size:            actualSize,
-						contentType:     resolveContentType(extMeta.ContentType, p),
-						contentEncoding: extMeta.ContentEncoding,
-						etag:            extMeta.ETag,
-						lastModified:    extMeta.LastModified,
-						exists:          true,
-						hasMeta:         true,
-						verified:        true,
-					})
+					m.persistMu.RLock()
+					shard := m.tokenShardByCanon(tok.canonKey)
+					shard.mu.Lock()
+					valid := isTokenValidLocked(shard, tok, m.generation)
+					if valid {
+						matched = true
+						m.setDiskMeta(ramKey, diskMetaEntry{
+							mtimeNano:       actualMtime,
+							size:            actualSize,
+							contentType:     resolveContentType(extMeta.ContentType, p),
+							contentEncoding: extMeta.ContentEncoding,
+							etag:            extMeta.ETag,
+							lastModified:    extMeta.LastModified,
+							exists:          true,
+							hasMeta:         true,
+							verified:        true,
+						})
+					}
+					shard.mu.Unlock()
+					m.persistMu.RUnlock()
+					if !valid {
+						_ = f.Close()
+						return nil, 0, fmt.Errorf("cache item invalidated during stream open: %s", p)
+					}
 				} else {
 					_ = f.Close()
 					m.deleteDiskMeta(ramKey)
@@ -1679,15 +1857,16 @@ func (m *Manager) OpenDiskStream(ns, urlPath string) (io.ReadCloser, int64, erro
 func (m *Manager) Invalidate(ns, urlPath string) {
 	basePath, _, _ := strings.Cut(urlPath, "?")
 	cleanKey := strings.TrimPrefix(basePath, "/")
-	ramKey := makeRAMKey(ns, cleanKey)
+	if cleanKey == "" {
+		return
+	}
 
-	m.deleteDiskMeta(ramKey)
-	if m.residentPool != nil {
-		m.residentPool.Delete(ramKey)
-	}
-	if m.ramCache != nil {
-		m.ramCache.Delete(ramKey)
-	}
+	m.persistMu.RLock()
+	shard, canonKey := m.tokenShardFor(ns, cleanKey)
+	shard.mu.Lock()
+
+	bumpInvalidateTokenLocked(shard, canonKey)
+	m.clearKeyMemoryState(ns, cleanKey)
 
 	if p, ok := m.resolvePathWithNamespace(ns, cleanKey); ok {
 		_ = os.Remove(p)
@@ -1695,37 +1874,35 @@ func (m *Manager) Invalidate(ns, urlPath string) {
 	}
 
 	if ns == "" || ns == "gbf" {
-		var altKey string
-		if !strings.HasPrefix(cleanKey, "assets") {
-			altKey = "assets/" + cleanKey
-		} else {
-			altKey = strings.TrimPrefix(cleanKey, "assets/")
-		}
-		altRamKey := makeRAMKey("gbf", altKey)
-		m.deleteDiskMeta(altRamKey)
-		if m.residentPool != nil {
-			m.residentPool.Delete(altRamKey)
-		}
-		if m.ramCache != nil {
-			m.ramCache.Delete(altRamKey)
-		}
-		if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
-			_ = os.Remove(altPath)
-			_ = os.Remove(altPath + ".ext")
+		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
+			if altPath, ok := m.resolvePathWithNamespace("gbf", altKey); ok {
+				_ = os.Remove(altPath)
+				_ = os.Remove(altPath + ".ext")
+			}
 		}
 	}
+
+	shard.mu.Unlock()
+	m.persistMu.RUnlock()
+
+	if m.ramBudget != nil && m.residentPool != nil && m.residentPool.Enabled() {
+		m.ramBudget.SyncSLRU(m.ramCache)
+	}
+	m.invalidateSnapshots("已执行缓存定点失效")
 }
 
 // CreateDiskTempFile creates a secure temporary file in the cache directory adjacent to the destination path.
 // The file is opened with O_CREATE|os.O_WRONLY|os.O_EXCL.
 // Returns the file handle, temporary path, cache generation, and error.
 func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint64, error) {
-	m.persistMu.RLock()
-	generation := m.generation
-	m.persistMu.RUnlock()
-
 	basePath, _, _ := strings.Cut(urlPath, "?")
 	cleanKey := strings.TrimPrefix(basePath, "/")
+
+	m.persistMu.RLock()
+	generation := m.generation
+	tok := m.acquireOpTokenWithGen(ns, cleanKey, generation)
+	m.persistMu.RUnlock()
+
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
 		return nil, "", 0, fmt.Errorf("failed to resolve path for %s", urlPath)
@@ -1745,6 +1922,7 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 	if err != nil {
 		return nil, "", 0, err
 	}
+	m.registerTempFileToken(tmpDataPath, tok)
 	return f, tmpDataPath, generation, nil
 }
 
@@ -1752,6 +1930,8 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 // It renames the temp file to the final path, writes the .ext metadata file, updates diskMeta,
 // and clears any negative cache entry.
 func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]string, tmpFilePath string, totalSize int64, generation uint64) (*CacheItem, bool) {
+	tok, hasTok := m.popTempFileToken(tmpFilePath)
+
 	m.persistMu.RLock()
 	defer m.persistMu.RUnlock()
 	if generation != m.generation {
@@ -1763,6 +1943,15 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 	cleanKey := strings.TrimPrefix(basePath, "/")
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
+		_ = os.Remove(tmpFilePath)
+		return nil, false
+	}
+
+	shard, _ := m.tokenShardFor(ns, cleanKey)
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+
+	if hasTok && !isTokenValidLocked(shard, tok, m.generation) {
 		_ = os.Remove(tmpFilePath)
 		return nil, false
 	}
@@ -1841,11 +2030,18 @@ func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]stri
 	if m.residentPool != nil {
 		m.residentPool.Delete(ramKey)
 	}
+	m.deleteMissingKey(ramKey)
 
-	shard := m.missingShard(ramKey)
-	shard.mu.Lock()
-	delete(shard.items, ramKey)
-	shard.mu.Unlock()
+	if ns == "" || ns == "gbf" {
+		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
+			altRamKey := makeRAMKey("gbf", altKey)
+			m.ramCache.Delete(altRamKey)
+			if m.residentPool != nil {
+				m.residentPool.Delete(altRamKey)
+			}
+			m.deleteMissingKey(altRamKey)
+		}
+	}
 
 	item := &CacheItem{
 		Key:             ramKey,
@@ -1899,6 +2095,9 @@ func (m *Manager) ClearAll() (int, int64) {
 
 	m.clearMissing()
 	m.clearDiskMeta()
+	m.clearTokenShards()
+	m.clearTempTokens()
+	m.invalidateSnapshots("已执行全盘清空")
 
 	return deletedFiles, freedBytes
 }
@@ -1951,7 +2150,7 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		}
 		scanned++
 
-		_, _, ramKey, ok := extractNamespaceAndKey(base, p)
+		ns, cleanKey, _, ok := extractNamespaceAndKey(base, p)
 		if !ok {
 			return nil
 		}
@@ -1961,11 +2160,11 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			quarantined := m.CheckAndQuarantineTamperedJS(p)
 			if quarantined {
 				corrupted++
-				m.ramCache.Delete(ramKey)
-				if m.residentPool != nil {
-					m.residentPool.Delete(ramKey)
-				}
-				m.deleteDiskMeta(ramKey)
+				shard, canonKey := m.tokenShardFor(ns, cleanKey)
+				shard.mu.Lock()
+				bumpInvalidateTokenLocked(shard, canonKey)
+				m.clearKeyMemoryState(ns, cleanKey)
+				shard.mu.Unlock()
 			}
 			m.persistMu.Unlock()
 			if quarantined {
@@ -1984,13 +2183,13 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		if isBad {
 			corrupted++
 			m.persistMu.Lock()
+			shard, canonKey := m.tokenShardFor(ns, cleanKey)
+			shard.mu.Lock()
+			bumpInvalidateTokenLocked(shard, canonKey)
 			_ = os.Remove(p)
 			_ = os.Remove(p + ".ext")
-			m.ramCache.Delete(ramKey)
-			if m.residentPool != nil {
-				m.residentPool.Delete(ramKey)
-			}
-			m.deleteDiskMeta(ramKey)
+			m.clearKeyMemoryState(ns, cleanKey)
+			shard.mu.Unlock()
 			m.persistMu.Unlock()
 		} else {
 			healthy++
@@ -2006,6 +2205,10 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		}
 		return nil
 	})
+
+	if corrupted > 0 {
+		m.invalidateSnapshots("缓存体检清理了损坏文件")
+	}
 
 	if progressCb != nil {
 		progressCb(AuditProgress{
@@ -2030,122 +2233,13 @@ func (m *Manager) AuditAndRepair() map[string]interface{} {
 
 func (m *Manager) PruneStaleVersionsWithProgress(keepCount int, progressCb func(p SlimProgress), cancelCh <-chan struct{}) (int, int, int64) {
 	if keepCount <= 0 {
-		keepCount = 8
+		keepCount = DefaultVersionKeep
 	}
-	m.mu.RLock()
-	base := m.cacheBase
-	m.mu.RUnlock()
-
-	type staleDirEntry struct {
-		fullPath string
-		display  string
+	res, err := m.PruneStaleVersionsDetailed(keepCount, "", progressCb, cancelCh)
+	if err != nil || res == nil {
+		return 0, 0, 0
 	}
-
-	collectStale := func(root string) []staleDirEntry {
-		var stales []staleDirEntry
-		for _, prefix := range []string{"assets", "assets_en", "assets_jp"} {
-			prefixDir := filepath.Join(root, prefix)
-			entries, err := os.ReadDir(prefixDir)
-			if err != nil {
-				continue
-			}
-
-			var versions []string
-			for _, e := range entries {
-				if e.IsDir() {
-					if _, err := strconv.Atoi(e.Name()); err == nil {
-						versions = append(versions, e.Name())
-					}
-				}
-			}
-
-			sort.Slice(versions, func(i, j int) bool {
-				v1, _ := strconv.Atoi(versions[i])
-				v2, _ := strconv.Atoi(versions[j])
-				return v1 > v2
-			})
-
-			if len(versions) > keepCount {
-				for _, v := range versions[keepCount:] {
-					stales = append(stales, staleDirEntry{
-						fullPath: filepath.Join(prefixDir, v),
-						display:  filepath.Join(prefix, v),
-					})
-				}
-			}
-		}
-		return stales
-	}
-
-	var allStales []staleDirEntry
-	allStales = append(allStales, collectStale(base)...)
-
-	hostsDir := filepath.Join(base, "hosts")
-	if hostEntries, err := os.ReadDir(hostsDir); err == nil {
-		for _, he := range hostEntries {
-			if he.IsDir() {
-				allStales = append(allStales, collectStale(filepath.Join(hostsDir, he.Name()))...)
-			}
-		}
-	}
-
-	var deletedDirs, deletedFiles int
-	var freedBytes int64
-	totalDirs := len(allStales)
-
-	for idx, s := range allStales {
-		select {
-		case <-cancelCh:
-			return deletedDirs, deletedFiles, freedBytes
-		default:
-		}
-
-		if progressCb != nil {
-			progressCb(SlimProgress{
-				CurrentDir:   s.display,
-				CurrentIdx:   idx + 1,
-				TotalDirs:    totalDirs,
-				DeletedFiles: deletedFiles,
-				FreedBytes:   freedBytes,
-				Done:         false,
-			})
-		}
-
-		m.persistMu.Lock()
-		_ = filepath.WalkDir(s.fullPath, func(p string, d os.DirEntry, err error) error {
-			if err == nil && !d.IsDir() {
-				deletedFiles++
-				if info, err := d.Info(); err == nil {
-					freedBytes += info.Size()
-				}
-				if _, _, ramKey, ok := extractNamespaceAndKey(base, p); ok {
-					m.ramCache.Delete(ramKey)
-					if m.residentPool != nil {
-						m.residentPool.Delete(ramKey)
-					}
-					m.deleteDiskMeta(ramKey)
-				}
-			}
-			return nil
-		})
-		if err := os.RemoveAll(s.fullPath); err == nil {
-			deletedDirs++
-		}
-		m.persistMu.Unlock()
-	}
-
-	if progressCb != nil {
-		progressCb(SlimProgress{
-			CurrentDir:   "",
-			CurrentIdx:   totalDirs,
-			TotalDirs:    totalDirs,
-			DeletedFiles: deletedFiles,
-			FreedBytes:   freedBytes,
-			Done:         true,
-		})
-	}
-
-	return deletedDirs, deletedFiles, freedBytes
+	return res.DeletedDirs, res.DeletedFiles, res.FreedBytes
 }
 
 func (m *Manager) PruneStaleVersions(keepCount int) (int, int, int64) {

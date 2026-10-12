@@ -333,7 +333,8 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 			}
 
 			// Unified validation and loading path (Section IV)
-			item, err := m.loadAndValidateDiskItem(c.ns, c.cleanKey, c.filePath)
+			tok := m.acquireOpToken(c.ns, c.cleanKey)
+			item, err := m.loadAndValidateDiskItemWithToken(c.ns, c.cleanKey, c.filePath, tok)
 
 			// Re-verify generation/enabled immediately after file read
 			if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
@@ -383,8 +384,23 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 				}
 			}
 
-			// Commit to resident pool using workerGen. If generation changed or disabled, SetWithGen returns false.
-			if !m.residentPool.SetWithGen(c.ramKey, item, workerGen) {
+			// Commit to resident pool under tokenShard synchronization so an item invalidated
+			// while being read cannot be inserted into ResidentPool.
+			m.persistMu.RLock()
+			tokShard := m.tokenShardByCanon(tok.canonKey)
+			tokShard.mu.Lock()
+			if !isTokenValidLocked(tokShard, tok, m.generation) {
+				tokShard.mu.Unlock()
+				m.persistMu.RUnlock()
+				m.residentPool.ReleaseBudget(item.Size, workerGen)
+				invalidFiles++
+				continue
+			}
+			committed := m.residentPool.SetWithGen(c.ramKey, item, workerGen)
+			tokShard.mu.Unlock()
+			m.persistMu.RUnlock()
+
+			if !committed {
 				m.residentPool.ReleaseBudget(item.Size, workerGen)
 				state = BoostStateDisabled
 				break
