@@ -217,22 +217,23 @@ func installCA(caPath string) error {
 		currentSHA1 = GetCAFingerprintSHA1(certBytes)
 	}
 
-	// CA Hygiene: Clean up stale/duplicate or 0-trust certificates with the same CA name
-	cleanupStaleCAs("")
-
-	// Import into user login keychain with trustRoot policy (User domain, no -d)
-	cmd := exec.Command("security", "add-trusted-cert", "-r", "trustRoot", "-k", keychain, cleanPath)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("security add-trusted-cert failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
-	}
-
-	// Verify that trust is actually effective
-	if currentSHA1 != "" && !isCAInstalled(currentSHA1, cleanPath) {
-		return fmt.Errorf("certificate was imported into keychain but trust verification failed; please verify trust settings in Keychain Access")
-	}
-
-	return nil
+	// Ordering (import -> verify trust -> remove stale duplicates) is enforced by
+	// installCAInOrder so that a previously trusted CA keeps working when the import or the
+	// trust check fails, and so that cleanup never removes the certificate it just verified.
+	return installCAInOrder(currentSHA1, caInstallSteps{
+		importCert: func() error {
+			// Import into user login keychain with trustRoot policy (User domain, no -d)
+			out, err := exec.Command("security", "add-trusted-cert", "-r", "trustRoot", "-k", keychain, cleanPath).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("security add-trusted-cert failed: %w (output: %s)", err, strings.TrimSpace(string(out)))
+			}
+			return nil
+		},
+		trustVerified: func() bool {
+			return isCAInstalled(currentSHA1, cleanPath)
+		},
+		removeStale: cleanupStaleCAs,
+	})
 }
 
 func uninstallCA(sha1 string) error {
