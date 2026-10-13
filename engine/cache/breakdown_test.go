@@ -1674,4 +1674,319 @@ func TestDeleteSnapshotSkipsModifiedOrReplacedPairedExtWhenDataPresent(t *testin
 	})
 }
 
+func TestAuditAndRepair_PreservesActiveStreamingTempFileAndRemovesOrphan(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	activeKey := "/assets/js/active_stream.js"
+	activeBody := []byte("console.log('active_stream_payload');")
+
+	// 1. Create an active streaming temp file via CreateDiskTempFile
+	f, tmpPath, gen, err := mgr.CreateDiskTempFile("gbf", activeKey)
+	if err != nil {
+		t.Fatalf("CreateDiskTempFile failed: %v", err)
+	}
+	if _, err := f.Write(activeBody); err != nil {
+		_ = f.Close()
+		t.Fatalf("Write to active temp file failed: %v", err)
+	}
+	// Close the file handle (simulating the window between tmpFile.Close() and CommitDiskTempFile in proxy.go)
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close active temp file failed: %v", err)
+	}
+
+	// 2. Create an unregistered orphan .tmp. file in the same directory
+	orphanTmpPath := filepath.Join(filepath.Dir(tmpPath), "orphan.js.tmp.9999.12345.1")
+	if err := os.WriteFile(orphanTmpPath, []byte("orphan_temp"), 0644); err != nil {
+		t.Fatalf("WriteFile orphanTmpPath failed: %v", err)
+	}
+
+	// 3. Also create a corrupted 0-byte file that has an entry in ResidentPool to verify ramBudget.SyncSLRU
+	corruptKey := "assets/js/corrupt_boost.js"
+	corruptPath := filepath.Join(tmpDir, "assets", "js", "corrupt_boost.js")
+	if err := os.MkdirAll(filepath.Dir(corruptPath), 0755); err != nil {
+		t.Fatalf("MkdirAll corruptPath failed: %v", err)
+	}
+	if err := os.WriteFile(corruptPath, []byte{}, 0644); err != nil {
+		t.Fatalf("WriteFile corruptPath failed: %v", err)
+	}
+	rGen := mgr.residentPool.NextGeneration()
+	mgr.residentPool.ResetForGen(rGen)
+	const residentItemBytes = int64(4 * 1024 * 1024)
+	if !mgr.residentPool.TryAcquireBudget(residentItemBytes, rGen) {
+		t.Fatalf("TryAcquireBudget failed")
+	}
+	mgr.residentPool.SetWithGen(makeRAMKey("gbf", corruptKey), &CacheItem{
+		Key:  makeRAMKey("gbf", corruptKey),
+		Data: make([]byte, residentItemBytes),
+		Size: residentItemBytes,
+	}, rGen)
+	slruCapBefore := mgr.ramCache.MaxBytes()
+
+	// 4. Run AuditAndRepairWithProgress while the streaming temp file is still uncommitted
+	auditRes := mgr.AuditAndRepairWithProgress(nil, nil)
+	if auditRes["corrupted"] != 1 {
+		t.Fatalf("expected 1 corrupted file, got %+v", auditRes)
+	}
+
+	// Verify orphan .tmp. file was removed
+	if _, err := os.Stat(orphanTmpPath); !os.IsNotExist(err) {
+		t.Fatalf("expected orphan temp file to be removed by AuditAndRepair, got err=%v", err)
+	}
+
+	// Verify active streaming .tmp. file was preserved and can be committed cleanly
+	if _, err := os.Stat(tmpPath); err != nil {
+		t.Fatalf("expected active streaming temp file to be preserved by AuditAndRepair, got err=%v", err)
+	}
+	committedItem, committed := mgr.CommitDiskTempFile("gbf", activeKey, headers, tmpPath, int64(len(activeBody)), gen)
+	if !committed || committedItem == nil {
+		t.Fatalf("expected CommitDiskTempFile to succeed after AuditAndRepair")
+	}
+	gotItem, source := mgr.GetWithNamespace("gbf", activeKey)
+	if gotItem == nil || !bytes.Equal(gotItem.Data, activeBody) {
+		t.Fatalf("expected committed file to be readable from cache (source=%s), got %+v", source, gotItem)
+	}
+
+	// Verify corrupted item was evicted from ResidentPool and SLRU budget synced back up
+	if mgr.ramBudget.ResidentBytes() != 0 {
+		t.Fatalf("expected ResidentBytes to be 0 after corrupted resident item removal, got %d", mgr.ramBudget.ResidentBytes())
+	}
+	if mgr.ramCache.MaxBytes() <= slruCapBefore {
+		t.Fatalf("expected SLRU MaxBytes to increase after freeing resident bytes (before=%d, after=%d)", slruCapBefore, mgr.ramCache.MaxBytes())
+	}
+}
+
+func TestBreakdown_ClearCategories_SkippedChangedAndAlreadyMissingConsistency(t *testing.T) {
+	t.Run("SkippedChangedPreservesNewMemoryAndInFlightTokens", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 32)
+		defer mgr.Close()
+
+		headers := map[string]string{"content-type": "application/javascript"}
+		key := "assets/js/changing.js"
+		v1Body := []byte("console.log('v1');")
+		v2Body := []byte("console.log('v2_updated_after_scan');")
+		v3Body := []byte("console.log('v3_inflight_after_v2');")
+
+		if !mgr.SaveWithNamespace("gbf", key, headers, v1Body) {
+			t.Fatalf("SaveWithNamespace v1 failed")
+		}
+
+		snap := mgr.ScanBreakdownWithProgress(nil, nil)
+		if snap == nil || !snap.Valid {
+			t.Fatalf("expected valid snapshot")
+		}
+
+		// Update the asset to v2 on disk, in RAM, in ResidentPool, and in diskMeta after the snapshot
+		time.Sleep(15 * time.Millisecond)
+		if !mgr.SaveWithNamespace("gbf", key, headers, v2Body) {
+			t.Fatalf("SaveWithNamespace v2 failed")
+		}
+		rGen := mgr.residentPool.NextGeneration()
+		mgr.residentPool.ResetForGen(rGen)
+		ramKey := makeRAMKey("gbf", key)
+		mgr.residentPool.Set(ramKey, &CacheItem{
+			Key:         ramKey,
+			Data:        v2Body,
+			ContentType: "application/javascript",
+			Size:        int64(len(v2Body)),
+		})
+
+		// Also stage an in-flight v3 RAM save / persistence token acquired after v2
+		_, _, fileV3, genV3, tokV3, ok := mgr.saveRAMInternal("gbf", key, headers, v3Body, false, true)
+		if !ok {
+			t.Fatalf("saveRAMInternal v3 failed")
+		}
+		// Re-populate residentPool with v2 so we can verify neither ramCache(v3), residentPool, nor diskMeta(v2) are wiped
+		mgr.residentPool.Set(ramKey, &CacheItem{
+			Key:         ramKey,
+			Data:        v2Body,
+			ContentType: "application/javascript",
+			Size:        int64(len(v2Body)),
+		})
+		mgr.setDiskMeta(ramKey, diskMetaEntry{
+			size:      int64(len(v2Body)),
+			namespace: "gbf",
+			exists:    true,
+			hasMeta:   true,
+			verified:  true,
+		})
+
+		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+		}
+		if delRes.SkippedChangedCount != 1 || delRes.DeletedAssetFiles != 0 {
+			t.Fatalf("expected SkippedChangedCount=1 and DeletedAssetFiles=0, got %+v", delRes)
+		}
+
+		// 1. RAM cache must still contain v3
+		if ramItem, ok := mgr.ramCache.Get(ramKey); !ok || ramItem == nil || !bytes.Equal(ramItem.Data, v3Body) {
+			t.Fatalf("expected RAM cache entry to be preserved on SkippedChanged, got %+v", ramItem)
+		}
+		// 2. ResidentPool must still contain its entry
+		if resItem, ok := mgr.residentPool.Get(ramKey); !ok || resItem == nil {
+			t.Fatalf("expected ResidentPool entry to be preserved on SkippedChanged")
+		}
+		// 3. diskMeta must still be present
+		if _, ok := mgr.getDiskMeta(ramKey); !ok {
+			t.Fatalf("expected diskMeta entry to be preserved on SkippedChanged")
+		}
+		// 4. In-flight persistence token for v3 must still be valid and succeed in persisting to disk
+		if !mgr.saveToDiskWithToken(fileV3, headers, v3Body, genV3, tokV3) {
+			t.Fatalf("expected post-snapshot in-flight persistence token to remain valid after SkippedChanged")
+		}
+	})
+
+	t.Run("AlreadyMissingClearsMemoryAndInvalidatesStaleToken", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 32)
+		defer mgr.Close()
+
+		headers := map[string]string{"content-type": "application/javascript"}
+		key := "assets/js/vanished.js"
+		body := []byte("console.log('vanished');")
+
+		if !mgr.SaveWithNamespace("gbf", key, headers, body) {
+			t.Fatalf("SaveWithNamespace failed")
+		}
+
+		snap := mgr.ScanBreakdownWithProgress(nil, nil)
+		if snap == nil || !snap.Valid {
+			t.Fatalf("expected valid snapshot")
+		}
+
+		// Acquire a pre-deletion persistence token before the file vanishes
+		_, _, staleFile, staleGen, staleTok, ok := mgr.saveRAMInternal("gbf", key, headers, body, false, true)
+		if !ok {
+			t.Fatalf("saveRAMInternal failed")
+		}
+
+		// Externally remove the disk file and its .ext while leaving RAM / ResidentPool / diskMeta populated
+		diskPath := filepath.Join(tmpDir, "assets", "js", "vanished.js")
+		_ = os.Remove(diskPath)
+		_ = os.Remove(diskPath + ".ext")
+
+		rGen := mgr.residentPool.NextGeneration()
+		mgr.residentPool.ResetForGen(rGen)
+		ramKey := makeRAMKey("gbf", key)
+		mgr.residentPool.Set(ramKey, &CacheItem{
+			Key:         ramKey,
+			Data:        body,
+			ContentType: "application/javascript",
+			Size:        int64(len(body)),
+		})
+		mgr.setDiskMeta(ramKey, diskMetaEntry{
+			size:      int64(len(body)),
+			namespace: "gbf",
+			exists:    true,
+			hasMeta:   true,
+			verified:  true,
+		})
+
+		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+		}
+		if delRes.AlreadyMissingCount != 1 {
+			t.Fatalf("expected AlreadyMissingCount=1, got %+v", delRes)
+		}
+
+		// Memory states must be cleared and stale token invalidated even though disk file was AlreadyMissing
+		if _, ok := mgr.ramCache.Get(ramKey); ok {
+			t.Fatalf("expected RAM cache entry to be cleared when disk file is AlreadyMissing")
+		}
+		if _, ok := mgr.residentPool.Get(ramKey); ok {
+			t.Fatalf("expected ResidentPool entry to be cleared when disk file is AlreadyMissing")
+		}
+		if _, ok := mgr.getDiskMeta(ramKey); ok {
+			t.Fatalf("expected diskMeta entry to be cleared when disk file is AlreadyMissing")
+		}
+		if mgr.saveToDiskWithToken(staleFile, headers, body, staleGen, staleTok) {
+			t.Fatalf("expected pre-deletion token to be invalidated when disk file is AlreadyMissing")
+		}
+	})
+
+	t.Run("PathBoundaryFailurePreservesMemoryAndTokens", func(t *testing.T) {
+		parentDir := t.TempDir()
+		cacheRoot := filepath.Join(parentDir, "cache_root")
+		if err := os.MkdirAll(cacheRoot, 0755); err != nil {
+			t.Fatalf("MkdirAll cacheRoot failed: %v", err)
+		}
+		mgr := NewManager(cacheRoot, 32)
+		defer mgr.Close()
+
+		headers := map[string]string{"content-type": "application/javascript"}
+		key := "assets/js/boundary.js"
+		body := []byte("console.log('boundary');")
+		if !mgr.SaveWithNamespace("gbf", key, headers, body) {
+			t.Fatalf("SaveWithNamespace failed")
+		}
+
+		snap := mgr.ScanBreakdownWithProgress(nil, nil)
+		if snap == nil || !snap.Valid {
+			t.Fatalf("expected valid snapshot")
+		}
+
+		// Replace intermediate directory assets/js with a regular file so openPinnedParentRoot fails with a non-ENOENT error
+		jsDir := filepath.Join(cacheRoot, "assets", "js")
+		if err := os.RemoveAll(jsDir); err != nil {
+			t.Fatalf("RemoveAll jsDir failed: %v", err)
+		}
+		if err := os.WriteFile(jsDir, []byte("not_a_directory"), 0644); err != nil {
+			t.Fatalf("WriteFile blocker failed: %v", err)
+		}
+
+		// Populate RAM, ResidentPool, diskMeta, and acquire an active token
+		_, _, _, _, activeTok, ok := mgr.saveRAMInternal("gbf", key, headers, body, false, true)
+		if !ok {
+			t.Fatalf("saveRAMInternal failed")
+		}
+		ramKey := makeRAMKey("gbf", key)
+		rGen := mgr.residentPool.NextGeneration()
+		mgr.residentPool.ResetForGen(rGen)
+		mgr.residentPool.Set(ramKey, &CacheItem{
+			Key:         ramKey,
+			Data:        body,
+			ContentType: "application/javascript",
+			Size:        int64(len(body)),
+		})
+		mgr.setDiskMeta(ramKey, diskMetaEntry{
+			size:      int64(len(body)),
+			namespace: "gbf",
+			exists:    true,
+			hasMeta:   true,
+			verified:  true,
+		})
+
+		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+		if err != nil {
+			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+		}
+		if delRes.FailedCount != 1 {
+			t.Fatalf("expected FailedCount=1 on path boundary failure, got %+v", delRes)
+		}
+
+		if _, ok := mgr.ramCache.Get(ramKey); !ok {
+			t.Fatalf("expected RAM cache entry to be preserved on path boundary failure")
+		}
+		if _, ok := mgr.residentPool.Get(ramKey); !ok {
+			t.Fatalf("expected ResidentPool entry to be preserved on path boundary failure")
+		}
+		if _, ok := mgr.getDiskMeta(ramKey); !ok {
+			t.Fatalf("expected diskMeta entry to be preserved on path boundary failure")
+		}
+		shard := mgr.tokenShardByCanon(activeTok.canonKey)
+		shard.mu.Lock()
+		tokValid := isTokenValidLocked(shard, activeTok, mgr.generation)
+		shard.mu.Unlock()
+		if !tokValid {
+			t.Fatalf("expected active token to remain valid on path boundary failure")
+		}
+	})
+}
+
+
 
