@@ -601,6 +601,11 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 	return refs
 }
 
+func prefetchInflightKey(host, path string) string {
+	cleanP, _, _ := strings.Cut(path, "?")
+	return strings.ToLower(host) + cleanP
+}
+
 func (pe *PrefetchEngine) dispatchDiscoveredRefs(refs []discoveredRef) {
 	if pe == nil || pe.srv == nil || pe.srv.cacheMgr == nil {
 		return
@@ -615,7 +620,7 @@ func (pe *PrefetchEngine) dispatchDiscoveredRefs(refs []discoveredRef) {
 		if pe.deadFilter != nil && pe.deadFilter.IsDead(h, cleanP) {
 			continue
 		}
-		key := h + cleanP
+		key := prefetchInflightKey(h, cleanP)
 		pe.inflightMu.Lock()
 		if _, ok := pe.inflight[key]; ok {
 			pe.inflightMu.Unlock()
@@ -675,11 +680,13 @@ func (pe *PrefetchEngine) fetchWorker() {
 		if !ok {
 			return
 		}
-		key := item.host + item.path
+		key := prefetchInflightKey(item.host, item.path)
 		pe.processFetchItem(item)
 		pe.removeInflight(key)
 	}
 }
+
+var testBeforePrefetchSingleFlightDoHook func(flightKey string)
 
 func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	// P1 Dynamic yielding: pause if active dynamic API or foreground assets
@@ -711,9 +718,27 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	pe.srv.stats.IncPrefetchRequest()
 	fetchStart := time.Now()
 
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	stopWatchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-pe.stopChan:
+			cancelReq()
+		case <-stopWatchDone:
+		}
+	}()
+	defer func() {
+		close(stopWatchDone)
+		cancelReq()
+	}()
+
+	if testBeforePrefetchSingleFlightDoHook != nil {
+		testBeforePrefetchSingleFlightDoHook(flightKey)
+	}
+
 	// Execute through SingleFlight so concurrent foreground requests coalesce naturally
 	var prefetchSaved bool
-	res, err := pe.srv.cacheMgr.SingleFlight().DoContext(context.Background(), flightKey, func() (interface{}, error) {
+	res, err := pe.srv.cacheMgr.SingleFlight().DoContext(reqCtx, flightKey, func() (interface{}, error) {
 		// Double check cache in case it landed just before acquiring flight
 		if pe.srv.cacheMgr.SingleFlight().Waiters(flightKey) > 0 {
 			// Foreground is actively waiting: promote probationary items to protected
@@ -730,8 +755,14 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 			}
 		}
 
+		select {
+		case <-pe.stopChan:
+			return nil, nil
+		default:
+		}
+
 		upURL := fmt.Sprintf("https://%s%s", item.host, item.path)
-		req, err := http.NewRequestWithContext(context.Background(), "GET", upURL, nil)
+		req, err := http.NewRequestWithContext(reqCtx, "GET", upURL, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -748,15 +779,36 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
+			if reqCtx.Err() != nil || pe.IsStopped() {
+				return nil, nil
+			}
 			if err != nil {
 				return nil, err
 			}
 			return nil, fmt.Errorf("upstream returned %d", resp.StatusCode)
 		}
 
-		data, err := io.ReadAll(resp.Body)
+		maxRAMItemSize := pe.srv.cacheMgr.MaxRAMItemSize()
+		if maxRAMItemSize <= 0 {
+			maxRAMItemSize = 2 * 1024 * 1024
+		}
+		if resp.ContentLength > maxRAMItemSize {
+			_ = resp.Body.Close()
+			return nil, nil
+		}
+
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxRAMItemSize+1))
 		_ = resp.Body.Close()
-		if err != nil || len(data) == 0 {
+		if err != nil {
+			if reqCtx.Err() != nil || pe.IsStopped() {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("empty body: %v", err)
+		}
+		if int64(len(data)) > maxRAMItemSize {
+			return nil, nil
+		}
+		if len(data) == 0 {
 			return nil, fmt.Errorf("empty body: %v", err)
 		}
 

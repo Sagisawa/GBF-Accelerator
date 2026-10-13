@@ -1319,7 +1319,7 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		host = h
 		reqPort = p
 	}
-	hostTrimmed := strings.Trim(host, "[]")
+	hostTrimmed := strings.ToLower(strings.Trim(host, "[]"))
 
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
@@ -1345,8 +1345,8 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 
 	isLocalHost := hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
 		hostTrimmed == "::1" || hostTrimmed == "proxy" || hostTrimmed == "gbf-proxy" ||
-		(localIP != "" && hostTrimmed == localIP) ||
-		(config.GetLANIP() != "" && hostTrimmed == config.GetLANIP())
+		(localIP != "" && strings.EqualFold(hostTrimmed, localIP)) ||
+		(config.GetLANIP() != "" && strings.EqualFold(hostTrimmed, config.GetLANIP()))
 
 	// A proxy client may address the listener using any of the machine's private
 	// LAN addresses (important on multi-NIC hosts). The proxy port is the anchor:
@@ -1382,7 +1382,8 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 		if hp, _, err := net.SplitHostPort(req.Host); err == nil {
 			hostNoPort = hp
 		}
-		if hostNoPort != "" && hostNoPort != "127.0.0.1" && hostNoPort != "localhost" && hostNoPort != "::1" {
+		hostNoPortLower := strings.ToLower(strings.Trim(hostNoPort, "[]"))
+		if hostNoPortLower != "" && hostNoPortLower != "127.0.0.1" && hostNoPortLower != "localhost" && hostNoPortLower != "::1" {
 			h = hostNoPort
 		}
 		pacText := GetPAC(h, cfg.ListenPort)
@@ -1432,7 +1433,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		hostOnly = h
 		reqPort = p
 	}
-	hostTrimmed := strings.Trim(hostOnly, "[]")
+	hostTrimmed := strings.ToLower(strings.Trim(hostOnly, "[]"))
 	effectivePort := reqPort
 	if effectivePort == "" {
 		effectivePort = "80"
@@ -1448,8 +1449,8 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	isProxyPort := effectivePort == listenPortStr || effectivePort == localPort
 	isSelfHost := hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
 		hostTrimmed == "::1" || hostTrimmed == "proxy" || hostTrimmed == "gbf-proxy" ||
-		(localIP != "" && hostTrimmed == localIP) ||
-		(config.GetLANIP() != "" && hostTrimmed == config.GetLANIP())
+		(localIP != "" && strings.EqualFold(hostTrimmed, localIP)) ||
+		(config.GetLANIP() != "" && strings.EqualFold(hostTrimmed, config.GetLANIP()))
 
 	if isProxyPort && isSelfHost {
 		writeHTTPResponse(conn, http.StatusNotFound, nil, nil, req.Method == http.MethodHead, true)
@@ -4478,7 +4479,7 @@ func isExternalGBFDomain(host string) bool {
 	if hp, _, err := net.SplitHostPort(host); err == nil {
 		host = hp
 	}
-	host = strings.Trim(host, "[]")
+	host = strings.ToLower(strings.Trim(host, "[]"))
 	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
 		return false
 	}
@@ -4489,7 +4490,7 @@ func isPrivateOrLocalHost(host string) bool {
 	if hp, _, err := net.SplitHostPort(host); err == nil {
 		host = hp
 	}
-	host = strings.Trim(host, "[]")
+	host = strings.ToLower(strings.Trim(host, "[]"))
 	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
 		return true
 	}
@@ -4508,6 +4509,7 @@ func isStaticTargetLower(host, pathLower string) bool {
 	if hp, _, err := net.SplitHostPort(host); err == nil {
 		host = hp
 	}
+	host = strings.ToLower(strings.TrimRight(host, "."))
 	p := pathLower
 
 	// Dynamic prefixes are strictly non-static

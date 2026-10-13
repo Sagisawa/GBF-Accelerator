@@ -154,4 +154,39 @@ describe('useKeyboardShortcuts', () => {
     expect(onCloseAll).toHaveBeenCalledTimes(1)
     expect(event.preventDefault).toHaveBeenCalled()
   })
+
+  it('blocks all single-key shortcuts (including l/L, d/D, c/C, ?, Space) while any modal is open', () => {
+    const onToggleProxy = vi.fn()
+    const onToggleLogs = vi.fn()
+    const onToggleDirect = vi.fn()
+    const onOpenClearModal = vi.fn()
+    const onOpenShortcutsModal = vi.fn()
+    const onCloseAll = vi.fn()
+
+    useKeyboardShortcuts({
+      onToggleProxy,
+      onToggleLogs,
+      onToggleDirect,
+      onOpenClearModal,
+      onOpenShortcutsModal,
+      onCloseAll,
+      isModalOpen: true,
+    })
+
+    dispatchKeydown({ key: ' ', code: 'Space' })
+    dispatchKeydown({ key: 'l' })
+    dispatchKeydown({ key: 'L' })
+    dispatchKeydown({ key: 'd' })
+    dispatchKeydown({ key: 'D' })
+    dispatchKeydown({ key: 'c' })
+    dispatchKeydown({ key: 'C' })
+    dispatchKeydown({ key: '?' })
+
+    expect(onToggleProxy).not.toHaveBeenCalled()
+    expect(onToggleLogs).not.toHaveBeenCalled()
+    expect(onToggleDirect).not.toHaveBeenCalled()
+    expect(onOpenClearModal).not.toHaveBeenCalled()
+    expect(onOpenShortcutsModal).not.toHaveBeenCalled()
+    expect(onCloseAll).not.toHaveBeenCalled()
+  })
 })

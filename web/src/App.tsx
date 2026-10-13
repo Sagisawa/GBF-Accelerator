@@ -1048,7 +1048,13 @@ export const App: React.FC = () => {
     setIsLatencyModalOpen(false)
     setIsHealthModalOpen(false)
     setIsAuditModalOpen(false)
+    setIsBoostModalOpen(false)
     setIsUpdateModalOpen(false)
+    setIsUpstreamSelectModalOpen(false)
+    setIsShimakazeSuggestOpen(false)
+    if (!quitting) {
+      setIsQuitModalOpen(false)
+    }
     setCaModalAction(null)
   }
 
@@ -1061,7 +1067,11 @@ export const App: React.FC = () => {
     isLatencyModalOpen ||
     isHealthModalOpen ||
     isAuditModalOpen ||
+    isBoostModalOpen ||
     isUpdateModalOpen ||
+    isUpstreamSelectModalOpen ||
+    isShimakazeSuggestOpen ||
+    isQuitModalOpen ||
     caModalAction !== null ||
     isStandaloneLogsPage
 

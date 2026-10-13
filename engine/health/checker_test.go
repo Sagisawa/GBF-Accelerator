@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"gbf-proxy/cache"
 	"gbf-proxy/cert"
 	"gbf-proxy/config"
+	"gbf-proxy/firewall"
 	"gbf-proxy/proxy"
 	"gbf-proxy/sysproxy"
 	"gbf-proxy/telemetry"
@@ -406,6 +408,48 @@ func TestChecker_LANDisabledCondition(t *testing.T) {
 	}
 	if item.Details["allow_lan"] != false {
 		t.Errorf("expected allow_lan false in details")
+	}
+}
+
+func TestChecker_LANFirewallUnsupportedPlatform(t *testing.T) {
+	if config.GetLANIP() == "" {
+		t.Skip("skipping LAN firewall check test on host without active LAN IP")
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.AllowLAN = true
+
+	// 1. Simulate non-Windows firewall status (OK=true, Supported=false, Allowed=false)
+	checker := NewChecker(nil, nil, nil, nil, nil, nil)
+	checker.SetFirewallStatusFunc(func(port int) (firewall.Status, error) {
+		return firewall.Status{
+			OK:        true,
+			Supported: false,
+			Allowed:   false,
+			Port:      port,
+		}, nil
+	})
+
+	item := checker.checkLANFirewall(cfg)
+	if item.Status != StatusOk || item.Code != "LAN_OK" {
+		t.Fatalf("expected StatusOk with LAN_OK when Windows firewall integration is unsupported, got %s (%s: %s)",
+			item.Status, item.Code, item.Message)
+	}
+	if item.Details["firewall_checked"] != false {
+		t.Errorf("expected firewall_checked=false when Supported=false, got %v", item.Details["firewall_checked"])
+	}
+
+	// 2. On actual non-Windows platforms, default NewChecker (without SetFirewallStatusFunc)
+	// must also return LAN_OK and never trigger FIREWALL_RULE_MISSING.
+	if runtime.GOOS != "windows" {
+		defaultChecker := NewChecker(nil, nil, nil, nil, nil, nil)
+		defaultItem := defaultChecker.checkLANFirewall(cfg)
+		if defaultItem.Status != StatusOk || defaultItem.Code != "LAN_OK" {
+			t.Fatalf("expected LAN_OK on non-Windows default checker, got %s (%s)", defaultItem.Code, defaultItem.Status)
+		}
+		if defaultItem.Details["firewall_checked"] != false {
+			t.Errorf("expected firewall_checked=false on non-Windows default checker, got %v", defaultItem.Details["firewall_checked"])
+		}
 	}
 }
 

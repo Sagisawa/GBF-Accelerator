@@ -373,7 +373,7 @@ func isLoopbackRemoteAddr(remoteAddr string) bool {
 	return ip.Equal(net.IPv6loopback)
 }
 
-func isAllowedControlHost(reqHost string, allowLAN bool) bool {
+func isAllowedControlHost(reqHost string) bool {
 	if reqHost == "" {
 		return false
 	}
@@ -382,16 +382,7 @@ func isAllowedControlHost(reqHost string, allowLAN bool) bool {
 		host = h
 	}
 	host = strings.ToLower(strings.Trim(host, "[]"))
-	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
-		return true
-	}
-	if allowLAN {
-		lanIP := strings.ToLower(config.GetLANIP())
-		if lanIP != "" && host == lanIP {
-			return true
-		}
-	}
-	return false
+	return host == "127.0.0.1" || host == "localhost" || host == "::1"
 }
 
 func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
@@ -400,7 +391,7 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if !isAllowedControlHost(req.Host, c.cfgMgr.Get().AllowLAN) {
+	if !isAllowedControlHost(req.Host) {
 		http.Error(w, "Forbidden: Invalid Host header (DNS Rebinding Protection)", http.StatusForbidden)
 		return
 	}

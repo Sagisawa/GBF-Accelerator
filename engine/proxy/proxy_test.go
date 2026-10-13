@@ -1122,3 +1122,98 @@ func TestProxyHostsPathAndNamespaceIsolation(t *testing.T) {
 		t.Fatalf("expected 3 distinct upstream fetches, got %d", hits)
 	}
 }
+
+func TestPlainHTTPHostCaseNormalizationAndStaticTarget(t *testing.T) {
+	// 1. Verify isStaticTarget / isStaticTargetLower with uppercase CDN hosts
+	if !isStaticTarget("GAME-A.GRANBLUEFANTASY.JP", "/custom/unknown_ext_resource") {
+		t.Fatal("expected uppercase GAME-A.GRANBLUEFANTASY.JP to be recognized as static target")
+	}
+	if !isStaticTarget("PRD-GAME-A-GRANBLUEFANTASY.AKAMAIZED.NET", "/assets/js/app.js") {
+		t.Fatal("expected uppercase Akamai host to be recognized as static target")
+	}
+	if isStaticTarget("GAME-A.GRANBLUEFANTASY.JP", "/rest/multiraid/start.json") {
+		t.Fatal("expected dynamic /rest/ path on uppercase host to remain non-static")
+	}
+
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = 8124
+	})
+	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	defer srv.Stop()
+
+	runPlainHTTP := func(reqStr string) *http.Response {
+		c1, c2 := net.Pipe()
+		defer c1.Close()
+		defer c2.Close()
+
+		req, err := http.ReadRequest(bufio.NewReader(strings.NewReader(reqStr)))
+		if err != nil {
+			t.Fatalf("ReadRequest failed: %v", err)
+		}
+		go func() {
+			defer c2.Close()
+			srv.handlePlainHTTP(c2, req)
+		}()
+		resp, err := http.ReadResponse(bufio.NewReader(c1), req)
+		if err != nil {
+			t.Fatalf("ReadResponse failed: %v", err)
+		}
+		return resp
+	}
+
+	// 2. LOCALHOST:8124/ca.crt -> 200 OK certificate download
+	respCA := runPlainHTTP("GET /ca.crt HTTP/1.1\r\nHost: LOCALHOST:8124\r\nConnection: close\r\n\r\n")
+	defer respCA.Body.Close()
+	if respCA.StatusCode != http.StatusOK || respCA.Header.Get("Content-Type") != "application/x-x509-ca-cert" {
+		t.Fatalf("expected 200 x509 cert for LOCALHOST:8124/ca.crt, got status=%d ct=%q", respCA.StatusCode, respCA.Header.Get("Content-Type"))
+	}
+
+	// 3. LOCALHOST:8124/proxy.pac -> 200 OK PAC referencing 127.0.0.1:8124
+	respPAC := runPlainHTTP("GET /proxy.pac HTTP/1.1\r\nHost: LOCALHOST:8124\r\nConnection: close\r\n\r\n")
+	defer respPAC.Body.Close()
+	pacBody, _ := io.ReadAll(respPAC.Body)
+	if respPAC.StatusCode != http.StatusOK || !bytes.Contains(pacBody, []byte("PROXY 127.0.0.1:8124")) {
+		t.Fatalf("expected PAC for LOCALHOST:8124 to use 127.0.0.1:8124, got status=%d body=%s", respPAC.StatusCode, string(pacBody))
+	}
+
+	// 4. LOCALHOST:8124/ -> 200 OK landing guide
+	respGuide := runPlainHTTP("GET / HTTP/1.1\r\nHost: LOCALHOST:8124\r\nConnection: close\r\n\r\n")
+	defer respGuide.Body.Close()
+	if respGuide.StatusCode != http.StatusOK || !strings.Contains(respGuide.Header.Get("Content-Type"), "text/html") {
+		t.Fatalf("expected 200 HTML landing page for LOCALHOST:8124/, got status=%d ct=%q", respGuide.StatusCode, respGuide.Header.Get("Content-Type"))
+	}
+
+	// 5. LOCALHOST:8124/unknown-self-loop -> 404 Not Found via self-loop prevention
+	respLoop := runPlainHTTP("GET http://LOCALHOST:8124/unknown-self-loop HTTP/1.1\r\nHost: LOCALHOST:8124\r\nConnection: close\r\n\r\n")
+	defer respLoop.Body.Close()
+	if respLoop.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 Not Found for self-loop request to LOCALHOST:8124, got %d", respLoop.StatusCode)
+	}
+
+	// 6. Plain HTTP static asset with uppercase CDN Host routes to handleStaticAsset and hits cache
+	const assetPath = "/assets/js/upper_host_test.js"
+	const assetBody = "console.log('upper_host_cached');"
+	cacheMgr.SaveRAMValidatedWithNamespace("gbf", assetPath, map[string]string{
+		"content-type": "application/javascript",
+		"etag":         `"upper-etag"`,
+	}, []byte(assetBody))
+
+	respAsset := runPlainHTTP("GET http://PRD-GAME-A-GRANBLUEFANTASY.AKAMAIZED.NET" + assetPath + " HTTP/1.1\r\nHost: PRD-GAME-A-GRANBLUEFANTASY.AKAMAIZED.NET\r\nConnection: close\r\n\r\n")
+	defer respAsset.Body.Close()
+	gotAsset, _ := io.ReadAll(respAsset.Body)
+	if respAsset.StatusCode != http.StatusOK || string(gotAsset) != assetBody {
+		t.Fatalf("expected 200 cached asset for uppercase CDN host, got status=%d body=%q", respAsset.StatusCode, string(gotAsset))
+	}
+}
+

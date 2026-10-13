@@ -387,7 +387,7 @@ function Build-DarwinArch ([string]$Arch) {
 # Package a single macOS release zip with a stable universal2 asset name so the
 # updater's cross-platform matching (which prefers "universal") stays consistent
 # across both build scripts. On hosts with `lipo` (macOS), both architectures are
-# merged into a true Universal 2 binary; otherwise the arm64 build is shipped.
+# merged into a true Universal 2 binary; packaging fails if `lipo` is unavailable.
 function Build-Darwin {
     Build-DarwinArch "arm64"
     Build-DarwinArch "amd64"
@@ -456,6 +456,8 @@ function Build-Darwin {
     <key>LSMinimumSystemVersion</key>
     <string>10.15</string>
     <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSUIElement</key>
     <true/>
 </dict>
 </plist>

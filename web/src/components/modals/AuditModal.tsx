@@ -20,12 +20,18 @@ export const AuditModal: React.FC<AuditModalProps> = ({
   const [running, setRunning] = useState(false)
   const [taskStatus, setTaskStatus] = useState<any | null>(null)
   const pollTimerRef = useRef<any>(null)
+  const auditTaskIdRef = useRef<string | null>(null)
 
   const fetchStatus = async () => {
     try {
       const data = await fetchCacheTaskStatus()
       setTaskStatus(data)
       setRunning(Boolean(data?.is_auditing))
+      if (data?.is_auditing && data?.active_task_id) {
+        auditTaskIdRef.current = String(data.active_task_id)
+      } else if (!data?.is_auditing) {
+        auditTaskIdRef.current = null
+      }
     } catch {}
   }
 
@@ -44,7 +50,10 @@ export const AuditModal: React.FC<AuditModalProps> = ({
   const handleStartAudit = async () => {
     setRunning(true)
     try {
-      await auditCache()
+      const res = await auditCache()
+      if (res?.task_id) {
+        auditTaskIdRef.current = String(res.task_id)
+      }
       onToast('缓存体检任务已在后台启动', 'info')
       fetchStatus()
       onRefresh()
@@ -56,7 +65,17 @@ export const AuditModal: React.FC<AuditModalProps> = ({
 
   const handleCancelAudit = async () => {
     try {
-      await cancelCacheTask()
+      const targetTaskId =
+        (taskStatus?.is_auditing && taskStatus?.active_task_id
+          ? String(taskStatus.active_task_id)
+          : '') ||
+        auditTaskIdRef.current ||
+        ''
+      if (!targetTaskId) {
+        await fetchStatus()
+        return
+      }
+      await cancelCacheTask(targetTaskId)
       onToast('已请求终止体检任务', 'info')
       fetchStatus()
     } catch (e: any) {
@@ -66,6 +85,15 @@ export const AuditModal: React.FC<AuditModalProps> = ({
 
   const isAuditing = Boolean(taskStatus?.is_auditing)
   const isSlimming = Boolean(taskStatus?.is_slimming)
+  const isOtherTaskActive =
+    !isAuditing &&
+    Boolean(
+      taskStatus?.active_task_id ||
+        isSlimming ||
+        taskStatus?.is_scanning ||
+        taskStatus?.is_clearing_category ||
+        taskStatus?.is_boosting
+    )
   const progress = taskStatus?.audit_progress
 
   return (
@@ -154,10 +182,14 @@ export const AuditModal: React.FC<AuditModalProps> = ({
               variant="primary"
               size="sm"
               loading={running}
-              disabled={isSlimming}
+              disabled={running || isOtherTaskActive}
               onClick={handleStartAudit}
             >
-              {isSlimming ? '瘦身任务执行中...' : '立即开始体检'}
+              {isSlimming
+                ? '瘦身任务执行中...'
+                : isOtherTaskActive
+                  ? '其他缓存任务执行中...'
+                  : '立即开始体检'}
             </Button>
           )}
         </div>

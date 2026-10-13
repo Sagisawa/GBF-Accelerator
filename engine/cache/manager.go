@@ -2280,7 +2280,7 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 	if !m.registerTempFileTokenLocked(tmpDataPath, tok) {
 		_ = f.Close()
 		_ = os.Remove(tmpDataPath)
-		return nil, "", 0, fmt.Errorf("cache generation changed during temp file creation")
+		return nil, "", 0, fmt.Errorf("temp file token registration rejected (generation changed or registry full)")
 	}
 	return f, tmpDataPath, generation, nil
 }
@@ -2289,10 +2289,9 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 // It renames the temp file to the final path, writes the .ext metadata file, updates diskMeta,
 // and clears any negative cache entry.
 func (m *Manager) CommitDiskTempFile(ns, urlPath string, headers map[string]string, tmpFilePath string, totalSize int64, generation uint64) (*CacheItem, bool) {
-	tok, hasTok := m.popTempFileToken(tmpFilePath)
-
 	m.persistMu.RLock()
 	defer m.persistMu.RUnlock()
+	tok, hasTok := m.popTempFileToken(tmpFilePath)
 	if generation != m.generation {
 		_ = os.Remove(tmpFilePath)
 		return nil, false
@@ -2507,7 +2506,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
 			if strings.Contains(p, ".tmp.") {
 				m.persistMu.Lock()
-				_ = os.Remove(p)
+				if !m.isActiveTempFileLocked(p) {
+					_ = os.Remove(p)
+				}
 				m.persistMu.Unlock()
 			}
 			return nil
@@ -2571,6 +2572,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 	})
 
 	if corrupted > 0 {
+		if m.ramBudget != nil && m.residentPool != nil && m.residentPool.Enabled() {
+			m.ramBudget.SyncSLRU(m.ramCache)
+		}
 		m.invalidateSnapshots("缓存体检清理了损坏文件")
 	}
 

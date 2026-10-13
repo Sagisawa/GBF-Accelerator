@@ -23,6 +23,7 @@ import {
 } from '../../api'
 import {
   BreakdownResponse,
+  BreakdownSnapshot,
   CategoryStat,
   DeleteResult,
   CleanupProgress,
@@ -69,6 +70,28 @@ function sortCategoriesWithCautionLast(categories: CategoryStat[]): CategoryStat
   })
 }
 
+export function resolveDefaultNamespaces(
+  snapshot: Pick<BreakdownSnapshot, 'namespaces' | 'retention_previews'> | null | undefined
+): string[] {
+  const nsEntries = snapshot?.namespaces || []
+  if (nsEntries.length === 0) {
+    return ['gbf']
+  }
+  const gbfEntry = nsEntries.find((n) => n.namespace === 'gbf')
+  const gbfPruneDirs = snapshot?.retention_previews?.['8']?.prune_dirs ?? 0
+  if (gbfEntry && (gbfEntry.asset_files > 0 || gbfPruneDirs > 0)) {
+    return ['gbf']
+  }
+  const nonEmpty = nsEntries.filter((n) => n.asset_files > 0).map((n) => n.namespace)
+  if (nonEmpty.length > 0) {
+    return nonEmpty
+  }
+  if (gbfEntry) {
+    return ['gbf']
+  }
+  return [nsEntries[0].namespace]
+}
+
 function formatTimestamp(ms?: number): string {
   if (!ms || ms <= 0) return '--'
   try {
@@ -109,6 +132,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const statusReqSeqRef = useRef<number>(0)
   const statusInFlightCountRef = useRef<number>(0)
   const breakdownScanningRef = useRef<boolean>(false)
+  const activeModalTaskIdRef = useRef<string | null>(null)
 
   const loadBreakdown = useCallback(async () => {
     const reqSeq = ++breakdownReqSeqRef.current
@@ -116,6 +140,9 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       const data = await fetchCacheBreakdown()
       if (reqSeq !== breakdownReqSeqRef.current) return
       breakdownScanningRef.current = Boolean(data?.is_scanning)
+      if (data?.is_scanning && data?.active_task_id) {
+        activeModalTaskIdRef.current = String(data.active_task_id)
+      }
       setBreakdown(data)
     } catch {
       // Ignore transient poll errors
@@ -129,11 +156,21 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       const data = await fetchCacheTaskStatus()
       if (reqSeq !== statusReqSeqRef.current) return
       setTaskStatus(data)
+      const isModalTaskRunning = Boolean(
+        data?.is_scanning || data?.is_clearing_category || data?.is_slimming
+      )
+      if (isModalTaskRunning && data?.active_task_id) {
+        activeModalTaskIdRef.current = String(data.active_task_id)
+      } else if (!isModalTaskRunning) {
+        activeModalTaskIdRef.current = null
+      }
       const busy = Boolean(
         data?.is_scanning ||
           data?.is_clearing_category ||
           data?.is_slimming ||
-          data?.is_auditing
+          data?.is_auditing ||
+          data?.is_boosting ||
+          data?.active_task_id
       )
       if ((prevBusyRef.current && !busy) || (!data?.is_scanning && breakdownScanningRef.current)) {
         breakdownScanningRef.current = false
@@ -170,14 +207,25 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const snapshot = breakdown?.snapshot
   const isSnapshotReady = Boolean(snapshot && snapshot.status === 'completed' && snapshot.valid && !snapshot.stale)
   const activeSnapshotId = isSnapshotReady && snapshot ? snapshot.snapshot_id : null
+  const defaultNamespaces = useMemo(() => resolveDefaultNamespaces(snapshot), [snapshot])
 
   useEffect(() => {
     if (prevSnapshotIdRef.current !== activeSnapshotId) {
       prevSnapshotIdRef.current = activeSnapshotId
       setConfirmingCategoryClean(false)
-      setSelectedCategories([])
+      setSelectedCategories((prev) => (prev.length === 0 ? prev : []))
+      setSelectedNamespaces(resolveDefaultNamespaces(snapshot))
     }
-  }, [activeSnapshotId])
+  }, [activeSnapshotId, snapshot])
+
+  const effectiveSelectedNamespaces = useMemo<string[]>(() => {
+    const available = new Set((snapshot?.namespaces || []).map((n) => n.namespace))
+    if (available.size === 0) {
+      return selectedNamespaces.length > 0 ? selectedNamespaces : defaultNamespaces
+    }
+    const validSelected = selectedNamespaces.filter((ns) => available.has(ns))
+    return validSelected.length > 0 ? validSelected : defaultNamespaces
+  }, [snapshot, selectedNamespaces, defaultNamespaces])
 
   const isScanning =
     taskStatus !== null ? Boolean(taskStatus?.is_scanning) : Boolean(breakdown?.is_scanning)
@@ -200,15 +248,16 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   const slimProgress = taskStatus?.slim_progress
   const lastCleanupResult: DeleteResult | undefined = taskStatus?.last_cleanup_result
   const isGbfNamespaceSelected =
-    selectedNamespaces.length === 0 || selectedNamespaces.includes('gbf')
+    effectiveSelectedNamespaces.length === 0 || effectiveSelectedNamespaces.includes('gbf')
   const preview: VersionRetentionPreview | undefined = isGbfNamespaceSelected
     ? snapshot?.retention_previews?.['8']
     : undefined
 
-  // Compute per-category stats filtered by currently selected namespaces (defaulting to ['gbf'])
+  // Compute per-category stats filtered by currently selected namespaces
   const effectiveCategoryStats = useMemo<CategoryStat[]>(() => {
     if (!snapshot?.categories) return []
-    const nsList = selectedNamespaces.length > 0 ? selectedNamespaces : ['gbf']
+    const nsList =
+      effectiveSelectedNamespaces.length > 0 ? effectiveSelectedNamespaces : defaultNamespaces
     const nsSet = new Set(nsList)
     const matchingNamespaces = (snapshot.namespaces || []).filter((n) => nsSet.has(n.namespace))
 
@@ -252,7 +301,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       }
     })
     return sortCategoriesWithCautionLast(computed)
-  }, [snapshot, selectedNamespaces])
+  }, [snapshot, effectiveSelectedNamespaces, defaultNamespaces])
 
   const selectedCategorySummary = useMemo(() => {
     const sel = new Set(selectedCategories)
@@ -277,7 +326,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     setStartingScan(true)
     setConfirmingCategoryClean(false)
     try {
-      await startCacheBreakdownScan()
+      const res = await startCacheBreakdownScan()
+      if (res?.task_id) {
+        activeModalTaskIdRef.current = String(res.task_id)
+      }
       prevBusyRef.current = true
       onToast('磁盘缓存扫描已在后台启动', 'info')
       await loadTaskStatus()
@@ -291,7 +343,22 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
   const handleCancelActiveTask = async () => {
     try {
-      const activeId = taskStatus?.active_task_id || undefined
+      const isModalTaskRunning = Boolean(
+        taskStatus?.is_scanning || taskStatus?.is_clearing_category || taskStatus?.is_slimming
+      )
+      const activeId =
+        (isModalTaskRunning && taskStatus?.active_task_id
+          ? String(taskStatus.active_task_id)
+          : '') ||
+        activeModalTaskIdRef.current ||
+        (breakdown?.is_scanning && breakdown?.active_task_id
+          ? String(breakdown.active_task_id)
+          : '')
+      if (!activeId) {
+        await loadTaskStatus()
+        await loadBreakdown()
+        return
+      }
       await cancelCacheTask(activeId)
       onToast('已发送取消请求', 'info')
       await loadTaskStatus()
@@ -310,9 +377,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
   const toggleNamespace = (ns: string) => {
     setConfirmingCategoryClean(false)
-    setSelectedNamespaces((prev) => {
-      const next = prev.includes(ns) ? prev.filter((item) => item !== ns) : [...prev, ns]
-      const resolved = next.length > 0 ? next : ['gbf']
+    setSelectedNamespaces(() => {
+      const base = effectiveSelectedNamespaces
+      const next = base.includes(ns) ? base.filter((item) => item !== ns) : [...base, ns]
+      const resolved = next.length > 0 ? next : defaultNamespaces
       if (!resolved.includes('gbf')) {
         setSelectedCategories((cats) => cats.filter((c) => c !== 'versioned'))
       }
@@ -333,13 +401,25 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     try {
       const hasVersioned = selectedCategories.includes('versioned')
       const regularCategories = selectedCategories.filter((c) => c !== 'versioned')
-      const nsList = selectedNamespaces.length > 0 ? selectedNamespaces : ['gbf']
+      const nsList =
+        effectiveSelectedNamespaces.length > 0 ? effectiveSelectedNamespaces : defaultNamespaces
 
       if (regularCategories.length === 0 && hasVersioned) {
-        await slimCache(8, snapshot.snapshot_id)
+        const res = await slimCache(8, snapshot.snapshot_id)
+        if (res?.task_id) {
+          activeModalTaskIdRef.current = String(res.task_id)
+        }
         onToast('历史旧版本清理已在后台启动（自动保留最新 8 个版本）', 'info')
       } else {
-        await clearCacheCategories(snapshot.snapshot_id, regularCategories, nsList, hasVersioned)
+        const res = await clearCacheCategories(
+          snapshot.snapshot_id,
+          regularCategories,
+          nsList,
+          hasVersioned
+        )
+        if (res?.task_id) {
+          activeModalTaskIdRef.current = String(res.task_id)
+        }
         onToast('缓存清理任务已在后台启动', 'info')
       }
       prevBusyRef.current = true
@@ -693,11 +773,14 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   </div>
                 </div>
 
-                {/* Namespace Filter (when multiple namespaces exist) */}
-                {snapshot.namespaces && snapshot.namespaces.length > 1 && (
+                {/* Namespace Filter (when multiple namespaces or a non-gbf namespace exist) */}
+                {snapshot.namespaces &&
+                  (snapshot.namespaces.length > 1 ||
+                    (snapshot.namespaces.length === 1 &&
+                      snapshot.namespaces[0].namespace !== 'gbf')) && (
                   <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between flex-wrap gap-2 text-[11px]">
                     <span className="font-semibold text-slate-700">
-                      清理域名范围 (默认仅 gbf)：
+                      清理域名范围：
                     </span>
                     <div className="flex items-center gap-3 flex-wrap">
                       {snapshot.namespaces.map((ns) => (
@@ -707,7 +790,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                         >
                           <input
                             type="checkbox"
-                            checked={selectedNamespaces.includes(ns.namespace)}
+                            checked={effectiveSelectedNamespaces.includes(ns.namespace)}
                             onChange={() => toggleNamespace(ns.namespace)}
                             disabled={!isSnapshotReady || hasAnyActiveTask}
                             className="w-3.5 h-3.5 rounded text-sky-600 accent-sky-600"

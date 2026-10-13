@@ -709,7 +709,13 @@ func (m *Manager) registerTempFileToken(tmpPath string, tok opToken) bool {
 	return m.registerTempFileTokenLocked(tmpPath, tok)
 }
 
+const maxActiveTempTokens = 1024
+
 func (m *Manager) registerTempFileTokenLocked(tmpPath string, tok opToken) bool {
+	if tmpPath == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(tmpPath)
 	curGen := m.generation
 	if tok.gen == 0 || tok.gen != curGen {
 		return false
@@ -719,8 +725,8 @@ func (m *Manager) registerTempFileTokenLocked(tmpPath string, tok opToken) bool 
 	if m.tempTokens == nil {
 		m.tempTokens = make(map[string]opToken)
 	}
-	if len(m.tempTokens) >= 1024 {
-		// First sweep entries whose generation doesn't match the current generation or whose temp file was already removed
+	if _, exists := m.tempTokens[cleanPath]; !exists && len(m.tempTokens) >= maxActiveTempTokens {
+		// Sweep entries whose generation doesn't match the current generation or whose temp file was already removed
 		for k, v := range m.tempTokens {
 			if v.gen != curGen {
 				delete(m.tempTokens, k)
@@ -730,44 +736,56 @@ func (m *Manager) registerTempFileTokenLocked(tmpPath string, tok opToken) bool 
 				delete(m.tempTokens, k)
 			}
 		}
-	}
-	if len(m.tempTokens) >= 1024 {
-		// Evict excess entries; CommitDiskTempFile fails closed when a token is missing (!hasTok)
-		count := 0
-		for k := range m.tempTokens {
-			delete(m.tempTokens, k)
-			count++
-			if count >= 256 {
-				break
-			}
+		if len(m.tempTokens) >= maxActiveTempTokens {
+			// Refuse new registration rather than evicting active tokens that protect in-flight temp files
+			return false
 		}
 	}
-	m.tempTokens[tmpPath] = tok
+	m.tempTokens[cleanPath] = tok
 	return true
 }
 
 func (m *Manager) popTempFileToken(tmpPath string) (opToken, bool) {
+	if tmpPath == "" {
+		return opToken{}, false
+	}
+	cleanPath := filepath.Clean(tmpPath)
 	m.tempTokensMu.Lock()
 	if m.tempTokens == nil {
 		m.tempTokensMu.Unlock()
 		return opToken{}, false
 	}
-	tok, ok := m.tempTokens[tmpPath]
+	tok, ok := m.tempTokens[cleanPath]
 	if ok {
-		delete(m.tempTokens, tmpPath)
+		delete(m.tempTokens, cleanPath)
 	}
 	m.tempTokensMu.Unlock()
 	return tok, ok
 }
 
-// DiscardDiskTempFile removes a temporary download file's token registration
-// and deletes the temporary file from disk if present.
+func (m *Manager) isActiveTempFileLocked(tmpPath string) bool {
+	if tmpPath == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(tmpPath)
+	curGen := m.generation
+	m.tempTokensMu.Lock()
+	defer m.tempTokensMu.Unlock()
+	if m.tempTokens == nil {
+		return false
+	}
+	tok, ok := m.tempTokens[cleanPath]
+	return ok && tok.gen != 0 && tok.gen == curGen
+}
+
+// DiscardDiskTempFile removes a temporary download file from disk if present
+// and clears its token registration.
 func (m *Manager) DiscardDiskTempFile(tmpPath string) {
 	if tmpPath == "" {
 		return
 	}
-	m.popTempFileToken(tmpPath)
 	_ = os.Remove(tmpPath)
+	m.popTempFileToken(tmpPath)
 }
 
 func (m *Manager) clearTempTokens() {
@@ -2607,14 +2625,12 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	shard, canonKey := m.tokenShardFor(normNS, normKey)
 	shard.mu.Lock()
 
-	// 1. Advance per-key invalidation token and clear all in-memory representations
-	bumpInvalidateTokenLocked(shard, canonKey)
-	m.clearKeyMemoryState(normNS, normKey)
-
-	// 2. Open pinned parent directory handle via step-by-step os.Root traversal inside the synchronized boundary
+	// 1. Open pinned parent directory handle via step-by-step os.Root traversal inside the synchronized boundary
 	parentRoot, leafName, closeParent, chainErr := openPinnedParentRoot(absBase, realBase, expectedRootFi, dirInfos, filePath)
 	if chainErr != nil {
 		if os.IsNotExist(chainErr) && verifyStrictRootIdentity(absBase, realBase, expectedRootFi) == nil {
+			bumpInvalidateTokenLocked(shard, canonKey)
+			m.clearKeyMemoryState(normNS, normKey)
 			res.AlreadyMissingCount++
 		} else {
 			res.FailedCount++
@@ -2628,17 +2644,20 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 
 	extLeaf := leafName + ".ext"
 
-	// 3. Verify physical file identity (regular file + size + mtime + os.SameFile) on the pinned parent handle
+	// 2. Verify physical file identity (regular file + size + mtime + os.SameFile) on the pinned parent handle
 	lfi, statErr := parentRoot.Lstat(leafName)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			res.AlreadyMissingCount++
+			shouldClearMem := true
 			// Clean up paired .ext if it still lingers after data file disappeared and matches recorded metadata identity
 			if extFi, extErr := parentRoot.Lstat(extLeaf); extErr == nil {
 				if extFi.IsDir() || extFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !extFi.Mode().IsRegular() {
+					shouldClearMem = false
 					res.FailedCount++
 					appendBoundedFailure(res, normNS, normKey+".ext", "残留元数据路径不是普通文件")
 				} else if isPairedExtChangedSinceSnapshot(cand, extFi) {
+					shouldClearMem = false
 					res.SkippedChangedCount++
 				} else {
 					extSize := extFi.Size()
@@ -2650,13 +2669,19 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 						res.DeletedMetaBytes += extSize
 						touchedDirs[filepath.Dir(filePath)] = struct{}{}
 					} else if !os.IsNotExist(rmErr) {
+						shouldClearMem = false
 						res.FailedCount++
 						appendBoundedFailure(res, normNS, normKey+".ext", rmErr.Error())
 					}
 				}
 			} else if !os.IsNotExist(extErr) {
+				shouldClearMem = false
 				res.FailedCount++
 				appendBoundedFailure(res, normNS, normKey+".ext", extErr.Error())
+			}
+			if shouldClearMem {
+				bumpInvalidateTokenLocked(shard, canonKey)
+				m.clearKeyMemoryState(normNS, normKey)
 			}
 		} else {
 			res.FailedCount++
@@ -2677,6 +2702,7 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 
 	if lfi.Size() != cand.Size || lfi.ModTime().UnixNano() != cand.MTimeNano || (cand.fileInfo != nil && !os.SameFile(cand.fileInfo, lfi)) {
 		// File was modified or replaced after the snapshot was taken: skip deleting the disk file
+		// and preserve newer in-memory state and in-flight persistence tokens.
 		res.SkippedChangedCount++
 		shard.mu.Unlock()
 		m.persistMu.RUnlock()
@@ -2687,9 +2713,11 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 		testBeforeUnlinkHook(filePath)
 	}
 
-	// 4. Delete verified data file via handle-relative unlinkat/Deleteat on parentRoot
+	// 3. Delete verified data file via handle-relative unlinkat/Deleteat on parentRoot
 	if rmErr := parentRoot.Remove(leafName); rmErr != nil {
 		if os.IsNotExist(rmErr) {
+			bumpInvalidateTokenLocked(shard, canonKey)
+			m.clearKeyMemoryState(normNS, normKey)
 			res.AlreadyMissingCount++
 		} else {
 			res.FailedCount++
@@ -2699,6 +2727,10 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 		m.persistMu.RUnlock()
 		return
 	}
+
+	// 4. Advance per-key invalidation token and clear all in-memory representations after verified deletion
+	bumpInvalidateTokenLocked(shard, canonKey)
+	m.clearKeyMemoryState(normNS, normKey)
 
 	res.DeletedAssetFiles++
 	res.DeletedAssetBytes += cand.Size
