@@ -184,7 +184,10 @@ vi.mock('../common/Modal', () => ({
   },
 }))
 
-import { ClearCacheModal } from './ClearCacheModal'
+import { ClearCacheModal, resolveDefaultNamespaces } from './ClearCacheModal'
+import { AuditModal } from './AuditModal'
+import { BoostModal } from './BoostModal'
+import { LatencyTestModal, summarizeWarmLatency } from './LatencyTestModal'
 
 const sampleSnapshot = (id: string) => ({
   snapshot_id: id,
@@ -702,5 +705,359 @@ describe('ClearCacheModal concurrency and state regressions', () => {
     await flushMicrotasks()
     expect(collectText(lastTree)).toContain('分类扫描失败：')
     expect(collectText(lastTree)).toContain('缓存根目录不可访问')
+  })
+
+  it('derives default namespaces from current snapshot when gbf is absent or empty', async () => {
+    expect(
+      resolveDefaultNamespaces({
+        ...sampleSnapshot('snap-ns-only-other'),
+        namespaces: [
+          {
+            namespace: 'mbga',
+            asset_files: 7,
+            asset_bytes: 7168,
+            metadata_files: 7,
+            metadata_bytes: 700,
+            estimated_delete_bytes: 7868,
+          },
+        ],
+      })
+    ).toEqual(['mbga'])
+
+    expect(
+      resolveDefaultNamespaces({
+        ...sampleSnapshot('snap-ns-gbf-empty'),
+        namespaces: [
+          {
+            namespace: 'gbf',
+            asset_files: 0,
+            asset_bytes: 0,
+            metadata_files: 0,
+            metadata_bytes: 0,
+            estimated_delete_bytes: 0,
+          },
+          {
+            namespace: 'mbga',
+            asset_files: 4,
+            asset_bytes: 4096,
+            metadata_files: 4,
+            metadata_bytes: 400,
+            estimated_delete_bytes: 4496,
+          },
+        ],
+      })
+    ).toEqual(['mbga'])
+
+    let clearCategoryPayload: any = null
+    const nonGbfSnap = {
+      ...sampleSnapshot('snap-non-gbf'),
+      namespaces: [
+        {
+          namespace: 'mbga',
+          asset_files: 5,
+          asset_bytes: 5120,
+          metadata_files: 5,
+          metadata_bytes: 512,
+          estimated_delete_bytes: 5632,
+          categories: {
+            story: {
+              category: 'story',
+              label: '剧情与立绘漫画',
+              description: '剧情背景与立绘',
+              selectable: true,
+              asset_files: 5,
+              asset_bytes: 5120,
+              metadata_files: 5,
+              metadata_bytes: 512,
+              estimated_delete_bytes: 5632,
+              percentage: 100,
+            },
+          },
+        },
+      ],
+    }
+
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.startsWith('/api/cache/breakdown')) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            cache_base: 'D:\\cache',
+            has_snapshot: true,
+            is_scanning: false,
+            snapshot: nonGbfSnap,
+          }),
+        }
+      }
+      if (url === '/api/cache/task-status') {
+        return {
+          ok: true,
+          json: async () => ({
+            is_scanning: false,
+            is_clearing_category: false,
+            is_slimming: false,
+            is_auditing: false,
+          }),
+        }
+      }
+      if (url === '/api/cache/clear-category') {
+        clearCategoryPayload = init?.body ? JSON.parse(String(init.body)) : null
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            task_id: 'clean-mbga-1',
+            task: 'clear_category',
+            status: 'running',
+            categories: ['story'],
+          }),
+        }
+      }
+      throw new Error(`Unexpected URL: ${url}`)
+    }) as any
+
+    const onClose = vi.fn()
+    const onRefresh = vi.fn()
+    const onToast = vi.fn()
+
+    mountComponent(() =>
+      ClearCacheModal({
+        isOpen: true,
+        onClose,
+        onRefresh,
+        onToast,
+      })
+    )
+    await flushMicrotasks()
+
+    const text = collectText(lastTree)
+    expect(text).toContain('共 5 个文件')
+    expect(text).toContain('mbga')
+
+    const checkboxes = findElements(
+      lastTree,
+      (el) => el.type === 'input' && el.props.type === 'checkbox'
+    )
+    // First checkbox is the namespace filter ('mbga'), second is category ('story')
+    expect(checkboxes.length).toBe(2)
+    checkboxes[1].props.onChange()
+    expect(collectText(lastTree)).toContain('已选 1 个类别 · 预计清理 5 个文件')
+
+    const cleanBtn = findElements(
+      lastTree,
+      (el) => el.type === 'button' && el.text.includes('清理所选缓存')
+    )[0]
+    cleanBtn.props.onClick()
+
+    const confirmBtn = findElements(
+      lastTree,
+      (el) => el.type === 'button' && el.text.includes('确认清理')
+    )[0]
+    await confirmBtn.props.onClick()
+    await flushMicrotasks()
+
+    expect(clearCategoryPayload).toEqual({
+      snapshot_id: 'snap-non-gbf',
+      categories: ['story'],
+      namespaces: ['mbga'],
+    })
+  })
+
+  it('sorts warm latency samples and uses min/median/max instead of temporal sample order', async () => {
+    expect(
+      summarizeWarmLatency({
+        warm_samples: [320.4, 95.2, 180.1],
+      })
+    ).toEqual({
+      samples: [95, 180, 320],
+      min: 95,
+      mid: 180,
+      max: 320,
+    })
+
+    expect(
+      summarizeWarmLatency({
+        warm_samples: [320, 95, 180],
+        warm_min_ms: 95,
+        warm_mid_ms: 180,
+        warm_max_ms: 320,
+      })
+    ).toEqual({
+      samples: [95, 180, 320],
+      min: 95,
+      mid: 180,
+      max: 320,
+    })
+
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
+      if (url.startsWith('/api/latency-test')) {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            target: 'https://game.granbluefantasy.jp/',
+            route_desc: '直连模式',
+            cold_ms: 410,
+            warm_samples: [320, 95, 180],
+          }),
+        }
+      }
+      throw new Error(`Unexpected URL: ${url}`)
+    }) as any
+
+    mountComponent(() =>
+      LatencyTestModal({
+        isOpen: true,
+        onClose: vi.fn(),
+        isDirect: true,
+      })
+    )
+    await flushMicrotasks()
+
+    const text = collectText(lastTree)
+    expect(text).toContain('最快 95 ms ｜ 中位 180 ms ｜ 最慢 320 ms')
+  })
+
+  it('enforces task_id cancellation and mutual exclusion in AuditModal and BoostModal', async () => {
+    const cancelBodies: any[] = []
+    let currentTaskStatus: any = {
+      active_task_id: 'scan-99',
+      active_task_type: 'scan',
+      is_scanning: true,
+      is_auditing: false,
+      is_slimming: false,
+      is_boosting: false,
+      is_clearing_category: false,
+    }
+
+    ;(globalThis as any).window = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }
+
+    globalThis.fetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/cache/task-status') {
+        return {
+          ok: true,
+          json: async () => currentTaskStatus,
+        }
+      }
+      if (url === '/api/cache/cancel-task') {
+        cancelBodies.push(init?.body ? JSON.parse(String(init.body)) : null)
+        return {
+          ok: true,
+          json: async () => ({ ok: true, cancelled: true }),
+        }
+      }
+      throw new Error(`Unexpected URL: ${url}`)
+    }) as any
+
+    // 1. AuditModal disables start button when scan task is active
+    mountComponent(() =>
+      AuditModal({
+        isOpen: true,
+        onClose: vi.fn(),
+        onRefresh: vi.fn(),
+        onToast: vi.fn(),
+      })
+    )
+    await flushMicrotasks()
+
+    const auditStartBtn = findElements(
+      lastTree,
+      (el) => el.type === 'button' && el.text.includes('其他缓存任务执行中...')
+    )[0]
+    expect(auditStartBtn).toBeDefined()
+    expect(auditStartBtn.props.disabled).toBe(true)
+    unmountComponent()
+
+    // 2. AuditModal passes active audit task_id when cancelling an active audit
+    currentTaskStatus = {
+      active_task_id: 'audit-42',
+      active_task_type: 'audit',
+      is_auditing: true,
+      audit_progress: { scanned: 10, healthy: 9, corrupted: 1 },
+    }
+    mountComponent(() =>
+      AuditModal({
+        isOpen: true,
+        onClose: vi.fn(),
+        onRefresh: vi.fn(),
+        onToast: vi.fn(),
+      })
+    )
+    await flushMicrotasks()
+
+    const cancelAuditBtn = findElements(
+      lastTree,
+      (el) => el.type === 'button' && el.text.includes('终止体检')
+    )[0]
+    await cancelAuditBtn.props.onClick()
+    await flushMicrotasks()
+    expect(cancelBodies).toEqual([{ task_id: 'audit-42' }])
+    unmountComponent()
+
+    // 3. BoostModal disables start button when another task is active, and passes boost task_id on cancel
+    currentTaskStatus = {
+      active_task_id: 'scan-99',
+      active_task_type: 'scan',
+      is_scanning: true,
+      is_boosting: false,
+    }
+    mountComponent(() =>
+      BoostModal({
+        isOpen: true,
+        onClose: vi.fn(),
+        onRefresh: vi.fn(),
+        onToast: vi.fn(),
+        cacheStats: null,
+      })
+    )
+    await flushMicrotasks()
+
+    const boostStartBtn = findElements(
+      lastTree,
+      (el) => el.type === 'button' && el.text.includes('其他缓存任务执行中...')
+    )[0]
+    expect(boostStartBtn).toBeDefined()
+    expect(boostStartBtn.props.disabled).toBe(true)
+    unmountComponent()
+
+    currentTaskStatus = {
+      active_task_id: 'boost-77',
+      active_task_type: 'boost',
+      is_boosting: true,
+      boost_progress: {
+        state: 'loading',
+        loaded_files: 5,
+        total_files: 10,
+        loaded_bytes: 1024,
+        total_bytes: 2048,
+        speed_bytes_sec: 512,
+        resident_bytes: 1024,
+        pending_bytes: 1024,
+        is_paused_by_fg: false,
+        done: false,
+      },
+    }
+    mountComponent(() =>
+      BoostModal({
+        isOpen: true,
+        onClose: vi.fn(),
+        onRefresh: vi.fn(),
+        onToast: vi.fn(),
+        cacheStats: null,
+      })
+    )
+    await flushMicrotasks()
+
+    const cancelBoostBtn = findElements(
+      lastTree,
+      (el) => el.type === 'button' && el.text.includes('停止后续载入')
+    )[0]
+    await cancelBoostBtn.props.onClick()
+    await flushMicrotasks()
+    expect(cancelBodies).toEqual([{ task_id: 'audit-42' }, { task_id: 'boost-77' }])
   })
 })

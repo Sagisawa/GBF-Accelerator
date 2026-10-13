@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { Zap, CheckCircle2, AlertTriangle, ShieldAlert, XCircle, PauseCircle } from 'lucide-react'
@@ -22,11 +22,17 @@ export const BoostModal: React.FC<BoostModalProps> = ({
 }) => {
   const [taskStatus, setTaskStatus] = useState<any | null>(null)
   const [actionLoading, setActionLoading] = useState<boolean>(false)
+  const boostTaskIdRef = useRef<string | null>(null)
 
   const fetchStatus = async () => {
     try {
       const data = await fetchCacheTaskStatus()
       setTaskStatus(data)
+      if (data?.is_boosting && data?.active_task_id) {
+        boostTaskIdRef.current = String(data.active_task_id)
+      } else if (!data?.is_boosting) {
+        boostTaskIdRef.current = null
+      }
     } catch {}
   }
 
@@ -47,6 +53,7 @@ export const BoostModal: React.FC<BoostModalProps> = ({
 
     const onBoostDone = (e: Event) => {
       const data = (e as CustomEvent).detail
+      boostTaskIdRef.current = null
       setTaskStatus((prev: any) => ({
         ...prev,
         is_boosting: false,
@@ -56,6 +63,7 @@ export const BoostModal: React.FC<BoostModalProps> = ({
     }
 
     const onBoostDisabled = () => {
+      boostTaskIdRef.current = null
       setTaskStatus((prev: any) => ({
         ...prev,
         is_boosting: false,
@@ -80,6 +88,15 @@ export const BoostModal: React.FC<BoostModalProps> = ({
   }, [isOpen, onRefresh])
 
   const isBoosting = Boolean(taskStatus?.is_boosting)
+  const isOtherTaskActive =
+    !isBoosting &&
+    Boolean(
+      taskStatus?.active_task_id ||
+        taskStatus?.is_auditing ||
+        taskStatus?.is_slimming ||
+        taskStatus?.is_scanning ||
+        taskStatus?.is_clearing_category
+    )
   const boostProgress: BoostProgress | undefined = taskStatus?.boost_progress
   const boostState = isBoosting
     ? 'loading'
@@ -88,7 +105,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
   const handleStart = async () => {
     setActionLoading(true)
     try {
-      await startBoost()
+      const res = await startBoost()
+      if (res?.task_id) {
+        boostTaskIdRef.current = String(res.task_id)
+      }
       onToast('RAM Boost 全量预载入已启动', 'info')
       await fetchStatus()
       onRefresh()
@@ -102,7 +122,17 @@ export const BoostModal: React.FC<BoostModalProps> = ({
   const handleCancel = async () => {
     setActionLoading(true)
     try {
-      await cancelCacheTask()
+      const targetTaskId =
+        (taskStatus?.is_boosting && taskStatus?.active_task_id
+          ? String(taskStatus.active_task_id)
+          : '') ||
+        boostTaskIdRef.current ||
+        ''
+      if (!targetTaskId) {
+        await fetchStatus()
+        return
+      }
+      await cancelCacheTask(targetTaskId)
       onToast('已请求停止后续载入', 'info')
       await fetchStatus()
       onRefresh()
@@ -117,6 +147,7 @@ export const BoostModal: React.FC<BoostModalProps> = ({
     setActionLoading(true)
     try {
       await disableBoost()
+      boostTaskIdRef.current = null
       onToast('RAM Boost 已关闭，驻留内存已释放', 'success')
       await fetchStatus()
       onRefresh()
@@ -208,10 +239,14 @@ export const BoostModal: React.FC<BoostModalProps> = ({
               <Button
                 variant="primary"
                 onClick={handleStart}
-                disabled={actionLoading}
+                disabled={actionLoading || isOtherTaskActive}
                 className="bg-amber-600 hover:bg-amber-500 text-white font-medium"
               >
-                {actionLoading ? '启动中...' : '开始全量载入'}
+                {actionLoading
+                  ? '启动中...'
+                  : isOtherTaskActive
+                    ? '其他缓存任务执行中...'
+                    : '开始全量载入'}
               </Button>
             </div>
           </div>
@@ -378,10 +413,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
                 <Button
                   variant="primary"
                   onClick={handleStart}
-                  disabled={actionLoading}
+                  disabled={actionLoading || isOtherTaskActive}
                   className="bg-amber-600 hover:bg-amber-500 text-white"
                 >
-                  重新载入
+                  {isOtherTaskActive ? '其他缓存任务执行中...' : '重新载入'}
                 </Button>
               </div>
             </div>

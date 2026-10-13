@@ -11,6 +11,46 @@ export interface LatencyTestModalProps {
   upstreamProxy?: string
 }
 
+export interface WarmLatencySummary {
+  samples: number[]
+  min: number
+  mid: number
+  max: number
+}
+
+export function summarizeWarmLatency(
+  res:
+    | {
+        warm_samples?: number[]
+        warm_min_ms?: number
+        warm_mid_ms?: number
+        warm_max_ms?: number
+      }
+    | null
+    | undefined
+): WarmLatencySummary {
+  const rawSamples = Array.isArray(res?.warm_samples)
+    ? res!.warm_samples.filter((s): s is number => typeof s === 'number' && Number.isFinite(s))
+    : []
+  const sorted = [...rawSamples].sort((a, b) => a - b).map((s) => Math.round(s))
+  if (sorted.length === 0) {
+    return { samples: [], min: 0, mid: 0, max: 0 }
+  }
+  const min =
+    typeof res?.warm_min_ms === 'number' && Number.isFinite(res.warm_min_ms)
+      ? Math.round(res.warm_min_ms)
+      : sorted[0]
+  const mid =
+    typeof res?.warm_mid_ms === 'number' && Number.isFinite(res.warm_mid_ms)
+      ? Math.round(res.warm_mid_ms)
+      : sorted[Math.floor(sorted.length / 2)]
+  const max =
+    typeof res?.warm_max_ms === 'number' && Number.isFinite(res.warm_max_ms)
+      ? Math.round(res.warm_max_ms)
+      : sorted[sorted.length - 1]
+  return { samples: sorted, min, mid, max }
+}
+
 export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
   isOpen,
   onClose,
@@ -19,7 +59,12 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
 }) => {
   const [testing, setTesting] = useState(false)
   const [coldMs, setColdMs] = useState<number | null>(null)
-  const [warmList, setWarmList] = useState<number[]>([])
+  const [warmSummary, setWarmSummary] = useState<WarmLatencySummary>({
+    samples: [],
+    min: 0,
+    mid: 0,
+    max: 0,
+  })
   const [errorMsg, setErrorMsg] = useState<string>('')
   const [currentRoute, setCurrentRoute] = useState<string>('')
   const [currentTarget, setCurrentTarget] = useState<string>('https://game.granbluefantasy.jp/')
@@ -32,7 +77,7 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
     setTesting(true)
     setErrorMsg('')
     setColdMs(null)
-    setWarmList([])
+    setWarmSummary({ samples: [], min: 0, mid: 0, max: 0 })
 
     try {
       const res = await testLatency()
@@ -43,11 +88,7 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
         return
       }
       setColdMs(res.cold_ms !== undefined ? Math.round(res.cold_ms) : null)
-      if (res.warm_samples && res.warm_samples.length > 0) {
-        setWarmList(res.warm_samples.map((s: number) => Math.round(s)))
-      } else {
-        setWarmList([])
-      }
+      setWarmSummary(summarizeWarmLatency(res))
     } catch (e: any) {
       setErrorMsg(e.message || '网络请求超时')
     } finally {
@@ -62,9 +103,10 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
     }
   }, [isOpen])
 
-  const wMin = warmList[0] ?? 0
-  const wMid = warmList[1] ?? warmList[0] ?? 0
-  const wMax = warmList[warmList.length - 1] ?? 0
+  const warmList = warmSummary.samples
+  const wMin = warmSummary.min
+  const wMid = warmSummary.mid
+  const wMax = warmSummary.max
 
   const getEvalColor = () => {
     if (wMid <= 120) return '#28a745'

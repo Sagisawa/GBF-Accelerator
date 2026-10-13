@@ -60,15 +60,12 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
       }
 
       // 5. If a modal or drawer is open:
-      // Only allow Esc (or L if toggling logs drawer)
+      // Only allow Esc to close the active modal/drawer; block all single-key shortcuts
       const isModalOpen = handlersRef.current.isModalOpen
       if (isModalOpen) {
         if (e.key === 'Escape') {
           e.preventDefault()
           handlersRef.current.onCloseAll?.()
-        } else if (e.key === 'l' || e.key === 'L') {
-          e.preventDefault()
-          handlersRef.current.onToggleLogs?.()
         }
         return
       }
