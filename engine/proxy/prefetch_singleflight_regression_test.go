@@ -562,4 +562,129 @@ func TestPrefetch_FollowerExitsPromptlyOnStop_WhileForegroundLeaderCompletes(t *
 	}
 }
 
+// TestPrefetch_UpstreamFailure_ForegroundWaiterFallsBackCleanly verifies that a background
+// prefetch which wins the SingleFlight leadership race cannot propagate its own upstream
+// failure to a coalesced foreground GET waiter. The waiter must fall back to its own
+// request path and receive 200 OK with the asset body, instead of a 502 synthesized from
+// the background prefetch's error.
+//
+// Two upstream failure modes are covered: a non-200 HTTP status and a transport-level
+// connection abort.
+func TestPrefetch_UpstreamFailure_ForegroundWaiterFallsBackCleanly(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		failMode string
+	}{
+		{name: "UpstreamReturns500", failMode: "status"},
+		{name: "UpstreamTransportError", failMode: "transport"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+			cacheMgr := cache.NewManager(tempDir, 16)
+			defer cacheMgr.Close()
+			stats := telemetry.NewStats()
+			defer stats.Close()
+
+			payload := []byte("console.log('foreground_fallback_after_prefetch_upstream_failure');")
+			prefetchEntered := make(chan struct{}, 1)
+			releasePrefetch := make(chan struct{})
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(releasePrefetch) }) }
+			defer release()
+
+			ts, client := newMockAssetServer(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("User-Agent") == prefetchUserAgent {
+					select {
+					case prefetchEntered <- struct{}{}:
+					default:
+					}
+					<-releasePrefetch
+					if tc.failMode == "transport" {
+						panic(http.ErrAbortHandler)
+					}
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/javascript")
+				w.Header().Set("ETag", `"upstream-failure-fallback-etag"`)
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(payload)
+			})
+			defer ts.Close()
+
+			srv := &ProxyServer{
+				cfgMgr:   cfgMgr,
+				cacheMgr: cacheMgr,
+				stats:    stats,
+			}
+			setTestAssetClient(srv, client)
+			pe := newPrefetchEngine(srv)
+			defer pe.Stop()
+
+			const host = "prd-game-a-granbluefantasy.akamaized.net"
+			const path = "/assets/js/prefetch_upstream_failure.js"
+
+			var wg sync.WaitGroup
+			wg.Add(2)
+
+			// 1. Background prefetch becomes the SingleFlight leader and blocks inside its upstream request.
+			go func() {
+				defer wg.Done()
+				pe.processFetchItem(prefetchItem{
+					prio: 1,
+					host: host,
+					path: path,
+				})
+			}()
+
+			select {
+			case <-prefetchEntered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("prefetch never reached upstream")
+			}
+
+			// 2. Foreground GET arrives while the prefetch flight is in-flight, so it attaches as a follower.
+			var respBuf bytes.Buffer
+			go func() {
+				defer wg.Done()
+				req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+				req.RequestURI = path
+				req.Host = host
+				srv.handleStaticAssetLower(&respBuf, req, host, path)
+			}()
+
+			deadline := time.Now().Add(2 * time.Second)
+			for cacheMgr.SingleFlight().Waiters("gbf:"+path) < 1 && time.Now().Before(deadline) {
+				time.Sleep(2 * time.Millisecond)
+			}
+			if cacheMgr.SingleFlight().Waiters("gbf:"+path) < 1 {
+				t.Fatal("foreground request never attached to the prefetch's in-flight SingleFlight call")
+			}
+
+			// 3. Fail the prefetch's upstream request now that the foreground waiter is attached.
+			release()
+			wg.Wait()
+
+			req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+			resp, err := http.ReadResponse(bufio.NewReader(&respBuf), req)
+			if err != nil {
+				t.Fatalf("failed to parse foreground response: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("foreground waiter inherited the background prefetch failure: got %d, want 200", resp.StatusCode)
+			}
+			gotBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("failed to read foreground body: %v", err)
+			}
+			if !bytes.Equal(gotBody, payload) {
+				t.Fatalf("foreground body mismatch: got %q, want %q", string(gotBody), string(payload))
+			}
+		})
+	}
+}
+
 

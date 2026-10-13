@@ -736,7 +736,19 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 		testBeforePrefetchSingleFlightDoHook(flightKey)
 	}
 
-	// Execute through SingleFlight so concurrent foreground requests coalesce naturally
+	// Execute through SingleFlight so concurrent foreground requests coalesce naturally.
+	//
+	// This closure runs as a *background* producer. Any upstream-facing failure to obtain a
+	// cacheable item must return (nil, nil) rather than an error: an error returned here is
+	// handed verbatim to every coalesced foreground follower, which would turn a background
+	// failure into a foreground 502. Returning (nil, nil) instead lets each follower fall back
+	// to its own request path. Failures are still logged with their specific reason, and
+	// 404/410 responses still feed the dead-asset filter.
+	failFetch := func(reason string) (interface{}, error) {
+		pe.srv.stats.Log("WARN", fmt.Sprintf("[PREFETCH] fetch failed (%s) -> %s%s", reason, item.host, cleanPath))
+		return nil, nil
+	}
+
 	var prefetchSaved bool
 	res, err := pe.srv.cacheMgr.SingleFlight().DoContext(reqCtx, flightKey, func() (interface{}, error) {
 		// Double check cache in case it landed just before acquiring flight
@@ -783,9 +795,9 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 				return nil, nil
 			}
 			if err != nil {
-				return nil, err
+				return failFetch(fmt.Sprintf("upstream request error: %v", err))
 			}
-			return nil, fmt.Errorf("upstream returned %d", resp.StatusCode)
+			return failFetch(fmt.Sprintf("upstream returned %d", resp.StatusCode))
 		}
 
 		maxRAMItemSize := pe.srv.cacheMgr.MaxRAMItemSize()
@@ -803,18 +815,18 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 			if reqCtx.Err() != nil || pe.IsStopped() {
 				return nil, nil
 			}
-			return nil, fmt.Errorf("empty body: %v", err)
+			return failFetch(fmt.Sprintf("body read error: %v", err))
 		}
 		if int64(len(data)) > maxRAMItemSize {
 			return nil, nil
 		}
 		if len(data) == 0 {
-			return nil, fmt.Errorf("empty body: %v", err)
+			return failFetch("empty body")
 		}
 
 		ct := resp.Header.Get("Content-Type")
 		if !cache.IsValidCacheContent(item.path, ct, data) {
-			return nil, fmt.Errorf("invalid cache content")
+			return failFetch(fmt.Sprintf("invalid cache content (type=%q)", ct))
 		}
 
 		headersMap := make(map[string]string)
