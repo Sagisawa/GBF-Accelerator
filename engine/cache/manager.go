@@ -2280,7 +2280,7 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 	if !m.registerTempFileTokenLocked(tmpDataPath, tok) {
 		_ = f.Close()
 		_ = os.Remove(tmpDataPath)
-		return nil, "", 0, fmt.Errorf("cache generation changed during temp file creation")
+		return nil, "", 0, fmt.Errorf("temp file token registration rejected (generation changed or registry full)")
 	}
 	return f, tmpDataPath, generation, nil
 }

@@ -709,6 +709,8 @@ func (m *Manager) registerTempFileToken(tmpPath string, tok opToken) bool {
 	return m.registerTempFileTokenLocked(tmpPath, tok)
 }
 
+const maxActiveTempTokens = 1024
+
 func (m *Manager) registerTempFileTokenLocked(tmpPath string, tok opToken) bool {
 	if tmpPath == "" {
 		return false
@@ -723,8 +725,8 @@ func (m *Manager) registerTempFileTokenLocked(tmpPath string, tok opToken) bool 
 	if m.tempTokens == nil {
 		m.tempTokens = make(map[string]opToken)
 	}
-	if len(m.tempTokens) >= 1024 {
-		// First sweep entries whose generation doesn't match the current generation or whose temp file was already removed
+	if _, exists := m.tempTokens[cleanPath]; !exists && len(m.tempTokens) >= maxActiveTempTokens {
+		// Sweep entries whose generation doesn't match the current generation or whose temp file was already removed
 		for k, v := range m.tempTokens {
 			if v.gen != curGen {
 				delete(m.tempTokens, k)
@@ -734,16 +736,9 @@ func (m *Manager) registerTempFileTokenLocked(tmpPath string, tok opToken) bool 
 				delete(m.tempTokens, k)
 			}
 		}
-	}
-	if len(m.tempTokens) >= 1024 {
-		// Evict excess entries; CommitDiskTempFile fails closed when a token is missing (!hasTok)
-		count := 0
-		for k := range m.tempTokens {
-			delete(m.tempTokens, k)
-			count++
-			if count >= 256 {
-				break
-			}
+		if len(m.tempTokens) >= maxActiveTempTokens {
+			// Refuse new registration rather than evicting active tokens that protect in-flight temp files
+			return false
 		}
 	}
 	m.tempTokens[cleanPath] = tok

@@ -422,41 +422,50 @@ func TestTempTokenEvictionAndDiscardFailClosed(t *testing.T) {
 		t.Fatalf("expected 0 registered temp tokens after DiscardDiskTempFile, got %d", remainingAfterDiscard)
 	}
 
-	// 2. Create 1025 simultaneous active temp transactions to force eviction in tempTokens
-	txs := make([]tx, 0, 1025)
-	for i := 0; i < 1025; i++ {
+	// 2. Create 1024 simultaneous active temp transactions to reach capacity in tempTokens
+	txs := make([]tx, 0, maxActiveTempTokens)
+	for i := 0; i < maxActiveTempTokens; i++ {
 		k := fmt.Sprintf("/assets/js/overflow_%d.js", i)
 		f, tp, g, err := mgr.CreateDiskTempFile("gbf", k)
 		if err != nil {
-			t.Fatalf("CreateDiskTempFile overflow failed at %d: %v", i, err)
+			t.Fatalf("CreateDiskTempFile failed at %d: %v", i, err)
 		}
 		_, _ = f.Write(validJS)
 		_ = f.Close()
 		txs = append(txs, tx{key: k, tmpPath: tp, gen: g})
 	}
 
-	// Find an evicted transaction
-	var evictedTx *tx
+	// Verify the 1025th simultaneous active temp file is safely rejected without evicting any existing active token
+	overflowKey := "/assets/js/overflow_1024.js"
+	if fOverflow, tpOverflow, _, err := mgr.CreateDiskTempFile("gbf", overflowKey); err == nil {
+		_ = fOverflow.Close()
+		mgr.DiscardDiskTempFile(tpOverflow)
+		t.Fatalf("expected 1025th simultaneous CreateDiskTempFile to fail when all 1024 tokens are active")
+	}
+
 	mgr.tempTokensMu.Lock()
 	for i := range txs {
-		if _, exists := mgr.tempTokens[txs[i].tmpPath]; !exists {
-			evictedTx = &txs[i]
-			break
+		if _, exists := mgr.tempTokens[filepath.Clean(txs[i].tmpPath)]; !exists {
+			mgr.tempTokensMu.Unlock()
+			t.Fatalf("expected active temp token %d (%s) to be preserved at capacity", i, txs[i].tmpPath)
 		}
 	}
 	mgr.tempTokensMu.Unlock()
 
-	if evictedTx == nil {
-		t.Fatalf("expected at least one evicted temp token after 1025 simultaneous creations")
+	// Attempting CommitDiskTempFile on a temp file without a registered token MUST fail closed and remove the temp file
+	unregisteredTmp := filepath.Join(tmpDir, "assets", "js", "unregistered.js.tmp.1.1.1")
+	if err := os.WriteFile(unregisteredTmp, validJS, 0644); err != nil {
+		t.Fatalf("WriteFile unregisteredTmp failed: %v", err)
 	}
-
-	// Invalidate the evicted key and attempt to commit: MUST fail closed and remove temp file
-	mgr.Invalidate("gbf", evictedTx.key)
-	if item, committed := mgr.CommitDiskTempFile("gbf", evictedTx.key, headers, evictedTx.tmpPath, int64(len(validJS)), evictedTx.gen); committed || item != nil {
-		t.Fatalf("expected CommitDiskTempFile to reject evicted/missing token transaction for %s", evictedTx.key)
+	mgr.Invalidate("gbf", overflowKey)
+	if item, committed := mgr.CommitDiskTempFile("gbf", overflowKey, headers, unregisteredTmp, int64(len(validJS)), txs[0].gen); committed || item != nil {
+		t.Fatalf("expected CommitDiskTempFile to reject missing-token transaction for %s", overflowKey)
 	}
-	if got, _ := mgr.GetWithNamespace("gbf", evictedTx.key); got != nil {
-		t.Fatalf("stale payload was written to cache after token eviction for %s", evictedTx.key)
+	if _, err := os.Stat(unregisteredTmp); !os.IsNotExist(err) {
+		t.Fatalf("expected unregistered temp file to be removed on rejected commit, got err=%v", err)
+	}
+	if got, _ := mgr.GetWithNamespace("gbf", overflowKey); got != nil {
+		t.Fatalf("stale payload was written to cache after missing-token commit for %s", overflowKey)
 	}
 
 	// Clean up remaining temp files
@@ -1755,6 +1764,94 @@ func TestAuditAndRepair_PreservesActiveStreamingTempFileAndRemovesOrphan(t *test
 	}
 	if mgr.ramCache.MaxBytes() <= slruCapBefore {
 		t.Fatalf("expected SLRU MaxBytes to increase after freeing resident bytes (before=%d, after=%d)", slruCapBefore, mgr.ramCache.MaxBytes())
+	}
+}
+
+func TestTempTokenCapacityBoundary_PreservesActiveFilesUnderAudit(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	headers := map[string]string{"content-type": "application/javascript"}
+	validJS := []byte("console.log('capacity_boundary_active_temp');")
+
+	type activeTemp struct {
+		key     string
+		tmpPath string
+		gen     uint64
+	}
+
+	active := make([]activeTemp, 0, maxActiveTempTokens)
+	for i := 0; i < maxActiveTempTokens; i++ {
+		k := fmt.Sprintf("/assets/js/cap_active_%d.js", i)
+		f, tp, g, err := mgr.CreateDiskTempFile("gbf", k)
+		if err != nil {
+			t.Fatalf("CreateDiskTempFile failed at %d: %v", i, err)
+		}
+		if _, err := f.Write(validJS); err != nil {
+			_ = f.Close()
+			t.Fatalf("Write failed at %d: %v", i, err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("Close failed at %d: %v", i, err)
+		}
+		active = append(active, activeTemp{key: k, tmpPath: tp, gen: g})
+	}
+
+	// Attempt 32 extra registrations while registry is full of live temp files:
+	// all must fail cleanly without leaving orphan .tmp. files or evicting any of the 1024 active tokens.
+	for i := 0; i < 32; i++ {
+		extraKey := fmt.Sprintf("/assets/js/cap_extra_%d.js", i)
+		f, tp, _, err := mgr.CreateDiskTempFile("gbf", extraKey)
+		if err == nil {
+			_ = f.Close()
+			mgr.DiscardDiskTempFile(tp)
+			t.Fatalf("expected overflow CreateDiskTempFile %d to fail when 1024 active tokens exist", i)
+		}
+	}
+
+	// Create an unregistered orphan .tmp. file alongside the 1024 active temp files
+	orphanPath := filepath.Join(filepath.Dir(active[0].tmpPath), "orphan_cap.js.tmp.9999.1.1")
+	if err := os.WriteFile(orphanPath, []byte("orphan"), 0644); err != nil {
+		t.Fatalf("WriteFile orphanPath failed: %v", err)
+	}
+
+	// Run AuditAndRepair: orphan .tmp. must be removed, while all 1024 active .tmp. files must be preserved
+	mgr.AuditAndRepairWithProgress(nil, nil)
+
+	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
+		t.Fatalf("expected orphan temp file to be removed by AuditAndRepair, got err=%v", err)
+	}
+
+	for i, item := range active {
+		if _, err := os.Stat(item.tmpPath); err != nil {
+			t.Fatalf("expected active temp file %d (%s) to be preserved by AuditAndRepair, got err=%v", i, item.tmpPath, err)
+		}
+	}
+
+	// If one temp file disappears from disk externally, the capacity sweep must reclaim its slot and allow a new registration
+	_ = os.Remove(active[0].tmpPath)
+	reclaimedKey := "/assets/js/cap_reclaimed.js"
+	fRec, tpRec, genRec, err := mgr.CreateDiskTempFile("gbf", reclaimedKey)
+	if err != nil {
+		t.Fatalf("expected CreateDiskTempFile to succeed after sweeping missing temp file slot: %v", err)
+	}
+	_, _ = fRec.Write(validJS)
+	_ = fRec.Close()
+	active[0] = activeTemp{key: reclaimedKey, tmpPath: tpRec, gen: genRec}
+
+	// Verify active temp files can still commit cleanly after audit
+	for _, idx := range []int{0, 1, 512, maxActiveTempTokens - 1} {
+		item := active[idx]
+		committedItem, ok := mgr.CommitDiskTempFile("gbf", item.key, headers, item.tmpPath, int64(len(validJS)), item.gen)
+		if !ok || committedItem == nil {
+			t.Fatalf("expected CommitDiskTempFile to succeed for index %d (%s)", idx, item.key)
+		}
+	}
+
+	// Clean up remaining uncommitted temp files
+	for _, item := range active {
+		mgr.DiscardDiskTempFile(item.tmpPath)
 	}
 }
 
