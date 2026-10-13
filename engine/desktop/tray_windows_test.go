@@ -47,6 +47,7 @@ func TestAppIconBytes(t *testing.T) {
 }
 
 func TestWindowsTrayLifecycle(t *testing.T) {
+	requireUIEnvironment(t)
 	ctrl := &mockController{running: true}
 	tray := NewTray(ctrl, ui.AppIconBytes)
 
@@ -71,6 +72,7 @@ func TestWindowsTray_ShowNotification_UninitializedNoPanic(t *testing.T) {
 }
 
 func TestWindowsTray_ShowNotification_LongBoundarySafety(t *testing.T) {
+	requireUIEnvironment(t)
 	ctrl := &mockController{running: true}
 	tray := NewTray(ctrl, ui.AppIconBytes)
 
@@ -91,6 +93,7 @@ func TestWindowsTray_ShowNotification_LongBoundarySafety(t *testing.T) {
 }
 
 func TestWindowsTray_ShowNotification_AfterStop(t *testing.T) {
+	requireUIEnvironment(t)
 	ctrl := &mockController{running: true}
 	tray := NewTray(ctrl, ui.AppIconBytes)
 
@@ -108,6 +111,7 @@ func TestWindowsTray_ShowNotification_AfterStop(t *testing.T) {
 }
 
 func TestWindowsTray_ConcurrentNotificationAndStop(t *testing.T) {
+	requireUIEnvironment(t)
 	ctrl := &mockController{running: true}
 	tray := NewTray(ctrl, ui.AppIconBytes)
 
