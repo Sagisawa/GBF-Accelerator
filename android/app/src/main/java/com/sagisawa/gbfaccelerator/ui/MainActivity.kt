@@ -34,6 +34,17 @@ import org.json.JSONObject
 import java.io.File
 import java.util.Locale
 
+/**
+ * Whether a control action carried by an intent may be honoured.
+ *
+ * MainActivity stays exported because the launcher has to be able to open it, so any app can
+ * start it with an "action" extra. Only an intent launched by this app itself is trusted with
+ * that extra; launchers, adb and other apps must not be able to start or stop the local core
+ * through it.
+ */
+internal fun isTrustedActionCaller(launchedFromPackage: String?, selfPackage: String): Boolean =
+    launchedFromPackage != null && launchedFromPackage == selfPackage
+
 class MainActivity : AppCompatActivity() {
 
     // 1. Status Section
@@ -104,9 +115,9 @@ class MainActivity : AppCompatActivity() {
 
         renderLogs()
         updateCacheSummary()
-        handleIntentAction(intent)
+        val handledAction = handleIntentAction(intent)
 
-        if (intent?.getStringExtra("action") == null) {
+        if (!handledAction) {
             requestNotificationPermission()
         }
     }
@@ -124,15 +135,33 @@ class MainActivity : AppCompatActivity() {
         handleIntentAction(intent)
     }
 
-    private fun handleIntentAction(intent: Intent?) {
-        when (intent?.getStringExtra("action")) {
-            "start" -> CoreService.start(this)
-            "stop" -> CoreService.stop(this)
-            "launch_browser" -> {
-                selectedTarget?.let { target ->
-                    launchTargetBrowser(target)
-                }
+    /**
+     * Honours the optional control action carried by [intent] and reports whether one was
+     * honoured. Intents launched by other packages are rejected, see [isTrustedActionCaller].
+     */
+    private fun handleIntentAction(intent: Intent?): Boolean {
+        val action = intent?.getStringExtra("action") ?: return false
+        if (!isTrustedActionCaller(launchedFromPackage, packageName)) {
+            Log.w(
+                "MainActivity",
+                "Ignoring action \"$action\" from untrusted package: ${launchedFromPackage ?: "<unknown>"}"
+            )
+            return false
+        }
+        return when (action) {
+            "start" -> {
+                CoreService.start(this)
+                true
             }
+            "stop" -> {
+                CoreService.stop(this)
+                true
+            }
+            "launch_browser" -> {
+                selectedTarget?.let { target -> launchTargetBrowser(target) }
+                true
+            }
+            else -> false
         }
     }
 
