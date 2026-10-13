@@ -38,6 +38,7 @@ func TestPrepareAppURL(t *testing.T) {
 }
 
 func TestOpenFolder(t *testing.T) {
+	requireUIEnvironment(t)
 	err := OpenFolder(t.TempDir())
 	if err != nil {
 		t.Errorf("OpenFolder returned error: %v", err)

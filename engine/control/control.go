@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gbf-proxy/cache"
@@ -47,6 +48,11 @@ type ControlServer struct {
 	listener    net.Listener
 	listenerGen uint64
 	mu          sync.RWMutex
+	// applyMu serializes the whole config transaction: read candidate snapshot -> commit/save ->
+	// system side effects -> listener rebind -> rollback. Every handler that mutates persisted
+	// config, or performs a listener/system side effect derived from that config, must hold it.
+	// Otherwise a stale candidate snapshot can revert another writer's already committed update
+	// and leave the persisted config, the runtime and the system state disagreeing.
 	applyMu     sync.Mutex
 	distDir     string
 	running     bool
@@ -117,7 +123,17 @@ type ControlServer struct {
 	checkComponentsFn   func(toolsDir, exeDir string) (bool, bool, []patcher.ComponentStatus, string)
 	runPatchFn          func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error)
 
+	// Desktop shell hooks (mockable in tests so control plane tests never open Explorer
+	// windows or native folder pickers on the machine running them)
+	openFolderFn   func(string) error
+	showInFolderFn func(string) error
+	chooseFolderFn func(string) (string, error)
+
 	repairer *health.Repairer
+	// repairClaim rejects a concurrent health repair immediately instead of queueing it behind
+	// the config transaction lock and then running a second repair once the first finishes.
+	// Repair() keeps its own in-progress guard; this is only the fast path.
+	repairClaim atomic.Bool
 }
 
 func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cache.Manager, proxySrv *proxy.ProxyServer, stats *telemetry.Stats) *ControlServer {
@@ -153,6 +169,9 @@ func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *c
 		enablePACProxyFn:    sysproxy.EnablePACProxy,
 		disablePACProxyFn:   sysproxy.DisablePACProxy,
 		setStartupEnabledFn: startup.SetStartupEnabled,
+		openFolderFn:        desktop.OpenFolder,
+		showInFolderFn:      desktop.ShowInFolder,
+		chooseFolderFn:      desktop.ChooseFolder,
 	}
 	checker := health.NewChecker(cfgMgr, certMgr, cacheMgr, proxySrv, stats, ctrl.ListenerAddr)
 	ctrl.repairer = health.NewRepairer(cfgMgr, certMgr, cacheMgr, proxySrv, stats, checker, ctrl.ReloadListener)
@@ -949,6 +968,15 @@ func (c *ControlServer) handleHealth(w http.ResponseWriter, req *http.Request) {
 	c.sendJSON(w, http.StatusOK, res)
 }
 
+// sendRepairInProgress reports that another repair is already running.
+func (c *ControlServer) sendRepairInProgress(w http.ResponseWriter) {
+	c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+		"ok":      false,
+		"error":   "repair_in_progress",
+		"message": "已有修复任务正在执行中，请勿重复提交",
+	})
+}
+
 func (c *ControlServer) handleHealthRepair(w http.ResponseWriter, req *http.Request) {
 	var repairReq health.RepairRequest
 	if req.Body != nil {
@@ -957,6 +985,20 @@ func (c *ControlServer) handleHealthRepair(w http.ResponseWriter, req *http.Requ
 			_ = json.Unmarshal(body, &repairReq)
 		}
 	}
+
+	// Claim the repair slot before waiting on the transaction lock so a concurrent repair is
+	// still rejected immediately with 409 instead of queueing behind a long repair.
+	if !c.repairClaim.CompareAndSwap(false, true) {
+		c.sendRepairInProgress(w)
+		return
+	}
+	defer c.repairClaim.Store(false)
+
+	// Repairs read the configuration and may rebind listeners from it, so they must not overlap
+	// an apply transaction: otherwise a repair could rebind to a port the apply transaction just
+	// changed away from. Lock order is applyMu -> c.mu, matching the apply transaction.
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
 
 	c.mu.Lock()
 	repairer := c.repairer
@@ -970,11 +1012,7 @@ func (c *ControlServer) handleHealthRepair(w http.ResponseWriter, req *http.Requ
 	res, err := repairer.Repair(req.Context(), repairReq)
 	if err != nil {
 		if errors.Is(err, health.ErrRepairInProgress) {
-			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-				"ok":      false,
-				"error":   "repair_in_progress",
-				"message": "已有修复任务正在执行中，请勿重复提交",
-			})
+			c.sendRepairInProgress(w)
 			return
 		}
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -999,6 +1037,11 @@ func (c *ControlServer) handleGetConfig(w http.ResponseWriter, req *http.Request
 	})
 }
 
+// testBeforeApplyCommitHook, when set, runs inside the apply transaction after it has read its
+// candidate snapshot but before it commits anything. Tests use it to force a deterministic
+// interleaving with the other config writers instead of relying on timing luck.
+var testBeforeApplyCommitHook func()
+
 func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Request) {
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
@@ -1019,6 +1062,10 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 
 	candidate := c.cfgMgr.Candidate()
 	oldCandidate := candidate
+
+	if testBeforeApplyCommitHook != nil {
+		testBeforeApplyCommitHook()
+	}
 
 	if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
 		candidate.ListenPort = int(val)
@@ -1426,13 +1473,13 @@ func (c *ControlServer) handleOpenCacheFolder(w http.ResponseWriter, req *http.R
 	base := c.cacheMgr.GetCacheBase()
 	_ = os.MkdirAll(base, 0755)
 	go func() {
-		_ = desktop.OpenFolder(base)
+		_ = c.openFolderFn(base)
 	}()
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": base})
 }
 
 func (c *ControlServer) handleBrowseDir(w http.ResponseWriter, req *http.Request) {
-	chosen, _ := desktop.ChooseFolder("选择 GBF 本地静态缓存保存目录")
+	chosen, _ := c.chooseFolderFn("选择 GBF 本地静态缓存保存目录")
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": chosen})
 }
 
@@ -2214,7 +2261,7 @@ func (c *ControlServer) handleUpdateOpenFolder(w http.ResponseWriter, req *http.
 		target = updater.GetDefaultDownloadDir()
 	}
 
-	if err := desktop.ShowInFolder(target); err != nil {
+	if err := c.showInFolderFn(target); err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"ok":    false,
 			"error": fmt.Sprintf("无法打开文件夹: %v", err),
@@ -2363,6 +2410,11 @@ func (c *ControlServer) handleStartupSet(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
+	// Shares the config transaction lock with apply so the commit cannot be reverted by a
+	// concurrent apply transaction holding a stale candidate snapshot.
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
 	oldEnabled := c.cfgMgr.Get().AutoStart
 	if err := c.setStartupEnabledFn(body.Enabled); err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"ok": false, "error": err.Error()})
@@ -2384,6 +2436,11 @@ func (c *ControlServer) handleStartupSet(w http.ResponseWriter, req *http.Reques
 	})
 }
 func (c *ControlServer) handleSysProxyEnable(w http.ResponseWriter, req *http.Request) {
+	// Shares the config transaction lock with apply: the PAC URL is derived from the persisted
+	// listen port, so the port read, the system side effect and the commit must be one unit.
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
 	cfg := c.cfgMgr.Get()
 	pacURL := fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", cfg.ListenPort)
 	oldEnabled := cfg.AutoSystemProxy
@@ -2413,6 +2470,11 @@ func (c *ControlServer) handleSysProxyEnable(w http.ResponseWriter, req *http.Re
 	})
 }
 func (c *ControlServer) handleSysProxyDisable(w http.ResponseWriter, req *http.Request) {
+	// Shares the config transaction lock with apply so the commit cannot be reverted by a
+	// concurrent apply transaction holding a stale candidate snapshot.
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+
 	cfg := c.cfgMgr.Get()
 	oldEnabled := cfg.AutoSystemProxy
 	if err := c.disablePACProxyFn(false); err != nil {

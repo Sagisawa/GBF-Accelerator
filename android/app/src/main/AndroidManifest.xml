@@ -36,9 +36,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Started and stopped only through explicit in-app intents (CoreService.start/stop),
+             never resolved from another app. -->
         <service
             android:name="com.sagisawa.gbfaccelerator.core.CoreService"
-            android:exported="true"
+            android:exported="false"
             android:foregroundServiceType="specialUse">
             <intent-filter>
                 <action android:name="com.sagisawa.gbfaccelerator.ACTION_START" />
@@ -49,9 +51,11 @@
                 android:value="Local proxy daemon lifecycle management for static resource caching" />
         </service>
 
+        <!-- Relays the same explicit actions to CoreService from inside the app; no component
+             sends these broadcasts across an app boundary. -->
         <receiver
             android:name="com.sagisawa.gbfaccelerator.core.CoreControlReceiver"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="com.sagisawa.gbfaccelerator.ACTION_START" />
                 <action android:name="com.sagisawa.gbfaccelerator.ACTION_STOP" />

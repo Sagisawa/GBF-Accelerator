@@ -104,11 +104,7 @@ class MainActivity : AppCompatActivity() {
 
         renderLogs()
         updateCacheSummary()
-        handleIntentAction(intent)
-
-        if (intent?.getStringExtra("action") == null) {
-            requestNotificationPermission()
-        }
+        requestNotificationPermission()
     }
 
     override fun onResume() {
@@ -121,19 +117,6 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIntentAction(intent)
-    }
-
-    private fun handleIntentAction(intent: Intent?) {
-        when (intent?.getStringExtra("action")) {
-            "start" -> CoreService.start(this)
-            "stop" -> CoreService.stop(this)
-            "launch_browser" -> {
-                selectedTarget?.let { target ->
-                    launchTargetBrowser(target)
-                }
-            }
-        }
     }
 
     private fun initViews() {

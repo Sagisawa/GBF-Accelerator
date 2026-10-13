@@ -27,6 +27,53 @@ import (
 
 type testControlServer struct {
 	*ControlServer
+	folders *folderActionRecorder
+}
+
+// folderActionRecorder captures desktop shell actions instead of driving the real desktop, so
+// control plane tests never open Explorer windows or native folder pickers on the machine
+// running them. The folder-opening endpoints act from a goroutine, hence the wait helper.
+type folderActionRecorder struct {
+	mu      sync.Mutex
+	opened  []string
+	shown   []string
+	prompts []string
+}
+
+func (r *folderActionRecorder) openFolder(path string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.opened = append(r.opened, path)
+	return nil
+}
+
+func (r *folderActionRecorder) showInFolder(path string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.shown = append(r.shown, path)
+	return nil
+}
+
+func (r *folderActionRecorder) chooseFolder(prompt string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prompts = append(r.prompts, prompt)
+	return "", nil
+}
+
+// openedPaths waits for the asynchronous open action and returns every recorded path.
+func (r *folderActionRecorder) openedPaths(t *testing.T) []string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		r.mu.Lock()
+		got := append([]string(nil), r.opened...)
+		r.mu.Unlock()
+		if len(got) > 0 || time.Now().After(deadline) {
+			return got
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (s *testControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
@@ -45,10 +92,15 @@ func setupTestControlServer(t *testing.T) (*testControlServer, func()) {
 	stats := telemetry.NewStats()
 
 	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
+	// Route desktop shell actions to a recorder so no test opens real folders.
+	folders := &folderActionRecorder{}
+	ctrl.openFolderFn = folders.openFolder
+	ctrl.showInFolderFn = folders.showInFolder
+	ctrl.chooseFolderFn = folders.chooseFolder
 	cleanup := func() {
 		cacheMgr.Close()
 	}
-	return &testControlServer{ControlServer: ctrl}, cleanup
+	return &testControlServer{ControlServer: ctrl, folders: folders}, cleanup
 }
 
 func TestControlAndroidEnv(t *testing.T) {
@@ -335,6 +387,15 @@ func TestControlAndroidPatchOpenOutput(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	wantDir, err := filepath.Abs(tempDir)
+	if err != nil {
+		t.Fatalf("failed to resolve expected output dir: %v", err)
+	}
+	opened := ctrl.folders.openedPaths(t)
+	if len(opened) != 1 || opened[0] != wantDir {
+		t.Fatalf("expected exactly one open action for %q, got %v", wantDir, opened)
 	}
 }
 
@@ -630,6 +691,18 @@ func TestControlAndroidPatchOpenBackup(t *testing.T) {
 	}
 	if res.Path == "" {
 		t.Errorf("expected non-empty path in response")
+	}
+
+	wantDir, err := filepath.Abs(filepath.Join(config.GetBaseDir(), "backups"))
+	if err != nil {
+		t.Fatalf("failed to resolve expected backup dir: %v", err)
+	}
+	if res.Path != wantDir {
+		t.Errorf("expected response path %q, got %q", wantDir, res.Path)
+	}
+	opened := ctrl.folders.openedPaths(t)
+	if len(opened) != 1 || opened[0] != wantDir {
+		t.Fatalf("expected exactly one open action for %q, got %v", wantDir, opened)
 	}
 }
 
