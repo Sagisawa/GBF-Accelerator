@@ -81,6 +81,20 @@ class AndroidComponentAccessTest {
     }
 
     @Test
+    fun launcherActivityDeclaresNoControlActionFilter() {
+        val activity = component("activity", "com.sagisawa.gbfaccelerator.ui.MainActivity")
+        val actions = (0 until activity.getElementsByTagName("action").length)
+            .map { activity.getElementsByTagName("action").item(it) as Element }
+            .mapNotNull { attribute(it, "name") }
+            .toSet()
+        assertEquals(
+            "MainActivity must stay reachable only as the launcher entry point",
+            setOf("android.intent.action.MAIN"),
+            actions,
+        )
+    }
+
+    @Test
     fun onlyTheLauncherActivityIsExported() {
         val exported = listOf("activity", "service", "receiver", "provider").flatMap { tag ->
             components(tag)
