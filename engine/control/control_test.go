@@ -276,19 +276,23 @@ func TestControlDNSRebindingProtection(t *testing.T) {
 		}
 	}
 
-	// Test AllowLAN
+	// Test AllowLAN: 8125 Control Plane must strictly reject non-loopback Host headers
+	// (including the machine's own LAN IP) even when AllowLAN is enabled.
 	cfgMgr.Update(func(c *config.Config) {
 		c.AllowLAN = true
 	})
-	lanIP := config.GetLANIP()
-	if lanIP != "" {
+	lanHosts := []string{"192.168.1.99:8125"}
+	if lanIP := config.GetLANIP(); lanIP != "" {
+		lanHosts = append(lanHosts, lanIP, lanIP+":8125")
+	}
+	for _, h := range lanHosts {
 		req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
-		req.Host = lanIP + ":8125"
+		req.Host = h
 		req.RemoteAddr = "127.0.0.1:12345"
 		w := httptest.NewRecorder()
 		ctrl.handleRoute(w, req)
-		if w.Code != http.StatusOK {
-			t.Errorf("LAN IP %q should be allowed when AllowLAN is true, got %d", req.Host, w.Code)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("LAN Host %q on control plane must be rejected with 403 Forbidden even when AllowLAN is true, got %d", req.Host, w.Code)
 		}
 	}
 }

@@ -573,6 +573,17 @@ func PlatformToolsGoogleFallbackURL() string {
 	}
 }
 
+func canonicalPlatformToolsSHA256ForOS(goos string) string {
+	switch goos {
+	case "windows":
+		return CanonicalPlatformToolsWindowsSHA256
+	case "darwin":
+		return CanonicalPlatformToolsDarwinSHA256
+	default:
+		return ""
+	}
+}
+
 // DownloadPlatformTools downloads the platform-tools archive and extracts adb into toolsDir/platform-tools.
 // It prioritizes our project's GitHub Release asset and automatically falls back to Google's official mirror.
 func DownloadPlatformTools(
@@ -581,10 +592,14 @@ func DownloadPlatformTools(
 	customURL string,
 	progressFn func(curBytes, totalBytes int64, percent float64),
 ) (string, error) {
+	expectedSHA := canonicalPlatformToolsSHA256ForOS(runtime.GOOS)
 	var candidateURLs []string
 	if customURL != "" {
 		candidateURLs = []string{customURL}
 	} else {
+		if expectedSHA == "" {
+			return "", fmt.Errorf("managed platform-tools download is not supported on %s: missing canonical SHA-256 checksum", runtime.GOOS)
+		}
 		candidateURLs = []string{PlatformToolsDownloadURL()}
 	}
 
@@ -666,14 +681,8 @@ func DownloadPlatformTools(
 	_ = f.Close()
 
 	if customURL == "" {
-		expectedSHA := ""
-		if runtime.GOOS == "windows" {
-			expectedSHA = CanonicalPlatformToolsWindowsSHA256
-		} else if runtime.GOOS == "darwin" {
-			expectedSHA = CanonicalPlatformToolsDarwinSHA256
-		}
 		actualSHA := hex.EncodeToString(hasher.Sum(nil))
-		if expectedSHA != "" && !strings.EqualFold(actualSHA, expectedSHA) {
+		if expectedSHA == "" || !strings.EqualFold(actualSHA, expectedSHA) {
 			return "", fmt.Errorf("platform-tools checksum validation failed: expected %s, got %s", expectedSHA, actualSHA)
 		}
 	}

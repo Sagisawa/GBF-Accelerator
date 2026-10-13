@@ -174,32 +174,38 @@ func GetDefaultComponentSpecs() []ComponentSpec {
 }
 
 // GetFullEnvironmentSpecs returns the full closed-loop Android environment specification
-// including LSPatch, Xposed module, licenses, platform-tools (ADB), and portable JRE.
+// including LSPatch, Xposed module, licenses, and (on supported platforms) platform-tools (ADB) and portable JRE.
 func GetFullEnvironmentSpecs() []ComponentSpec {
+	return fullEnvironmentSpecsForPlatform(runtime.GOOS, runtime.GOARCH)
+}
+
+func fullEnvironmentSpecsForPlatform(goos, goarch string) []ComponentSpec {
 	toolchainReleaseURL := "https://github.com/" + AssetsRepo + "/releases/download/" + ToolchainAssetsTag + "/"
 	specs := GetDefaultComponentSpecs()
 
-	// Platform tools archive for current OS.
-	ptFileName := fmt.Sprintf("platform-tools-%s.zip", runtime.GOOS)
-	ptSize := int64(5200000)
-	ptSHA256 := ""
-	if runtime.GOOS == "darwin" {
-		ptSize = 16110554
-		ptSHA256 = "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d"
-	} else if runtime.GOOS == "windows" {
-		ptSize = 2890617
-		ptSHA256 = CanonicalPlatformToolsWindowsSHA256
+	// Managed platform-tools archive is only included on platforms with pinned canonical SHA-256 checksums.
+	switch goos {
+	case "darwin":
+		specs = append(specs, ComponentSpec{
+			ID:          "platform-tools",
+			FileName:    "platform-tools-darwin.zip",
+			Size:        16110554,
+			SHA256:      CanonicalPlatformToolsDarwinSHA256,
+			URL:         toolchainReleaseURL + "platform-tools-darwin.zip",
+			Description: "Android 平台调试工具 (ADB)",
+		})
+	case "windows":
+		specs = append(specs, ComponentSpec{
+			ID:          "platform-tools",
+			FileName:    "platform-tools-windows.zip",
+			Size:        2890617,
+			SHA256:      CanonicalPlatformToolsWindowsSHA256,
+			URL:         toolchainReleaseURL + "platform-tools-windows.zip",
+			Description: "Android 平台调试工具 (ADB)",
+		})
 	}
-	specs = append(specs, ComponentSpec{
-		ID:          "platform-tools",
-		FileName:    ptFileName,
-		Size:        ptSize,
-		SHA256:      ptSHA256,
-		URL:         toolchainReleaseURL + ptFileName,
-		Description: "Android 平台调试工具 (ADB)",
-	})
 
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		specs = append(specs, ComponentSpec{
 			ID:          "jre",
 			FileName:    "jre-windows-x64.zip",
@@ -208,7 +214,7 @@ func GetFullEnvironmentSpecs() []ComponentSpec {
 			URL:         toolchainReleaseURL + "jre-windows-x64.zip",
 			Description: "便携 Java 21+ 运行环境 (JBR / OpenJDK)",
 		})
-	} else if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
+	} else if goos == "darwin" && goarch == "arm64" {
 		specs = append(specs, ComponentSpec{
 			ID:          "jre",
 			FileName:    "jre-macos-arm64.zip",
@@ -615,6 +621,19 @@ func DownloadComponentsWithSpecs(
 				progressFn(prog)
 			}
 			continue
+		}
+
+		if strings.TrimSpace(spec.SHA256) == "" {
+			err := fmt.Errorf("missing expected SHA-256 checksum for %s", spec.FileName)
+			prog.Active = false
+			prog.Stage = "error"
+			prog.Error = err.Error()
+			prog.ErrorDetails = ""
+			prog.IsPermissionErr = false
+			if progressFn != nil {
+				progressFn(prog)
+			}
+			return err
 		}
 
 		// 2. Resolve URL

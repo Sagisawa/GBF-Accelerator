@@ -62,7 +62,6 @@ func NewChecker(
 	}
 	c.probeFn = c.defaultProbe
 	c.readProbeFn = os.ReadFile
-	c.firewallStatusFn = firewall.GetStatus
 	return c
 }
 
@@ -814,6 +813,17 @@ func (c *Checker) checkLANFirewall(cfg config.Config) (item HealthItem) {
 			statusFn = firewall.GetStatus
 		}
 		fwStatus, err := statusFn(cfg.ListenPort)
+		if err == nil && fwStatus.OK && !fwStatus.Supported {
+			details["firewall_checked"] = false
+			return HealthItem{
+				Name:       "局域网共享与防火墙",
+				Status:     StatusOk,
+				Code:       "LAN_OK",
+				Message:    fmt.Sprintf("局域网已启用 (IP: %s)", lanIP),
+				Details:    details,
+				Repairable: false,
+			}
+		}
 		details["firewall_status"] = fwStatus
 		if err != nil || !fwStatus.Allowed {
 			return HealthItem{

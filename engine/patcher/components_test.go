@@ -241,3 +241,115 @@ func TestCheckComponents_EmptySHA_NeverVerified(t *testing.T) {
 		t.Fatalf("component status must have Verified=false when SHA256 is empty")
 	}
 }
+
+func TestFullEnvironmentSpecs_PlatformBoundary(t *testing.T) {
+	// 1. Linux must not include unverified platform-tools or jre archives, and every spec must have a non-empty SHA-256.
+	linuxSpecs := fullEnvironmentSpecsForPlatform("linux", "amd64")
+	if len(linuxSpecs) != 3 {
+		t.Fatalf("expected 3 specs on linux/amd64, got %d", len(linuxSpecs))
+	}
+	for _, s := range linuxSpecs {
+		if strings.TrimSpace(s.SHA256) == "" {
+			t.Errorf("linux spec %s (%s) has empty SHA256", s.ID, s.FileName)
+		}
+		if s.ID == "platform-tools" || s.ID == "jre" {
+			t.Errorf("unexpected platform-specific archive spec %q on linux/amd64", s.ID)
+		}
+	}
+
+	// 2. Windows x64 must retain platform-tools and jre with canonical SHA-256 checksums.
+	winSpecs := fullEnvironmentSpecsForPlatform("windows", "amd64")
+	var winPT, winJRE *ComponentSpec
+	for i := range winSpecs {
+		if strings.TrimSpace(winSpecs[i].SHA256) == "" {
+			t.Errorf("windows spec %s (%s) has empty SHA256", winSpecs[i].ID, winSpecs[i].FileName)
+		}
+		switch winSpecs[i].ID {
+		case "platform-tools":
+			winPT = &winSpecs[i]
+		case "jre":
+			winJRE = &winSpecs[i]
+		}
+	}
+	if winPT == nil || winPT.FileName != "platform-tools-windows.zip" || winPT.SHA256 != CanonicalPlatformToolsWindowsSHA256 {
+		t.Fatalf("unexpected windows platform-tools spec: %+v", winPT)
+	}
+	if winJRE == nil || winJRE.FileName != "jre-windows-x64.zip" || winJRE.SHA256 != CanonicalJreWindowsSHA256 {
+		t.Fatalf("unexpected windows jre spec: %+v", winJRE)
+	}
+
+	// 3. macOS ARM64 must retain platform-tools and jre with canonical SHA-256 checksums.
+	macSpecs := fullEnvironmentSpecsForPlatform("darwin", "arm64")
+	var macPT, macJRE *ComponentSpec
+	for i := range macSpecs {
+		if strings.TrimSpace(macSpecs[i].SHA256) == "" {
+			t.Errorf("darwin/arm64 spec %s (%s) has empty SHA256", macSpecs[i].ID, macSpecs[i].FileName)
+		}
+		switch macSpecs[i].ID {
+		case "platform-tools":
+			macPT = &macSpecs[i]
+		case "jre":
+			macJRE = &macSpecs[i]
+		}
+	}
+	if macPT == nil || macPT.FileName != "platform-tools-darwin.zip" || macPT.SHA256 != CanonicalPlatformToolsDarwinSHA256 {
+		t.Fatalf("unexpected darwin platform-tools spec: %+v", macPT)
+	}
+	if macJRE == nil || macJRE.FileName != "jre-macos-arm64.zip" || strings.TrimSpace(macJRE.SHA256) == "" {
+		t.Fatalf("unexpected darwin/arm64 jre spec: %+v", macJRE)
+	}
+
+	// 4. Canonical platform-tools SHA-256 helper boundary check.
+	if got := canonicalPlatformToolsSHA256ForOS("linux"); got != "" {
+		t.Errorf("expected empty canonical platform-tools SHA256 on linux, got %q", got)
+	}
+	if got := canonicalPlatformToolsSHA256ForOS("windows"); got != CanonicalPlatformToolsWindowsSHA256 {
+		t.Errorf("expected %q for windows, got %q", CanonicalPlatformToolsWindowsSHA256, got)
+	}
+	if got := canonicalPlatformToolsSHA256ForOS("darwin"); got != CanonicalPlatformToolsDarwinSHA256 {
+		t.Errorf("expected %q for darwin, got %q", CanonicalPlatformToolsDarwinSHA256, got)
+	}
+}
+
+func TestDownloadComponentsWithSpecs_EmptySHA_FailsBeforeNetworkDownload(t *testing.T) {
+	t.Setenv("GBF_DISABLE_SYSTEM_TOOLS", "1")
+	tempDir := t.TempDir()
+
+	var requestCount int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestCount++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("unverified-archive-payload"))
+	}))
+	defer srv.Close()
+
+	specs := []ComponentSpec{
+		{
+			ID:       "unverified-tool",
+			FileName: "unverified-tool.zip",
+			Size:     26,
+			SHA256:   "",
+			URL:      srv.URL + "/unverified-tool.zip",
+		},
+	}
+
+	var lastProg DownloadProgress
+	err := DownloadComponentsWithSpecs(context.Background(), tempDir, specs, nil, func(p DownloadProgress) {
+		lastProg = p
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing expected SHA-256 checksum") {
+		t.Fatalf("expected missing SHA-256 checksum error, got: %v", err)
+	}
+	if lastProg.Stage != "error" {
+		t.Errorf("expected progress stage 'error', got %q", lastProg.Stage)
+	}
+	mu.Lock()
+	gotReqs := requestCount
+	mu.Unlock()
+	if gotReqs != 0 {
+		t.Errorf("expected 0 HTTP requests when spec.SHA256 is empty, got %d", gotReqs)
+	}
+}
