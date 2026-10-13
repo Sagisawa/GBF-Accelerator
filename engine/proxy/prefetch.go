@@ -686,6 +686,8 @@ func (pe *PrefetchEngine) fetchWorker() {
 	}
 }
 
+var testBeforePrefetchSingleFlightDoHook func(flightKey string)
+
 func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	// P1 Dynamic yielding: pause if active dynamic API or foreground assets
 	waitStart := time.Now()
@@ -716,9 +718,27 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	pe.srv.stats.IncPrefetchRequest()
 	fetchStart := time.Now()
 
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	stopWatchDone := make(chan struct{})
+	go func() {
+		select {
+		case <-pe.stopChan:
+			cancelReq()
+		case <-stopWatchDone:
+		}
+	}()
+	defer func() {
+		close(stopWatchDone)
+		cancelReq()
+	}()
+
+	if testBeforePrefetchSingleFlightDoHook != nil {
+		testBeforePrefetchSingleFlightDoHook(flightKey)
+	}
+
 	// Execute through SingleFlight so concurrent foreground requests coalesce naturally
 	var prefetchSaved bool
-	res, err := pe.srv.cacheMgr.SingleFlight().DoContext(context.Background(), flightKey, func() (interface{}, error) {
+	res, err := pe.srv.cacheMgr.SingleFlight().DoContext(reqCtx, flightKey, func() (interface{}, error) {
 		// Double check cache in case it landed just before acquiring flight
 		if pe.srv.cacheMgr.SingleFlight().Waiters(flightKey) > 0 {
 			// Foreground is actively waiting: promote probationary items to protected
@@ -740,20 +760,6 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 			return nil, nil
 		default:
 		}
-
-		reqCtx, cancelReq := context.WithCancel(context.Background())
-		stopWatchDone := make(chan struct{})
-		go func() {
-			select {
-			case <-pe.stopChan:
-				cancelReq()
-			case <-stopWatchDone:
-			}
-		}()
-		defer func() {
-			close(stopWatchDone)
-			cancelReq()
-		}()
 
 		upURL := fmt.Sprintf("https://%s%s", item.host, item.path)
 		req, err := http.NewRequestWithContext(reqCtx, "GET", upURL, nil)

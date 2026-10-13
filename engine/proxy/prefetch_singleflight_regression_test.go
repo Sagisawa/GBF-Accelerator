@@ -246,7 +246,7 @@ func TestPrefetch_OversizedAssetSkipped_ForegroundWaiterFallsBackCleanly(t *test
 
 			// Wait until foreground waiter attaches to SingleFlight
 			deadline := time.Now().Add(2 * time.Second)
-			for cacheMgr.SingleFlight().Waiters("gbf:"+path) == 0 && time.Now().Before(deadline) {
+			for cacheMgr.SingleFlight().Waiters("gbf:"+path) < 1 && time.Now().Before(deadline) {
 				time.Sleep(2 * time.Millisecond)
 			}
 			close(allowUpstreamWrite)
@@ -345,7 +345,7 @@ func TestPrefetch_StopCancelsInFlightRequest_ForegroundWaiterFallsBackCleanly(t 
 	}()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for cacheMgr.SingleFlight().Waiters("gbf:"+path) == 0 && time.Now().Before(deadline) {
+	for cacheMgr.SingleFlight().Waiters("gbf:"+path) < 1 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
@@ -429,4 +429,137 @@ func TestPrefetch_InflightKeyNormalizedWithQueryAndCase(t *testing.T) {
 		t.Fatalf("expected pe.inflight to be empty after fetchWorker processed query-string item, got %d entries", remaining)
 	}
 }
+
+// TestPrefetch_FollowerExitsPromptlyOnStop_WhileForegroundLeaderCompletes verifies the second
+// SingleFlight ordering scenario: when a foreground request becomes the SingleFlight Leader first
+// and Prefetch enters DoContext as a Follower, calling pe.Stop() causes the Prefetch Follower to
+// exit promptly without waiting for the foreground request to complete, while the foreground
+// Leader continues normally and receives the full 200 OK response.
+func TestPrefetch_FollowerExitsPromptlyOnStop_WhileForegroundLeaderCompletes(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	payload := []byte("console.log('foreground_leader_continues_after_prefetch_follower_stops');")
+	var upstreamHits atomic.Int64
+	fgUpstreamEntered := make(chan struct{}, 1)
+	allowForegroundFinish := make(chan struct{})
+
+	ts, client := newMockAssetServer(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		select {
+		case fgUpstreamEntered <- struct{}{}:
+		default:
+		}
+		<-allowForegroundFinish
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("ETag", `"fg-leader-etag"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	})
+	defer ts.Close()
+
+	srv := &ProxyServer{
+		cfgMgr:   cfgMgr,
+		cacheMgr: cacheMgr,
+		stats:    stats,
+	}
+	setTestAssetClient(srv, client)
+	pe := newPrefetchEngine(srv)
+	defer pe.Stop()
+
+	const host = "prd-game-a-granbluefantasy.akamaized.net"
+	const path = "/assets/js/fg_leader_prefetch_follower.js"
+	const flightKey = "gbf:" + path
+
+	var fgBuf bytes.Buffer
+	fgDone := make(chan struct{})
+
+	oldHook := testBeforePrefetchSingleFlightDoHook
+	testBeforePrefetchSingleFlightDoHook = func(fk string) {
+		if fk != flightKey {
+			return
+		}
+		// Start foreground request so it becomes the SingleFlight Leader just before Prefetch enters DoContext
+		go func() {
+			defer close(fgDone)
+			req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+			req.RequestURI = path
+			req.Host = host
+			srv.handleStaticAssetLower(&fgBuf, req, host, path)
+		}()
+		<-fgUpstreamEntered
+	}
+	defer func() {
+		testBeforePrefetchSingleFlightDoHook = oldHook
+	}()
+
+	prefetchDone := make(chan struct{})
+	go func() {
+		defer close(prefetchDone)
+		pe.processFetchItem(prefetchItem{
+			prio: 1,
+			host: host,
+			path: path,
+		})
+	}()
+
+	// Wait until Prefetch has joined SingleFlight as a Follower behind the Foreground Leader
+	deadline := time.Now().Add(2 * time.Second)
+	for cacheMgr.SingleFlight().Waiters(flightKey) < 1 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if gotWaiters := cacheMgr.SingleFlight().Waiters(flightKey); gotWaiters != 1 {
+		t.Fatalf("expected Prefetch to be waiting as SingleFlight follower (waiters=1), got %d", gotWaiters)
+	}
+
+	// Stop Prefetch while Foreground Leader is still blocked on allowForegroundFinish
+	pe.Stop()
+
+	// Assert 1: Prefetch Follower exits promptly without waiting for Foreground Leader to finish
+	select {
+	case <-prefetchDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected Prefetch SingleFlight follower to exit promptly on pe.Stop() while foreground leader is still in flight")
+	}
+
+	if gotWaiters := cacheMgr.SingleFlight().Waiters(flightKey); gotWaiters != 0 {
+		t.Fatalf("expected SingleFlight waiters to drop to 0 after Prefetch follower canceled, got %d", gotWaiters)
+	}
+
+	// Assert 2: Release Foreground Leader and verify it completes with full 200 OK response
+	close(allowForegroundFinish)
+
+	select {
+	case <-fgDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("foreground leader did not complete after releasing upstream")
+	}
+
+	if hits := upstreamHits.Load(); hits != 1 {
+		t.Fatalf("expected strictly 1 upstream hit from foreground leader, got %d", hits)
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, "https://"+host+path, nil)
+	resp, err := http.ReadResponse(bufio.NewReader(&fgBuf), req)
+	if err != nil {
+		t.Fatalf("failed to parse foreground leader response: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected foreground leader to receive 200 OK, got %d", resp.StatusCode)
+	}
+	gotBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read foreground leader body: %v", err)
+	}
+	if !bytes.Equal(gotBody, payload) {
+		t.Fatalf("foreground leader body mismatch: got %q, want %q", string(gotBody), string(payload))
+	}
+}
+
 
