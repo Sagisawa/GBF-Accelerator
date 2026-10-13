@@ -117,6 +117,12 @@ type ControlServer struct {
 	checkComponentsFn   func(toolsDir, exeDir string) (bool, bool, []patcher.ComponentStatus, string)
 	runPatchFn          func(ctx context.Context, opts patcher.PatchOptions) (*patcher.BundleResult, error)
 
+	// Desktop shell hooks (mockable in tests so control plane tests never open Explorer
+	// windows or native folder pickers on the machine running them)
+	openFolderFn   func(string) error
+	showInFolderFn func(string) error
+	chooseFolderFn func(string) (string, error)
+
 	repairer *health.Repairer
 }
 
@@ -153,6 +159,9 @@ func NewControlServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *c
 		enablePACProxyFn:    sysproxy.EnablePACProxy,
 		disablePACProxyFn:   sysproxy.DisablePACProxy,
 		setStartupEnabledFn: startup.SetStartupEnabled,
+		openFolderFn:        desktop.OpenFolder,
+		showInFolderFn:      desktop.ShowInFolder,
+		chooseFolderFn:      desktop.ChooseFolder,
 	}
 	checker := health.NewChecker(cfgMgr, certMgr, cacheMgr, proxySrv, stats, ctrl.ListenerAddr)
 	ctrl.repairer = health.NewRepairer(cfgMgr, certMgr, cacheMgr, proxySrv, stats, checker, ctrl.ReloadListener)
@@ -1426,13 +1435,13 @@ func (c *ControlServer) handleOpenCacheFolder(w http.ResponseWriter, req *http.R
 	base := c.cacheMgr.GetCacheBase()
 	_ = os.MkdirAll(base, 0755)
 	go func() {
-		_ = desktop.OpenFolder(base)
+		_ = c.openFolderFn(base)
 	}()
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": base})
 }
 
 func (c *ControlServer) handleBrowseDir(w http.ResponseWriter, req *http.Request) {
-	chosen, _ := desktop.ChooseFolder("选择 GBF 本地静态缓存保存目录")
+	chosen, _ := c.chooseFolderFn("选择 GBF 本地静态缓存保存目录")
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "path": chosen})
 }
 
@@ -2214,7 +2223,7 @@ func (c *ControlServer) handleUpdateOpenFolder(w http.ResponseWriter, req *http.
 		target = updater.GetDefaultDownloadDir()
 	}
 
-	if err := desktop.ShowInFolder(target); err != nil {
+	if err := c.showInFolderFn(target); err != nil {
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"ok":    false,
 			"error": fmt.Sprintf("无法打开文件夹: %v", err),

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"gbf-proxy/config"
-	"gbf-proxy/desktop"
 	"gbf-proxy/patcher"
 )
 
@@ -794,7 +793,7 @@ func (c *ControlServer) handleAndroidPatchOpenOutput(w http.ResponseWriter, req 
 	_ = os.MkdirAll(targetDir, 0755)
 
 	go func() {
-		_ = desktop.OpenFolder(targetDir)
+		_ = c.openFolderFn(targetDir)
 	}()
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
@@ -1396,7 +1395,7 @@ func (c *ControlServer) handleAndroidPatchOpenBackup(w http.ResponseWriter, req 
 	_ = os.MkdirAll(backupDir, 0755)
 
 	go func() {
-		_ = desktop.OpenFolder(backupDir)
+		_ = c.openFolderFn(backupDir)
 	}()
 
 	c.sendJSON(w, http.StatusOK, map[string]interface{}{
