@@ -1115,6 +1115,28 @@ func TestControlServer_LANIsolation(t *testing.T) {
 	if pResp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 OK from proxy over LAN socket, got %d", pResp.StatusCode)
 	}
+
+	// 5. Penetration test: Attempt to reach control server via CONNECT through LAN proxy socket
+	// Target 127.0.0.1.nip.io:<ctrlPort> MUST be blocked with 403 Forbidden
+	pTunnelConn, err := net.DialTimeout("tcp", lanProxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("failed to connect to proxy via LAN socket for CONNECT test: %v", err)
+	}
+	defer pTunnelConn.Close()
+
+	connectReq := fmt.Sprintf("CONNECT 127.0.0.1.nip.io:%d HTTP/1.1\r\nHost: 127.0.0.1.nip.io:%d\r\n\r\n", ctrlPort, ctrlPort)
+	if _, err := pTunnelConn.Write([]byte(connectReq)); err != nil {
+		t.Fatalf("failed to write CONNECT request to proxy via LAN socket: %v", err)
+	}
+	tBr := bufio.NewReader(pTunnelConn)
+	tResp, err := http.ReadResponse(tBr, nil)
+	if err != nil {
+		t.Fatalf("failed to read response for CONNECT from LAN socket: %v", err)
+	}
+	tResp.Body.Close()
+	if tResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CRITICAL SECURITY VIOLATION: LAN client bypassed control plane loopback isolation via CONNECT 127.0.0.1.nip.io:%d (status=%d)", ctrlPort, tResp.StatusCode)
+	}
 }
 
 func TestControlServer_ApplyConfig_SaveFail_NoRuntimeSideEffects(t *testing.T) {
@@ -1439,6 +1461,44 @@ func TestHandleLatencyTestWithMockServer(t *testing.T) {
 	_ = json.Unmarshal(wUnreach.Body.Bytes(), &unreachRes)
 	if ok, _ := unreachRes["ok"].(bool); ok {
 		t.Errorf("expected ok=false for unreachable proxy, got %v", unreachRes)
+	}
+
+	// Test 3: socks5h (and case-insensitive SOCKS5H) custom proxy whitelist acceptance
+	for _, scheme := range []string{"socks5h", "SOCKS5H"} {
+		socks5hReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/latency-test?target=%s&proxy=%s://127.0.0.1:59998&fast=1", url.QueryEscape(mockTarget.URL), scheme), nil)
+		wSocks := httptest.NewRecorder()
+		ctrl.handleLatencyTest(wSocks, socks5hReq)
+
+		if wSocks.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for socks5h proxy test, got %d", wSocks.Code)
+		}
+		var socksRes map[string]interface{}
+		_ = json.Unmarshal(wSocks.Body.Bytes(), &socksRes)
+		routeDesc, _ := socksRes["route_desc"].(string)
+		if !strings.Contains(routeDesc, "127.0.0.1:59998") {
+			t.Errorf("expected route_desc to reflect accepted %s proxy, got: %s", scheme, routeDesc)
+		}
+		errMsg, _ := socksRes["error"].(string)
+		if strings.Contains(errMsg, "unsupported proxy scheme") {
+			t.Errorf("socks5h proxy scheme was rejected by transport: %s", errMsg)
+		}
+	}
+
+	// Test 4: Unsupported scheme (ftp) or missing host (socks5h://) must be ignored and fall back to direct mode
+	for _, invalidProxy := range []string{
+		"ftp://127.0.0.1:21",
+		"socks5h://",
+		"://bad-url",
+	} {
+		unsuppReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/latency-test?target=%s&proxy=%s&fast=1", url.QueryEscape(mockTarget.URL), url.QueryEscape(invalidProxy)), nil)
+		wUnsupp := httptest.NewRecorder()
+		ctrl.handleLatencyTest(wUnsupp, unsuppReq)
+		var unsuppRes map[string]interface{}
+		_ = json.Unmarshal(wUnsupp.Body.Bytes(), &unsuppRes)
+		routeDesc, _ := unsuppRes["route_desc"].(string)
+		if !strings.Contains(routeDesc, "直连模式") {
+			t.Errorf("expected invalid proxy %q to fall back to direct mode, got: %s", invalidProxy, routeDesc)
+		}
 	}
 }
 

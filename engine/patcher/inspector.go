@@ -95,6 +95,9 @@ var (
 // InspectInput analyzes the user's input path (single .apk, .apks/.xapk/.zip archive, or directory).
 // If an archive (.apks/.xapk/.zip) is provided, it unpacks it into workDir/unpacked.
 func InspectInput(inputPath string, workDir string) (*ApkPackageInfo, error) {
+	if abs, err := filepath.Abs(inputPath); err == nil {
+		inputPath = abs
+	}
 	fi, err := os.Stat(inputPath)
 	if err != nil {
 		return nil, fmt.Errorf("input path not accessible: %w", err)
@@ -369,6 +372,11 @@ func isValidPackageName(s string) bool {
 	return IsValidPackageName(s)
 }
 
+const (
+	maxSingleZipEntryBytes  = 1024 * 1024 * 1024     // 1 GiB per file
+	maxTotalZipExtractBytes = 2 * 1024 * 1024 * 1024 // 2 GiB total archive
+)
+
 func unzipArchive(srcZip, destDir string) error {
 	zr, err := zip.OpenReader(srcZip)
 	if err != nil {
@@ -376,7 +384,11 @@ func unzipArchive(srcZip, destDir string) error {
 	}
 	defer zr.Close()
 
+	var totalExtracted int64
 	for _, f := range zr.File {
+		if f.FileInfo().Mode()&os.ModeSymlink != 0 {
+			continue
+		}
 		// Prevent Zip Slip
 		cleanPath := filepath.Clean(f.Name)
 		if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
@@ -409,11 +421,21 @@ func unzipArchive(srcZip, destDir string) error {
 			return err
 		}
 
-		_, err = io.Copy(outFile, rc)
+		n, err := io.Copy(outFile, io.LimitReader(rc, maxSingleZipEntryBytes+1))
 		rc.Close()
 		outFile.Close()
 		if err != nil {
+			_ = os.Remove(targetPath)
 			return err
+		}
+		if n > maxSingleZipEntryBytes {
+			_ = os.Remove(targetPath)
+			return fmt.Errorf("zip entry %s exceeds maximum allowed size (%d bytes)", f.Name, maxSingleZipEntryBytes)
+		}
+		totalExtracted += n
+		if totalExtracted > maxTotalZipExtractBytes {
+			_ = os.Remove(targetPath)
+			return fmt.Errorf("zip archive exceeds maximum total extracted size (%d bytes)", maxTotalZipExtractBytes)
 		}
 	}
 	return nil

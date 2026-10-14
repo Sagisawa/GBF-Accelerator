@@ -1915,7 +1915,7 @@ func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Reque
 	if custom := strings.TrimSpace(req.URL.Query().Get("proxy")); custom != "" {
 		if strings.EqualFold(custom, "direct") {
 			proxyURL = ""
-		} else if u, err := url.Parse(custom); err == nil && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "socks5") {
+		} else if isSupportedBackupProxyURL(custom) {
 			proxyURL = custom
 		}
 	}
@@ -1942,7 +1942,13 @@ func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Reque
 
 	if proxyURL != "" {
 		if u, err := url.Parse(proxyURL); err == nil {
-			transport.Proxy = http.ProxyURL(u)
+			if strings.EqualFold(u.Scheme, "socks5h") {
+				proxyCopy := *u
+				proxyCopy.Scheme = "socks5"
+				transport.Proxy = http.ProxyURL(&proxyCopy)
+			} else {
+				transport.Proxy = http.ProxyURL(u)
+			}
 		}
 	}
 

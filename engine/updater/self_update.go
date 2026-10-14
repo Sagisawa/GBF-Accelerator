@@ -372,38 +372,45 @@ func extractMacBundle(archivePath, stageDir string) (string, error) {
 	}
 	defer zr.Close()
 
-	bundleRoot := ""
-	for _, f := range zr.File {
-		name := filepath.ToSlash(f.Name)
-		if !isSafeZipPath(name) {
-			continue
-		}
-		parts := strings.Split(strings.Trim(name, "/"), "/")
-		for _, p := range parts {
-			if strings.HasSuffix(strings.ToLower(p), ".app") {
-				bundleRoot = p
-				break
-			}
-		}
-		if bundleRoot != "" {
-			break
-		}
-	}
-	if bundleRoot == "" {
-		return "", fmt.Errorf("更新压缩包中未找到 macOS .app")
-	}
-
-	stageBundle := filepath.Join(stageDir, bundleRoot)
+	bundleName := ""
+	bundlePrefix := ""
 	for _, f := range zr.File {
 		name := filepath.ToSlash(strings.Trim(f.Name, "/"))
 		if name == "" || !isSafeZipPath(name) {
 			continue
 		}
 		parts := strings.Split(name, "/")
-		if len(parts) == 0 || parts[0] != bundleRoot {
+		for idx, p := range parts {
+			if strings.HasSuffix(strings.ToLower(p), ".app") {
+				bundleName = p
+				bundlePrefix = strings.Join(parts[:idx+1], "/")
+				break
+			}
+		}
+		if bundleName != "" {
+			break
+		}
+	}
+	if bundleName == "" {
+		return "", fmt.Errorf("更新压缩包中未找到 macOS .app")
+	}
+
+	stageBundle := filepath.Join(stageDir, bundleName)
+	extractedFiles := 0
+	for _, f := range zr.File {
+		name := filepath.ToSlash(strings.Trim(f.Name, "/"))
+		if name == "" || !isSafeZipPath(name) {
 			continue
 		}
-		target := filepath.Join(stageDir, filepath.FromSlash(name))
+		var relInsideBundle string
+		if name == bundlePrefix {
+			relInsideBundle = bundleName
+		} else if strings.HasPrefix(name, bundlePrefix+"/") {
+			relInsideBundle = bundleName + "/" + strings.TrimPrefix(name, bundlePrefix+"/")
+		} else {
+			continue
+		}
+		target := filepath.Join(stageDir, filepath.FromSlash(relInsideBundle))
 		targetClean := filepath.Clean(target)
 		rel, err := filepath.Rel(stageDir, targetClean)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
@@ -439,7 +446,18 @@ func extractMacBundle(archivePath, stageDir string) (string, error) {
 		if closeErr != nil {
 			return "", fmt.Errorf("关闭更新文件失败: %w", closeErr)
 		}
-		_ = os.Chmod(targetClean, 0755)
+		perm := f.Mode().Perm()
+		if perm == 0 {
+			perm = 0644
+		}
+		if strings.HasPrefix(relInsideBundle, bundleName+"/Contents/MacOS/") {
+			perm |= 0755
+		}
+		_ = os.Chmod(targetClean, perm)
+		extractedFiles++
+	}
+	if extractedFiles == 0 {
+		return "", fmt.Errorf("更新压缩包中的 macOS .app 内容为空")
 	}
 	return stageBundle, nil
 }

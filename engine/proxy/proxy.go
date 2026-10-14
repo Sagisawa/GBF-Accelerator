@@ -86,6 +86,33 @@ type ProxyServer struct {
 	// Test synchronization hooks (nil in production)
 	beforeSingleFlightDoContext func(key string, isHead bool)
 	insideSingleFlightHeadHook  func(key string)
+
+	// Resolver and dialer hooks (nil in production; used for testing and controlled resolution)
+	lookupIPFn    func(ctx context.Context, host string) ([]net.IP, error)
+	dialContextFn func(ctx context.Context, network, addr string) (net.Conn, error)
+}
+
+func (s *ProxyServer) resolveHostIPs(ctx context.Context, host string) ([]net.IP, error) {
+	if s.lookupIPFn != nil {
+		return s.lookupIPFn(ctx, host)
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, len(addrs))
+	for i, a := range addrs {
+		ips[i] = a.IP
+	}
+	return ips, nil
+}
+
+func (s *ProxyServer) dialTarget(ctx context.Context, network, addr string) (net.Conn, error) {
+	if s.dialContextFn != nil {
+		return s.dialContextFn(ctx, network, addr)
+	}
+	var d net.Dialer
+	return d.DialContext(ctx, network, addr)
 }
 
 const (
@@ -500,11 +527,14 @@ func (s *ProxyServer) finishInFlightWatch(tracker *inFlightTracker, route failov
 	}
 	// The watchdog already fired and recorded a soft latency failure for this
 	// request. A clean completion (err == nil) must NOT be re-observed to avoid
-	// double counting. A genuine hard error, however, is an immediate-failover
-	// trigger and must NOT be swallowed: it still reaches observe(), whose
-	// route != active guard makes this call idempotent when the watchdog
-	// already switched the route to backup.
-	if err != nil {
+	// double counting. A genuine hard error on a non-trial request is an
+	// immediate-failover trigger and must NOT be swallowed: it still reaches
+	// observe(), whose route != active guard makes this call idempotent when the
+	// watchdog already switched the route to backup. For recovery trials
+	// (trial == true), observeInFlightTimeout already terminated the trial and
+	// cleared trialInFlight, so a late error must not re-enter observe() and
+	// clobber a subsequent recovery trial.
+	if err != nil && !trial {
 		s.observeUpstream(route, trial, elapsed, err)
 	}
 }
@@ -962,11 +992,17 @@ func (s *ProxyServer) handleConnection(conn net.Conn) {
 
 func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.Request) {
 	target := req.RequestURI
+	if target == "" && req.URL != nil && req.URL.Host != "" {
+		target = req.URL.Host
+	}
+	if target == "" {
+		target = req.Host
+	}
 	host := target
 	if h, _, err := net.SplitHostPort(target); err == nil {
 		host = h
 	}
-	host = strings.ToLower(strings.TrimRight(host, "."))
+	host = strings.ToLower(strings.TrimRight(strings.Trim(host, "[]"), "."))
 
 	clientIP := "127.0.0.1"
 	if cAddr := conn.RemoteAddr(); cAddr != nil {
@@ -1153,145 +1189,355 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 		targetHost = net.JoinHostPort(strings.Trim(targetHost, "[]"), "443")
 	}
 
-	var upConn net.Conn
-	var upReader io.Reader
-	var err error
+	if tHost, tPort, splitErr := net.SplitHostPort(targetHost); splitErr == nil {
+		tHostTrimmed := strings.ToLower(strings.TrimRight(strings.Trim(tHost, "[]"), "."))
+		cfg := s.cfgMgr.Get()
+		listenPortStr := strconv.Itoa(cfg.ListenPort)
+		controlPortStr := strconv.Itoa(cfg.ControlPort)
+		localIP, localPort := safeLocalAddr(clientConn)
+		if localPort == "" {
+			localPort = listenPortStr
+		}
+		isSelfPort := tPort == listenPortStr || tPort == localPort || (controlPortStr != "" && tPort == controlPortStr)
+		isLANClient := isRemoteLANClientConn(clientConn)
 
-	if effProxy != "" {
-		if u, parseErr := url.Parse(effProxy); parseErr == nil {
-			scheme := strings.ToLower(u.Scheme)
+		// 1. Fast-path syntactic check (zero DNS cost)
+		isLiteralSelf := isLoopbackOrSelfHost(tHostTrimmed, localIP)
+		isLiteralLoopback := isLoopbackOrUnspecifiedHost(tHostTrimmed)
+		if (isLiteralSelf && isSelfPort) || (isLANClient && (isLiteralLoopback || isLiteralSelf)) {
+			writeHTTPResponse(clientConn, http.StatusForbidden, nil, nil, false, true)
+			return
+		}
 
-			if strings.HasPrefix(scheme, "socks") {
-				proxyHost := u.Hostname()
-				proxyPort := u.Port()
-				if proxyPort == "" {
-					proxyPort = "1080"
-				}
-				proxyAddr := net.JoinHostPort(proxyHost, proxyPort)
-				user := ""
-				pass := ""
-				if u.User != nil {
-					user = u.User.Username()
-					pass, _ = u.User.Password()
-				}
-				upConn, err = dialSOCKS5(proxyAddr, targetHost, user, pass, 10*time.Second)
-			} else if scheme == "http" || scheme == "https" {
-				proxyHost := u.Hostname()
-				proxyPort := u.Port()
-				if proxyPort == "" {
-					if scheme == "https" {
-						proxyPort = "443"
-					} else {
-						proxyPort = "80"
+		// 2. Controlled DNS resolution for domain targets:
+		// Only resolve when required for security policy (specifically for self ports e.g. ControlPort or ListenPort).
+		// Normal request paths (e.g. port 443 / 80) must NOT have blocking DNS queries added.
+		var resolvedIPs []net.IP
+		if parsedIP := net.ParseIP(tHostTrimmed); parsedIP != nil {
+			resolvedIPs = []net.IP{parsedIP}
+		} else if isSelfPort {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ips, err := s.resolveHostIPs(ctx, tHostTrimmed)
+			cancel()
+			if err != nil {
+				writeHTTPResponse(clientConn, http.StatusBadGateway, nil, nil, false, true)
+				return
+			}
+			resolvedIPs = ips
+		}
+
+		// 3. Security policy check on all resolved IPs
+		if len(resolvedIPs) > 0 {
+			for _, ip := range resolvedIPs {
+				if isLoopbackOrSelfIP(ip, localIP) {
+					if isSelfPort || isLANClient {
+						writeHTTPResponse(clientConn, http.StatusForbidden, nil, nil, false, true)
+						return
 					}
 				}
-				proxyAddr := net.JoinHostPort(proxyHost, proxyPort)
-				upConn, err = net.DialTimeout("tcp", proxyAddr, 10*time.Second)
-				if err == nil && scheme == "https" {
-					cfg := s.cfgMgr.Get()
-					tlsCfg := &tls.Config{
-						ServerName:         proxyHost,
-						InsecureSkipVerify: !cfg.VerifyUpstreamTLS || cfg.ShimakazeMode,
+			}
+		}
+
+		var upConn net.Conn
+		var upReader io.Reader
+		var err error
+
+		if effProxy != "" {
+			if u, parseErr := url.Parse(effProxy); parseErr == nil {
+				scheme := strings.ToLower(u.Scheme)
+
+				if strings.HasPrefix(scheme, "socks") {
+					proxyHost := u.Hostname()
+					proxyPort := u.Port()
+					if proxyPort == "" {
+						proxyPort = "1080"
 					}
-					tlsConn := tls.Client(upConn, tlsCfg)
-					_ = upConn.SetDeadline(time.Now().Add(10 * time.Second))
-					if hErr := tlsConn.Handshake(); hErr != nil {
-						_ = upConn.Close()
-						upConn = nil
-						err = hErr
-					} else {
-						_ = upConn.SetDeadline(time.Time{})
-						upConn = tlsConn
-					}
-				}
-				if err == nil && upConn != nil {
-					var authHeader string
+					proxyAddr := net.JoinHostPort(proxyHost, proxyPort)
+					user := ""
+					pass := ""
 					if u.User != nil {
-						user := u.User.Username()
-						pass, _ := u.User.Password()
-						auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
-						authHeader = fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth)
+						user = u.User.Username()
+						pass, _ = u.User.Password()
 					}
-					connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", targetHost, targetHost, authHeader)
-					_ = upConn.SetDeadline(time.Now().Add(10 * time.Second))
-					if _, wErr := upConn.Write([]byte(connectReq)); wErr != nil {
-						_ = upConn.Close()
-						upConn = nil
-						err = wErr
-					} else {
-						br := bufio.NewReader(upConn)
-						resp, rErr := http.ReadResponse(br, nil)
-						if rErr != nil || resp.StatusCode != http.StatusOK {
+					upConn, err = dialSOCKS5(proxyAddr, targetHost, user, pass, 10*time.Second)
+				} else if scheme == "http" || scheme == "https" {
+					proxyHost := u.Hostname()
+					proxyPort := u.Port()
+					if proxyPort == "" {
+						if scheme == "https" {
+							proxyPort = "443"
+						} else {
+							proxyPort = "80"
+						}
+					}
+					proxyAddr := net.JoinHostPort(proxyHost, proxyPort)
+					dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					upConn, err = s.dialTarget(dialCtx, "tcp", proxyAddr)
+					dialCancel()
+					if err == nil && scheme == "https" {
+						cfg := s.cfgMgr.Get()
+						tlsCfg := &tls.Config{
+							ServerName:         proxyHost,
+							InsecureSkipVerify: !cfg.VerifyUpstreamTLS || cfg.ShimakazeMode,
+						}
+						tlsConn := tls.Client(upConn, tlsCfg)
+						_ = upConn.SetDeadline(time.Now().Add(10 * time.Second))
+						if hErr := tlsConn.Handshake(); hErr != nil {
 							_ = upConn.Close()
 							upConn = nil
-							if rErr != nil {
-								err = rErr
-							} else {
-								err = fmt.Errorf("proxy returned %d", resp.StatusCode)
-							}
+							err = hErr
 						} else {
 							_ = upConn.SetDeadline(time.Time{})
-							upReader = br
+							upConn = tlsConn
+						}
+					}
+					if err == nil && upConn != nil {
+						var authHeader string
+						if u.User != nil {
+							user := u.User.Username()
+							pass, _ := u.User.Password()
+							auth := base64.StdEncoding.EncodeToString([]byte(user + ":" + pass))
+							authHeader = fmt.Sprintf("Proxy-Authorization: Basic %s\r\n", auth)
+						}
+						connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n%s\r\n", targetHost, targetHost, authHeader)
+						_ = upConn.SetDeadline(time.Now().Add(10 * time.Second))
+						if _, wErr := upConn.Write([]byte(connectReq)); wErr != nil {
+							_ = upConn.Close()
+							upConn = nil
+							err = wErr
+						} else {
+							br := bufio.NewReader(upConn)
+							resp, rErr := http.ReadResponse(br, nil)
+							if rErr != nil || resp.StatusCode != http.StatusOK {
+								_ = upConn.Close()
+								upConn = nil
+								if rErr != nil {
+									err = rErr
+								} else {
+									err = fmt.Errorf("proxy returned %d", resp.StatusCode)
+								}
+							} else {
+								_ = upConn.SetDeadline(time.Time{})
+								upReader = br
+							}
 						}
 					}
 				}
 			}
 		}
-	}
 
-	if upConn == nil && err == nil {
-		upConn, err = net.DialTimeout("tcp", targetHost, 10*time.Second)
-	}
+		if upConn == nil && err == nil {
+			var dialAddrs []string
+			if len(resolvedIPs) > 0 {
+				for _, ip := range resolvedIPs {
+					if (isSelfPort || isLANClient) && isLoopbackOrSelfIP(ip, localIP) {
+						continue
+					}
+					dialAddrs = append(dialAddrs, net.JoinHostPort(ip.String(), tPort))
+				}
+			} else {
+				dialAddrs = []string{targetHost}
+			}
 
-	if err != nil || upConn == nil {
-		writeHTTPResponse(clientConn, http.StatusBadGateway, nil, nil, false, true)
+			if len(dialAddrs) == 0 {
+				writeHTTPResponse(clientConn, http.StatusForbidden, nil, nil, false, true)
+				return
+			}
+
+			for _, dialAddr := range dialAddrs {
+				dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				c, dErr := s.dialTarget(dialCtx, "tcp", dialAddr)
+				dialCancel()
+				if dErr == nil && c != nil {
+					upConn = c
+					err = nil
+					break
+				}
+				err = dErr
+			}
+		}
+
+		if err != nil || upConn == nil {
+			writeHTTPResponse(clientConn, http.StatusBadGateway, nil, nil, false, true)
+			return
+		}
+		defer upConn.Close()
+
+		if upReader == nil {
+			upReader = upConn
+		}
+
+		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+			return
+		}
+		s.stats.Log("INFO", fmt.Sprintf("[BYPASS-TCP] Tunneling %s via upstream", targetHost))
+
+		var closeOnce sync.Once
+		closeBoth := func() {
+			closeOnce.Do(func() {
+				_ = clientConn.Close()
+				_ = upConn.Close()
+			})
+		}
+		defer closeBoth()
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			defer closeBoth()
+			bufPtr := tunnelBufferPool.Get().(*[]byte)
+			defer tunnelBufferPool.Put(bufPtr)
+			_, _ = io.CopyBuffer(clientConn, upReader, *bufPtr)
+		}()
+
+		go func() {
+			defer wg.Done()
+			defer closeBoth()
+			bufPtr := tunnelBufferPool.Get().(*[]byte)
+			defer tunnelBufferPool.Put(bufPtr)
+			_, _ = io.CopyBuffer(upConn, clientReader, *bufPtr)
+		}()
+
+		wg.Wait()
 		return
 	}
-	defer upConn.Close()
 
-	if upReader == nil {
-		upReader = upConn
-	}
-
-	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		return
-	}
-	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-TCP] Tunneling %s via upstream", targetHost))
-
-	var closeOnce sync.Once
-	closeBoth := func() {
-		closeOnce.Do(func() {
-			_ = clientConn.Close()
-			_ = upConn.Close()
-		})
-	}
-	defer closeBoth()
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		defer closeBoth()
-		bufPtr := tunnelBufferPool.Get().(*[]byte)
-		defer tunnelBufferPool.Put(bufPtr)
-		_, _ = io.CopyBuffer(clientConn, upReader, *bufPtr)
-	}()
-
-	go func() {
-		defer wg.Done()
-		defer closeBoth()
-		bufPtr := tunnelBufferPool.Get().(*[]byte)
-		defer tunnelBufferPool.Put(bufPtr)
-		_, _ = io.CopyBuffer(upConn, clientReader, *bufPtr)
-	}()
-
-	wg.Wait()
+	writeHTTPResponse(clientConn, http.StatusBadRequest, nil, nil, false, true)
 }
 
 func isPrivateProxyHost(host string) bool {
 	ip := net.ParseIP(strings.Trim(host, "[]"))
 	return ip != nil && ip.To4() != nil && ip.IsPrivate()
+}
+
+func isLoopbackOrUnspecifiedHost(hostTrimmed string) bool {
+	if hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
+		hostTrimmed == "::1" || hostTrimmed == "0.0.0.0" || hostTrimmed == "::" {
+		return true
+	}
+	if ip := net.ParseIP(hostTrimmed); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+		return true
+	}
+	return false
+}
+
+func isLoopbackOrSelfIP(ip net.IP, localIP string) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsUnspecified() {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4[0] == 127 { // 127.0.0.0/8 loopback range
+			return true
+		}
+	}
+	if localIP != "" {
+		if lip := net.ParseIP(localIP); lip != nil && lip.Equal(ip) {
+			return true
+		}
+	}
+	if lanIP := config.GetLANIP(); lanIP != "" {
+		if lip := net.ParseIP(lanIP); lip != nil && lip.Equal(ip) {
+			return true
+		}
+	}
+	// Check against local interface addresses
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			if addrs, err := iface.Addrs(); err == nil {
+				for _, addr := range addrs {
+					var ifIP net.IP
+					switch v := addr.(type) {
+					case *net.IPNet:
+						ifIP = v.IP
+					case *net.IPAddr:
+						ifIP = v.IP
+					}
+					if ifIP != nil && ifIP.Equal(ip) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func extractEmbeddedIP(host string) net.IP {
+	host = strings.ToLower(strings.TrimRight(strings.Trim(host, "[]"), "."))
+	if strings.HasSuffix(host, "localtest.me") || strings.HasSuffix(host, "lvh.me") {
+		return net.ParseIP("127.0.0.1")
+	}
+	if !strings.HasSuffix(host, ".nip.io") &&
+		!strings.HasSuffix(host, ".sslip.io") &&
+		!strings.HasSuffix(host, ".traefik.me") {
+		return nil
+	}
+	parts := strings.Split(host, ".")
+	for i := 0; i <= len(parts)-4; i++ {
+		candidate := strings.Join(parts[i:i+4], ".")
+		if ip := net.ParseIP(candidate); ip != nil {
+			return ip
+		}
+	}
+	for _, part := range parts {
+		if ip := net.ParseIP(part); ip != nil {
+			return ip
+		}
+		if strings.Contains(part, "-") {
+			dotted := strings.ReplaceAll(part, "-", ".")
+			if ip := net.ParseIP(dotted); ip != nil {
+				return ip
+			}
+			coloned := strings.ReplaceAll(part, "-", ":")
+			if ip := net.ParseIP(coloned); ip != nil {
+				return ip
+			}
+		}
+	}
+	return nil
+}
+
+func isLoopbackOrSelfHost(hostTrimmed, localIP string) bool {
+	if isLoopbackOrUnspecifiedHost(hostTrimmed) || hostTrimmed == "proxy" || hostTrimmed == "gbf-proxy" {
+		return true
+	}
+	if localIP != "" && strings.EqualFold(hostTrimmed, localIP) {
+		return true
+	}
+	if lanIP := config.GetLANIP(); lanIP != "" && strings.EqualFold(hostTrimmed, lanIP) {
+		return true
+	}
+	if ip := net.ParseIP(hostTrimmed); ip != nil {
+		return isLoopbackOrSelfIP(ip, localIP)
+	}
+	if embIP := extractEmbeddedIP(hostTrimmed); embIP != nil {
+		return isLoopbackOrSelfIP(embIP, localIP)
+	}
+	return false
+}
+
+func isRemoteLANClientConn(conn net.Conn) bool {
+	if conn == nil {
+		return false
+	}
+	rAddr := conn.RemoteAddr()
+	if rAddr == nil {
+		return false
+	}
+	if tcpAddr, ok := rAddr.(*net.TCPAddr); ok && tcpAddr != nil && tcpAddr.IP != nil {
+		return !tcpAddr.IP.IsLoopback()
+	}
+	host, _, err := net.SplitHostPort(rAddr.String())
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && !ip.IsLoopback()
 }
 
 func safeLocalAddr(conn net.Conn) (localIP string, localPort string) {
@@ -1312,20 +1558,36 @@ func safeLocalAddr(conn net.Conn) (localIP string, localPort string) {
 	return "", ""
 }
 
-func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
-	host := req.Host
-	reqPort := ""
-	if h, p, err := net.SplitHostPort(req.Host); err == nil {
-		host = h
-		reqPort = p
+func extractActualTarget(req *http.Request) (string, string) {
+	raw := ""
+	if req.URL != nil && req.URL.Host != "" {
+		raw = req.URL.Host
+	} else if strings.HasPrefix(req.RequestURI, "http://") || strings.HasPrefix(req.RequestURI, "https://") || strings.HasPrefix(req.RequestURI, "//") {
+		if u, err := url.Parse(req.RequestURI); err == nil && u.Host != "" {
+			raw = u.Host
+		}
 	}
-	hostTrimmed := strings.ToLower(strings.Trim(host, "[]"))
+	if raw == "" {
+		raw = req.Host
+	}
+	// Strip userinfo if present in authority (e.g. user:pass@host:port -> host:port)
+	if atIdx := strings.LastIndex(raw, "@"); atIdx != -1 {
+		raw = raw[atIdx+1:]
+	}
+	if h, p, err := net.SplitHostPort(raw); err == nil {
+		return strings.ToLower(strings.TrimRight(strings.Trim(h, "[]"), ".")), p
+	}
+	return strings.ToLower(strings.TrimRight(strings.Trim(raw, "[]"), ".")), ""
+}
 
+func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
+	hostTrimmed, reqPort := extractActualTarget(req)
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
 	// Check if this request targets local internal proxy endpoints
 	cfg := s.cfgMgr.Get()
 	listenPortStr := strconv.Itoa(cfg.ListenPort)
+	controlPortStr := strconv.Itoa(cfg.ControlPort)
 	localIP, localPort := safeLocalAddr(conn)
 	if localPort == "" {
 		localPort = listenPortStr
@@ -1333,14 +1595,41 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 
 	effectivePort := reqPort
 	if effectivePort == "" {
-		effectivePort = "80"
+		if req.URL != nil && strings.EqualFold(req.URL.Scheme, "https") {
+			effectivePort = "443"
+		} else {
+			effectivePort = "80"
+		}
 	}
 
 	isProxyPort := reqPort == listenPortStr || reqPort == localPort || effectivePort == listenPortStr || effectivePort == localPort
+	isControlPort := controlPortStr != "" && effectivePort == controlPortStr
+	isSelfHost := isLoopbackOrSelfHost(hostTrimmed, localIP)
 
-	isInternalCertOrPac := cleanPath == "/ca.crt" || cleanPath == "/ca.pem" ||
+	// Local control plane isolation: strictly reject proxy requests targeting the local control port.
+	if isControlPort {
+		if isSelfHost {
+			writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
+			return false
+		}
+		if net.ParseIP(hostTrimmed) == nil {
+			ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+			if ips, err := s.resolveHostIPs(ctx, hostTrimmed); err == nil {
+				for _, ip := range ips {
+					if isLoopbackOrSelfIP(ip, localIP) {
+						cancel()
+						writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
+						return false
+					}
+				}
+			}
+			cancel()
+		}
+	}
+
+	isInternalCertOrPac := (cleanPath == "/ca.crt" || cleanPath == "/ca.pem" ||
 		cleanPath == "/proxy.pac" ||
-		((strings.HasSuffix(cleanPath, "/ca.crt") || strings.HasSuffix(cleanPath, "/proxy.pac")) && (!req.URL.IsAbs() || isProxyPort))
+		strings.HasSuffix(cleanPath, "/ca.crt") || strings.HasSuffix(cleanPath, "/proxy.pac")) && (!req.URL.IsAbs() || isProxyPort)
 	isLandingPage := cleanPath == "" || cleanPath == "/" || cleanPath == "/index.html"
 
 	isLocalHost := hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
@@ -1378,13 +1667,8 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	if isDirectLocal && (cleanPath == "/proxy.pac" || strings.HasSuffix(cleanPath, "/proxy.pac")) {
 		cfg := s.cfgMgr.Get()
 		h := "127.0.0.1"
-		hostNoPort := req.Host
-		if hp, _, err := net.SplitHostPort(req.Host); err == nil {
-			hostNoPort = hp
-		}
-		hostNoPortLower := strings.ToLower(strings.Trim(hostNoPort, "[]"))
-		if hostNoPortLower != "" && hostNoPortLower != "127.0.0.1" && hostNoPortLower != "localhost" && hostNoPortLower != "::1" {
-			h = hostNoPort
+		if hostTrimmed != "" && hostTrimmed != "127.0.0.1" && hostTrimmed != "localhost" && hostTrimmed != "::1" {
+			h = hostTrimmed
 		}
 		pacText := GetPAC(h, cfg.ListenPort)
 		hdr := make(http.Header)
@@ -1427,44 +1711,71 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	defer s.stats.AddActiveAPI(-1)
 
 	// Loop prevention: do not forward requests targeted at the proxy itself
-	hostOnly := req.Host
-	reqPort := ""
-	if h, p, err := net.SplitHostPort(req.Host); err == nil {
-		hostOnly = h
-		reqPort = p
-	}
-	hostTrimmed := strings.ToLower(strings.Trim(hostOnly, "[]"))
+	hostTrimmed, reqPort := extractActualTarget(req)
 	effectivePort := reqPort
 	if effectivePort == "" {
-		effectivePort = "80"
+		if req.URL != nil && strings.EqualFold(req.URL.Scheme, "https") {
+			effectivePort = "443"
+		} else {
+			effectivePort = "80"
+		}
 	}
 
 	cfg := s.cfgMgr.Get()
 	listenPortStr := strconv.Itoa(cfg.ListenPort)
+	controlPortStr := strconv.Itoa(cfg.ControlPort)
 	localIP, localPort := safeLocalAddr(conn)
 	if localPort == "" {
 		localPort = listenPortStr
 	}
 
 	isProxyPort := effectivePort == listenPortStr || effectivePort == localPort
-	isSelfHost := hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
-		hostTrimmed == "::1" || hostTrimmed == "proxy" || hostTrimmed == "gbf-proxy" ||
-		(localIP != "" && strings.EqualFold(hostTrimmed, localIP)) ||
-		(config.GetLANIP() != "" && strings.EqualFold(hostTrimmed, config.GetLANIP()))
+	isControlPort := controlPortStr != "" && effectivePort == controlPortStr
+	isSelfHost := isLoopbackOrSelfHost(hostTrimmed, localIP)
 
 	if isProxyPort && isSelfHost {
 		writeHTTPResponse(conn, http.StatusNotFound, nil, nil, req.Method == http.MethodHead, true)
 		return false
 	}
+	if isControlPort {
+		if isSelfHost {
+			writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
+			return false
+		}
+		if net.ParseIP(hostTrimmed) == nil {
+			ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+			if ips, err := s.resolveHostIPs(ctx, hostTrimmed); err == nil {
+				for _, ip := range ips {
+					if isLoopbackOrSelfIP(ip, localIP) {
+						cancel()
+						writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
+						return false
+					}
+				}
+			}
+			cancel()
+		}
+	}
+	if isRemoteLANClientConn(conn) {
+		if isLoopbackOrUnspecifiedHost(hostTrimmed) || isSelfHost {
+			writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
+			return false
+		}
+	}
 
 	startTime := time.Now()
 	upURL := req.URL.String()
+	targetHost := hostTrimmed
+	if reqPort != "" && reqPort != "80" && reqPort != "443" {
+		targetHost = net.JoinHostPort(targetHost, reqPort)
+	} else if strings.Contains(targetHost, ":") && !strings.HasPrefix(targetHost, "[") {
+		targetHost = "[" + targetHost + "]"
+	}
+	if targetHost == "" {
+		targetHost = "gbf.game.mbga.jp"
+	}
 	if !strings.HasPrefix(upURL, "http://") && !strings.HasPrefix(upURL, "https://") {
-		host := req.Host
-		if host == "" {
-			host = "gbf.game.mbga.jp"
-		}
-		upURL = "http://" + host + req.URL.RequestURI()
+		upURL = "http://" + targetHost + req.URL.RequestURI()
 	}
 
 	var bodyBytes []byte
@@ -1512,7 +1823,20 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 				upReq.Header.Add(k, v)
 			}
 		}
-		upReq.Host = req.Host
+		// RFC 9112 §3.2.2:
+		// "When a proxy receives a request with an absolute-form request-target,
+		// the proxy MUST ignore the received Host header field (if any) and instead
+		// use the host information from the request-target. A proxy forwarding such
+		// a request MUST generate a new Host field-value based on the received
+		// request-target rather than forward the received Host field-value."
+		if req.URL != nil && req.URL.Host != "" {
+			upReq.Host = targetHost
+			upReq.Header.Del("Host")
+		} else if req.Host != "" {
+			upReq.Host = req.Host
+		} else {
+			upReq.Host = targetHost
+		}
 
 		if attempt == 0 {
 			apiClient, route, trial = s.getAPIClientForRequest(req.Method)
@@ -1582,7 +1906,11 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	}
 	s.forwardDynamicResponse(conn, resp, respBytes, req.Method == http.MethodHead, req.Close)
 	if s.prefetch != nil && resp != nil && resp.StatusCode == http.StatusOK && len(respBytes) > 0 {
-		s.prefetch.MaybeEnqueueGameData(req, req.Host, respBytes)
+		prefetchHost := hostTrimmed
+		if prefetchHost == "" {
+			prefetchHost = req.Host
+		}
+		s.prefetch.MaybeEnqueueGameData(req, prefetchHost, respBytes)
 	}
 	elapsed := time.Since(startTime).Milliseconds()
 	if s.telemetryEnabled() {

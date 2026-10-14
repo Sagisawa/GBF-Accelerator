@@ -298,4 +298,81 @@ func TestWaitForParentExit(t *testing.T) {
 	}
 }
 
+func TestExtractMacBundle_NestedRootAndPermissions(t *testing.T) {
+	tempDir := t.TempDir()
+	archivePath := filepath.Join(tempDir, "mac-release.zip")
+
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+
+	binHeader := &zip.FileHeader{
+		Name:   "release-v2.4.2/GBF_Accelerator.app/Contents/MacOS/GBF_Accelerator",
+		Method: zip.Deflate,
+	}
+	binHeader.SetMode(0644)
+	wBin, err := zw.CreateHeader(binHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = wBin.Write([]byte("mach-o-binary"))
+
+	plistHeader := &zip.FileHeader{
+		Name:   "release-v2.4.2/GBF_Accelerator.app/Contents/Info.plist",
+		Method: zip.Deflate,
+	}
+	plistHeader.SetMode(0644)
+	wPlist, err := zw.CreateHeader(plistHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = wPlist.Write([]byte("<plist/>"))
+
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archivePath, buf.Bytes(), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	stageDir := filepath.Join(tempDir, "stage")
+	if err := os.MkdirAll(stageDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	stageBundle, err := extractMacBundle(archivePath, stageDir)
+	if err != nil {
+		t.Fatalf("extractMacBundle failed: %v", err)
+	}
+	wantBundle := filepath.Join(stageDir, "GBF_Accelerator.app")
+	if stageBundle != wantBundle {
+		t.Fatalf("stageBundle = %q, want %q", stageBundle, wantBundle)
+	}
+
+	binPath := filepath.Join(stageBundle, "Contents", "MacOS", "GBF_Accelerator")
+	binData, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatalf("failed to read extracted binary: %v", err)
+	}
+	if string(binData) != "mach-o-binary" {
+		t.Fatalf("unexpected binary data: %q", string(binData))
+	}
+	binInfo, err := os.Stat(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binInfo.Mode().Perm()&0111 == 0 {
+		t.Fatalf("expected Contents/MacOS binary to be executable, got mode %v", binInfo.Mode().Perm())
+	}
+
+	plistPath := filepath.Join(stageBundle, "Contents", "Info.plist")
+	plistInfo, err := os.Stat(plistPath)
+	if err != nil {
+		t.Fatalf("failed to stat extracted Info.plist: %v", err)
+	}
+	if plistInfo.Mode().Perm() != 0644 {
+		t.Fatalf("expected Info.plist mode 0644, got %o", plistInfo.Mode().Perm())
+	}
+}
+
+
 

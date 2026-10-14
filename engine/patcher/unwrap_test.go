@@ -3,6 +3,8 @@ package patcher
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -217,9 +219,209 @@ func TestExtractOriginFromApk_CRCValidation(t *testing.T) {
 		t.Fatalf("expected error due to CRC mismatch, got nil")
 	}
 
-	// Verify target file was deleted on failure
+	// Verify target file was deleted on failure (did not exist beforehand)
 	if _, statErr := os.Stat(destApk); statErr == nil {
 		t.Errorf("expected destination file to be removed when CRC check fails")
+	}
+}
+
+// 5a. Declared size limit rejection: verifies entry declaring > limit is rejected immediately
+// and existing target file is preserved.
+func TestExtractOriginFromApk_DeclaredSizeLimitRejection(t *testing.T) {
+	tempDir := t.TempDir()
+	srcApk := filepath.Join(tempDir, "oversized_declared.apk")
+	destApk := filepath.Join(tempDir, "dest.apk")
+
+	// Pre-create destination with existing valid data
+	existingContent := []byte("PRE_EXISTING_VALID_ORIGIN_DATA")
+	if err := os.WriteFile(destApk, existingContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := []byte("small payload content")
+	buildZipFileWithMethod(t, srcApk, map[string][]byte{
+		"assets/lspatch/origin.apk": payload,
+	}, zip.Store)
+
+	// Tamper with central directory header to declare uncompressed size of 2 GiB (0x80000000 > maxSingleZipEntryBytes 1 GiB)
+	rawZip, err := os.ReadFile(srcApk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdSig := []byte{0x50, 0x4b, 0x01, 0x02}
+	cdIdx := bytes.Index(rawZip, cdSig)
+	if cdIdx == -1 {
+		t.Fatalf("could not find central directory header in raw zip")
+	}
+	// offset 24 from cdSig is uncompressed size (uint32)
+	binary.LittleEndian.PutUint32(rawZip[cdIdx+24:], 0x80000000)
+	if err := os.WriteFile(srcApk, rawZip, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = ExtractOriginFromApk(srcApk, destApk)
+	if err == nil {
+		t.Fatalf("expected error for oversized declared origin.apk, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum limit") {
+		t.Errorf("expected error mentioning 'exceeds maximum limit', got: %v", err)
+	}
+
+	// Verify existing valid target file was NOT deleted or overwritten
+	gotContent, err := os.ReadFile(destApk)
+	if err != nil {
+		t.Fatalf("failed to read destApk after rejection: %v", err)
+	}
+	if !bytes.Equal(gotContent, existingContent) {
+		t.Errorf("pre-existing destination was mutated! expected %q, got %q", existingContent, gotContent)
+	}
+
+	// Verify no temporary extraction files leaked in directory
+	files, _ := os.ReadDir(tempDir)
+	for _, fi := range files {
+		if strings.HasPrefix(fi.Name(), ".origin-extract-") {
+			t.Errorf("leaked temporary file found: %s", fi.Name())
+		}
+	}
+}
+
+// 5b. Copy-phase limit exceed: verifies that if declared size appears valid within maxSingleZipEntryBytes
+// but stream exceeds the copy limit, copy is halted, error is returned, and existing target is preserved.
+func TestExtractOriginFromApk_CopyPhaseLimitExceed(t *testing.T) {
+	tempDir := t.TempDir()
+	srcApk := filepath.Join(tempDir, "copy_exceeded.apk")
+	destApk := filepath.Join(tempDir, "dest.apk")
+
+	// Set small copy limit for deterministic copy-phase testing
+	origLimit := maxOriginApkCopyLimit
+	maxOriginApkCopyLimit = 256
+	defer func() {
+		maxOriginApkCopyLimit = origLimit
+	}()
+
+	// Pre-create destination with existing valid data
+	existingContent := []byte("PRE_EXISTING_VALID_ORIGIN_DATA_COPY")
+	if err := os.WriteFile(destApk, existingContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create valid zip with 1024 bytes of data (exceeds copyLimit 256, but within maxSingleZipEntryBytes declared limit)
+	payload := bytes.Repeat([]byte("A"), 1024)
+	buildZipFileWithMethod(t, srcApk, map[string][]byte{
+		"assets/lspatch/origin.apk": payload,
+	}, zip.Store)
+
+	err := ExtractOriginFromApk(srcApk, destApk)
+	if err == nil {
+		t.Fatalf("expected error for copy exceeding limit, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum allowed size") {
+		t.Errorf("expected error mentioning 'exceeds maximum allowed size', got: %v", err)
+	}
+
+	// Verify existing valid target file was NOT deleted or overwritten
+	gotContent, err := os.ReadFile(destApk)
+	if err != nil {
+		t.Fatalf("failed to read destApk after copy exceed: %v", err)
+	}
+	if !bytes.Equal(gotContent, existingContent) {
+		t.Errorf("pre-existing destination was mutated! expected %q, got %q", existingContent, gotContent)
+	}
+
+	// Verify no temporary extraction files leaked in directory
+	files, _ := os.ReadDir(tempDir)
+	for _, fi := range files {
+		if strings.HasPrefix(fi.Name(), ".origin-extract-") {
+			t.Errorf("leaked temporary file found: %s", fi.Name())
+		}
+	}
+}
+
+// 5c. Failure cleanup preserves existing target: verifies failure does not delete existing file
+func TestExtractOriginFromApk_FailureCleanupPreservesExistingTarget(t *testing.T) {
+	tempDir := t.TempDir()
+	srcApk := filepath.Join(tempDir, "missing_origin.apk")
+	destApk := filepath.Join(tempDir, "dest.apk")
+
+	existingContent := []byte("SAFE_UNTOUCHED_DESTINATION_DATA")
+	if err := os.WriteFile(destApk, existingContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	buildZipFile(t, srcApk, map[string][]byte{
+		"other_file.txt": []byte("irrelevant"),
+	})
+
+	err := ExtractOriginFromApk(srcApk, destApk)
+	if err == nil {
+		t.Fatalf("expected error for missing origin.apk, got nil")
+	}
+
+	gotContent, err := os.ReadFile(destApk)
+	if err != nil {
+		t.Fatalf("destination file should still exist, but got err: %v", err)
+	}
+	if !bytes.Equal(gotContent, existingContent) {
+		t.Errorf("existing destination was mutated on missing origin! expected %q, got %q", existingContent, gotContent)
+	}
+}
+
+// 5d. Replace file safely preserves and restores existing target file when final replacement fails
+func TestReplaceFileSafely_RestoresExistingTargetOnFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	destPath := filepath.Join(tempDir, "target.apk")
+	tmpPath := filepath.Join(tempDir, "temp.apk")
+
+	origContent := []byte("ORIGINAL_SAFE_TARGET_DATA")
+	if err := os.WriteFile(destPath, origContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newContent := []byte("NEW_EXTRACTED_DATA")
+	if err := os.WriteFile(tmpPath, newContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Simulate failure during replacement with a partial file written to destPath:
+	// existing file must still be restored cleanly even if cleanDest exists on Windows
+	replaceFileSafelyFailHook = func() error {
+		_ = os.WriteFile(destPath, []byte("CORRUPT_PARTIALLY_WRITTEN_CHUNK"), 0644)
+		return errors.New("simulated I/O failure during replacement")
+	}
+	defer func() { replaceFileSafelyFailHook = nil }()
+
+	err := replaceFileSafely(tmpPath, destPath, tempDir)
+	if err == nil {
+		t.Fatal("expected error from simulated replacement failure, got nil")
+	}
+
+	restoredContent, rErr := os.ReadFile(destPath)
+	if rErr != nil {
+		t.Fatalf("destination file missing after failure: %v", rErr)
+	}
+	if !bytes.Equal(restoredContent, origContent) {
+		t.Fatalf("destination content was corrupted: expected %q, got %q", origContent, restoredContent)
+	}
+
+	// Ensure no dangling backup files left behind
+	entries, _ := os.ReadDir(tempDir)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".origin-dest-bak-") {
+			t.Fatalf("dangling backup file found in destDir: %s", entry.Name())
+		}
+	}
+
+	// 2. Normal replacement without failure hook succeeds
+	replaceFileSafelyFailHook = nil
+	if err := replaceFileSafely(tmpPath, destPath, tempDir); err != nil {
+		t.Fatalf("expected successful replacement, got: %v", err)
+	}
+	finalContent, fErr := os.ReadFile(destPath)
+	if fErr != nil {
+		t.Fatalf("destination file missing after normal replacement: %v", fErr)
+	}
+	if !bytes.Equal(finalContent, newContent) {
+		t.Fatalf("destination content mismatch: expected %q, got %q", newContent, finalContent)
 	}
 }
 
