@@ -129,18 +129,74 @@ func ExtractOriginFromApk(srcApkPath, destApkPath string) error {
 	}
 
 	_ = os.Chmod(tmpPath, 0644)
-	if err := os.Rename(tmpPath, cleanDest); err != nil {
-		// On Windows, rename fails if cleanDest already exists; remove and retry
-		_ = os.Remove(cleanDest)
-		if rErr := os.Rename(tmpPath, cleanDest); rErr != nil {
-			if cErr := copyFile(tmpPath, cleanDest); cErr != nil {
-				return fmt.Errorf("failed to finalize destination file %s: %w", cleanDest, cErr)
-			}
-			_ = os.Remove(tmpPath)
-		}
+	if err := replaceFileSafely(tmpPath, cleanDest, destDir); err != nil {
+		return fmt.Errorf("failed to finalize destination file %s: %w", cleanDest, err)
 	}
 
 	cleanup = false
+	return nil
+}
+
+// replaceFileSafelyFailHook is a test hook to simulate replacement failure after backup (nil in production).
+var replaceFileSafelyFailHook func() error
+
+func replaceFileSafely(tmpPath, cleanDest, destDir string) error {
+	if replaceFileSafelyFailHook == nil {
+		if err := os.Rename(tmpPath, cleanDest); err == nil {
+			return nil
+		}
+	}
+
+	// On Windows or across filesystem boundaries, os.Rename fails if cleanDest already exists.
+	// If cleanDest exists, move it to a temporary backup first so it can be restored on failure.
+	if _, statErr := os.Stat(cleanDest); statErr == nil {
+		backupFile, bErr := os.CreateTemp(destDir, ".origin-dest-bak-*.tmp")
+		if bErr != nil {
+			return fmt.Errorf("failed to create backup for existing target %s: %w", cleanDest, bErr)
+		}
+		backupPath := backupFile.Name()
+		_ = backupFile.Close()
+		_ = os.Remove(backupPath) // remove placeholder so cleanDest can be renamed to backupPath
+
+		if renErr := os.Rename(cleanDest, backupPath); renErr != nil {
+			// Could not safely back up existing file; do not destroy or clobber cleanDest.
+			return fmt.Errorf("failed to back up existing target %s: %w", cleanDest, renErr)
+		}
+
+		var finalErr error
+		if replaceFileSafelyFailHook != nil {
+			finalErr = replaceFileSafelyFailHook()
+		} else {
+			if rErr := os.Rename(tmpPath, cleanDest); rErr != nil {
+				if cErr := copyFile(tmpPath, cleanDest); cErr != nil {
+					finalErr = cErr
+				} else {
+					_ = os.Remove(tmpPath)
+				}
+			}
+		}
+
+		if finalErr != nil {
+			// Replacement failed: restore existing file from backup.
+			// Remove any partial cleanDest that might have been created by copyFile before restoring
+			// so that os.Rename will not fail on Windows if cleanDest already exists.
+			_ = os.Remove(cleanDest)
+			if rErr := os.Rename(backupPath, cleanDest); rErr != nil {
+				_ = copyFile(backupPath, cleanDest)
+			}
+			return finalErr
+		}
+
+		// Replacement succeeded: discard backup
+		_ = os.Remove(backupPath)
+		return nil
+	}
+
+	// cleanDest did not exist, but rename failed (e.g. cross-device); copy and remove tmp
+	if cErr := copyFile(tmpPath, cleanDest); cErr != nil {
+		return cErr
+	}
+	_ = os.Remove(tmpPath)
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -362,6 +363,65 @@ func TestExtractOriginFromApk_FailureCleanupPreservesExistingTarget(t *testing.T
 	}
 	if !bytes.Equal(gotContent, existingContent) {
 		t.Errorf("existing destination was mutated on missing origin! expected %q, got %q", existingContent, gotContent)
+	}
+}
+
+// 5d. Replace file safely preserves and restores existing target file when final replacement fails
+func TestReplaceFileSafely_RestoresExistingTargetOnFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	destPath := filepath.Join(tempDir, "target.apk")
+	tmpPath := filepath.Join(tempDir, "temp.apk")
+
+	origContent := []byte("ORIGINAL_SAFE_TARGET_DATA")
+	if err := os.WriteFile(destPath, origContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newContent := []byte("NEW_EXTRACTED_DATA")
+	if err := os.WriteFile(tmpPath, newContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Simulate failure during replacement with a partial file written to destPath:
+	// existing file must still be restored cleanly even if cleanDest exists on Windows
+	replaceFileSafelyFailHook = func() error {
+		_ = os.WriteFile(destPath, []byte("CORRUPT_PARTIALLY_WRITTEN_CHUNK"), 0644)
+		return errors.New("simulated I/O failure during replacement")
+	}
+	defer func() { replaceFileSafelyFailHook = nil }()
+
+	err := replaceFileSafely(tmpPath, destPath, tempDir)
+	if err == nil {
+		t.Fatal("expected error from simulated replacement failure, got nil")
+	}
+
+	restoredContent, rErr := os.ReadFile(destPath)
+	if rErr != nil {
+		t.Fatalf("destination file missing after failure: %v", rErr)
+	}
+	if !bytes.Equal(restoredContent, origContent) {
+		t.Fatalf("destination content was corrupted: expected %q, got %q", origContent, restoredContent)
+	}
+
+	// Ensure no dangling backup files left behind
+	entries, _ := os.ReadDir(tempDir)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".origin-dest-bak-") {
+			t.Fatalf("dangling backup file found in destDir: %s", entry.Name())
+		}
+	}
+
+	// 2. Normal replacement without failure hook succeeds
+	replaceFileSafelyFailHook = nil
+	if err := replaceFileSafely(tmpPath, destPath, tempDir); err != nil {
+		t.Fatalf("expected successful replacement, got: %v", err)
+	}
+	finalContent, fErr := os.ReadFile(destPath)
+	if fErr != nil {
+		t.Fatalf("destination file missing after normal replacement: %v", fErr)
+	}
+	if !bytes.Equal(finalContent, newContent) {
+		t.Fatalf("destination content mismatch: expected %q, got %q", newContent, finalContent)
 	}
 }
 

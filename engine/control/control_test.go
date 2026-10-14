@@ -1115,6 +1115,28 @@ func TestControlServer_LANIsolation(t *testing.T) {
 	if pResp.StatusCode != http.StatusOK {
 		t.Errorf("expected 200 OK from proxy over LAN socket, got %d", pResp.StatusCode)
 	}
+
+	// 5. Penetration test: Attempt to reach control server via CONNECT through LAN proxy socket
+	// Target 127.0.0.1.nip.io:<ctrlPort> MUST be blocked with 403 Forbidden
+	pTunnelConn, err := net.DialTimeout("tcp", lanProxyAddr, 2*time.Second)
+	if err != nil {
+		t.Fatalf("failed to connect to proxy via LAN socket for CONNECT test: %v", err)
+	}
+	defer pTunnelConn.Close()
+
+	connectReq := fmt.Sprintf("CONNECT 127.0.0.1.nip.io:%d HTTP/1.1\r\nHost: 127.0.0.1.nip.io:%d\r\n\r\n", ctrlPort, ctrlPort)
+	if _, err := pTunnelConn.Write([]byte(connectReq)); err != nil {
+		t.Fatalf("failed to write CONNECT request to proxy via LAN socket: %v", err)
+	}
+	tBr := bufio.NewReader(pTunnelConn)
+	tResp, err := http.ReadResponse(tBr, nil)
+	if err != nil {
+		t.Fatalf("failed to read response for CONNECT from LAN socket: %v", err)
+	}
+	tResp.Body.Close()
+	if tResp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CRITICAL SECURITY VIOLATION: LAN client bypassed control plane loopback isolation via CONNECT 127.0.0.1.nip.io:%d (status=%d)", ctrlPort, tResp.StatusCode)
+	}
 }
 
 func TestControlServer_ApplyConfig_SaveFail_NoRuntimeSideEffects(t *testing.T) {

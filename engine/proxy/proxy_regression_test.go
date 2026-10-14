@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"net/url"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -465,8 +468,8 @@ func TestControlPlaneHostConfusionAndExternalPort8125Allowed(t *testing.T) {
 		if !strings.Contains(lastTargetURL, "api.legitimate-external.com:8125") {
 			t.Fatalf("expected upstream target to be api.legitimate-external.com:8125, got: %s", lastTargetURL)
 		}
-		if lastTargetHostHeader != tc.reqHost {
-			t.Fatalf("expected forwarded Host header to be %s, got %s", tc.reqHost, lastTargetHostHeader)
+		if lastTargetHostHeader != tc.urlHost {
+			t.Fatalf("expected forwarded Host header normalized to %s per RFC 9112 §3.2.2, got %s", tc.urlHost, lastTargetHostHeader)
 		}
 	}
 
@@ -566,9 +569,11 @@ func TestControlPlaneHostConfusionAndExternalPort8125Allowed(t *testing.T) {
 		t.Fatalf("expected 200 OK for /ca.crt targeting proxy port 8124, got: %s", connCA.writeBuf.String())
 	}
 
-	// 4h. Forwarding actual external target with spoofed loopback Host header:
-	// Client wants http://innocent.com/api with Host: 127.0.0.1:8125.
-	// Proxy MUST forward to innocent.com and NOT block locally because actual target is external innocent.com.
+	// 4h. Forwarding absolute-form request with spoofed Host header:
+	// Client sends http://innocent.com/api with Host: 127.0.0.1:8125.
+	// Proxy MUST forward to innocent.com and NOT block locally because actual target is innocent.com.
+	// Per RFC 9112 §3.2.2, a proxy forwarding an absolute-form request MUST ignore the received
+	// Host header and generate a new Host field-value based on the received request-target ("innocent.com").
 	connExt := &dummyConn{}
 	reqExt := &http.Request{
 		Method: http.MethodGet,
@@ -582,8 +587,8 @@ func TestControlPlaneHostConfusionAndExternalPort8125Allowed(t *testing.T) {
 	if !strings.Contains(lastTargetURL, "innocent.com/api") {
 		t.Fatalf("expected upstream URL targeting innocent.com/api, got: %s", lastTargetURL)
 	}
-	if lastTargetHostHeader != "127.0.0.1:8125" {
-		t.Fatalf("expected forwarded Host header to be 127.0.0.1:8125, got: %s", lastTargetHostHeader)
+	if lastTargetHostHeader != "innocent.com" {
+		t.Fatalf("expected forwarded Host header normalized to innocent.com per RFC 9112 §3.2.2, got: %s", lastTargetHostHeader)
 	}
 
 	// 4i. IPv6 literal target forwarding with default port 80 formatted with brackets
@@ -599,6 +604,196 @@ func TestControlPlaneHostConfusionAndExternalPort8125Allowed(t *testing.T) {
 	}
 	if !strings.Contains(lastTargetURL, "http://[2001:db8::1]/test") {
 		t.Fatalf("expected correctly bracketed IPv6 URL http://[2001:db8::1]/test, got: %s", lastTargetURL)
+	}
+}
+
+// TestDNSLoopbackPenetration_CONNECT_Blocked validates H-01:
+// In AllowLAN=true scenario, CONNECT targets resolving to loopback addresses
+// (e.g. 127.0.0.1.nip.io:<ControlPort> and IPv6 ::1 equivalents) must be blocked
+// with 403 Forbidden. The test verifies the actual dialed target to ensure that
+// verified destination addresses are dialed directly without secondary DNS queries,
+// and that no tunnel connects to the local Control Plane.
+func TestDNSLoopbackPenetration_CONNECT_Blocked(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = 8124
+		c.ControlPort = 8125
+		c.AllowLAN = true
+		c.UpstreamProxy = "direct"
+	})
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, &cert.Manager{}, cacheMgr, stats)
+
+	// Controlled DNS resolution
+	var dnsLookupCount atomic.Int32
+	srv.lookupIPFn = func(ctx context.Context, host string) ([]net.IP, error) {
+		dnsLookupCount.Add(1)
+		switch strings.ToLower(host) {
+		case "127.0.0.1.nip.io":
+			return []net.IP{net.ParseIP("127.0.0.1")}, nil
+		case "loopback6.example.test":
+			return []net.IP{net.ParseIP("::1")}, nil
+		case "lan-internal.example.test":
+			return []net.IP{net.ParseIP("127.0.0.2")}, nil
+		case "api.legitimate-external.com":
+			return []net.IP{net.ParseIP("93.184.216.34")}, nil
+		default:
+			return nil, fmt.Errorf("unknown test host: %s", host)
+		}
+	}
+
+	var dialedAddrs []string
+	var dialMu sync.Mutex
+	srv.dialContextFn = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialMu.Lock()
+		dialedAddrs = append(dialedAddrs, addr)
+		dialMu.Unlock()
+		// Return an in-memory client connection for mock dialing
+		clientSide, serverSide := net.Pipe()
+		go func() {
+			_, _ = io.Copy(io.Discard, serverSide)
+			_ = serverSide.Close()
+		}()
+		return clientSide, nil
+	}
+
+	// 1. LAN client targeting 127.0.0.1.nip.io:8125 (ControlPort) via CONNECT -> MUST be 403
+	lanConn1 := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54321},
+	}
+	srv.handlePassthroughTunnel(lanConn1, strings.NewReader(""), "127.0.0.1.nip.io:8125")
+	if !strings.Contains(lanConn1.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for CONNECT to 127.0.0.1.nip.io:8125, got: %s", lanConn1.writeBuf.String())
+	}
+
+	// 2. LAN client targeting IPv6 loopback domain (loopback6.example.test:8125) via CONNECT -> MUST be 403
+	lanConn2 := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54322},
+	}
+	srv.handlePassthroughTunnel(lanConn2, strings.NewReader(""), "loopback6.example.test:8125")
+	if !strings.Contains(lanConn2.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for CONNECT to loopback6.example.test:8125, got: %s", lanConn2.writeBuf.String())
+	}
+
+	// 3. Local client targeting 127.0.0.1.nip.io:8125 (ControlPort) via CONNECT -> MUST be 403
+	localConn := &dummyConn{}
+	srv.handlePassthroughTunnel(localConn, strings.NewReader(""), "127.0.0.1.nip.io:8125")
+	if !strings.Contains(localConn.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for local CONNECT to 127.0.0.1.nip.io:8125, got: %s", localConn.writeBuf.String())
+	}
+
+	// 4. LAN client targeting non-control loopback port (127.0.0.1.nip.io:9000) via CONNECT -> MUST be 403
+	lanConn3 := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54323},
+	}
+	srv.handlePassthroughTunnel(lanConn3, strings.NewReader(""), "127.0.0.1.nip.io:9000")
+	if !strings.Contains(lanConn3.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for LAN CONNECT to 127.0.0.1.nip.io:9000, got: %s", lanConn3.writeBuf.String())
+	}
+
+	// 5. Plain HTTP targeting control port via DNS loopback -> MUST be 403
+	plainConn := &dummyConn{}
+	reqPlain := &http.Request{
+		Method: http.MethodPost,
+		Host:   "innocent.com",
+		URL:    &url.URL{Scheme: "http", Host: "127.0.0.1.nip.io:8125", Path: "/api/config/apply"},
+	}
+	srv.handlePlainHTTP(plainConn, reqPlain)
+	if !strings.Contains(plainConn.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for plain HTTP targeting 127.0.0.1.nip.io:8125, got: %s", plainConn.writeBuf.String())
+	}
+
+	// 6. Plain HTTP from LAN client targeting loopback port via DNS -> MUST be 403
+	lanPlainConn := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54324},
+	}
+	reqLANPlain := &http.Request{
+		Method: http.MethodGet,
+		Host:   "innocent.com",
+		URL:    &url.URL{Scheme: "http", Host: "127.0.0.1.nip.io:8080", Path: "/admin"},
+	}
+	srv.handlePlainHTTP(lanPlainConn, reqLANPlain)
+	if !strings.Contains(lanPlainConn.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for LAN client plain HTTP targeting loopback via DNS, got: %s", lanPlainConn.writeBuf.String())
+	}
+
+	// Verify that NO dials were made to loopback addresses or control plane
+	dialMu.Lock()
+	for _, dialed := range dialedAddrs {
+		if strings.HasPrefix(dialed, "127.") || strings.HasPrefix(dialed, "[::1]") || strings.Contains(dialed, "8125") {
+			t.Fatalf("forbidden dial made to loopback/control port: %s", dialed)
+		}
+	}
+	dialMu.Unlock()
+
+	// 7. Legitimate external target with port 8125:
+	// Verify that it connects to the actual VERIFIED IP (93.184.216.34:8125), not the hostname string
+	extConn := &dummyConn{}
+	srv.handlePassthroughTunnel(extConn, strings.NewReader(""), "api.legitimate-external.com:8125")
+	if !strings.Contains(extConn.writeBuf.String(), "200 Connection Established") {
+		t.Fatalf("expected 200 Connection Established for external port 8125, got: %s", extConn.writeBuf.String())
+	}
+	dialMu.Lock()
+	foundExternalDial := false
+	for _, dialed := range dialedAddrs {
+		if dialed == "93.184.216.34:8125" {
+			foundExternalDial = true
+			break
+		}
+	}
+	dialMu.Unlock()
+	if !foundExternalDial {
+		t.Fatalf("expected dialed address to be verified IP 93.184.216.34:8125, dialed: %v", dialedAddrs)
+	}
+
+	// 8. Normal LAN client request to port 443 (e.g. gbf.game.mbga.jp:443):
+	// Verify that NO blocking DNS queries are invoked on the normal request path!
+	dnsCountBefore := dnsLookupCount.Load()
+	lanConnNormal := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54325},
+	}
+	srv.handlePassthroughTunnel(lanConnNormal, strings.NewReader(""), "gbf.game.mbga.jp:443")
+	if !strings.Contains(lanConnNormal.writeBuf.String(), "200 Connection Established") {
+		t.Fatalf("expected 200 Connection Established for normal LAN request to port 443, got: %s", lanConnNormal.writeBuf.String())
+	}
+	dnsCountAfter := dnsLookupCount.Load()
+	if dnsCountAfter != dnsCountBefore {
+		t.Fatalf("expected 0 DNS lookups on normal request path to port 443, got %d lookups", dnsCountAfter-dnsCountBefore)
+	}
+	dialMu.Lock()
+	foundNormalDial := false
+	for _, dialed := range dialedAddrs {
+		if dialed == "gbf.game.mbga.jp:443" {
+			foundNormalDial = true
+			break
+		}
+	}
+	dialMu.Unlock()
+	if !foundNormalDial {
+		t.Fatalf("expected direct dial to gbf.game.mbga.jp:443 on normal path, dialed: %v", dialedAddrs)
+	}
+
+	// 9. IPv6 dashed format loopback (--1.sslip.io:8125) via CONNECT -> MUST be 403
+	lanConnIPv6Dashed := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54326},
+	}
+	srv.handlePassthroughTunnel(lanConnIPv6Dashed, strings.NewReader(""), "--1.sslip.io:8125")
+	if !strings.Contains(lanConnIPv6Dashed.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for CONNECT to --1.sslip.io:8125, got: %s", lanConnIPv6Dashed.writeBuf.String())
+	}
+
+	// 10. Wildcard loopback domain (foo.localtest.me:8125) via CONNECT -> MUST be 403
+	lanConnLocaltest := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54327},
+	}
+	srv.handlePassthroughTunnel(lanConnLocaltest, strings.NewReader(""), "foo.localtest.me:8125")
+	if !strings.Contains(lanConnLocaltest.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for CONNECT to foo.localtest.me:8125, got: %s", lanConnLocaltest.writeBuf.String())
 	}
 }
 
