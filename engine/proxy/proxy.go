@@ -500,11 +500,14 @@ func (s *ProxyServer) finishInFlightWatch(tracker *inFlightTracker, route failov
 	}
 	// The watchdog already fired and recorded a soft latency failure for this
 	// request. A clean completion (err == nil) must NOT be re-observed to avoid
-	// double counting. A genuine hard error, however, is an immediate-failover
-	// trigger and must NOT be swallowed: it still reaches observe(), whose
-	// route != active guard makes this call idempotent when the watchdog
-	// already switched the route to backup.
-	if err != nil {
+	// double counting. A genuine hard error on a non-trial request is an
+	// immediate-failover trigger and must NOT be swallowed: it still reaches
+	// observe(), whose route != active guard makes this call idempotent when the
+	// watchdog already switched the route to backup. For recovery trials
+	// (trial == true), observeInFlightTimeout already terminated the trial and
+	// cleared trialInFlight, so a late error must not re-enter observe() and
+	// clobber a subsequent recovery trial.
+	if err != nil && !trial {
 		s.observeUpstream(route, trial, elapsed, err)
 	}
 }
@@ -1153,6 +1156,24 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 		targetHost = net.JoinHostPort(strings.Trim(targetHost, "[]"), "443")
 	}
 
+	if tHost, tPort, splitErr := net.SplitHostPort(targetHost); splitErr == nil {
+		tHostTrimmed := strings.ToLower(strings.TrimRight(strings.Trim(tHost, "[]"), "."))
+		cfg := s.cfgMgr.Get()
+		listenPortStr := strconv.Itoa(cfg.ListenPort)
+		controlPortStr := strconv.Itoa(cfg.ControlPort)
+		localIP, localPort := safeLocalAddr(clientConn)
+		if localPort == "" {
+			localPort = listenPortStr
+		}
+		isSelf := isLoopbackOrSelfHost(tHostTrimmed, localIP)
+		isSelfPort := tPort == listenPortStr || tPort == localPort || (controlPortStr != "" && tPort == controlPortStr)
+		isLoopbackTarget := isLoopbackOrUnspecifiedHost(tHostTrimmed)
+		if (isSelf && isSelfPort) || (isRemoteLANClientConn(clientConn) && (isLoopbackTarget || isSelf)) {
+			writeHTTPResponse(clientConn, http.StatusForbidden, nil, nil, false, true)
+			return
+		}
+	}
+
 	var upConn net.Conn
 	var upReader io.Reader
 	var err error
@@ -1294,6 +1315,49 @@ func isPrivateProxyHost(host string) bool {
 	return ip != nil && ip.To4() != nil && ip.IsPrivate()
 }
 
+func isLoopbackOrUnspecifiedHost(hostTrimmed string) bool {
+	if hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
+		hostTrimmed == "::1" || hostTrimmed == "0.0.0.0" || hostTrimmed == "::" {
+		return true
+	}
+	if ip := net.ParseIP(hostTrimmed); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+		return true
+	}
+	return false
+}
+
+func isLoopbackOrSelfHost(hostTrimmed, localIP string) bool {
+	if isLoopbackOrUnspecifiedHost(hostTrimmed) || hostTrimmed == "proxy" || hostTrimmed == "gbf-proxy" {
+		return true
+	}
+	if localIP != "" && strings.EqualFold(hostTrimmed, localIP) {
+		return true
+	}
+	if lanIP := config.GetLANIP(); lanIP != "" && strings.EqualFold(hostTrimmed, lanIP) {
+		return true
+	}
+	return false
+}
+
+func isRemoteLANClientConn(conn net.Conn) bool {
+	if conn == nil {
+		return false
+	}
+	rAddr := conn.RemoteAddr()
+	if rAddr == nil {
+		return false
+	}
+	if tcpAddr, ok := rAddr.(*net.TCPAddr); ok && tcpAddr != nil && tcpAddr.IP != nil {
+		return !tcpAddr.IP.IsLoopback()
+	}
+	host, _, err := net.SplitHostPort(rAddr.String())
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && !ip.IsLoopback()
+}
+
 func safeLocalAddr(conn net.Conn) (localIP string, localPort string) {
 	if conn == nil {
 		return "", ""
@@ -1433,7 +1497,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		hostOnly = h
 		reqPort = p
 	}
-	hostTrimmed := strings.ToLower(strings.Trim(hostOnly, "[]"))
+	hostTrimmed := strings.ToLower(strings.TrimRight(strings.Trim(hostOnly, "[]"), "."))
 	effectivePort := reqPort
 	if effectivePort == "" {
 		effectivePort = "80"
@@ -1441,19 +1505,22 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 
 	cfg := s.cfgMgr.Get()
 	listenPortStr := strconv.Itoa(cfg.ListenPort)
+	controlPortStr := strconv.Itoa(cfg.ControlPort)
 	localIP, localPort := safeLocalAddr(conn)
 	if localPort == "" {
 		localPort = listenPortStr
 	}
 
 	isProxyPort := effectivePort == listenPortStr || effectivePort == localPort
-	isSelfHost := hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
-		hostTrimmed == "::1" || hostTrimmed == "proxy" || hostTrimmed == "gbf-proxy" ||
-		(localIP != "" && strings.EqualFold(hostTrimmed, localIP)) ||
-		(config.GetLANIP() != "" && strings.EqualFold(hostTrimmed, config.GetLANIP()))
+	isControlPort := controlPortStr != "" && effectivePort == controlPortStr
+	isSelfHost := isLoopbackOrSelfHost(hostTrimmed, localIP)
 
 	if isProxyPort && isSelfHost {
 		writeHTTPResponse(conn, http.StatusNotFound, nil, nil, req.Method == http.MethodHead, true)
+		return false
+	}
+	if (isControlPort && isSelfHost) || (isRemoteLANClientConn(conn) && (isLoopbackOrUnspecifiedHost(hostTrimmed) || isSelfHost)) {
+		writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
 		return false
 	}
 

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -236,3 +237,131 @@ func TestTelemetryDomainsPassthroughNotBlocked(t *testing.T) {
 		})
 	}
 }
+
+type lanClientDummyConn struct {
+	dummyConn
+	remote net.Addr
+}
+
+func (c *lanClientDummyConn) RemoteAddr() net.Addr {
+	return c.remote
+}
+
+func TestControlPlaneAndLoopbackBlockedViaDataPlane(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = 8124
+		c.ControlPort = 8125
+		c.AllowLAN = true
+	})
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, &cert.Manager{}, cacheMgr, stats)
+	srv.apiClient.Store(&http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			t.Errorf("apiClient should never be invoked for blocked control-plane or LAN loopback target %s", r.URL.String())
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("unexpected")),
+				Proto:      "HTTP/1.1",
+			}, nil
+		}),
+	})
+
+	// 1. Plain HTTP to control port (8125) from local or LAN must be blocked with 403
+	for _, host := range []string{"127.0.0.1:8125", "localhost:8125", "[::1]:8125"} {
+		conn := &dummyConn{}
+		req := &http.Request{
+			Method: http.MethodPost,
+			Host:   host,
+			URL:    &url.URL{Scheme: "http", Host: host, Path: "/api/config/apply"},
+		}
+		srv.handlePlainHTTP(conn, req)
+		if !strings.Contains(conn.writeBuf.String(), "403 Forbidden") {
+			t.Fatalf("expected 403 Forbidden for plain HTTP to control plane %s, got: %s", host, conn.writeBuf.String())
+		}
+	}
+
+	// 2. Plain HTTP to any loopback port from a non-loopback LAN client must be blocked with 403
+	lanConn := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54321},
+	}
+	reqLAN := &http.Request{
+		Method: http.MethodGet,
+		Host:   "127.0.0.1:9000",
+		URL:    &url.URL{Scheme: "http", Host: "127.0.0.1:9000", Path: "/internal"},
+	}
+	srv.handlePlainHTTP(lanConn, reqLAN)
+	if !strings.Contains(lanConn.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for LAN client targeting loopback, got: %s", lanConn.writeBuf.String())
+	}
+
+	// 3. CONNECT tunnel to control port (8125) or proxy port (8124) must be blocked with 403
+	for _, target := range []string{"127.0.0.1:8125", "localhost:8125", "127.0.0.1:8124"} {
+		conn := &dummyConn{}
+		srv.handlePassthroughTunnel(conn, strings.NewReader(""), target)
+		if !strings.Contains(conn.writeBuf.String(), "403 Forbidden") {
+			t.Fatalf("expected 403 Forbidden for CONNECT tunnel to %s, got: %s", target, conn.writeBuf.String())
+		}
+	}
+
+	// 4. CONNECT tunnel from LAN client to any loopback port must be blocked with 403
+	lanTunnelConn := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54322},
+	}
+	srv.handlePassthroughTunnel(lanTunnelConn, strings.NewReader(""), "127.0.0.1:9000")
+	if !strings.Contains(lanTunnelConn.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for LAN CONNECT tunnel to loopback, got: %s", lanTunnelConn.writeBuf.String())
+	}
+}
+
+func TestFailoverWatchdogLateTrialErrorDoesNotClobberNewTrial(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, &cert.Manager{}, cacheMgr, stats)
+	srv.failover.configure(true, true, 50*time.Millisecond, 1, time.Second, true)
+
+	now := time.Now()
+	if tr := srv.failover.observe(failoverRoutePrimary, false, 100*time.Millisecond, errors.New("down"), now.Add(-5*time.Second)); tr == nil {
+		t.Fatal("expected initial failover to backup")
+	}
+
+	// Start Trial #1 and simulate watchdog firing on Trial #1
+	route1, trial1 := srv.failover.routeForRequest(true, now)
+	if route1 != failoverRoutePrimary || !trial1 {
+		t.Fatalf("expected trial #1 on primary, got %s/%v", route1, trial1)
+	}
+	tracker1 := &inFlightTracker{threshold: 50 * time.Millisecond, stopped: true}
+	tracker1.fired.Store(true)
+	srv.observeInFlightTimeout(route1, trial1)
+
+	// Advance cooldown and start Trial #2 while Trial #1 is still unwinding
+	srv.failover.mu.Lock()
+	srv.failover.lastSwitchAt = time.Now().Add(-2 * time.Second)
+	srv.failover.mu.Unlock()
+	_, trial2 := srv.failover.routeForRequest(true, time.Now())
+	if !trial2 {
+		t.Fatal("expected trial #2 to start after cooldown")
+	}
+
+	// Trial #1 finally returns a late hard error; it must NOT clear trialInFlight for Trial #2
+	srv.finishInFlightWatch(tracker1, route1, trial1, 200*time.Millisecond, errors.New("late trial #1 error"))
+
+	srv.failover.mu.Lock()
+	stillInFlight := srv.failover.trialInFlight
+	srv.failover.mu.Unlock()
+	if !stillInFlight {
+		t.Fatal("late error from timed-out trial #1 clobbered active trialInFlight of trial #2")
+	}
+}
+

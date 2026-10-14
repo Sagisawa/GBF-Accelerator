@@ -160,7 +160,7 @@ func GetDefaultComponentSpecs() []ComponentSpec {
 			Size:        4933016,
 			SHA256:      CanonicalModuleSHA256,
 			URL:         moduleReleaseURL + "xposed-release.apk",
-			Description: "GBF-Accelerator Xposed Module (v2.4.1)",
+			Description: "GBF-Accelerator Xposed Module (" + AssetsTag + ")",
 		},
 		{
 			ID:          "licenses",
@@ -853,6 +853,28 @@ func HostAppReleaseName() string {
 	return fmt.Sprintf("GBF_Accelerator_v%s_Android.apk", config.AppVersion)
 }
 
+const CanonicalHostAppPackageName = "com.sagisawa.gbfaccelerator"
+
+// ValidateHostAppApk verifies that an APK file is structurally valid and carries the
+// canonical GBF-Accelerator Android host package name.
+func ValidateHostAppApk(apkPath string) error {
+	fi, err := os.Stat(apkPath)
+	if err != nil {
+		return err
+	}
+	if fi.IsDir() || fi.Size() <= 1024*1024 {
+		return fmt.Errorf("invalid host app APK size (%d bytes)", fi.Size())
+	}
+	info, err := parseApkManifestInfo(apkPath)
+	if err != nil {
+		return fmt.Errorf("invalid host app APK manifest: %w", err)
+	}
+	if info.PackageName != CanonicalHostAppPackageName {
+		return fmt.Errorf("unexpected host app package name %q (want %q)", info.PackageName, CanonicalHostAppPackageName)
+	}
+	return nil
+}
+
 // FindOrFetchHostApp locates the GBF-Accelerator Android Host App APK locally,
 // or on-demand downloads it from the official GitHub Release asset if not present locally.
 // Note: This is strictly called on-demand when the user explicitly triggers installation.
@@ -869,7 +891,7 @@ func FindOrFetchHostApp(ctx context.Context, toolsDir string, exeDir string) (st
 	}
 
 	for _, cand := range candidates {
-		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() && fi.Size() > 1024*1024 {
+		if err := ValidateHostAppApk(cand); err == nil {
 			return cand, nil
 		}
 	}
@@ -886,12 +908,19 @@ func FindOrFetchHostApp(ctx context.Context, toolsDir string, exeDir string) (st
 	tag := "v" + config.AppVersion
 	downloadURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", GitHubRepo, tag, HostAppReleaseName())
 
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 180*time.Second)
+		defer cancel()
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to build download request: %w", err)
 	}
+	req.Header.Set("User-Agent", "GBF-Accelerator/"+config.AppVersion)
 
-	client := &http.Client{Timeout: 180 * time.Second}
+	client := buildDownloadHTTPClient(GetUpstreamProxy())
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to download Android app (%s): %w", downloadURL, err)
@@ -915,6 +944,10 @@ func FindOrFetchHostApp(ctx context.Context, toolsDir string, exeDir string) (st
 		return "", fmt.Errorf("download interrupted: %w", err)
 	}
 	_ = outF.Close()
+
+	if err := ValidateHostAppApk(tempPath); err != nil {
+		return "", fmt.Errorf("downloaded Android app failed verification: %w", err)
+	}
 
 	_ = os.Remove(targetPath)
 	if err := os.Rename(tempPath, targetPath); err != nil {
