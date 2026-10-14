@@ -857,6 +857,11 @@ const CanonicalHostAppPackageName = "com.sagisawa.gbfaccelerator"
 
 // ValidateHostAppApk verifies that an APK file is structurally valid and carries the
 // canonical GBF-Accelerator Android host package name.
+//
+// NOTE (Audit M-02): This function performs structural sanity checks (file size,
+// AXML manifest parsing, and canonical package name). It does NOT perform cryptographic
+// integrity or APK signature verification. Full mitigation requires cryptographic
+// verification for official release APKs against trusted SHA-256 or release signing certificate.
 func ValidateHostAppApk(apkPath string) error {
 	fi, err := os.Stat(apkPath)
 	if err != nil {

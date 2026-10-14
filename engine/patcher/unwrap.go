@@ -10,9 +10,15 @@ import (
 	"strings"
 )
 
+// maxOriginApkCopyLimit is the maximum uncompressed bytes allowed to be copied from assets/lspatch/origin.apk.
+// It defaults to maxSingleZipEntryBytes (1 GiB) and can be adjusted in internal unit tests.
+var maxOriginApkCopyLimit int64 = maxSingleZipEntryBytes
+
 // ExtractOriginFromApk streams assets/lspatch/origin.apk from srcApkPath to destApkPath.
+// It validates declared size and enforces byte limits during copy against maxSingleZipEntryBytes.
 // It verifies ZIP entry existence, non-emptiness, and streams using a fixed buffer to avoid
-// high memory consumption. It validates CRC-32 and deletes incomplete output on any failure.
+// high memory consumption. It validates CRC-32 and deletes incomplete output on any failure,
+// ensuring existing valid target files are preserved if an operation fails.
 func ExtractOriginFromApk(srcApkPath, destApkPath string) error {
 	cleanSrc := filepath.Clean(srcApkPath)
 	cleanDest := filepath.Clean(destApkPath)
@@ -47,61 +53,91 @@ func ExtractOriginFromApk(srcApkPath, destApkPath string) error {
 		return fmt.Errorf("assets/lspatch/origin.apk in %s is empty", filepath.Base(cleanSrc))
 	}
 
-	if err := os.MkdirAll(filepath.Dir(cleanDest), 0755); err != nil {
+	// 1. Verify declared uncompressed size against single-file limit
+	if originEntry.UncompressedSize64 > maxSingleZipEntryBytes {
+		return fmt.Errorf("assets/lspatch/origin.apk declared size (%d bytes) in %s exceeds maximum limit (%d bytes)",
+			originEntry.UncompressedSize64, filepath.Base(cleanSrc), maxSingleZipEntryBytes)
+	}
+
+	destDir := filepath.Dir(cleanDest)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
-	outF, err := os.OpenFile(cleanDest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// Extract to temporary file first so existing valid target files are never clobbered or deleted on failure
+	tmpFile, err := os.CreateTemp(destDir, ".origin-extract-*.tmp")
 	if err != nil {
-		return fmt.Errorf("failed to create destination file %s: %w", cleanDest, err)
+		return fmt.Errorf("failed to create temporary destination file: %w", err)
 	}
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	rc, err := originEntry.Open()
 	if err != nil {
-		_ = outF.Close()
-		_ = os.Remove(cleanDest)
 		return fmt.Errorf("failed to open zip entry assets/lspatch/origin.apk in %s: %w", filepath.Base(cleanSrc), err)
 	}
 
 	crcHasher := crc32.NewIEEE()
-	mw := io.MultiWriter(outF, crcHasher)
+	mw := io.MultiWriter(tmpFile, crcHasher)
+
+	copyLimit := maxOriginApkCopyLimit
+	if copyLimit <= 0 {
+		copyLimit = maxSingleZipEntryBytes
+	}
 
 	buf := make([]byte, 64*1024) // 64KB streaming buffer
-	copiedBytes, copyErr := io.CopyBuffer(mw, rc, buf)
+	limitedReader := io.LimitReader(rc, copyLimit+1)
+	copiedBytes, copyErr := io.CopyBuffer(mw, limitedReader, buf)
 	rcCloseErr := rc.Close()
-	syncErr := outF.Sync()
-	closeErr := outF.Close()
+	syncErr := tmpFile.Sync()
+	closeErr := tmpFile.Close()
+
+	// 2. Enforce byte limit during actual copy (defends against forged declared size zip bombs)
+	if copiedBytes > copyLimit {
+		return fmt.Errorf("assets/lspatch/origin.apk in %s exceeds maximum allowed size (%d bytes)",
+			filepath.Base(cleanSrc), copyLimit)
+	}
 
 	if copyErr != nil {
-		_ = os.Remove(cleanDest)
 		return fmt.Errorf("failed to stream copy origin.apk from %s: %w", filepath.Base(cleanSrc), copyErr)
 	}
 	if rcCloseErr != nil {
-		_ = os.Remove(cleanDest)
 		return fmt.Errorf("failed to close zip entry reader for %s: %w", filepath.Base(cleanSrc), rcCloseErr)
 	}
 	if syncErr != nil || closeErr != nil {
-		_ = os.Remove(cleanDest)
-		return fmt.Errorf("failed to flush/close destination file %s: sync=%v, close=%v", cleanDest, syncErr, closeErr)
+		return fmt.Errorf("failed to flush/close temporary file %s: sync=%v, close=%v", tmpPath, syncErr, closeErr)
 	}
 
 	if copiedBytes == 0 {
-		_ = os.Remove(cleanDest)
 		return fmt.Errorf("extracted origin.apk from %s is 0 bytes", filepath.Base(cleanSrc))
 	}
 
 	if originEntry.UncompressedSize64 > 0 && copiedBytes != int64(originEntry.UncompressedSize64) {
-		_ = os.Remove(cleanDest)
 		return fmt.Errorf("extracted size mismatch for %s: expected %d bytes, got %d",
 			filepath.Base(cleanSrc), originEntry.UncompressedSize64, copiedBytes)
 	}
 
 	if originEntry.CRC32 != 0 && crcHasher.Sum32() != originEntry.CRC32 {
-		_ = os.Remove(cleanDest)
 		return fmt.Errorf("CRC-32 checksum mismatch for origin.apk in %s: expected 0x%08X, got 0x%08X",
 			filepath.Base(cleanSrc), originEntry.CRC32, crcHasher.Sum32())
 	}
 
+	_ = os.Chmod(tmpPath, 0644)
+	_ = os.Remove(cleanDest)
+	if err := os.Rename(tmpPath, cleanDest); err != nil {
+		if cErr := copyFile(tmpPath, cleanDest); cErr != nil {
+			return fmt.Errorf("failed to finalize destination file %s: %w", cleanDest, cErr)
+		}
+		_ = os.Remove(tmpPath)
+	}
+
+	cleanup = false
 	return nil
 }
 

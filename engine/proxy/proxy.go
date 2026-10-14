@@ -965,11 +965,17 @@ func (s *ProxyServer) handleConnection(conn net.Conn) {
 
 func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.Request) {
 	target := req.RequestURI
+	if target == "" && req.URL != nil && req.URL.Host != "" {
+		target = req.URL.Host
+	}
+	if target == "" {
+		target = req.Host
+	}
 	host := target
 	if h, _, err := net.SplitHostPort(target); err == nil {
 		host = h
 	}
-	host = strings.ToLower(strings.TrimRight(host, "."))
+	host = strings.ToLower(strings.TrimRight(strings.Trim(host, "[]"), "."))
 
 	clientIP := "127.0.0.1"
 	if cAddr := conn.RemoteAddr(); cAddr != nil {
@@ -1376,15 +1382,26 @@ func safeLocalAddr(conn net.Conn) (localIP string, localPort string) {
 	return "", ""
 }
 
-func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
-	host := req.Host
-	reqPort := ""
-	if h, p, err := net.SplitHostPort(req.Host); err == nil {
-		host = h
-		reqPort = p
+func extractActualTarget(req *http.Request) (string, string) {
+	raw := ""
+	if req.URL != nil && req.URL.Host != "" {
+		raw = req.URL.Host
+	} else if strings.HasPrefix(req.RequestURI, "http://") || strings.HasPrefix(req.RequestURI, "https://") || strings.HasPrefix(req.RequestURI, "//") {
+		if u, err := url.Parse(req.RequestURI); err == nil && u.Host != "" {
+			raw = u.Host
+		}
 	}
-	hostTrimmed := strings.ToLower(strings.Trim(host, "[]"))
+	if raw == "" {
+		raw = req.Host
+	}
+	if h, p, err := net.SplitHostPort(raw); err == nil {
+		return strings.ToLower(strings.TrimRight(strings.Trim(h, "[]"), ".")), p
+	}
+	return strings.ToLower(strings.TrimRight(strings.Trim(raw, "[]"), ".")), ""
+}
 
+func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
+	hostTrimmed, reqPort := extractActualTarget(req)
 	cleanPath := strings.ToLower(strings.Split(req.URL.Path, "?")[0])
 
 	// Check if this request targets local internal proxy endpoints
@@ -1397,7 +1414,11 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 
 	effectivePort := reqPort
 	if effectivePort == "" {
-		effectivePort = "80"
+		if req.URL != nil && strings.EqualFold(req.URL.Scheme, "https") {
+			effectivePort = "443"
+		} else {
+			effectivePort = "80"
+		}
 	}
 
 	isProxyPort := reqPort == listenPortStr || reqPort == localPort || effectivePort == listenPortStr || effectivePort == localPort
@@ -1442,13 +1463,8 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	if isDirectLocal && (cleanPath == "/proxy.pac" || strings.HasSuffix(cleanPath, "/proxy.pac")) {
 		cfg := s.cfgMgr.Get()
 		h := "127.0.0.1"
-		hostNoPort := req.Host
-		if hp, _, err := net.SplitHostPort(req.Host); err == nil {
-			hostNoPort = hp
-		}
-		hostNoPortLower := strings.ToLower(strings.Trim(hostNoPort, "[]"))
-		if hostNoPortLower != "" && hostNoPortLower != "127.0.0.1" && hostNoPortLower != "localhost" && hostNoPortLower != "::1" {
-			h = hostNoPort
+		if hostTrimmed != "" && hostTrimmed != "127.0.0.1" && hostTrimmed != "localhost" && hostTrimmed != "::1" {
+			h = hostTrimmed
 		}
 		pacText := GetPAC(h, cfg.ListenPort)
 		hdr := make(http.Header)
@@ -1491,16 +1507,14 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	defer s.stats.AddActiveAPI(-1)
 
 	// Loop prevention: do not forward requests targeted at the proxy itself
-	hostOnly := req.Host
-	reqPort := ""
-	if h, p, err := net.SplitHostPort(req.Host); err == nil {
-		hostOnly = h
-		reqPort = p
-	}
-	hostTrimmed := strings.ToLower(strings.TrimRight(strings.Trim(hostOnly, "[]"), "."))
+	hostTrimmed, reqPort := extractActualTarget(req)
 	effectivePort := reqPort
 	if effectivePort == "" {
-		effectivePort = "80"
+		if req.URL != nil && strings.EqualFold(req.URL.Scheme, "https") {
+			effectivePort = "443"
+		} else {
+			effectivePort = "80"
+		}
 	}
 
 	cfg := s.cfgMgr.Get()
@@ -1527,11 +1541,14 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	startTime := time.Now()
 	upURL := req.URL.String()
 	if !strings.HasPrefix(upURL, "http://") && !strings.HasPrefix(upURL, "https://") {
-		host := req.Host
-		if host == "" {
-			host = "gbf.game.mbga.jp"
+		targetHost := hostTrimmed
+		if reqPort != "" && reqPort != "80" && reqPort != "443" {
+			targetHost = net.JoinHostPort(targetHost, reqPort)
 		}
-		upURL = "http://" + host + req.URL.RequestURI()
+		if targetHost == "" {
+			targetHost = "gbf.game.mbga.jp"
+		}
+		upURL = "http://" + targetHost + req.URL.RequestURI()
 	}
 
 	var bodyBytes []byte
@@ -1649,7 +1666,11 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 	}
 	s.forwardDynamicResponse(conn, resp, respBytes, req.Method == http.MethodHead, req.Close)
 	if s.prefetch != nil && resp != nil && resp.StatusCode == http.StatusOK && len(respBytes) > 0 {
-		s.prefetch.MaybeEnqueueGameData(req, req.Host, respBytes)
+		prefetchHost := hostTrimmed
+		if prefetchHost == "" {
+			prefetchHost = req.Host
+		}
+		s.prefetch.MaybeEnqueueGameData(req, prefetchHost, respBytes)
 	}
 	elapsed := time.Since(startTime).Milliseconds()
 	if s.telemetryEnabled() {

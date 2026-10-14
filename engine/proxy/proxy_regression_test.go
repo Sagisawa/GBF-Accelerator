@@ -365,3 +365,149 @@ func TestFailoverWatchdogLateTrialErrorDoesNotClobberNewTrial(t *testing.T) {
 	}
 }
 
+func TestControlPlaneHostConfusionAndExternalPort8125Allowed(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cfgMgr.Update(func(c *config.Config) {
+		c.ListenPort = 8124
+		c.ControlPort = 8125
+		c.AllowLAN = true
+	})
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, &cert.Manager{}, cacheMgr, stats)
+
+	var lastTargetURL string
+	var lastTargetHostHeader string
+	mockClient := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			lastTargetURL = r.URL.String()
+			lastTargetHostHeader = r.Host
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("upstream-ok")),
+				Proto:      "HTTP/1.1",
+			}, nil
+		}),
+	}
+	srv.primaryClient.Store(&upstreamClients{api: mockClient, asset: mockClient})
+	srv.apiClient.Store(mockClient)
+	srv.assetClient.Store(mockClient)
+
+	// 1. Host Confusion targeting control plane:
+	// req.URL.Host = 127.0.0.1:8125, req.Host = innocent.com MUST be blocked with 403 Forbidden
+	for _, target := range []string{"127.0.0.1:8125", "localhost:8125", "[::1]:8125", "0.0.0.0:8125"} {
+		conn := &dummyConn{}
+		req := &http.Request{
+			Method: http.MethodPost,
+			Host:   "innocent.com",
+			URL:    &url.URL{Scheme: "http", Host: target, Path: "/api/config/apply"},
+		}
+		srv.handlePlainHTTP(conn, req)
+		if !strings.Contains(conn.writeBuf.String(), "403 Forbidden") {
+			t.Fatalf("expected 403 Forbidden for Host confusion targeting %s with Host innocent.com, got: %s", target, conn.writeBuf.String())
+		}
+	}
+
+	// 2. Dynamically configured local control port:
+	// If control port is changed to 9125, 127.0.0.1:9125 and [::1]:9125 must be blocked with 403
+	cfgMgr.Update(func(c *config.Config) {
+		c.ControlPort = 9125
+	})
+	for _, target := range []string{"127.0.0.1:9125", "[::1]:9125"} {
+		conn := &dummyConn{}
+		req := &http.Request{
+			Method: http.MethodPost,
+			Host:   "innocent.com",
+			URL:    &url.URL{Scheme: "http", Host: target, Path: "/api/config/apply"},
+		}
+		srv.handlePlainHTTP(conn, req)
+		if !strings.Contains(conn.writeBuf.String(), "403 Forbidden") {
+			t.Fatalf("expected 403 Forbidden for dynamically configured control port %s, got: %s", target, conn.writeBuf.String())
+		}
+	}
+	// Restore control port
+	cfgMgr.Update(func(c *config.Config) {
+		c.ControlPort = 8125
+	})
+
+	// 3. Legitimate external target with port 8125 MUST NOT be falsely blocked:
+	srv.primaryClient.Store(&upstreamClients{api: mockClient, asset: mockClient})
+	srv.apiClient.Store(mockClient)
+	srv.assetClient.Store(mockClient)
+
+	externalTargets := []struct {
+		urlHost string
+		reqHost string
+	}{
+		{urlHost: "api.legitimate-external.com:8125", reqHost: "api.legitimate-external.com:8125"},
+		{urlHost: "api.legitimate-external.com:8125", reqHost: "127.0.0.1:8125"},
+		{urlHost: "api.legitimate-external.com:8125", reqHost: "innocent.com"},
+	}
+	for _, tc := range externalTargets {
+		conn := &dummyConn{}
+		req := &http.Request{
+			Method: http.MethodGet,
+			Host:   tc.reqHost,
+			URL:    &url.URL{Scheme: "http", Host: tc.urlHost, Path: "/v1/data"},
+		}
+		srv.handlePlainHTTP(conn, req)
+		if strings.Contains(conn.writeBuf.String(), "403 Forbidden") {
+			t.Fatalf("external port 8125 request falsely blocked! urlHost=%s reqHost=%s, response: %s", tc.urlHost, tc.reqHost, conn.writeBuf.String())
+		}
+		if !strings.Contains(conn.writeBuf.String(), "200 OK") {
+			t.Fatalf("expected 200 OK for external port 8125, got: %s", conn.writeBuf.String())
+		}
+		if !strings.Contains(lastTargetURL, "api.legitimate-external.com:8125") {
+			t.Fatalf("expected upstream target to be api.legitimate-external.com:8125, got: %s", lastTargetURL)
+		}
+		if lastTargetHostHeader != tc.reqHost {
+			t.Fatalf("expected forwarded Host header to be %s, got %s", tc.reqHost, lastTargetHostHeader)
+		}
+	}
+
+	// 4. Mismatched forwarding actual target and Host boundary scenarios:
+	// 4a. Relative URI with no URL.Host, but Host: 127.0.0.1:8125 -> MUST be blocked with 403
+	connRel := &dummyConn{}
+	reqRel := &http.Request{
+		Method: http.MethodPost,
+		Host:   "127.0.0.1:8125",
+		URL:    &url.URL{Path: "/api/config/apply"},
+	}
+	srv.handlePlainHTTP(connRel, reqRel)
+	if !strings.Contains(connRel.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for relative URI targeting 127.0.0.1:8125, got: %s", connRel.writeBuf.String())
+	}
+
+	// 4b. Absolute URI targeting proxy port (8124) with Host: innocent.com -> MUST be blocked with 404 (loop prevention)
+	connLoop := &dummyConn{}
+	reqLoop := &http.Request{
+		Method: http.MethodGet,
+		Host:   "innocent.com",
+		URL:    &url.URL{Scheme: "http", Host: "127.0.0.1:8124", Path: "/loop"},
+	}
+	srv.handlePlainHTTP(connLoop, reqLoop)
+	if !strings.Contains(connLoop.writeBuf.String(), "404 Not Found") {
+		t.Fatalf("expected 404 Not Found loop prevention for 127.0.0.1:8124, got: %s", connLoop.writeBuf.String())
+	}
+
+	// 4c. LAN client targeting loopback via absolute URI with Host: innocent.com -> MUST be blocked with 403
+	lanConn := &lanClientDummyConn{
+		remote: &net.TCPAddr{IP: net.ParseIP("192.168.1.50"), Port: 54323},
+	}
+	reqLAN := &http.Request{
+		Method: http.MethodGet,
+		Host:   "innocent.com",
+		URL:    &url.URL{Scheme: "http", Host: "127.0.0.1:8080", Path: "/service"},
+	}
+	srv.handlePlainHTTP(lanConn, reqLAN)
+	if !strings.Contains(lanConn.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for LAN client targeting loopback via absolute URI, got: %s", lanConn.writeBuf.String())
+	}
+}
+
+

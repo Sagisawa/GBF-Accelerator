@@ -1440,6 +1440,38 @@ func TestHandleLatencyTestWithMockServer(t *testing.T) {
 	if ok, _ := unreachRes["ok"].(bool); ok {
 		t.Errorf("expected ok=false for unreachable proxy, got %v", unreachRes)
 	}
+
+	// Test 3: socks5h (and case-insensitive SOCKS5H) custom proxy whitelist acceptance
+	for _, scheme := range []string{"socks5h", "SOCKS5H"} {
+		socks5hReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/latency-test?target=%s&proxy=%s://127.0.0.1:59998&fast=1", url.QueryEscape(mockTarget.URL), scheme), nil)
+		wSocks := httptest.NewRecorder()
+		ctrl.handleLatencyTest(wSocks, socks5hReq)
+
+		if wSocks.Code != http.StatusOK {
+			t.Fatalf("expected 200 OK for socks5h proxy test, got %d", wSocks.Code)
+		}
+		var socksRes map[string]interface{}
+		_ = json.Unmarshal(wSocks.Body.Bytes(), &socksRes)
+		routeDesc, _ := socksRes["route_desc"].(string)
+		if !strings.Contains(routeDesc, "127.0.0.1:59998") {
+			t.Errorf("expected route_desc to reflect accepted %s proxy, got: %s", scheme, routeDesc)
+		}
+		errMsg, _ := socksRes["error"].(string)
+		if strings.Contains(errMsg, "unsupported proxy scheme") {
+			t.Errorf("socks5h proxy scheme was rejected by transport: %s", errMsg)
+		}
+	}
+
+	// Test 4: Unsupported scheme (ftp) must be ignored and fall back to direct mode
+	unsuppReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/latency-test?target=%s&proxy=ftp://127.0.0.1:21&fast=1", url.QueryEscape(mockTarget.URL)), nil)
+	wUnsupp := httptest.NewRecorder()
+	ctrl.handleLatencyTest(wUnsupp, unsuppReq)
+	var unsuppRes map[string]interface{}
+	_ = json.Unmarshal(wUnsupp.Body.Bytes(), &unsuppRes)
+	routeDesc, _ := unsuppRes["route_desc"].(string)
+	if !strings.Contains(routeDesc, "直连模式") {
+		t.Errorf("expected unsupported proxy scheme to fall back to direct mode, got: %s", routeDesc)
+	}
 }
 
 func TestControlRejectsInvalidBackupUpstream(t *testing.T) {
