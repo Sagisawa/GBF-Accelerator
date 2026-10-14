@@ -1915,11 +1915,8 @@ func (c *ControlServer) handleLatencyTest(w http.ResponseWriter, req *http.Reque
 	if custom := strings.TrimSpace(req.URL.Query().Get("proxy")); custom != "" {
 		if strings.EqualFold(custom, "direct") {
 			proxyURL = ""
-		} else if u, err := url.Parse(custom); err == nil {
-			scheme := strings.ToLower(u.Scheme)
-			if scheme == "http" || scheme == "https" || scheme == "socks5" || scheme == "socks5h" {
-				proxyURL = custom
-			}
+		} else if isSupportedBackupProxyURL(custom) {
+			proxyURL = custom
 		}
 	}
 

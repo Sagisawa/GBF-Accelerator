@@ -1394,6 +1394,10 @@ func extractActualTarget(req *http.Request) (string, string) {
 	if raw == "" {
 		raw = req.Host
 	}
+	// Strip userinfo if present in authority (e.g. user:pass@host:port -> host:port)
+	if atIdx := strings.LastIndex(raw, "@"); atIdx != -1 {
+		raw = raw[atIdx+1:]
+	}
 	if h, p, err := net.SplitHostPort(raw); err == nil {
 		return strings.ToLower(strings.TrimRight(strings.Trim(h, "[]"), ".")), p
 	}
@@ -1407,6 +1411,7 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	// Check if this request targets local internal proxy endpoints
 	cfg := s.cfgMgr.Get()
 	listenPortStr := strconv.Itoa(cfg.ListenPort)
+	controlPortStr := strconv.Itoa(cfg.ControlPort)
 	localIP, localPort := safeLocalAddr(conn)
 	if localPort == "" {
 		localPort = listenPortStr
@@ -1422,10 +1427,18 @@ func (s *ProxyServer) handlePlainHTTP(conn net.Conn, req *http.Request) bool {
 	}
 
 	isProxyPort := reqPort == listenPortStr || reqPort == localPort || effectivePort == listenPortStr || effectivePort == localPort
+	isControlPort := controlPortStr != "" && effectivePort == controlPortStr
+	isSelfHost := isLoopbackOrSelfHost(hostTrimmed, localIP)
 
-	isInternalCertOrPac := cleanPath == "/ca.crt" || cleanPath == "/ca.pem" ||
+	// Local control plane isolation: strictly reject proxy requests targeting the local control port.
+	if isControlPort && isSelfHost {
+		writeHTTPResponse(conn, http.StatusForbidden, nil, nil, req.Method == http.MethodHead, true)
+		return false
+	}
+
+	isInternalCertOrPac := (cleanPath == "/ca.crt" || cleanPath == "/ca.pem" ||
 		cleanPath == "/proxy.pac" ||
-		((strings.HasSuffix(cleanPath, "/ca.crt") || strings.HasSuffix(cleanPath, "/proxy.pac")) && (!req.URL.IsAbs() || isProxyPort))
+		strings.HasSuffix(cleanPath, "/ca.crt") || strings.HasSuffix(cleanPath, "/proxy.pac")) && (!req.URL.IsAbs() || isProxyPort)
 	isLandingPage := cleanPath == "" || cleanPath == "/" || cleanPath == "/index.html"
 
 	isLocalHost := hostTrimmed == "" || hostTrimmed == "127.0.0.1" || hostTrimmed == "localhost" ||
@@ -1544,6 +1557,8 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		targetHost := hostTrimmed
 		if reqPort != "" && reqPort != "80" && reqPort != "443" {
 			targetHost = net.JoinHostPort(targetHost, reqPort)
+		} else if strings.Contains(targetHost, ":") && !strings.HasPrefix(targetHost, "[") {
+			targetHost = "[" + targetHost + "]"
 		}
 		if targetHost == "" {
 			targetHost = "gbf.game.mbga.jp"

@@ -129,12 +129,15 @@ func ExtractOriginFromApk(srcApkPath, destApkPath string) error {
 	}
 
 	_ = os.Chmod(tmpPath, 0644)
-	_ = os.Remove(cleanDest)
 	if err := os.Rename(tmpPath, cleanDest); err != nil {
-		if cErr := copyFile(tmpPath, cleanDest); cErr != nil {
-			return fmt.Errorf("failed to finalize destination file %s: %w", cleanDest, cErr)
+		// On Windows, rename fails if cleanDest already exists; remove and retry
+		_ = os.Remove(cleanDest)
+		if rErr := os.Rename(tmpPath, cleanDest); rErr != nil {
+			if cErr := copyFile(tmpPath, cleanDest); cErr != nil {
+				return fmt.Errorf("failed to finalize destination file %s: %w", cleanDest, cErr)
+			}
+			_ = os.Remove(tmpPath)
 		}
-		_ = os.Remove(tmpPath)
 	}
 
 	cleanup = false

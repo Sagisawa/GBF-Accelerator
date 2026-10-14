@@ -1462,15 +1462,21 @@ func TestHandleLatencyTestWithMockServer(t *testing.T) {
 		}
 	}
 
-	// Test 4: Unsupported scheme (ftp) must be ignored and fall back to direct mode
-	unsuppReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/latency-test?target=%s&proxy=ftp://127.0.0.1:21&fast=1", url.QueryEscape(mockTarget.URL)), nil)
-	wUnsupp := httptest.NewRecorder()
-	ctrl.handleLatencyTest(wUnsupp, unsuppReq)
-	var unsuppRes map[string]interface{}
-	_ = json.Unmarshal(wUnsupp.Body.Bytes(), &unsuppRes)
-	routeDesc, _ := unsuppRes["route_desc"].(string)
-	if !strings.Contains(routeDesc, "直连模式") {
-		t.Errorf("expected unsupported proxy scheme to fall back to direct mode, got: %s", routeDesc)
+	// Test 4: Unsupported scheme (ftp) or missing host (socks5h://) must be ignored and fall back to direct mode
+	for _, invalidProxy := range []string{
+		"ftp://127.0.0.1:21",
+		"socks5h://",
+		"://bad-url",
+	} {
+		unsuppReq := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/latency-test?target=%s&proxy=%s&fast=1", url.QueryEscape(mockTarget.URL), url.QueryEscape(invalidProxy)), nil)
+		wUnsupp := httptest.NewRecorder()
+		ctrl.handleLatencyTest(wUnsupp, unsuppReq)
+		var unsuppRes map[string]interface{}
+		_ = json.Unmarshal(wUnsupp.Body.Bytes(), &unsuppRes)
+		routeDesc, _ := unsuppRes["route_desc"].(string)
+		if !strings.Contains(routeDesc, "直连模式") {
+			t.Errorf("expected invalid proxy %q to fall back to direct mode, got: %s", invalidProxy, routeDesc)
+		}
 	}
 }
 

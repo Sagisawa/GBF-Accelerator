@@ -508,6 +508,98 @@ func TestControlPlaneHostConfusionAndExternalPort8125Allowed(t *testing.T) {
 	if !strings.Contains(lanConn.writeBuf.String(), "403 Forbidden") {
 		t.Fatalf("expected 403 Forbidden for LAN client targeting loopback via absolute URI, got: %s", lanConn.writeBuf.String())
 	}
+
+	// 4d. Userinfo in absolute URI authority targeting control plane -> MUST be blocked with 403
+	for _, targetWithUser := range []string{
+		"admin@127.0.0.1:8125",
+		"admin:secret@127.0.0.1:8125",
+		"user:pass@[::1]:8125",
+		"admin:secret@localhost:8125",
+	} {
+		conn := &dummyConn{}
+		req := &http.Request{
+			Method: http.MethodPost,
+			Host:   "innocent.com",
+			URL:    &url.URL{Scheme: "http", Host: targetWithUser, Path: "/api/config/apply"},
+		}
+		srv.handlePlainHTTP(conn, req)
+		if !strings.Contains(conn.writeBuf.String(), "403 Forbidden") {
+			t.Fatalf("expected 403 Forbidden for userinfo authority targeting %s, got: %s", targetWithUser, conn.writeBuf.String())
+		}
+	}
+
+	// 4e. Userinfo in Host header for relative URI targeting control plane -> MUST be blocked with 403
+	connUserHost := &dummyConn{}
+	reqUserHost := &http.Request{
+		Method: http.MethodPost,
+		Host:   "admin:secret@127.0.0.1:8125",
+		URL:    &url.URL{Path: "/api/config/apply"},
+	}
+	srv.handlePlainHTTP(connUserHost, reqUserHost)
+	if !strings.Contains(connUserHost.writeBuf.String(), "403 Forbidden") {
+		t.Fatalf("expected 403 Forbidden for userinfo in Host header targeting 127.0.0.1:8125, got: %s", connUserHost.writeBuf.String())
+	}
+
+	// 4f. Internal cert / PAC endpoints explicitly targeting control port (8125) MUST be blocked with 403, not served
+	for _, p := range []string{"/ca.crt", "/proxy.pac"} {
+		conn := &dummyConn{}
+		req := &http.Request{
+			Method: http.MethodGet,
+			Host:   "127.0.0.1:8125",
+			URL:    &url.URL{Scheme: "http", Host: "127.0.0.1:8125", Path: p},
+		}
+		srv.handlePlainHTTP(conn, req)
+		if !strings.Contains(conn.writeBuf.String(), "403 Forbidden") {
+			t.Fatalf("expected 403 Forbidden for %s targeting control port 8125, got: %s", p, conn.writeBuf.String())
+		}
+	}
+
+	// 4g. Internal cert endpoint targeting proxy port (8124) MUST return 200 OK
+	connCA := &dummyConn{}
+	reqCA := &http.Request{
+		Method: http.MethodGet,
+		Host:   "127.0.0.1:8124",
+		URL:    &url.URL{Scheme: "http", Host: "127.0.0.1:8124", Path: "/ca.crt"},
+	}
+	srv.handlePlainHTTP(connCA, reqCA)
+	if !strings.Contains(connCA.writeBuf.String(), "200 OK") {
+		t.Fatalf("expected 200 OK for /ca.crt targeting proxy port 8124, got: %s", connCA.writeBuf.String())
+	}
+
+	// 4h. Forwarding actual external target with spoofed loopback Host header:
+	// Client wants http://innocent.com/api with Host: 127.0.0.1:8125.
+	// Proxy MUST forward to innocent.com and NOT block locally because actual target is external innocent.com.
+	connExt := &dummyConn{}
+	reqExt := &http.Request{
+		Method: http.MethodGet,
+		Host:   "127.0.0.1:8125",
+		URL:    &url.URL{Scheme: "http", Host: "innocent.com", Path: "/api"},
+	}
+	srv.handlePlainHTTP(connExt, reqExt)
+	if !strings.Contains(connExt.writeBuf.String(), "200 OK") {
+		t.Fatalf("expected 200 OK forwarding external target with custom Host header, got: %s", connExt.writeBuf.String())
+	}
+	if !strings.Contains(lastTargetURL, "innocent.com/api") {
+		t.Fatalf("expected upstream URL targeting innocent.com/api, got: %s", lastTargetURL)
+	}
+	if lastTargetHostHeader != "127.0.0.1:8125" {
+		t.Fatalf("expected forwarded Host header to be 127.0.0.1:8125, got: %s", lastTargetHostHeader)
+	}
+
+	// 4i. IPv6 literal target forwarding with default port 80 formatted with brackets
+	connIPv6 := &dummyConn{}
+	reqIPv6 := &http.Request{
+		Method: http.MethodGet,
+		Host:   "2001:db8::1",
+		URL:    &url.URL{Path: "/test"},
+	}
+	srv.handlePlainHTTP(connIPv6, reqIPv6)
+	if !strings.Contains(connIPv6.writeBuf.String(), "200 OK") {
+		t.Fatalf("expected 200 OK for IPv6 literal target, got: %s", connIPv6.writeBuf.String())
+	}
+	if !strings.Contains(lastTargetURL, "http://[2001:db8::1]/test") {
+		t.Fatalf("expected correctly bracketed IPv6 URL http://[2001:db8::1]/test, got: %s", lastTargetURL)
+	}
 }
 
 
