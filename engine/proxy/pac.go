@@ -36,7 +36,11 @@ func GetPAC(host string, port int) string {
         shExpMatch(host, "connect.mobage.jp") ||
         shExpMatch(host, "*.game.mobage.jp") ||
         shExpMatch(host, "*.mobage.jp") ||
-        shExpMatch(host, "mobage.jp")
+        shExpMatch(host, "mobage.jp") ||
+        shExpMatch(host, "*.dmm.com") ||
+        shExpMatch(host, "dmm.com") ||
+        shExpMatch(host, "*.dmm.co.jp") ||
+        shExpMatch(host, "dmm.co.jp")
     ) {
         return "PROXY %s:%d; DIRECT";
     }

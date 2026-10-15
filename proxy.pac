@@ -33,7 +33,11 @@ function FindProxyForURL(url, host) {
         shExpMatch(host, "*.game.mobage.jp") ||
         shExpMatch(host, "gbf.game.mbga.jp") ||
         shExpMatch(host, "*.mobage.jp") ||
-        shExpMatch(host, "mobage.jp")
+        shExpMatch(host, "mobage.jp") ||
+        shExpMatch(host, "*.dmm.com") ||
+        shExpMatch(host, "dmm.com") ||
+        shExpMatch(host, "*.dmm.co.jp") ||
+        shExpMatch(host, "dmm.co.jp")
     ) {
         return "PROXY 127.0.0.1:8124; DIRECT";
     }

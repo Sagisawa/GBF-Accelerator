@@ -143,6 +143,34 @@
       {
         "condition": {
           "conditionType": "HostWildcardCondition",
+          "pattern": "*.dmm.com"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "dmm.com"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "*.dmm.co.jp"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
+          "pattern": "dmm.co.jp"
+        },
+        "profileName": "GBF_Speed"
+      },
+      {
+        "condition": {
+          "conditionType": "HostWildcardCondition",
           "pattern": "prd-game-a-granbluefantasy-steam.akamaized.net"
         },
         "profileName": "GBF_Speed"

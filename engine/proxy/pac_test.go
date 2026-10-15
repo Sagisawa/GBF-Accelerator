@@ -23,6 +23,8 @@ func TestGetPACDoesNotUseOverBroadCDNWildcards(t *testing.T) {
 		`shExpMatch(host, "*.granbluefantasy.akamaized.net")`,
 		`shExpMatch(host, "gbf.akamaized.net")`,
 		`shExpMatch(host, "*.game.mbga.jp")`,
+		`shExpMatch(host, "*.dmm.com")`,
+		`shExpMatch(host, "*.dmm.co.jp")`,
 	} {
 		if !strings.Contains(pac, pattern) {
 			t.Fatalf("PAC lost expected explicit domain rule: %s", pattern)

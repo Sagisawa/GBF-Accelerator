@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -356,21 +357,24 @@ func TestExtractMacBundle_NestedRootAndPermissions(t *testing.T) {
 	if string(binData) != "mach-o-binary" {
 		t.Fatalf("unexpected binary data: %q", string(binData))
 	}
-	binInfo, err := os.Stat(binPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if binInfo.Mode().Perm()&0111 == 0 {
-		t.Fatalf("expected Contents/MacOS binary to be executable, got mode %v", binInfo.Mode().Perm())
-	}
 
-	plistPath := filepath.Join(stageBundle, "Contents", "Info.plist")
-	plistInfo, err := os.Stat(plistPath)
-	if err != nil {
-		t.Fatalf("failed to stat extracted Info.plist: %v", err)
-	}
-	if plistInfo.Mode().Perm() != 0644 {
-		t.Fatalf("expected Info.plist mode 0644, got %o", plistInfo.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		binInfo, err := os.Stat(binPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if binInfo.Mode().Perm()&0111 == 0 {
+			t.Fatalf("expected Contents/MacOS binary to be executable, got mode %v", binInfo.Mode().Perm())
+		}
+
+		plistPath := filepath.Join(stageBundle, "Contents", "Info.plist")
+		plistInfo, err := os.Stat(plistPath)
+		if err != nil {
+			t.Fatalf("failed to stat extracted Info.plist: %v", err)
+		}
+		if plistInfo.Mode().Perm() != 0644 {
+			t.Fatalf("expected Info.plist mode 0644, got %o", plistInfo.Mode().Perm())
+		}
 	}
 }
 

@@ -69,11 +69,13 @@
   【注意】：如果你浏览器安装了 SwitchyOmega，必须将插件图标切换到【[系统代理]】档位或暂时禁用插件，否则浏览器插件会强行覆盖系统代理导致失效！
 
 • 备用方式 2（Clash TUN 虚拟网卡模式共存方案）：
-  若电脑开启了 Clash TUN 模式接管虚拟网卡，TUN 会抢占系统 PAC 路由。此时推荐在 SmartProxy 插件中配置专属分流：添加 127.0.0.1:8124 代理目标，并将以下 7 条域名指向该代理：
+  若电脑开启了 Clash TUN 模式接管虚拟网卡，TUN 会抢占系统 PAC 路由。此时推荐在 SmartProxy 插件中配置专属分流：添加 127.0.0.1:8124 代理目标，并将以下域名指向该代理：
   - granbluefantasy.jp
   - granbluefantasy.com
   - mbga.jp
   - mobage.jp
+  - dmm.com
+  - dmm.co.jp
   - *granbluefantasy.akamaized.net
   - *gbf.akamaized.net
   - *granbluefantasy-steam.akamaized.net（Steam版）
