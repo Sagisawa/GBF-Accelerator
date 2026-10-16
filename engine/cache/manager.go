@@ -45,8 +45,6 @@ type diskMeta struct {
 	LegacyContentType string `json:"ContentType,omitempty"`
 }
 
-type cacheMetadata = diskMeta
-
 type persistTask struct {
 	ns         string
 	cleanKey   string
@@ -491,32 +489,6 @@ func makeRAMKey(ns, cleanKey string) string {
 		return cleanKey
 	}
 	return normNS + "\x00" + cleanKey
-}
-
-func extractNamespaceAndKey(base, path string) (ns string, cleanKey string, ramKey string, ok bool) {
-	rel, err := filepath.Rel(base, path)
-	if err != nil {
-		return "", "", "", false
-	}
-	slashRel := filepath.ToSlash(rel)
-	ns = "gbf"
-	cleanKey = slashRel
-	if strings.HasPrefix(slashRel, "hosts/") {
-		parts := strings.SplitN(slashRel, "/", 3)
-		if len(parts) == 3 {
-			ns = parts[1]
-			cleanKey = parts[2]
-		}
-	}
-	if normKey := normalizeCleanKey(cleanKey); normKey != "" {
-		cleanKey = normKey
-	}
-	if ns == "" || ns == "gbf" {
-		ramKey = cleanKey
-	} else {
-		ramKey = sanitizeNamespace(ns) + "/" + cleanKey
-	}
-	return ns, cleanKey, ramKey, true
 }
 
 func resolveDiskFileOwner(base, path string) (ns string, cleanKey string, ramKey string, ok bool) {

@@ -15,7 +15,6 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1954,8 +1953,6 @@ func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, tar
 
 	return s.handleDynamicAPI(w, req, targetHost)
 }
-
-var reVersioned = regexp.MustCompile(`/(?:assets(?:_(?:en|jp))?)/\d+/|/\d{8,}/`)
 
 func isBlockedWindowsPath(s string) bool {
 	return isBlockedWindowsPathLower(strings.ToLower(s))
