@@ -2247,6 +2247,22 @@ func TestControlServer_ApplyConfig_PACFailure_DoesNotRollbackNetwork(t *testing.
 	} else if activeCfg.ListenPort != proxyPort2 {
 		t.Errorf("expected cfgMgr.Get().ListenPort to be %d, got %d", proxyPort2, activeCfg.ListenPort)
 	}
+
+	// 4. Verify config.json persistence on disk
+	diskBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read persisted config file: %v", err)
+	}
+	var diskCfg config.Config
+	if err := json.Unmarshal(diskBytes, &diskCfg); err != nil {
+		t.Fatalf("failed to parse persisted config file: %v", err)
+	}
+	if diskCfg.AutoSystemProxy != false {
+		t.Errorf("expected disk config.AutoSystemProxy to be false, got %v", diskCfg.AutoSystemProxy)
+	}
+	if diskCfg.ListenPort != proxyPort2 {
+		t.Errorf("expected disk config.ListenPort to be %d, got %d", proxyPort2, diskCfg.ListenPort)
+	}
 }
 
 func TestControlServer_ApplyConfig_StartupFailure_DoesNotRollbackNetwork(t *testing.T) {
@@ -2365,6 +2381,22 @@ func TestControlServer_ApplyConfig_StartupFailure_DoesNotRollbackNetwork(t *test
 	} else if activeCfg.ListenPort != proxyPort2 {
 		t.Errorf("expected cfgMgr.Get().ListenPort to be %d, got %d", proxyPort2, activeCfg.ListenPort)
 	}
+
+	// 3. Verify config.json persistence on disk
+	diskBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read persisted config file: %v", err)
+	}
+	var diskCfg config.Config
+	if err := json.Unmarshal(diskBytes, &diskCfg); err != nil {
+		t.Fatalf("failed to parse persisted config file: %v", err)
+	}
+	if diskCfg.AutoStart != false {
+		t.Errorf("expected disk config.AutoStart to be false, got %v", diskCfg.AutoStart)
+	}
+	if diskCfg.ListenPort != proxyPort2 {
+		t.Errorf("expected disk config.ListenPort to be %d, got %d", proxyPort2, diskCfg.ListenPort)
+	}
 }
 
 func TestControlServer_ApplyConfig_DisablePACFailure_ReconcilesConfig(t *testing.T) {
@@ -2459,6 +2491,19 @@ func TestControlServer_ApplyConfig_DisablePACFailure_ReconcilesConfig(t *testing
 	}
 	if activeCfg := cfgMgr.Get(); activeCfg.AutoSystemProxy != true {
 		t.Errorf("expected cfgMgr.Get().AutoSystemProxy to remain true, got false")
+	}
+
+	// Verify config.json persistence on disk
+	diskBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read persisted config file: %v", err)
+	}
+	var diskCfg config.Config
+	if err := json.Unmarshal(diskBytes, &diskCfg); err != nil {
+		t.Fatalf("failed to parse persisted config file: %v", err)
+	}
+	if diskCfg.AutoSystemProxy != true {
+		t.Errorf("expected disk config.AutoSystemProxy to remain true, got %v", diskCfg.AutoSystemProxy)
 	}
 }
 
@@ -2562,6 +2607,19 @@ func TestControlServer_ApplyConfig_BothPACAndStartupFail_DoesNotRollbackNetwork(
 	}
 	if activeCfg := cfgMgr.Get(); activeCfg.ListenPort != proxyPort2 || activeCfg.AutoSystemProxy != false || activeCfg.AutoStart != false {
 		t.Errorf("cfgMgr mismatch: port=%d pac=%v startup=%v", activeCfg.ListenPort, activeCfg.AutoSystemProxy, activeCfg.AutoStart)
+	}
+
+	// 3. Verify config.json persistence on disk
+	diskBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read persisted config file: %v", err)
+	}
+	var diskCfg config.Config
+	if err := json.Unmarshal(diskBytes, &diskCfg); err != nil {
+		t.Fatalf("failed to parse persisted config file: %v", err)
+	}
+	if diskCfg.ListenPort != proxyPort2 || diskCfg.AutoSystemProxy != false || diskCfg.AutoStart != false {
+		t.Errorf("disk config mismatch: port=%d pac=%v startup=%v", diskCfg.ListenPort, diskCfg.AutoSystemProxy, diskCfg.AutoStart)
 	}
 }
 
@@ -2684,6 +2742,22 @@ func TestControlServer_ApplyConfig_PortChange_PACFailure_KeepsSystemProxyTrueAnd
 	} else if activeCfg.ListenPort != proxyPort2 {
 		t.Errorf("expected cfgMgr.Get().ListenPort to be %d, got %d", proxyPort2, activeCfg.ListenPort)
 	}
+
+	// 4. Verify config.json persistence on disk
+	diskBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read persisted config file: %v", err)
+	}
+	var diskCfg config.Config
+	if err := json.Unmarshal(diskBytes, &diskCfg); err != nil {
+		t.Fatalf("failed to parse persisted config file: %v", err)
+	}
+	if diskCfg.AutoSystemProxy != true {
+		t.Errorf("expected disk config.AutoSystemProxy to remain true, got %v", diskCfg.AutoSystemProxy)
+	}
+	if diskCfg.ListenPort != proxyPort2 {
+		t.Errorf("expected disk config.ListenPort to be %d, got %d", proxyPort2, diskCfg.ListenPort)
+	}
 }
 
 func TestControlServer_ApplyConfig_DisableStartupFailure_ReconcilesConfig(t *testing.T) {
@@ -2777,6 +2851,19 @@ func TestControlServer_ApplyConfig_DisableStartupFailure_ReconcilesConfig(t *tes
 	if activeCfg := cfgMgr.Get(); activeCfg.AutoStart != true {
 		t.Errorf("expected cfgMgr.Get().AutoStart to remain true, got false")
 	}
+
+	// Verify config.json persistence on disk
+	diskBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read persisted config file: %v", err)
+	}
+	var diskCfg config.Config
+	if err := json.Unmarshal(diskBytes, &diskCfg); err != nil {
+		t.Fatalf("failed to parse persisted config file: %v", err)
+	}
+	if diskCfg.AutoStart != true {
+		t.Errorf("expected disk config.AutoStart to remain true, got %v", diskCfg.AutoStart)
+	}
 }
 
 func TestControlServer_ApplyConfig_ProxyRebindFail_RollsBackConfig(t *testing.T) {
@@ -2855,6 +2942,19 @@ func TestControlServer_ApplyConfig_ProxyRebindFail_RollsBackConfig(t *testing.T)
 	// Verify config rollback
 	if activeCfg := cfgMgr.Get(); activeCfg.ListenPort != proxyPort1 {
 		t.Fatalf("expected cfgMgr.Get().ListenPort to roll back to %d, got %d", proxyPort1, activeCfg.ListenPort)
+	}
+
+	// Verify config.json persistence on disk rolled back to proxyPort1
+	diskBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to read persisted config file: %v", err)
+	}
+	var diskCfg config.Config
+	if err := json.Unmarshal(diskBytes, &diskCfg); err != nil {
+		t.Fatalf("failed to parse persisted config file: %v", err)
+	}
+	if diskCfg.ListenPort != proxyPort1 {
+		t.Fatalf("expected disk config.ListenPort to roll back to %d, got %d", proxyPort1, diskCfg.ListenPort)
 	}
 }
 
