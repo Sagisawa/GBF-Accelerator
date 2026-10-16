@@ -11,7 +11,7 @@ export interface MobileGuideModalProps {
   onClose: () => void
   status: RuntimeStatus | null
   onConfigUpdated: () => void
-  onToast: (msg: string, type?: 'success' | 'info' | 'error') => void
+  onToast: (msg: string, type?: 'success' | 'info' | 'error' | 'warning') => void
 }
 
 export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({

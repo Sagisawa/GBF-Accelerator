@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -2115,3 +2116,452 @@ func TestControlServer_ConfigFailoverNotification(t *testing.T) {
 		t.Fatalf("expected cfgMgr config to be updated to true, got %v", cfgMgr.Get().UpstreamFailoverNotification)
 	}
 }
+
+func TestControlServer_ApplyConfig_PACFailure_DoesNotRollbackNetwork(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+
+	lC, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic control port: %v", err)
+	}
+	ctrlPort := lC.Addr().(*net.TCPAddr).Port
+	_ = lC.Close()
+
+	lProxy1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic proxy port 1: %v", err)
+	}
+	proxyPort1 := lProxy1.Addr().(*net.TCPAddr).Port
+	_ = lProxy1.Close()
+
+	lProxy2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic proxy port 2: %v", err)
+	}
+	proxyPort2 := lProxy2.Addr().(*net.TCPAddr).Port
+	_ = lProxy2.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ControlPort = ctrlPort
+		c.ListenPort = proxyPort1
+		c.AutoSystemProxy = false
+	})
+
+	stats := telemetry.NewStats()
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+	ctrl.enablePACProxyFn = func(url string) error {
+		return errors.New("simulated PAC error")
+	}
+
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// Initial check: proxy listens on proxyPort1
+	conn1, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort1), 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("initial proxy port unreachable: %v", err)
+	}
+	_ = conn1.Close()
+
+	// Apply port change to proxyPort2 AND enable auto_system_proxy
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", ctrlPort)
+	reqBody := fmt.Sprintf(`{"listen_port": %d, "auto_system_proxy": true}`, proxyPort2)
+	req, err := http.NewRequest(http.MethodPost, applyURL, strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("apply request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", resp.StatusCode)
+	}
+
+	var resData struct {
+		OK       bool          `json:"ok"`
+		Message  string        `json:"message"`
+		Config   config.Config `json:"config"`
+		Warnings []string      `json:"warnings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !resData.OK {
+		t.Fatalf("expected ok=true, got false")
+	}
+	if len(resData.Warnings) == 0 {
+		t.Fatalf("expected warnings in response, got none")
+	}
+	foundWarning := false
+	for _, w := range resData.Warnings {
+		if strings.Contains(w, "系统代理设置失败") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("expected warning to mention '系统代理设置失败', got %v", resData.Warnings)
+	}
+
+	// 1. Network listener MUST NOT have rolled back: proxy MUST listen on proxyPort2
+	conn2, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort2), 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("network transaction was rolled back! proxy not listening on %d: %v", proxyPort2, err)
+	}
+	_ = conn2.Close()
+
+	// 2. Old port MUST be closed
+	connOld, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort1), 200*time.Millisecond)
+	if err == nil {
+		_ = connOld.Close()
+		t.Errorf("proxy is still listening on old port %d", proxyPort1)
+	}
+
+	// 3. Backend configuration semantics: AutoSystemProxy must be reconciled to false
+	if resData.Config.AutoSystemProxy != false {
+		t.Errorf("expected response config.AutoSystemProxy to be reconciled to false, got %v", resData.Config.AutoSystemProxy)
+	}
+	if resData.Config.ListenPort != proxyPort2 {
+		t.Errorf("expected response config.ListenPort to be %d, got %d", proxyPort2, resData.Config.ListenPort)
+	}
+	if activeCfg := cfgMgr.Get(); activeCfg.AutoSystemProxy != false {
+		t.Errorf("expected cfgMgr.Get().AutoSystemProxy to be false, got true")
+	} else if activeCfg.ListenPort != proxyPort2 {
+		t.Errorf("expected cfgMgr.Get().ListenPort to be %d, got %d", proxyPort2, activeCfg.ListenPort)
+	}
+}
+
+func TestControlServer_ApplyConfig_StartupFailure_DoesNotRollbackNetwork(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+
+	lC, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic control port: %v", err)
+	}
+	ctrlPort := lC.Addr().(*net.TCPAddr).Port
+	_ = lC.Close()
+
+	lProxy1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic proxy port 1: %v", err)
+	}
+	proxyPort1 := lProxy1.Addr().(*net.TCPAddr).Port
+	_ = lProxy1.Close()
+
+	lProxy2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic proxy port 2: %v", err)
+	}
+	proxyPort2 := lProxy2.Addr().(*net.TCPAddr).Port
+	_ = lProxy2.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ControlPort = ctrlPort
+		c.ListenPort = proxyPort1
+		c.AutoStart = false
+	})
+
+	stats := telemetry.NewStats()
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+	ctrl.setStartupEnabledFn = func(enabled bool) error {
+		return errors.New("simulated startup error")
+	}
+
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// Apply port change to proxyPort2 AND enable auto_start
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", ctrlPort)
+	reqBody := fmt.Sprintf(`{"listen_port": %d, "auto_start": true}`, proxyPort2)
+	req, err := http.NewRequest(http.MethodPost, applyURL, strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("apply request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", resp.StatusCode)
+	}
+
+	var resData struct {
+		OK       bool          `json:"ok"`
+		Message  string        `json:"message"`
+		Config   config.Config `json:"config"`
+		Warnings []string      `json:"warnings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !resData.OK {
+		t.Fatalf("expected ok=true, got false")
+	}
+	if len(resData.Warnings) == 0 {
+		t.Fatalf("expected warnings in response, got none")
+	}
+	foundWarning := false
+	for _, w := range resData.Warnings {
+		if strings.Contains(w, "开机启动设置失败") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("expected warning to mention '开机启动设置失败', got %v", resData.Warnings)
+	}
+
+	// 1. Network listener MUST NOT have rolled back: proxy MUST listen on proxyPort2
+	conn2, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort2), 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("network transaction was rolled back! proxy not listening on %d: %v", proxyPort2, err)
+	}
+	_ = conn2.Close()
+
+	// 2. Backend configuration semantics: AutoStart must be reconciled to false
+	if resData.Config.AutoStart != false {
+		t.Errorf("expected response config.AutoStart to be reconciled to false, got %v", resData.Config.AutoStart)
+	}
+	if resData.Config.ListenPort != proxyPort2 {
+		t.Errorf("expected response config.ListenPort to be %d, got %d", proxyPort2, resData.Config.ListenPort)
+	}
+	if activeCfg := cfgMgr.Get(); activeCfg.AutoStart != false {
+		t.Errorf("expected cfgMgr.Get().AutoStart to be false, got true")
+	} else if activeCfg.ListenPort != proxyPort2 {
+		t.Errorf("expected cfgMgr.Get().ListenPort to be %d, got %d", proxyPort2, activeCfg.ListenPort)
+	}
+}
+
+func TestControlServer_ApplyConfig_DisablePACFailure_ReconcilesConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+
+	lC, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic control port: %v", err)
+	}
+	ctrlPort := lC.Addr().(*net.TCPAddr).Port
+	_ = lC.Close()
+
+	lProxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic proxy port: %v", err)
+	}
+	proxyPort := lProxy.Addr().(*net.TCPAddr).Port
+	_ = lProxy.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ControlPort = ctrlPort
+		c.ListenPort = proxyPort
+		c.AutoSystemProxy = true
+	})
+
+	stats := telemetry.NewStats()
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+	ctrl.disablePACProxyFn = func(force bool) error {
+		return errors.New("simulated disable error")
+	}
+
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// Apply disable auto_system_proxy
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", ctrlPort)
+	reqBody := `{"auto_system_proxy": false}`
+	req, err := http.NewRequest(http.MethodPost, applyURL, strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("apply request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", resp.StatusCode)
+	}
+
+	var resData struct {
+		OK       bool          `json:"ok"`
+		Config   config.Config `json:"config"`
+		Warnings []string      `json:"warnings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resData.Warnings) == 0 {
+		t.Fatalf("expected warnings, got none")
+	}
+	foundWarning := false
+	for _, w := range resData.Warnings {
+		if strings.Contains(w, "系统代理停用失败") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("expected warning to mention '系统代理停用失败', got %v", resData.Warnings)
+	}
+
+	// AutoSystemProxy must remain true because disabling failed
+	if resData.Config.AutoSystemProxy != true {
+		t.Errorf("expected response config.AutoSystemProxy to remain true, got %v", resData.Config.AutoSystemProxy)
+	}
+	if activeCfg := cfgMgr.Get(); activeCfg.AutoSystemProxy != true {
+		t.Errorf("expected cfgMgr.Get().AutoSystemProxy to remain true, got false")
+	}
+}
+
+func TestControlServer_ApplyConfig_BothPACAndStartupFail_DoesNotRollbackNetwork(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+
+	lC, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic control port: %v", err)
+	}
+	ctrlPort := lC.Addr().(*net.TCPAddr).Port
+	_ = lC.Close()
+
+	lProxy1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic proxy port 1: %v", err)
+	}
+	proxyPort1 := lProxy1.Addr().(*net.TCPAddr).Port
+	_ = lProxy1.Close()
+
+	lProxy2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on dynamic proxy port 2: %v", err)
+	}
+	proxyPort2 := lProxy2.Addr().(*net.TCPAddr).Port
+	_ = lProxy2.Close()
+
+	cfgMgr.Update(func(c *config.Config) {
+		c.ControlPort = ctrlPort
+		c.ListenPort = proxyPort1
+		c.AutoSystemProxy = false
+		c.AutoStart = false
+	})
+
+	stats := telemetry.NewStats()
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	proxySrv := proxy.NewProxyServer(cfgMgr, nil, cacheMgr, stats)
+	if err := proxySrv.Start(); err != nil {
+		t.Fatalf("failed to start proxy server: %v", err)
+	}
+	defer proxySrv.Stop()
+
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, proxySrv, stats)
+	ctrl.enablePACProxyFn = func(url string) error {
+		return errors.New("simulated PAC error")
+	}
+	ctrl.setStartupEnabledFn = func(enabled bool) error {
+		return errors.New("simulated startup error")
+	}
+
+	if err := ctrl.Start(); err != nil {
+		t.Fatalf("failed to start control server: %v", err)
+	}
+	defer ctrl.Stop()
+
+	// Apply port change to proxyPort2 AND enable both auto_system_proxy and auto_start
+	applyURL := fmt.Sprintf("http://127.0.0.1:%d/api/config/apply", ctrlPort)
+	reqBody := fmt.Sprintf(`{"listen_port": %d, "auto_system_proxy": true, "auto_start": true}`, proxyPort2)
+	req, err := http.NewRequest(http.MethodPost, applyURL, strings.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("apply request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", resp.StatusCode)
+	}
+
+	var resData struct {
+		OK       bool          `json:"ok"`
+		Config   config.Config `json:"config"`
+		Warnings []string      `json:"warnings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resData); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(resData.Warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d: %v", len(resData.Warnings), resData.Warnings)
+	}
+
+	// 1. Network listener MUST NOT have rolled back: proxy MUST listen on proxyPort2
+	conn2, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", proxyPort2), 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("network transaction was rolled back! proxy not listening on %d: %v", proxyPort2, err)
+	}
+	_ = conn2.Close()
+
+	// 2. Both fields reconciled
+	if resData.Config.AutoSystemProxy != false || resData.Config.AutoStart != false {
+		t.Errorf("expected both fields false, got pac=%v startup=%v", resData.Config.AutoSystemProxy, resData.Config.AutoStart)
+	}
+	if activeCfg := cfgMgr.Get(); activeCfg.ListenPort != proxyPort2 || activeCfg.AutoSystemProxy != false || activeCfg.AutoStart != false {
+		t.Errorf("cfgMgr mismatch: port=%d pac=%v startup=%v", activeCfg.ListenPort, activeCfg.AutoSystemProxy, activeCfg.AutoStart)
+	}
+}
+

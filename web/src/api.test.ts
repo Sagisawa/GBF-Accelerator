@@ -230,6 +230,25 @@ describe('applyConfig port migration & cancelAndroidPatch API', () => {
     }
   })
 
+  it('returns warnings array and reconciled config when Post-Commit sync encounters warnings', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        message: 'Configuration updated',
+        warnings: ['系统代理设置失败: simulated PAC error'],
+        config: { listen_port: 8130, auto_system_proxy: false },
+        control_url: 'http://127.0.0.1:8125',
+      }),
+    }) as any
+
+    const res = await applyConfig({ listen_port: 8130, auto_system_proxy: true })
+    expect(res.ok).toBe(true)
+    expect(res.warnings).toEqual(['系统代理设置失败: simulated PAC error'])
+    expect(res.config?.listen_port).toBe(8130)
+    expect(res.config?.auto_system_proxy).toBe(false)
+  })
+
   it('calls POST /api/android/patch/cancel in cancelAndroidPatch', async () => {
     globalThis.fetch = vi.fn().mockResolvedValue({
       ok: true,
