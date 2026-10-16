@@ -1262,7 +1262,10 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	var warnings []string
 	configRecommitNeeded := false
 
-	if candidate.AutoSystemProxy != oldCandidate.AutoSystemProxy || candidate.ListenPort != oldCandidate.ListenPort {
+	pacNeedsSync := (candidate.AutoSystemProxy != oldCandidate.AutoSystemProxy) ||
+		(candidate.AutoSystemProxy && candidate.ListenPort != oldCandidate.ListenPort)
+
+	if pacNeedsSync {
 		var err error
 		if candidate.AutoSystemProxy {
 			err = c.enablePACProxyFn(fmt.Sprintf("http://127.0.0.1:%d/proxy.pac", candidate.ListenPort))
@@ -1271,14 +1274,18 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 		}
 		if err != nil {
 			c.stats.Log("WARN", fmt.Sprintf("[CONFIG] Commit success, but Post-Commit Runtime Sync failure (system proxy): %v", err))
-			if candidate.AutoSystemProxy {
-				warnings = append(warnings, fmt.Sprintf("系统代理设置失败: %v", err))
-				candidate.AutoSystemProxy = false
+			if candidate.AutoSystemProxy != oldCandidate.AutoSystemProxy {
+				if candidate.AutoSystemProxy {
+					warnings = append(warnings, fmt.Sprintf("系统代理设置失败: %v", err))
+				} else {
+					warnings = append(warnings, fmt.Sprintf("系统代理停用失败: %v", err))
+				}
+				candidate.AutoSystemProxy = oldCandidate.AutoSystemProxy
+				configRecommitNeeded = true
 			} else {
-				warnings = append(warnings, fmt.Sprintf("系统代理停用失败: %v", err))
-				candidate.AutoSystemProxy = true
+				warnings = append(warnings, fmt.Sprintf("更新系统代理 PAC 地址失败: %v", err))
+				candidate.AutoSystemProxy = oldCandidate.AutoSystemProxy
 			}
-			configRecommitNeeded = true
 		}
 	}
 
@@ -1302,6 +1309,8 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if configRecommitNeeded {
 		if commitErr := c.cfgMgr.Commit(candidate); commitErr != nil {
 			c.stats.Log("ERROR", fmt.Sprintf("[CONFIG] 严重：运行时同步失败后状态对账持久化失败: %v", commitErr))
+			warnings = append(warnings, fmt.Sprintf("配置状态对账持久化失败: %v", commitErr))
+			candidate = c.cfgMgr.Get()
 		}
 	}
 

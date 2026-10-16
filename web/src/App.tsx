@@ -270,11 +270,19 @@ export const App: React.FC = () => {
     msg: string
     type: 'success' | 'info' | 'error' | 'warning'
   } | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const showToast = useCallback(
     (msg: string, type: 'success' | 'info' | 'error' | 'warning' = 'info') => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current)
+      }
       setToast({ msg, type })
-      setTimeout(() => setToast(null), 3000)
+      const duration = type === 'warning' || type === 'error' ? 4000 : 3000
+      toastTimerRef.current = setTimeout(() => {
+        setToast(null)
+        toastTimerRef.current = null
+      }, duration)
     },
     []
   )
@@ -912,9 +920,17 @@ export const App: React.FC = () => {
     const next = !current
     await runConfigAction('allow-lan', async () => {
       try {
-        await applyConfig({ allow_lan: next })
-        setConfig((prev) => ({ ...prev, allow_lan: next }))
-        showToast(next ? '允许局域网连接已开启 (绑定 0.0.0.0)' : '局域网连接已关闭', 'info')
+        const resp = await applyConfig({ allow_lan: next })
+        if (resp.config) {
+          setConfig(resp.config)
+        } else {
+          setConfig((prev) => ({ ...prev, allow_lan: next }))
+        }
+        if (resp.warnings && resp.warnings.length > 0) {
+          showToast(`局域网连接已切换，但附带同步存在警告: ${resp.warnings.join('; ')}`, 'warning')
+        } else {
+          showToast(next ? '允许局域网连接已开启 (绑定 0.0.0.0)' : '局域网连接已关闭', 'info')
+        }
         loadState()
       } catch (e: any) {
         showToast(`设置局域网共享失败: ${e.message}`, 'error')
@@ -934,7 +950,7 @@ export const App: React.FC = () => {
           setConfig((prev) => ({ ...prev, auto_system_proxy: next, auto_pac: next }))
         }
         if (resp.warnings && resp.warnings.length > 0) {
-          showToast(`系统 PAC 代理设置失败: ${resp.warnings.join('; ')}`, 'warning')
+          showToast(resp.warnings.join('; '), 'warning')
         } else {
           showToast(next ? '自动配置系统 PAC 代理已开启' : '系统 PAC 代理已关闭', 'info')
         }
@@ -957,7 +973,7 @@ export const App: React.FC = () => {
           setConfig((prev) => ({ ...prev, auto_start: next }))
         }
         if (resp.warnings && resp.warnings.length > 0) {
-          showToast(`开机自启设置失败: ${resp.warnings.join('; ')}`, 'warning')
+          showToast(resp.warnings.join('; '), 'warning')
         } else {
           showToast(next ? '开机自启已开启' : '开机自启已关闭', 'info')
         }

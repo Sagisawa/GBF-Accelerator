@@ -86,8 +86,12 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
     if (lanApplying) return
     setLanApplying(true)
     try {
-      await applyConfig({ allow_lan: true })
-      onToast('已开启局域网共享', 'success')
+      const resp = await applyConfig({ allow_lan: true })
+      if (resp.warnings && resp.warnings.length > 0) {
+        onToast(`已开启局域网共享，但附带同步存在警告: ${resp.warnings.join('; ')}`, 'warning')
+      } else {
+        onToast('已开启局域网共享', 'success')
+      }
       onConfigUpdated()
       await refreshFirewallStatus()
     } catch (e: any) {
