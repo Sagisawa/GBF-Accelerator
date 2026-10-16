@@ -263,6 +263,172 @@ func TestPrefetchExtraction(t *testing.T) {
 	}
 }
 
+func TestSplitHostPortElimination_ZeroAlloc(t *testing.T) {
+	plainHost := "prd-game-a-granbluefantasy.akamaized.net"
+	plainPath := "/assets/img/sp/quest/scene/character/body/3040001000.png"
+
+	// 1. isStaticTargetLower on plain host should not allocate (0 allocs)
+	allocs := testing.AllocsPerRun(1000, func() {
+		if !isStaticTargetLower(plainHost, plainPath) {
+			t.Fatal("expected static target")
+		}
+	})
+	if allocs > 0 {
+		t.Errorf("isStaticTargetLower allocated %v allocs/op on plain host, want 0", allocs)
+	}
+
+	// 2. isGBFDomain on plain host (Akamai CDN) should not allocate (0 allocs)
+	allocsGBF := testing.AllocsPerRun(1000, func() {
+		if !isGBFDomain(plainHost) {
+			t.Fatal("expected GBF domain")
+		}
+	})
+	if allocsGBF > 0 {
+		t.Errorf("isGBFDomain allocated %v allocs/op on plain host, want 0", allocsGBF)
+	}
+
+	// 2b. isGBFDomain on non-Akamai GBF domain (e.g. game.granbluefantasy.jp) should also have 0 allocs
+	allocsGame := testing.AllocsPerRun(1000, func() {
+		if !isGBFDomain("game.granbluefantasy.jp") {
+			t.Fatal("expected game.granbluefantasy.jp to be GBF domain")
+		}
+	})
+	if allocsGame > 0 {
+		t.Errorf("isGBFDomain allocated %v allocs/op on game.granbluefantasy.jp, want 0", allocsGame)
+	}
+
+	// 3. isExternalGBFDomain on plain host should match and not allocate
+	allocsExt := testing.AllocsPerRun(1000, func() {
+		if !isExternalGBFDomain(plainHost) {
+			t.Fatal("expected external GBF domain")
+		}
+	})
+	if allocsExt > 0 {
+		t.Errorf("isExternalGBFDomain allocated %v allocs/op on plain host, want 0", allocsExt)
+	}
+
+	// 4. Verify functionality with explicit port
+	hostWithPort := "prd-game-a-granbluefantasy.akamaized.net:443"
+	if !isStaticTargetLower(hostWithPort, plainPath) {
+		t.Errorf("isStaticTargetLower failed on host with port: %s", hostWithPort)
+	}
+	if !isGBFDomain(hostWithPort) {
+		t.Errorf("isGBFDomain failed on host with port: %s", hostWithPort)
+	}
+	if !isExternalGBFDomain(hostWithPort) {
+		t.Errorf("isExternalGBFDomain failed on host with port: %s", hostWithPort)
+	}
+
+	// 5. isPrivateOrLocalHost with and without port
+	if !isPrivateOrLocalHost("127.0.0.1") {
+		t.Error("isPrivateOrLocalHost failed for 127.0.0.1")
+	}
+	if !isPrivateOrLocalHost("127.0.0.1:8124") {
+		t.Error("isPrivateOrLocalHost failed for 127.0.0.1:8124")
+	}
+	if isPrivateOrLocalHost(plainHost) {
+		t.Errorf("isPrivateOrLocalHost returned true for public host %s", plainHost)
+	}
+
+	// 6. extractActualTarget zero allocation on plain host
+	reqWithoutPort, _ := http.NewRequest(http.MethodGet, "http://gbf-proxy/ca.crt", nil)
+	allocsTarget := testing.AllocsPerRun(1000, func() {
+		h, p := extractActualTarget(reqWithoutPort)
+		if h != "gbf-proxy" || p != "" {
+			t.Fatalf("unexpected extractActualTarget result: %s, %s", h, p)
+		}
+	})
+	if allocsTarget > 0 {
+		t.Errorf("extractActualTarget allocated %v allocs/op on plain host, want 0", allocsTarget)
+	}
+
+	// 7. prefetch RecordActiveGBFHost zero allocation on plain host
+	pe := &PrefetchEngine{}
+	allocsRecord := testing.AllocsPerRun(1000, func() {
+		pe.RecordActiveGBFHost(plainHost)
+	})
+	if allocsRecord > 0 {
+		t.Errorf("RecordActiveGBFHost allocated %v allocs/op on plain host, want 0", allocsRecord)
+	}
+
+	// 8. Edge cases and other domain checks (zero alloc and semantic parity)
+	otherGBFDomains := []string{
+		"granbluefantasy.jp",
+		"granbluefantasy.com",
+		"gbf.game.mbga.jp",
+		"connect.mobage.jp",
+		"sp.mbga.jp",
+	}
+	for _, d := range otherGBFDomains {
+		allocs := testing.AllocsPerRun(1000, func() {
+			if !isGBFDomain(d) {
+				t.Fatalf("expected %s to be recognized as GBF domain", d)
+			}
+		})
+		if allocs > 0 {
+			t.Errorf("isGBFDomain allocated %v allocs/op on %s, want 0", allocs, d)
+		}
+	}
+
+	// Non-GBF and passthrough domains: should be false and 0 allocs
+	nonGBF := []string{
+		"example.com",
+		"google.com",
+		"ws.game.granbluefantasy.jp",
+		"fakegranbluefantasy.jp",
+	}
+	for _, d := range nonGBF {
+		allocs := testing.AllocsPerRun(1000, func() {
+			if isGBFDomain(d) {
+				t.Fatalf("expected %s to NOT be GBF domain", d)
+			}
+		})
+		if allocs > 0 {
+			t.Errorf("isGBFDomain allocated %v allocs/op on non-GBF host %s, want 0", allocs, d)
+		}
+	}
+
+	// Dynamic API paths on static hosts: should be false and 0 allocs
+	allocsDyn := testing.AllocsPerRun(1000, func() {
+		if isStaticTargetLower(plainHost, "/rest/user/status") {
+			t.Fatal("dynamic prefix should not be static target")
+		}
+	})
+	if allocsDyn > 0 {
+		t.Errorf("isStaticTargetLower allocated %v allocs/op on dynamic path, want 0", allocsDyn)
+	}
+
+	// Semantic parity on edge-case host formats (empty, trailing dot, IPv6, malformed)
+	nonStaticPath := "/custom/asset.dat"
+	edgeHosts := []struct {
+		host      string
+		isGBF     bool
+		isStatic  bool
+		isPrivate bool
+	}{
+		{"", false, false, true},
+		{":80", false, false, true},
+		{"host:", false, false, false},
+		{"[::1]", false, false, true},
+		{"[::1]:8124", false, false, true},
+		{"::1", false, false, true},
+		{"prd-game-a-granbluefantasy.akamaized.net.", true, true, false},
+		{"prd-game-a-granbluefantasy.akamaized.net.:443", true, true, false},
+		{"game.granbluefantasy.jp.", true, false, false},
+	}
+	for _, tc := range edgeHosts {
+		if got := isGBFDomain(tc.host); got != tc.isGBF {
+			t.Errorf("isGBFDomain(%q) = %v, want %v", tc.host, got, tc.isGBF)
+		}
+		if got := isStaticTargetLower(tc.host, nonStaticPath); got != tc.isStatic {
+			t.Errorf("isStaticTargetLower(%q, %q) = %v, want %v", tc.host, nonStaticPath, got, tc.isStatic)
+		}
+		if got := isPrivateOrLocalHost(tc.host); got != tc.isPrivate {
+			t.Errorf("isPrivateOrLocalHost(%q) = %v, want %v", tc.host, got, tc.isPrivate)
+		}
+	}
+}
+
 func TestProxyServerLifecycleRestart(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "proxy-test-*")
 	if err != nil {

@@ -174,3 +174,41 @@ func BenchmarkRAMHitCachedAssetHandler(b *testing.B) {
 		srv.handleStaticAssetLower(io.Discard, req, benchHost, benchAssetPath)
 	}
 }
+
+func BenchmarkIsStaticTargetLower_PlainHost(b *testing.B) {
+	const host = "prd-game-a-granbluefantasy.akamaized.net"
+	const pathLower = "/assets/img/sp/quest/scene/character/body/3040001000.png"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = isStaticTargetLower(host, pathLower)
+	}
+}
+
+func BenchmarkIsGBFDomain_PlainHost(b *testing.B) {
+	const host = "prd-game-a-granbluefantasy.akamaized.net"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = isGBFDomain(host)
+	}
+}
+
+func BenchmarkIsStaticTargetLower_HostWithPort(b *testing.B) {
+	const host = "prd-game-a-granbluefantasy.akamaized.net:443"
+	const pathLower = "/assets/img/sp/quest/scene/character/body/3040001000.png"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = isStaticTargetLower(host, pathLower)
+	}
+}
+
+func BenchmarkIsGBFDomain_HostWithPort(b *testing.B) {
+	const host = "prd-game-a-granbluefantasy.akamaized.net:443"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = isGBFDomain(host)
+	}
+}

@@ -3,6 +3,9 @@ package patcher
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -412,8 +415,11 @@ func TestValidateModuleApk_InvalidZip(t *testing.T) {
 }
 
 func TestValidateLSPatchJar_Canonical(t *testing.T) {
-	repoRoot := filepath.Join("..", "..", "..")
+	repoRoot := filepath.Join("..", "..")
 	jarPath := filepath.Join(repoRoot, "build", "lspatch", "lspatch.jar")
+	if _, err := os.Stat(jarPath); err != nil {
+		jarPath = filepath.Join(repoRoot, "tools", "android", "lspatch.jar")
+	}
 	if _, err := os.Stat(jarPath); err != nil {
 		t.Skipf("skipping test, lspatch.jar not found at %s", jarPath)
 	}
@@ -455,6 +461,21 @@ func TestValidateLSPatchJar_EmptyAndMissing(t *testing.T) {
 	}
 	if err := ValidateLSPatchJar(emptyJar); err == nil {
 		t.Errorf("expected error for empty jar")
+	}
+}
+
+func TestValidateLSPatchJar_Directory(t *testing.T) {
+	tempDir := t.TempDir()
+	dirJar := filepath.Join(tempDir, "directory.jar")
+	if err := os.Mkdir(dirJar, 0755); err != nil {
+		t.Fatal(err)
+	}
+	err := ValidateLSPatchJar(dirJar)
+	if err == nil {
+		t.Fatalf("expected error for directory jar, got nil")
+	}
+	if !strings.Contains(err.Error(), "lspatch.jar is a directory or empty") {
+		t.Errorf("expected directory rejection error message, got: %v", err)
 	}
 }
 
@@ -761,3 +782,62 @@ func TestEnsureCanonicalModule_LocalMatch(t *testing.T) {
 		t.Errorf("expected canonical SHA256 %s, got %s", CanonicalModuleSHA256, sha)
 	}
 }
+
+func TestComputeFileSHA256(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// 1. Regular file with known content
+	content := []byte("The quick brown fox jumps over the lazy dog\n")
+	hasher := sha256.New()
+	hasher.Write(content)
+	expectedHex := hex.EncodeToString(hasher.Sum(nil))
+
+	filePath := filepath.Join(tempDir, "sample.txt")
+	if err := os.WriteFile(filePath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	actualHex, err := ComputeFileSHA256(filePath)
+	if err != nil {
+		t.Fatalf("ComputeFileSHA256 failed: %v", err)
+	}
+	if actualHex != expectedHex {
+		t.Errorf("expected %s, got %s", expectedHex, actualHex)
+	}
+
+	// 2. Empty file
+	emptyPath := filepath.Join(tempDir, "empty.bin")
+	if err := os.WriteFile(emptyPath, []byte{}, 0644); err != nil {
+		t.Fatal(err)
+	}
+	emptyExpected := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	actualEmpty, err := ComputeFileSHA256(emptyPath)
+	if err != nil {
+		t.Fatalf("ComputeFileSHA256 on empty file failed: %v", err)
+	}
+	if actualEmpty != emptyExpected {
+		t.Errorf("expected empty file sha256 %s, got %s", emptyExpected, actualEmpty)
+	}
+
+	// 3. Missing file
+	missingPath := filepath.Join(tempDir, "nonexistent.bin")
+	_, err = ComputeFileSHA256(missingPath)
+	if err == nil {
+		t.Errorf("expected error for nonexistent file, got nil")
+	}
+	var pe *os.PathError
+	if !errors.As(err, &pe) || pe.Op != "open" {
+		t.Errorf("expected *os.PathError with Op == 'open' for missing file, got: %v", err)
+	}
+
+	// 4. Directory input
+	dirPath := filepath.Join(tempDir, "sub_dir")
+	if err := os.Mkdir(dirPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = ComputeFileSHA256(dirPath)
+	if err == nil {
+		t.Errorf("expected error when computing sha256 on directory, got nil")
+	}
+}
+

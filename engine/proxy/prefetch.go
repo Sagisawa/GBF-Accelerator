@@ -236,12 +236,18 @@ func (pe *PrefetchEngine) RecordActiveGBFHost(host string) {
 	if pe == nil || host == "" {
 		return
 	}
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
 	}
 	h := strings.ToLower(strings.TrimRight(host, "."))
 	if isGBFAkamaiNormalized(h) {
-		pe.activeGBFHost.Store(&h)
+		if curr := pe.activeGBFHost.Load(); curr != nil && *curr == h {
+			return
+		}
+		newHost := h
+		pe.activeGBFHost.Store(&newHost)
 	}
 }
 
