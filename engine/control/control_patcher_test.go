@@ -133,6 +133,20 @@ func TestControlAndroidEnv(t *testing.T) {
 	if res.Java == nil || res.LSPatch == nil || res.Module == nil {
 		t.Errorf("expected java, lspatch, and module objects in env response")
 	}
+	if found, ok := res.LSPatch["found"].(bool); ok && found {
+		path, _ := res.LSPatch["path"].(string)
+		expectedSHA, err := patcher.ComputeFileSHA256(path)
+		if err != nil {
+			t.Fatalf("ComputeFileSHA256 failed on found lspatch.jar (%s): %v", path, err)
+		}
+		if actualSHA, _ := res.LSPatch["sha256"].(string); actualSHA != expectedSHA {
+			t.Errorf("expected lspatch sha256 %s, got %s", expectedSHA, actualSHA)
+		}
+	} else {
+		if actualSHA, _ := res.LSPatch["sha256"].(string); actualSHA != "" {
+			t.Errorf("expected empty lspatch sha256 when not found, got %s", actualSHA)
+		}
+	}
 }
 
 func TestControlAndroidInspect(t *testing.T) {

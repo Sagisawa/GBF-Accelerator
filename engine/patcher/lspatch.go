@@ -4,8 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -197,18 +196,14 @@ func ValidateLSPatchJar(jarPath string) error {
 		return fmt.Errorf("lspatch.jar is a directory or empty: %s", jarPath)
 	}
 
-	f, err := os.Open(jarPath)
+	actualSHA256, err := ComputeFileSHA256(jarPath)
 	if err != nil {
-		return fmt.Errorf("failed to open lspatch.jar for hashing: %w", err)
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+		var pe *os.PathError
+		if errors.As(err, &pe) && pe.Op == "open" {
+			return fmt.Errorf("failed to open lspatch.jar for hashing: %w", err)
+		}
 		return fmt.Errorf("failed to compute lspatch.jar checksum: %w", err)
 	}
-
-	actualSHA256 := hex.EncodeToString(h.Sum(nil))
 	if !strings.EqualFold(actualSHA256, CanonicalLSPatchSHA256) {
 		return fmt.Errorf("LSPatch binary validation failed: SHA-256 checksum mismatch for %s\n"+
 			"  Expected: %s (%s, %s)\n"+

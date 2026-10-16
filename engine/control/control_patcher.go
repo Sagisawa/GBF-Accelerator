@@ -2,8 +2,6 @@ package control
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,11 +120,8 @@ func (c *ControlServer) handleAndroidEnv(w http.ResponseWriter, req *http.Reques
 			lspatchErrStr = valErr.Error()
 		}
 		// Compute sha256
-		if f, err := os.Open(lspatchPath); err == nil {
-			h := sha256.New()
-			_, _ = io.Copy(h, f)
-			_ = f.Close()
-			lspatchSha = hex.EncodeToString(h.Sum(nil))
+		if sha, err := patcher.ComputeFileSHA256(lspatchPath); err == nil {
+			lspatchSha = sha
 		}
 	} else {
 		lspatchErrStr = lspatchErr.Error()
