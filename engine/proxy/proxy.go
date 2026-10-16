@@ -998,8 +998,10 @@ func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.R
 		target = req.Host
 	}
 	host := target
-	if h, _, err := net.SplitHostPort(target); err == nil {
-		host = h
+	if strings.IndexByte(target, ':') != -1 {
+		if h, _, err := net.SplitHostPort(target); err == nil {
+			host = h
+		}
 	}
 	host = strings.ToLower(strings.TrimRight(strings.Trim(host, "[]"), "."))
 
@@ -1573,8 +1575,10 @@ func extractActualTarget(req *http.Request) (string, string) {
 	if atIdx := strings.LastIndex(raw, "@"); atIdx != -1 {
 		raw = raw[atIdx+1:]
 	}
-	if h, p, err := net.SplitHostPort(raw); err == nil {
-		return strings.ToLower(strings.TrimRight(strings.Trim(h, "[]"), ".")), p
+	if strings.IndexByte(raw, ':') != -1 {
+		if h, p, err := net.SplitHostPort(raw); err == nil {
+			return strings.ToLower(strings.TrimRight(strings.Trim(h, "[]"), ".")), p
+		}
 	}
 	return strings.ToLower(strings.TrimRight(strings.Trim(raw, "[]"), ".")), ""
 }
@@ -4784,8 +4788,10 @@ func isGBFAkamaiHost(host string) bool {
 }
 
 func isGBFDomain(host string) bool {
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
 	}
 	if isPassthroughHost(host) {
 		return false
@@ -4801,8 +4807,10 @@ func isGBFDomain(host string) bool {
 }
 
 func isExternalGBFDomain(host string) bool {
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
 	}
 	host = strings.ToLower(strings.Trim(host, "[]"))
 	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
@@ -4812,8 +4820,10 @@ func isExternalGBFDomain(host string) bool {
 }
 
 func isPrivateOrLocalHost(host string) bool {
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
 	}
 	host = strings.ToLower(strings.Trim(host, "[]"))
 	if host == "" || host == "localhost" || host == "127.0.0.1" || host == "::1" {
@@ -4831,8 +4841,10 @@ func isStaticTarget(host, path string) bool {
 }
 
 func isStaticTargetLower(host, pathLower string) bool {
-	if hp, _, err := net.SplitHostPort(host); err == nil {
-		host = hp
+	if strings.IndexByte(host, ':') != -1 {
+		if hp, _, err := net.SplitHostPort(host); err == nil {
+			host = hp
+		}
 	}
 	host = strings.ToLower(strings.TrimRight(host, "."))
 	p := pathLower
