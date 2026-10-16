@@ -528,6 +528,11 @@ func TestResolveDiskFileOwner(t *testing.T) {
 			expectedRAM: "myhost.com_8080\x00assets/data.bin",
 			expectedOK:  true,
 		},
+		{
+			name:       "base path itself rejected",
+			path:       tempBase,
+			expectedOK: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -609,6 +614,24 @@ func TestResolveDiskFileOwner(t *testing.T) {
 		}
 	})
 
+	t.Run("ext file with forbidden hosts namespace rejected", func(t *testing.T) {
+		assetPath := filepath.Join(tempBase, "hosts", "alias.example.com", "assets", "forbidden_ns.png")
+		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(assetPath, []byte("data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(assetPath+".ext", []byte(`{"v":1,"ns":"hosts"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		_, _, _, ok := resolveDiskFileOwner(tempBase, assetPath)
+		if ok {
+			t.Errorf("expected ok=false for ext file with ns='hosts', got true")
+		}
+	})
+
 	t.Run("ext file corrupted falls back to directory namespace", func(t *testing.T) {
 		assetPath := filepath.Join(tempBase, "hosts", "prd-game-a.example.com", "assets", "corrupted.png")
 		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
@@ -634,6 +657,26 @@ func TestResolveDiskFileOwner(t *testing.T) {
 		expectedRAM := "prd-game-a.example.com\x00assets/corrupted.png"
 		if ramKey != expectedRAM {
 			t.Errorf("expected ramKey=%q, got %q", expectedRAM, ramKey)
+		}
+	})
+
+	t.Run("windows drive case insensitive matching", func(t *testing.T) {
+		if len(tempBase) < 2 || tempBase[1] != ':' {
+			t.Skip("skipping Windows drive test on non-drive base")
+		}
+		var invertedDrive string
+		if tempBase[0] >= 'A' && tempBase[0] <= 'Z' {
+			invertedDrive = strings.ToLower(string(tempBase[0])) + tempBase[1:]
+		} else {
+			invertedDrive = strings.ToUpper(string(tempBase[0])) + tempBase[1:]
+		}
+		testPath := filepath.Join(invertedDrive, "assets", "drive_case.mp3")
+		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(tempBase, testPath)
+		if !ok {
+			t.Fatalf("expected ok=true for drive case difference, got false")
+		}
+		if ns != "gbf" || cleanKey != "assets/drive_case.mp3" || ramKey != "assets/drive_case.mp3" {
+			t.Errorf("unexpected result for drive case: ns=%q, cleanKey=%q, ramKey=%q", ns, cleanKey, ramKey)
 		}
 	})
 }
