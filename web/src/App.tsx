@@ -46,6 +46,7 @@ import {
   CheckCircle2,
   Info,
   XCircle,
+  AlertTriangle,
   Zap,
   Power,
   Network,
@@ -267,13 +268,21 @@ export const App: React.FC = () => {
   // Floating Toast
   const [toast, setToast] = useState<{
     msg: string
-    type: 'success' | 'info' | 'error'
+    type: 'success' | 'info' | 'error' | 'warning'
   } | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const showToast = useCallback(
-    (msg: string, type: 'success' | 'info' | 'error' = 'info') => {
+    (msg: string, type: 'success' | 'info' | 'error' | 'warning' = 'info') => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current)
+      }
       setToast({ msg, type })
-      setTimeout(() => setToast(null), 3000)
+      const duration = type === 'warning' || type === 'error' ? 4000 : 3000
+      toastTimerRef.current = setTimeout(() => {
+        setToast(null)
+        toastTimerRef.current = null
+      }, duration)
     },
     []
   )
@@ -866,9 +875,17 @@ export const App: React.FC = () => {
     }
     await runConfigAction('save-port', async () => {
       try {
-        await applyConfig({ listen_port: p, port: p })
-        setConfig((prev) => ({ ...prev, listen_port: p }))
-        showToast(isRunning ? `本地监听端口已切换为 ${p}，运行中的代理已热重载` : `本地监听端口已保存为 ${p}，下次启动代理时生效`, 'success')
+        const resp = await applyConfig({ listen_port: p, port: p })
+        if (resp.config) {
+          setConfig(resp.config)
+        } else {
+          setConfig((prev) => ({ ...prev, listen_port: p }))
+        }
+        if (resp.warnings && resp.warnings.length > 0) {
+          showToast(`本地监听端口已切换为 ${p}，但附带同步存在警告: ${resp.warnings.join('; ')}`, 'warning')
+        } else {
+          showToast(isRunning ? `本地监听端口已切换为 ${p}，运行中的代理已热重载` : `本地监听端口已保存为 ${p}，下次启动代理时生效`, 'success')
+        }
         loadState()
       } catch (e: any) {
         showToast(`保存端口失败: ${e.message}`, 'error')
@@ -879,10 +896,18 @@ export const App: React.FC = () => {
   const handleResetPort = async () => {
     await runConfigAction('reset-port', async () => {
       try {
-        await applyConfig({ listen_port: 8124, port: 8124 })
+        const resp = await applyConfig({ listen_port: 8124, port: 8124 })
         setPortInput('8124')
-        setConfig((prev) => ({ ...prev, listen_port: 8124 }))
-        showToast(isRunning ? '监听端口已恢复默认 (8124)，运行中的代理已热重载' : '监听端口已恢复默认 (8124)', 'info')
+        if (resp.config) {
+          setConfig(resp.config)
+        } else {
+          setConfig((prev) => ({ ...prev, listen_port: 8124 }))
+        }
+        if (resp.warnings && resp.warnings.length > 0) {
+          showToast(`监听端口已恢复默认 (8124)，但附带同步存在警告: ${resp.warnings.join('; ')}`, 'warning')
+        } else {
+          showToast(isRunning ? '监听端口已恢复默认 (8124)，运行中的代理已热重载' : '监听端口已恢复默认 (8124)', 'info')
+        }
         loadState()
       } catch (e: any) {
         showToast(`恢复端口失败: ${e.message}`, 'error')
@@ -895,9 +920,17 @@ export const App: React.FC = () => {
     const next = !current
     await runConfigAction('allow-lan', async () => {
       try {
-        await applyConfig({ allow_lan: next })
-        setConfig((prev) => ({ ...prev, allow_lan: next }))
-        showToast(next ? '允许局域网连接已开启 (绑定 0.0.0.0)' : '局域网连接已关闭', 'info')
+        const resp = await applyConfig({ allow_lan: next })
+        if (resp.config) {
+          setConfig(resp.config)
+        } else {
+          setConfig((prev) => ({ ...prev, allow_lan: next }))
+        }
+        if (resp.warnings && resp.warnings.length > 0) {
+          showToast(`局域网连接已切换，但附带同步存在警告: ${resp.warnings.join('; ')}`, 'warning')
+        } else {
+          showToast(next ? '允许局域网连接已开启 (绑定 0.0.0.0)' : '局域网连接已关闭', 'info')
+        }
         loadState()
       } catch (e: any) {
         showToast(`设置局域网共享失败: ${e.message}`, 'error')
@@ -910,9 +943,17 @@ export const App: React.FC = () => {
     const next = !current
     await runConfigAction('auto-pac', async () => {
       try {
-        await applyConfig({ auto_system_proxy: next, auto_pac: next })
-        setConfig((prev) => ({ ...prev, auto_system_proxy: next, auto_pac: next }))
-        showToast(next ? '自动配置系统 PAC 代理已开启' : '系统 PAC 代理已关闭', 'info')
+        const resp = await applyConfig({ auto_system_proxy: next, auto_pac: next })
+        if (resp.config) {
+          setConfig(resp.config)
+        } else {
+          setConfig((prev) => ({ ...prev, auto_system_proxy: next, auto_pac: next }))
+        }
+        if (resp.warnings && resp.warnings.length > 0) {
+          showToast(resp.warnings.join('; '), 'warning')
+        } else {
+          showToast(next ? '自动配置系统 PAC 代理已开启' : '系统 PAC 代理已关闭', 'info')
+        }
         loadState()
       } catch (e: any) {
         showToast(`设置系统 PAC 代理失败: ${e.message}`, 'error')
@@ -925,9 +966,17 @@ export const App: React.FC = () => {
     const next = !current
     await runConfigAction('auto-start', async () => {
       try {
-        await applyConfig({ auto_start: next })
-        setConfig((prev) => ({ ...prev, auto_start: next }))
-        showToast(next ? '开机自启已开启' : '开机自启已关闭', 'info')
+        const resp = await applyConfig({ auto_start: next })
+        if (resp.config) {
+          setConfig(resp.config)
+        } else {
+          setConfig((prev) => ({ ...prev, auto_start: next }))
+        }
+        if (resp.warnings && resp.warnings.length > 0) {
+          showToast(resp.warnings.join('; '), 'warning')
+        } else {
+          showToast(next ? '开机自启已开启' : '开机自启已关闭', 'info')
+        }
         loadState()
       } catch (e: any) {
         showToast(`设置开机自启失败: ${e.message}`, 'error')
@@ -1164,6 +1213,7 @@ export const App: React.FC = () => {
           <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
             {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
             {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
+            {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />}
             {toast.type === 'info' && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
             <span className="font-medium tracking-tight">{toast.msg}</span>
           </div>

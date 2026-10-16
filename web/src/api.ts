@@ -68,6 +68,7 @@ export interface ApplyConfigResponse {
   message?: string
   config?: Record<string, any>
   control_url?: string
+  warnings?: string[]
 }
 
 export async function applyConfig(patch: Record<string, any>): Promise<ApplyConfigResponse> {
