@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -880,6 +881,8 @@ func TestProxyRedirectTransparency(t *testing.T) {
 		t.Error("apiClient must NOT auto-follow redirect to /target; it must be returned as-is to the client")
 	}
 }
+
+var reVersioned = regexp.MustCompile(`/(?:assets(?:_(?:en|jp))?)/\d+/|/\d{8,}/`)
 
 func TestIsVersionedAssetPathEquivalence(t *testing.T) {
 	testCases := []string{

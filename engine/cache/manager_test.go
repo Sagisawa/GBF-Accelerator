@@ -477,10 +477,12 @@ func TestAuditAndSlimProgress(t *testing.T) {
 	}
 }
 
-func TestExtractNamespaceAndKey(t *testing.T) {
-	base := filepath.Join(string(filepath.Separator), "var", "cache")
+func TestResolveDiskFileOwner(t *testing.T) {
+	tempBase := t.TempDir()
 
+	// 1. Static path test cases (no .ext file on disk)
 	cases := []struct {
+		name        string
 		path        string
 		expectedNS  string
 		expectedKey string
@@ -488,43 +490,152 @@ func TestExtractNamespaceAndKey(t *testing.T) {
 		expectedOK  bool
 	}{
 		{
-			path:        filepath.Join(base, "assets", "sound.mp3"),
+			name:        "standard GBF asset",
+			path:        filepath.Join(tempBase, "assets", "sound.mp3"),
 			expectedNS:  "gbf",
 			expectedKey: "assets/sound.mp3",
 			expectedRAM: "assets/sound.mp3",
 			expectedOK:  true,
 		},
 		{
-			path:        filepath.Join(base, "hosts", "prd-game-a.example.com", "assets", "img.png"),
+			name:        "external host asset",
+			path:        filepath.Join(tempBase, "hosts", "prd-game-a.example.com", "assets", "img.png"),
 			expectedNS:  "prd-game-a.example.com",
 			expectedKey: "assets/img.png",
-			expectedRAM: "prd-game-a.example.com/assets/img.png",
+			expectedRAM: "prd-game-a.example.com\x00assets/img.png",
 			expectedOK:  true,
 		},
 		{
-			path:        filepath.Join(base, "hosts", "short"),
-			expectedNS:  "gbf",
-			expectedKey: "hosts/short",
-			expectedRAM: "hosts/short",
+			name:       "incomplete host path rejected",
+			path:       filepath.Join(tempBase, "hosts", "short"),
+			expectedOK: false,
+		},
+		{
+			name:       "path traversal outside base rejected",
+			path:       filepath.Join(tempBase, "..", "outside.png"),
+			expectedOK: false,
+		},
+		{
+			name:       "deep relative traversal rejected",
+			path:       filepath.Join(tempBase, "assets", "..", "..", "outside.png"),
+			expectedOK: false,
+		},
+		{
+			name:        "namespace with port sanitized",
+			path:        filepath.Join(tempBase, "hosts", "myhost.com_8080", "assets", "data.bin"),
+			expectedNS:  "myhost.com_8080",
+			expectedKey: "assets/data.bin",
+			expectedRAM: "myhost.com_8080\x00assets/data.bin",
 			expectedOK:  true,
 		},
 	}
 
 	for _, tc := range cases {
-		ns, cleanKey, ramKey, ok := extractNamespaceAndKey(base, tc.path)
-		if ok != tc.expectedOK {
-			t.Errorf("path %q: expected ok=%v, got %v", tc.path, tc.expectedOK, ok)
-		}
-		if ns != tc.expectedNS {
-			t.Errorf("path %q: expected ns=%q, got %q", tc.path, tc.expectedNS, ns)
-		}
-		if cleanKey != tc.expectedKey {
-			t.Errorf("path %q: expected cleanKey=%q, got %q", tc.path, tc.expectedKey, cleanKey)
-		}
-		if ramKey != tc.expectedRAM {
-			t.Errorf("path %q: expected ramKey=%q, got %q", tc.path, tc.expectedRAM, ramKey)
-		}
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ns, cleanKey, ramKey, ok := resolveDiskFileOwner(tempBase, tc.path)
+			if ok != tc.expectedOK {
+				t.Fatalf("path %q: expected ok=%v, got %v", tc.path, tc.expectedOK, ok)
+			}
+			if !tc.expectedOK {
+				return
+			}
+			if ns != tc.expectedNS {
+				t.Errorf("path %q: expected ns=%q, got %q", tc.path, tc.expectedNS, ns)
+			}
+			if cleanKey != tc.expectedKey {
+				t.Errorf("path %q: expected cleanKey=%q, got %q", tc.path, tc.expectedKey, cleanKey)
+			}
+			if ramKey != tc.expectedRAM {
+				t.Errorf("path %q: expected ramKey=%q, got %q", tc.path, tc.expectedRAM, ramKey)
+			}
+		})
 	}
+
+	// 2. Metadata (.ext file) behavior
+	t.Run("ext file overrides namespace to gbf", func(t *testing.T) {
+		assetPath := filepath.Join(tempBase, "hosts", "prd-game-a.example.com", "assets", "gbf_override.png")
+		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(assetPath, []byte("data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(assetPath+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(tempBase, assetPath)
+		if !ok {
+			t.Fatalf("expected ok=true, got false")
+		}
+		if ns != "gbf" {
+			t.Errorf("expected ns='gbf', got %q", ns)
+		}
+		expectedKey := "hosts/prd-game-a.example.com/assets/gbf_override.png"
+		if cleanKey != expectedKey {
+			t.Errorf("expected cleanKey=%q, got %q", expectedKey, cleanKey)
+		}
+		if ramKey != expectedKey {
+			t.Errorf("expected ramKey=%q, got %q", expectedKey, ramKey)
+		}
+	})
+
+	t.Run("ext file overrides namespace to custom host", func(t *testing.T) {
+		assetPath := filepath.Join(tempBase, "hosts", "alias.example.com", "assets", "custom_override.png")
+		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(assetPath, []byte("data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(assetPath+".ext", []byte(`{"v":1,"ns":"canonical.example.com"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(tempBase, assetPath)
+		if !ok {
+			t.Fatalf("expected ok=true, got false")
+		}
+		if ns != "canonical.example.com" {
+			t.Errorf("expected ns='canonical.example.com', got %q", ns)
+		}
+		if cleanKey != "assets/custom_override.png" {
+			t.Errorf("expected cleanKey='assets/custom_override.png', got %q", cleanKey)
+		}
+		expectedRAM := "canonical.example.com\x00assets/custom_override.png"
+		if ramKey != expectedRAM {
+			t.Errorf("expected ramKey=%q, got %q", expectedRAM, ramKey)
+		}
+	})
+
+	t.Run("ext file corrupted falls back to directory namespace", func(t *testing.T) {
+		assetPath := filepath.Join(tempBase, "hosts", "prd-game-a.example.com", "assets", "corrupted.png")
+		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(assetPath, []byte("data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(assetPath+".ext", []byte(`invalid json`), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(tempBase, assetPath)
+		if !ok {
+			t.Fatalf("expected ok=true, got false")
+		}
+		if ns != "prd-game-a.example.com" {
+			t.Errorf("expected ns='prd-game-a.example.com', got %q", ns)
+		}
+		if cleanKey != "assets/corrupted.png" {
+			t.Errorf("expected cleanKey='assets/corrupted.png', got %q", cleanKey)
+		}
+		expectedRAM := "prd-game-a.example.com\x00assets/corrupted.png"
+		if ramKey != expectedRAM {
+			t.Errorf("expected ramKey=%q, got %q", expectedRAM, ramKey)
+		}
+	})
 }
 
 func TestAuditAndRepairRAMCachePurge(t *testing.T) {
