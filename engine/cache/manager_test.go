@@ -171,6 +171,16 @@ func TestLegacyTamperedJSQuarantine(t *testing.T) {
 	if mgr.CheckAndQuarantineTamperedJS(origFile) {
 		t.Fatal("Must NOT quarantine original official script")
 	}
+
+	// 4. Verify negative case: official error reporter containing rest/error/js must never
+	// be quarantined, even when minified code contains a hollow function body.
+	officialErrContent := []byte(`Game.reportError=function(){};var u="rest/error/js";window.onerror=function(e){void 0};`)
+	officialErrFile := filepath.Join(tempDir, "official-error-reporter-set-error-handler.js")
+	_ = os.WriteFile(officialErrFile, officialErrContent, 0644)
+
+	if mgr.CheckAndQuarantineTamperedJS(officialErrFile) {
+		t.Fatal("Must NOT quarantine official error reporter containing rest/error/js")
+	}
 }
 
 func TestHasCacheAndAutoRepair(t *testing.T) {

@@ -142,8 +142,12 @@ func generateCA(certPath, keyPath string) (*x509.Certificate, *rsa.PrivateKey, [
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 
-	_ = os.WriteFile(certPath, certPEM, 0644)
-	_ = os.WriteFile(keyPath, keyPEM, 0600)
+	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to write CA certificate to %s: %w", certPath, err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to write CA private key to %s: %w", keyPath, err)
+	}
 
 	parsedCert, err := x509.ParseCertificate(certDER)
 	if err != nil {

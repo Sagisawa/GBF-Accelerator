@@ -1,6 +1,7 @@
 package cert
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/hex"
@@ -67,21 +68,40 @@ func (m *Manager) GetInstallStore() string {
 }
 
 func (m *Manager) Install(certsDir string) error {
+	explicitDir := certsDir != ""
 	if certsDir == "" {
 		if dir := m.GetCertsDir(); dir != "" {
 			certsDir = dir
 		} else {
 			certsDir = "certs"
 		}
-		caPath := filepath.Join(certsDir, "ca.crt")
+	}
+
+	caPath := filepath.Join(certsDir, "ca.crt")
+	caPEM := m.GetCAPEM()
+
+	// An explicitly supplied directory must already contain a certificate;
+	// never create one there implicitly.
+	if explicitDir {
 		if fi, err := os.Stat(caPath); err != nil || fi.Size() == 0 {
-			if caPEM := m.GetCAPEM(); len(caPEM) > 0 {
-				_ = os.MkdirAll(certsDir, 0755)
-				_ = os.WriteFile(caPath, caPEM, 0644)
+			return fmt.Errorf("ca.crt not found at %s", caPath)
+		}
+	}
+
+	// Keep the on-disk CA in sync with the in-memory signing CA. Installing a
+	// stale certificate would make leaf certificates unverifiable.
+	if len(caPEM) > 0 {
+		existing, readErr := os.ReadFile(caPath)
+		if readErr != nil || !bytes.Equal(existing, caPEM) {
+			if err := os.MkdirAll(certsDir, 0755); err != nil {
+				return fmt.Errorf("failed to create certs dir: %w", err)
+			}
+			if err := os.WriteFile(caPath, caPEM, 0644); err != nil {
+				return fmt.Errorf("failed to write ca.crt: %w", err)
 			}
 		}
 	}
-	caPath := filepath.Join(certsDir, "ca.crt")
+
 	if fi, err := os.Stat(caPath); err != nil || fi.Size() == 0 {
 		return fmt.Errorf("ca.crt not found at %s", caPath)
 	}

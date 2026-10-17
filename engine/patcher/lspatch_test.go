@@ -1,10 +1,12 @@
 package patcher
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -183,3 +185,31 @@ func TestExecuteLSPatchContext_NilContextAppliesDefaultTimeout(t *testing.T) {
 	}
 }
 
+func TestLSPatchOutputWriterConcurrentSafety(t *testing.T) {
+	var buf bytes.Buffer
+	w := &lockedWriter{w: &buf}
+
+	const goroutines = 8
+	const writesPerGoroutine = 200
+	payload := []byte("lspatch-output\n")
+
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < writesPerGoroutine; j++ {
+				if _, err := w.Write(payload); err != nil {
+					t.Errorf("concurrent write failed: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	want := goroutines * writesPerGoroutine * len(payload)
+	if buf.Len() != want {
+		t.Fatalf("expected %d bytes from concurrent writes, got %d", want, buf.Len())
+	}
+}

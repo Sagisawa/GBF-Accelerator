@@ -667,7 +667,9 @@ func (m *Manager) CheckAndQuarantineTamperedJS(filePath string) bool {
 
 	hasHollowed := reHollowedFunc.MatchString(rawText)
 	hasErrorSig := strings.Contains(rawLower, "error") || strings.Contains(rawLower, "onerror")
-	isMissingOriginal := !strings.Contains(rawText, "window.location.reload") && !strings.Contains(rawText, "alert(")
+	isMissingOriginal := !strings.Contains(rawText, "window.location.reload") &&
+		!strings.Contains(rawText, "alert(") &&
+		!strings.Contains(rawText, "rest/error/js")
 
 	if hasHollowed && hasErrorSig && isMissingOriginal {
 		ts := time.Now().Unix()
@@ -1593,6 +1595,9 @@ func (m *Manager) GetFallback(urlPath string) (*CacheItem, string) {
 				v2, _ := strconv.Atoi(versions[j])
 				return v1 > v2
 			})
+			if len(versions) > 3 {
+				versions = versions[:3]
+			}
 
 			for _, v := range versions {
 				candUrl := fmt.Sprintf("/%s/%s/%s", prefix, v, subpath)
@@ -2609,7 +2614,7 @@ func (m *Manager) Warmup(maxItems int) int {
 			return nil
 		}
 		info, err := d.Info()
-		if err != nil || info.Size() == 0 {
+		if err != nil || info.Size() == 0 || info.Size() > MaxDiskDirectReadSize {
 			return nil
 		}
 		candidates = append(candidates, warmupCandidate{

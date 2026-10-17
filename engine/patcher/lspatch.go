@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gbf-proxy/config"
@@ -499,12 +500,14 @@ func executeLSPatchWithContext(ctx context.Context, cfg *LSPatchConfig, baseApk 
 	var outBuf bytes.Buffer
 	if cfg.LogFn != nil {
 		lw := &lspatchLineWriter{logFn: cfg.LogFn}
-		cmd.Stdout = io.MultiWriter(&outBuf, lw)
-		cmd.Stderr = io.MultiWriter(&outBuf, lw)
+		sink := &lockedWriter{w: io.MultiWriter(&outBuf, lw)}
+		cmd.Stdout = sink
+		cmd.Stderr = sink
 		defer lw.Flush()
 	} else {
-		cmd.Stdout = &outBuf
-		cmd.Stderr = &outBuf
+		sink := &lockedWriter{w: &outBuf}
+		cmd.Stdout = sink
+		cmd.Stderr = sink
 	}
 
 	if err := cmd.Run(); err != nil {
@@ -532,6 +535,17 @@ func executeLSPatchWithContext(ctx context.Context, cfg *LSPatchConfig, baseApk 
 	}
 
 	return outputApks, nil
+}
+
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
 }
 
 type lspatchLineWriter struct {
