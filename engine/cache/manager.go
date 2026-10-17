@@ -1595,8 +1595,10 @@ func (m *Manager) GetFallback(urlPath string) (*CacheItem, string) {
 				v2, _ := strconv.Atoi(versions[j])
 				return v1 > v2
 			})
-			if len(versions) > 3 {
-				versions = versions[:3]
+			if len(versions) > DefaultVersionKeep {
+				// Match the default retention window so fallback never scans
+				// versions that cleanup would have removed.
+				versions = versions[:DefaultVersionKeep]
 			}
 
 			for _, v := range versions {
