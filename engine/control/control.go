@@ -1075,6 +1075,10 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if val, ok := patch["control_port"].(float64); ok && val > 0 && val < 65536 {
 		candidate.ControlPort = int(val)
 	}
+	if candidate.ListenPort == candidate.ControlPort {
+		c.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "listen_port and control_port must differ"})
+		return
+	}
 	if val, ok := patch["upstream_proxy"].(string); ok {
 		candidate.UpstreamProxy = strings.TrimSpace(val)
 	}
@@ -2596,6 +2600,10 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 		c.sseMu.Unlock()
 	}()
 
+	c.mu.RLock()
+	closedCh := c.closedChan
+	c.mu.RUnlock()
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -2603,7 +2611,7 @@ func (c *ControlServer) handleSSE(w http.ResponseWriter, req *http.Request) {
 		select {
 		case <-req.Context().Done():
 			return
-		case <-c.closedChan:
+		case <-closedCh:
 			return
 		case rawEvent, ok := <-sseCh:
 			if !ok {

@@ -41,8 +41,8 @@ var categoryMeta = map[string]struct {
 	Selectable  bool
 }{
 	CategoryVersioned: {
-		Label:       "游戏历史版本文件",
-		Description: "游戏每次更新后留下的旧版脚本与资源（清理时自动保留最新 8 个版本，不影响当前游玩）。",
+		Label:       "旧版 JS/CSS 脚本",
+		Description: "游戏更新后留下的旧版前端脚本，清理时保留最新 8 个版本，不影响当前游玩。",
 		Selectable:  false,
 	},
 	CategoryBattleCJS: {
@@ -51,13 +51,13 @@ var categoryMeta = map[string]struct {
 		Selectable:  true,
 	},
 	CategoryStory: {
-		Label:       "剧情与立绘漫画",
-		Description: "主线/活动剧情对话背景、人物立绘、支线与小剧场漫画（看过的剧情一般不再需要）。",
+		Label:       "剧情场景与漫画",
+		Description: "剧情场景图、支线剧情和小剧场漫画，不含通用角色立绘。",
 		Selectable:  true,
 	},
 	CategoryCoreUI: {
-		Label:       "常用界面与图标",
-		Description: "主页、编成、共斗、商店等每天高频使用的界面素材，清理后切页需重新下载。",
+		Label:       "常用界面、立绘与武器",
+		Description: "常用界面、图标，以及角色立绘、武器、召唤、道具等素材；清理后需重新下载。",
 		Selectable:  true,
 	},
 	CategoryEventGacha: {
