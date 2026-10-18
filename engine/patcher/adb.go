@@ -323,7 +323,13 @@ var knownBrowserCatalog = []knownBrowserDef{
 	{"com.huawei.browser", "华为系统浏览器", true, "系统 WebView · 支持"},
 }
 
-// ListDeviceBrowsers discovers all browser and SkyLeap packages on the target device.
+// companionBrowserCatalog lists GBF companion apps that embed a system WebView.
+// They are surfaced only when installed and are not recommended as standalone browsers.
+var companionBrowserCatalog = []knownBrowserDef{
+	{"com.watanuki.tarou", "Tarou · GBF 工具", true, "系统 WebView · GBF 工具"},
+}
+
+// ListDeviceBrowsers discovers all browser, SkyLeap, and installed WebView companion packages on the target device.
 func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 	if !IsValidAdbSerial(serial) {
 		return nil, fmt.Errorf("invalid adb device serial")
@@ -352,6 +358,12 @@ func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 		}
 	}
 
+	return buildDeviceBrowserList(installedMap, deviceInstalledPkgs), nil
+}
+
+// buildDeviceBrowserList classifies installed packages into supported WebView
+// browsers, unsupported standalone engines, and known browsers that are not installed.
+func buildDeviceBrowserList(installedMap map[string]bool, deviceInstalledPkgs []string) []InstalledBrowserApp {
 	seen := make(map[string]bool)
 	var results []InstalledBrowserApp
 
@@ -382,8 +394,11 @@ func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 		}
 	}
 
-	// 2. Known browsers installed on the device
-	for _, def := range knownBrowserCatalog {
+	// 2. Known browsers and installed-only companion apps on the device
+	installedCatalog := make([]knownBrowserDef, 0, len(knownBrowserCatalog)+len(companionBrowserCatalog))
+	installedCatalog = append(installedCatalog, knownBrowserCatalog...)
+	installedCatalog = append(installedCatalog, companionBrowserCatalog...)
+	for _, def := range installedCatalog {
 		if installedMap[def.pkg] && !seen[def.pkg] {
 			statusTag := "系统 WebView · 已安装"
 			if !def.isSystemWebView {
@@ -441,7 +456,7 @@ func ListDeviceBrowsers(adbPath, serial string) ([]InstalledBrowserApp, error) {
 		}
 	}
 
-	return results, nil
+	return results
 }
 
 // PullDeviceApp pulls all APK parts of a package from the device into targetDir.
