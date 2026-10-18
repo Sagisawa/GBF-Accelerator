@@ -8,7 +8,7 @@ GBF Accelerator 各版本的更新记录与 Release 说明。
 
 | 版本 | 发布日期 | 主要亮点 | 详细说明 |
 | :--- | :--- | :--- | :--- |
-| **v2.5.0** | 2026-10-18 | 磁盘素材分类明细扫描与清理、Android太郎伴生支持及传输安全加固 | [v2.5.0 Notes](docs/releases/v2.5.0.md) |
+| **v2.5.0** | 2026-10-18 | 磁盘素材分类明细扫描与清理、Android太郎浏览器Patch页面识别支持、DMM域名规则生态补充、传输安全加固 | [v2.5.0 Notes](docs/releases/v2.5.0.md) |
 | **v2.4.2** | 2026-10-06 | 所罗门的贤者（肉鸽模式）下图裂修复 | [v2.4.2 Notes](docs/releases/v2.4.2.md) |
 | **v2.4.1** | 2026-10-03 | **一键系统健康体检与自愈、macOS 状态栏菜单、游戏数据智能预取与 Android 控制台精简** | [v2.4.1 Notes](docs/releases/v2.4.1.md) |
 | **v2.4.0** | 2026-10-01 | **传输架构代际跃迁、Stream-Through 流式边下边传与 Android 重新修补** | [v2.4.0 Notes](docs/releases/v2.4.0.md) |
