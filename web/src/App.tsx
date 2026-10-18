@@ -415,7 +415,7 @@ export const App: React.FC = () => {
             if (!data?.tag_name) return
             const latest = data.tag_name.replace(/^v/, '').trim()
             fetchStatus().then((cur) => {
-              const current = (cur?.version || '2.4.2').replace(/^v/, '').trim()
+              const current = (cur?.version || '2.5.0').replace(/^v/, '').trim()
               if (latest && isNewerVersion(latest, current)) {
                 setUpdateInfo({ available: true, version: latest })
               }
@@ -1243,7 +1243,7 @@ export const App: React.FC = () => {
                     碧蓝幻想 GBF-Accelerator
                   </span>
                   <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                    v{status?.version || '2.4.2'}
+                    v{status?.version || '2.5.0'}
                   </span>
                   {updateInfo?.available && (
                     <button
@@ -2440,7 +2440,7 @@ export const App: React.FC = () => {
       <UpdateModal
         isOpen={isUpdateModalOpen}
         onClose={() => setIsUpdateModalOpen(false)}
-        currentVersion={status?.version || '2.4.2'}
+        currentVersion={status?.version || '2.5.0'}
       />
 
       <LiveLogsWindow
