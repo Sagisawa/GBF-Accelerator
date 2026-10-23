@@ -38,6 +38,7 @@ import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
 import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal'
 import { HealthCheckModal } from './components/modals/HealthCheckModal'
 import { AndroidPatchPanel } from './components/AndroidPatchPanel'
+import { useI18n } from './i18n'
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { isNewerVersion } from './utils/version'
@@ -83,6 +84,7 @@ const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ ba
 }
 
 const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: boolean }> = ({ status, running }) => {
+  const { t } = useI18n()
   const [counts, setCounts] = useState(() => ({
     totalHits: running ? (status?.requests?.total_hits ?? 0) : 0,
     ramHits: running ? (status?.requests?.ram_hits ?? 0) : 0,
@@ -122,7 +124,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">⚡</span> 本地缓存命中
+            <span className="text-sm sm:text-base">⚡</span> {t('hud.totalHits')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
             <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 font-mono tnum leading-tight">
@@ -130,7 +132,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
             </span>
             {counts.ramHits > 0 && (
               <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
-                RAM {counts.ramHits.toLocaleString()}
+                {t('hud.ramHits', { count: counts.ramHits.toLocaleString() })}
               </span>
             )}
           </div>
@@ -140,7 +142,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">📥</span> 远程下载缓存
+            <span className="text-sm sm:text-base">📥</span> {t('hud.remoteDownloads')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
             <span className="text-2xl sm:text-3xl font-extrabold text-sky-600 font-mono tnum leading-tight">
@@ -153,7 +155,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">🔄</span> 游戏 API 转发
+            <span className="text-sm sm:text-base">🔄</span> {t('hud.apiForwarding')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
             <span className="text-2xl sm:text-3xl font-extrabold text-slate-800 font-mono tnum leading-tight">
@@ -167,6 +169,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
 }
 
 export const App: React.FC = () => {
+  const { language, setLanguage, t } = useI18n()
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
   const [upstreamRuntime, setUpstreamRuntime] = useState<UpstreamRuntimeStatus | null>(null)
@@ -257,9 +260,9 @@ export const App: React.FC = () => {
       await quitApp()
       setIsQuitModalOpen(false)
       setIsTerminated(true)
-      showToast('加速器后台已安全退出，端口已释放。您可以直接关闭此标签页。', 'success')
+      showToast(t('header.quitSuccess'), 'success')
     } catch (err: any) {
-      showToast(err?.message || '退出失败', 'error')
+      showToast(err?.message || t('header.quitFailed'), 'error')
     } finally {
       setQuitting(false)
     }
@@ -329,6 +332,7 @@ export const App: React.FC = () => {
         setFailoverNotificationInput(Boolean(c.value.upstream_failover_notification ?? true))
         if (c.value.listen_port) setPortInput(String(c.value.listen_port))
         if (c.value.ram_cache_max_mb) setRamMbInput(String(c.value.ram_cache_max_mb))
+        if (c.value.language) setLanguage(c.value.language, false)
       }
       if (cs.status === 'fulfilled') setCacheStats(cs.value)
       if (us.status === 'fulfilled') setUpstreamRuntime(us.value)
@@ -336,7 +340,7 @@ export const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to fetch initial state', e)
     }
-  }, [])
+  }, [setLanguage])
 
   useEffect(() => {
     loadState()
@@ -1176,7 +1180,6 @@ export const App: React.FC = () => {
   const caFingerprint = status?.ca_fingerprint || status?.ca_thumbprint || ''
 
   const currentListenPort = config.listen_port ?? status?.listen_port ?? 8124
-  const currentControlPort = config.control_port ?? status?.control_port ?? 8125
   const ramUsageMb = Math.round(cacheStats?.ram_mb ?? (status?.cache?.ram_mb ?? 0))
   const ramMaxMb = config.ram_cache_max_mb ?? 256
 
@@ -1224,7 +1227,7 @@ export const App: React.FC = () => {
       {isTerminated && (
         <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200">
           <span>🛑</span>
-          <span>GBF-Accelerator 后台服务已安全退出，端口 8124 与 8125 已释放。您可以随时关闭此网页标签。</span>
+          <span>{t('header.terminatedNotice')}</span>
         </div>
       )}
 
@@ -1240,7 +1243,7 @@ export const App: React.FC = () => {
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-2.5 flex-wrap">
                   <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
-                    碧蓝幻想 GBF-Accelerator
+                    {t('header.title')}
                   </span>
                   <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
                     v{status?.version || '2.5.0'}
@@ -1252,7 +1255,7 @@ export const App: React.FC = () => {
                       className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
                     >
                       <span className="text-sm">🔥</span>
-                      <span>发现新版 v{updateInfo.version}</span>
+                      <span>{t('header.updateFound', { version: updateInfo.version })}</span>
                     </button>
                   )}
                 </div>
@@ -1260,14 +1263,14 @@ export const App: React.FC = () => {
                   <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
                     <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
                     <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
-                      {isRunning ? `运行中 (监听端口 ${currentListenPort})` : '已停止'}
+                      {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
                     </span>
                   </span>
                   {isRunning && (
                     <>
                       <span className="text-slate-300">·</span>
                       <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
-                        <span className="text-slate-400">已运行:</span>
+                        <span className="text-slate-400">{t('header.uptime')}</span>
                         <span className="font-semibold text-slate-700">
                           <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
                         </span>
@@ -1278,29 +1281,66 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Top Right Master Start / Stop Action Button & Quit Button */}
-            <div className="flex items-center gap-2 sm:gap-2.5">
+            {/* Top Right Master Start / Stop Action Button, Quit Button & Language Switcher */}
+            <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
+              {/* Language Switcher Capsule */}
+              <div className="inline-flex items-center rounded-xl bg-slate-100 p-0.5 border border-slate-200/90 text-xs font-semibold shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setLanguage('zh')}
+                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
+                    language === 'zh'
+                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  简中
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLanguage('en')}
+                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
+                    language === 'en'
+                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  EN
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLanguage('ja')}
+                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
+                    language === 'ja'
+                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  日本語
+                </button>
+              </div>
+
               <button
                 type="button"
                 disabled={loadingProxy || isTerminated}
                 onClick={handleToggleProxy}
-                className={`min-w-[110px] px-5 py-2.5 rounded-xl text-sm sm:text-base font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] ${
+                className={`min-w-[100px] sm:min-w-[110px] px-4 sm:px-5 py-2.5 rounded-xl text-sm sm:text-base font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] ${
                   isRunning
                     ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
                     : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
                 }`}
               >
-                {loadingProxy ? '处理中...' : isRunning ? '停止加速' : '启动加速'}
+                {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
               </button>
               <button
                 type="button"
                 disabled={isTerminated}
                 onClick={() => setIsQuitModalOpen(true)}
                 className="px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs"
-                title="彻底退出 GBF 加速器后台服务 (释放 8124 与 8125 端口)"
+                title={t('header.quitAppTip')}
               >
                 <Power className="w-4 h-4 text-rose-500" />
-                <span>彻底退出</span>
+                <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
               </button>
             </div>
           </div>
@@ -1323,7 +1363,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Zap className="w-4 h-4" />
-            <span>核心加速与控制</span>
+            <span>{t('tabs.core')}</span>
           </button>
           {showAndroidPatch && (
             <button
@@ -1336,7 +1376,7 @@ export const App: React.FC = () => {
               }`}
             >
               <Smartphone className="w-4 h-4" />
-              <span>Android 浏览器 Patch</span>
+              <span>{t('tabs.android')}</span>
             </button>
           )}
         </div>
@@ -1354,7 +1394,7 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-lg">📁</span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    本地缓存与存储管理
+                    {t('cards.cache.title')}
                   </h2>
                 </div>
                 <span className="text-xs text-emerald-700 font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200/60">
@@ -1389,7 +1429,7 @@ export const App: React.FC = () => {
                       aria-busy={isActionLoading('save-cache-dir')}
                       className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
                     >
-                      {isActionLoading('save-cache-dir') ? '保存中...' : '保存'}
+                      {isActionLoading('save-cache-dir') ? t('common.saving') : t('common.save')}
                     </button>
                     {!isAndroid && (
                       <button
@@ -1399,7 +1439,7 @@ export const App: React.FC = () => {
                         aria-busy={loadingBrowse}
                         className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
                       >
-                        {loadingBrowse ? '正在打开...' : '浏览...'}
+                        {loadingBrowse ? t('common.loading') : t('common.browse')}
                       </button>
                     )}
                   </div>
@@ -1411,7 +1451,7 @@ export const App: React.FC = () => {
                         disabled={loadingOpenFolder}
                         className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
                       >
-                        {loadingOpenFolder ? '打开中...' : '打开目录'}
+                        {loadingOpenFolder ? t('common.loading') : t('common.openFolder')}
                       </button>
                       <button
                         type="button"
@@ -1420,7 +1460,7 @@ export const App: React.FC = () => {
                         aria-busy={isActionLoading('detect-acgp')}
                         className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
                       >
-                        {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
+                        {isActionLoading('detect-acgp') ? t('common.loading') : '检测 ACGP'}
                       </button>
                     </div>
                   )}
@@ -1544,7 +1584,7 @@ export const App: React.FC = () => {
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
                     <span>🩺</span>
-                    <span>一键体检缓存</span>
+                    <span>{t('cards.cache.auditCache')}</span>
                   </button>
                   <button
                     type="button"
@@ -1552,7 +1592,7 @@ export const App: React.FC = () => {
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
                     <span>🧹</span>
-                    <span>缓存清理与瘦身</span>
+                    <span>{t('cards.cache.clearCache')}</span>
                   </button>
                 </div>
               </div>
@@ -1567,7 +1607,7 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-lg">🌐</span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    上游网络代理与分流
+                    {t('cards.upstream.title')}
                   </h2>
                 </div>
                 <span className="text-xs text-sky-700 font-semibold px-2.5 py-0.5 rounded-full bg-sky-50 border border-sky-200/60">
@@ -1578,7 +1618,7 @@ export const App: React.FC = () => {
               {/* Upstream Proxy */}
               <div className="space-y-1.5">
                 <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
-                  上游网络代理（Clash Verge / Clash / V2ray / 岛风GO 等）：
+                  {t('cards.upstream.upstreamLabel')}
                 </label>
                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                   <input
@@ -1594,7 +1634,7 @@ export const App: React.FC = () => {
                     onClick={handleSaveUpstream}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
                   >
-                    {isActionLoading('save-upstream') ? '保存中...' : '确认'}
+                    {isActionLoading('save-upstream') ? t('common.saving') : t('common.save')}
                   </button>
                   <button
                     type="button"
@@ -1603,7 +1643,7 @@ export const App: React.FC = () => {
                     onClick={handleProbeUpstream}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
                   >
-                    {isActionLoading('probe-upstream') ? '探测中...' : '自动探测'}
+                    {isActionLoading('probe-upstream') ? t('common.loading') : t('cards.upstream.autoDetect')}
                   </button>
                 </div>
               </div>
@@ -1890,7 +1930,7 @@ export const App: React.FC = () => {
                     aria-busy={isActionLoading('save-port')}
                     className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                   >
-                    {isActionLoading('save-port') ? '保存中...' : '保存配置'}
+                    {isActionLoading('save-port') ? t('common.saving') : t('cards.network.savePort')}
                   </button>
                   <button
                     type="button"
@@ -1899,7 +1939,7 @@ export const App: React.FC = () => {
                     aria-busy={isActionLoading('reset-port')}
                     className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/80 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                   >
-                    {isActionLoading('reset-port') ? '恢复中...' : '恢复默认 (8124)'}
+                    {isActionLoading('reset-port') ? t('common.loading') : t('cards.network.resetDefault')}
                   </button>
                 </div>
 
@@ -1913,7 +1953,7 @@ export const App: React.FC = () => {
                         disabled={Boolean(loadingAction)}
                         className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                       />
-                      <span>允许局域网连接 (Allow LAN)</span>
+                      <span>{t('cards.network.allowLan')}</span>
                     </label>
                     <button
                       type="button"
@@ -1921,7 +1961,7 @@ export const App: React.FC = () => {
                       className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
                     >
                       <span>📱</span>
-                      <span>移动端/iOS 连接指引...</span>
+                      <span>{t('cards.network.mobileGuide')}</span>
                     </button>
                   </div>
                   {isAllowLan && (
@@ -1943,7 +1983,7 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-lg">🛡️</span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    HTTPS 根证书与系统集成
+                    {t('cards.network.certTitle')}
                   </h2>
                 </div>
                 <span
@@ -1955,7 +1995,7 @@ export const App: React.FC = () => {
                         : 'bg-rose-50 text-rose-700 border-rose-200/60'
                   }`}
                 >
-                  {!caStatusKnown ? '检查中' : isCaInstalled ? '已信任' : '未安装'}
+                  {!caStatusKnown ? '检查中' : isCaInstalled ? t('cards.network.certInstalled') : t('cards.network.certNotInstalled')}
                 </span>
               </div>
 
@@ -1965,7 +2005,7 @@ export const App: React.FC = () => {
                   <span className="text-[13px] sm:text-sm text-slate-700 font-medium">
                     证书状态：
                     <strong className={!caStatusKnown ? 'text-slate-500 ml-1' : isCaInstalled ? 'text-emerald-700 ml-1' : 'text-rose-600 ml-1'}>
-                      {!caStatusKnown ? '检查中...' : isCaInstalled ? '已信任 (正常解析)' : '未安装信任'}
+                      {!caStatusKnown ? '检查中...' : isCaInstalled ? t('cards.network.certInstalled') : t('cards.network.certNotInstalled')}
                     </strong>
                   </span>
                   <div className="flex items-center gap-2">
@@ -1974,14 +2014,14 @@ export const App: React.FC = () => {
                       onClick={() => setCaModalAction('install')}
                       className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                     >
-                      一键安装/修复根证书
+                      {t('cards.network.certInstallBtn')}
                     </button>
                     <button
                       type="button"
                       onClick={() => setCaModalAction('uninstall')}
                       className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                     >
-                      一键注销/卸载根证书
+                      {t('cards.network.certUninstallBtn')}
                     </button>
                   </div>
                 </div>
@@ -2050,7 +2090,7 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-lg">⚡</span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    性能加速与调度优化
+                    {t('cards.optim.title')}
                   </h2>
                 </div>
                 <span className="text-xs text-amber-800 font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200/60">
@@ -2069,7 +2109,7 @@ export const App: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
-                      启用资源预加载 - 解析场景 JS 引用的素材并后台预热，首次进新副本/活动更流畅
+                      {t('cards.optim.prefetch')}
                     </span>
                   </label>
                 </div>
@@ -2084,7 +2124,7 @@ export const App: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
-                      启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认开启）
+                      {t('cards.optim.browserCache')}
                     </span>
                   </label>
                 </div>
@@ -2109,7 +2149,7 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-2.5">
               <span className="w-2.5 h-2.5 rounded-full bg-sky-500 animate-pulse shrink-0" />
               <h3 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                加速效能与网络态势
+                {t('telemetry.title')}
               </h3>
               <span className="text-xs text-slate-400 font-mono hidden sm:inline">
                 ENGINE TELEMETRY
@@ -2270,7 +2310,7 @@ export const App: React.FC = () => {
             className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">📁</span>
-            <span>{loadingOpenFolder ? '打开中...' : '缓存目录'}</span>
+            <span>{loadingOpenFolder ? t('common.loading') : t('common.openFolder')}</span>
           </button>
 
           <button
@@ -2279,7 +2319,7 @@ export const App: React.FC = () => {
             className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">🗑</span>
-            <span>清空缓存</span>
+            <span>{t('cards.cache.clearCache')}</span>
           </button>
 
           <button
@@ -2288,7 +2328,7 @@ export const App: React.FC = () => {
             className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">🌐</span>
-            <span>分流说明</span>
+            <span>{t('footer.routingTips')}</span>
           </button>
 
           <a
@@ -2307,7 +2347,7 @@ export const App: React.FC = () => {
             className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">🔄</span>
-            <span>检查更新</span>
+            <span>{t('footer.checkUpdate')}</span>
           </button>
 
           <button
@@ -2316,7 +2356,7 @@ export const App: React.FC = () => {
             className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">📶</span>
-            <span>延迟测试</span>
+            <span>{t('cards.upstream.latencyTest')}</span>
           </button>
 
           <button
@@ -2325,7 +2365,7 @@ export const App: React.FC = () => {
             className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">🩺</span>
-            <span>运行自检</span>
+            <span>{t('footer.diagnostics')}</span>
           </button>
 
           <button
@@ -2334,7 +2374,7 @@ export const App: React.FC = () => {
             className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">📜</span>
-            <span>实时日志</span>
+            <span>{t('footer.liveLogs')}</span>
           </button>
         </div>
       </footer>
@@ -2459,26 +2499,18 @@ export const App: React.FC = () => {
         title={
           <div className="flex items-center gap-2 text-rose-600 font-bold text-base">
             <Power className="w-5 h-5" />
-            <span>确认彻底退出 GBF 加速器？</span>
+            <span>{t('quitModal.title')}</span>
           </div>
         }
-        subtitle="终止后台代理与管理服务"
+        subtitle={t('quitModal.desc')}
         maxWidth="max-w-md"
       >
         <div className="space-y-4 text-xs sm:text-sm text-slate-600">
-          <div className="p-3.5 bg-rose-50/80 border border-rose-200/80 rounded-xl space-y-2 text-rose-900">
-            <p className="font-semibold text-xs sm:text-sm">
-              退出后将完全关闭代理与后台管理服务：
+          <div className="p-3.5 bg-rose-50/80 border border-rose-200/80 rounded-xl space-y-2 text-rose-900 leading-relaxed">
+            <p className="text-xs sm:text-sm">
+              {t('quitModal.warning')}
             </p>
-            <ul className="list-disc list-inside space-y-1 text-xs text-rose-800">
-              <li>释放数据代理端口 <strong>{currentListenPort}</strong></li>
-              <li>释放 Web 控制台端口 <strong>{currentControlPort}</strong></li>
-              <li>安全回写内存缓存数据至磁盘</li>
-            </ul>
           </div>
-          <p className="text-slate-500 text-xs leading-relaxed">
-            如需再次使用，需在电脑桌面或终端重新启动程序。
-          </p>
           <div className="pt-2 flex justify-end gap-2.5 border-t border-slate-100">
             <button
               type="button"
@@ -2486,7 +2518,7 @@ export const App: React.FC = () => {
               onClick={() => setIsQuitModalOpen(false)}
               className="px-4 py-2 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 transition-all cursor-pointer"
             >
-              取消
+              {t('quitModal.cancel')}
             </button>
             <button
               type="button"
@@ -2495,7 +2527,7 @@ export const App: React.FC = () => {
               className="px-5 py-2 rounded-xl text-xs sm:text-sm font-bold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
             >
               <Power className="w-4 h-4" />
-              <span>{quitting ? '正在退出...' : '确认彻底退出'}</span>
+              <span>{quitting ? t('common.processing') : t('quitModal.confirm')}</span>
             </button>
           </div>
         </div>

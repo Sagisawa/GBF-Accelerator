@@ -58,6 +58,10 @@ func (a *appController) GetCacheDir() string {
 	return a.cfgMgr.Get().CacheDir
 }
 
+func (a *appController) GetLanguage() string {
+	return a.cfgMgr.Get().Language
+}
+
 func (a *appController) OpenBrowser(url string) error {
 	return desktop.OpenBrowser(url)
 }

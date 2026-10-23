@@ -23,6 +23,7 @@ import {
 } from '../../api'
 import { UpdateDownloadStatus } from '../../types'
 import { isNewerVersion } from '../../utils/version'
+import { useI18n } from '../../i18n'
 
 export interface UpdateModalProps {
   isOpen: boolean
@@ -195,6 +196,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
   currentVersion = '2.5.0',
   onUpdateSuccess,
 }) => {
+  const { t } = useI18n()
   const [checking, setChecking] = useState(false)
   const [hasChecked, setHasChecked] = useState(false)
   const [checkError, setCheckError] = useState<string | null>(null)
@@ -483,10 +485,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           <div className="w-8 h-8 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center border border-sky-200/60">
             <ArrowUpCircle className="w-5 h-5" />
           </div>
-          <span className="text-base sm:text-lg font-bold text-slate-900">软件版本检查与更新</span>
+          <span className="text-base sm:text-lg font-bold text-slate-900">{t('modals.update.title')}</span>
         </div>
       }
-      subtitle="对比本地引擎版本与 GitHub Releases 最新正式发布"
+      subtitle={t('modals.update.subtitle')}
       maxWidth="max-w-[760px]"
     >
       <div className="space-y-4 text-sm text-slate-700">

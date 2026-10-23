@@ -2,6 +2,7 @@ import React from 'react'
 import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { Keyboard, ShieldCheck } from 'lucide-react'
+import { useI18n } from '../../i18n'
 
 export interface ShortcutsModalProps {
   isOpen: boolean
@@ -9,13 +10,14 @@ export interface ShortcutsModalProps {
 }
 
 export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose }) => {
+  const { t } = useI18n()
   const shortcuts = [
-    { key: 'Space', desc: '启动 / 停止代理服务' },
-    { key: 'L', desc: '展开 / 收起实时日志终端' },
-    { key: 'D', desc: '切换直连模式 (Direct Mode)' },
-    { key: 'C', desc: '呼出清空缓存 (RAM / 磁盘) 窗口' },
-    { key: '?', desc: '打开此快捷键速查面板' },
-    { key: 'Esc', desc: '关闭当前展开的弹窗或抽屉' },
+    { key: 'Space', desc: t('modals.shortcuts.toggleProxy') },
+    { key: 'L', desc: t('modals.shortcuts.toggleLogs') },
+    { key: 'D', desc: t('modals.shortcuts.toggleDirect') },
+    { key: 'C', desc: t('modals.shortcuts.clearCache') },
+    { key: '?', desc: t('modals.shortcuts.shortcuts') },
+    { key: 'Esc', desc: t('modals.shortcuts.closeAll') },
   ]
 
   return (
@@ -25,7 +27,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
       title={
         <div className="flex items-center gap-2">
           <Keyboard className="w-4 h-4 text-blue-600" />
-          <span>键盘快捷键速查</span>
+          <span>{t('modals.shortcuts.title')}</span>
         </div>
       }
       subtitle="全局单键快速中控操作 (打字时自动屏蔽防误触)"
@@ -53,7 +55,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
 
         <div className="flex justify-end pt-1">
           <Button variant="desktop" size="sm" onClick={onClose}>
-            关闭 (Esc)
+            {t('common.close')} (Esc)
           </Button>
         </div>
       </div>

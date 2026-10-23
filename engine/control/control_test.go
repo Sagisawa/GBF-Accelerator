@@ -2117,6 +2117,60 @@ func TestControlServer_ConfigFailoverNotification(t *testing.T) {
 	}
 }
 
+func TestControlServer_LanguageConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	cfgMgr := config.NewManager(cfgPath)
+	stats := telemetry.NewStats()
+	ctrl := NewControlServer(cfgMgr, nil, nil, nil, stats)
+
+	// 1. GET /api/config: verify default language is "zh"
+	reqGet := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	reqGet.Host = "127.0.0.1:8125"
+	reqGet.RemoteAddr = "127.0.0.1:12345"
+	wGet := httptest.NewRecorder()
+	ctrl.handleRoute(wGet, reqGet)
+	if wGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/config, got %d", wGet.Code)
+	}
+	var getResp struct {
+		OK     bool          `json:"ok"`
+		Config config.Config `json:"config"`
+	}
+	if err := json.Unmarshal(wGet.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("failed to decode /api/config: %v", err)
+	}
+	if getResp.Config.Language != "zh" {
+		t.Fatalf("expected default language 'zh', got %q", getResp.Config.Language)
+	}
+
+	// 2. POST /api/config/apply: set language = "en"
+	reqApply := httptest.NewRequest(http.MethodPost, "/api/config/apply", strings.NewReader(`{"language": "en"}`))
+	reqApply.Host = "127.0.0.1:8125"
+	reqApply.RemoteAddr = "127.0.0.1:12345"
+	wApply := httptest.NewRecorder()
+	ctrl.handleRoute(wApply, reqApply)
+	if wApply.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/config/apply, got %d: %s", wApply.Code, wApply.Body.String())
+	}
+	if cfgMgr.Get().Language != "en" {
+		t.Fatalf("expected cfgMgr language to be 'en', got %q", cfgMgr.Get().Language)
+	}
+
+	// 3. POST /api/config/apply: set language = "ja"
+	reqApply2 := httptest.NewRequest(http.MethodPost, "/api/config/apply", strings.NewReader(`{"language": "ja"}`))
+	reqApply2.Host = "127.0.0.1:8125"
+	reqApply2.RemoteAddr = "127.0.0.1:12345"
+	wApply2 := httptest.NewRecorder()
+	ctrl.handleRoute(wApply2, reqApply2)
+	if wApply2.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/config/apply, got %d", wApply2.Code)
+	}
+	if cfgMgr.Get().Language != "ja" {
+		t.Fatalf("expected cfgMgr language to be 'ja', got %q", cfgMgr.Get().Language)
+	}
+}
+
 func TestControlServer_ApplyConfig_PACFailure_DoesNotRollbackNetwork(t *testing.T) {
 	tempDir := t.TempDir()
 	cfgPath := filepath.Join(tempDir, "config.json")

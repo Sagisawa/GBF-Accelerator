@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { ShieldCheck, CheckCircle2, Sparkles } from 'lucide-react'
+import { useI18n } from '../../i18n'
 
 export interface ShimakazeSuggestModalProps {
   isOpen: boolean
@@ -16,6 +17,7 @@ export const ShimakazeSuggestModal: React.FC<ShimakazeSuggestModalProps> = ({
   onEnable,
   targetName,
 }) => {
+  const { t } = useI18n()
   const [loading, setLoading] = useState(false)
 
   const isAcgp = Boolean(targetName?.includes('8123') || targetName?.toLowerCase().includes('acgpower'))
@@ -95,7 +97,7 @@ export const ShimakazeSuggestModal: React.FC<ShimakazeSuggestModalProps> = ({
             onClick={onClose}
             disabled={loading}
           >
-            暂不启用
+            {t('modals.shimakazeSuggest.ignoreBtn')}
           </Button>
           <Button
             variant="primary"
@@ -103,7 +105,7 @@ export const ShimakazeSuggestModal: React.FC<ShimakazeSuggestModalProps> = ({
             onClick={handleConfirm}
             loading={loading}
           >
-            立即启用
+            {t('modals.shimakazeSuggest.enableBtn')}
           </Button>
         </div>
       </div>

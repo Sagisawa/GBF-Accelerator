@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
+import { useI18n } from '../../i18n'
 import {
   Trash2,
   Cpu,
@@ -107,6 +108,15 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
   onRefresh,
   onToast,
 }) => {
+  const { t } = useI18n()
+  const getCategoryLabel = useCallback(
+    (category: string, defaultLabel: string) => {
+      const key = `modals.clearCache.categories.${category}`
+      const val = t(key)
+      return val !== key ? val : defaultLabel
+    },
+    [t]
+  )
   const [activeTab, setActiveTab] = useState<'breakdown' | 'reset'>('breakdown')
 
   // Breakdown & Task State
@@ -480,10 +490,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Layers className="w-4 h-4 text-sky-600" />
-          <span>缓存清理与瘦身</span>
+          <span>{t('modals.clearCache.title')}</span>
         </div>
       }
-      subtitle="查看各类型缓存占用，按需清理过期版本、剧情语音或清空内存缓存"
+      subtitle={t('modals.clearCache.subtitle')}
       maxWidth="max-w-3xl"
     >
       <div className="space-y-3.5 text-xs text-slate-700">
@@ -496,7 +506,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 {isScanning ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">
                     <RefreshCw className="w-3 h-3 animate-spin" />
-                    后台扫描中...
+                    {t('modals.clearCache.backgroundScanning')}
                   </span>
                 ) : !snapshot ? (
                   <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-medium">
@@ -510,7 +520,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 ) : (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">
                     <CheckCircle2 className="w-3 h-3" />
-                    有效快照 ({formatTimestamp(snapshot.completed_at_ms)})
+                    {t('modals.clearCache.validSnapshot')} ({formatTimestamp(snapshot.completed_at_ms)})
                   </span>
                 )}
               </div>
@@ -548,7 +558,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   onClick={handleStartScan}
                   icon={<RefreshCw className="w-3 h-3" />}
                 >
-                  {snapshot ? '重新扫描磁盘' : '开始扫描缓存'}
+                  {snapshot ? t('modals.clearCache.rescanDisk') : '开始扫描缓存'}
                 </Button>
               )}
             </div>
@@ -582,7 +592,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   }`}
                 />
                 <span>
-                  {scanOutcomeStatus === 'failed' ? '分类扫描失败：' : '分类扫描已取消：'}
+                  {scanOutcomeStatus === 'failed' ? t('modals.clearCache.scanFailed') : '分类扫描已取消：'}
                   {scanOutcomeMessage || (scanOutcomeStatus === 'failed' ? '分类扫描未完成' : '任务已取消')}
                 </span>
               </div>
@@ -606,7 +616,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           {isSlimming && (
             <div className="p-2.5 bg-blue-50 border border-blue-200 rounded text-[11px] text-blue-900 flex items-center justify-between flex-wrap gap-2 font-mono">
               <span>
-                正在清理历史版本目录: <strong>{slimProgress?.current_idx ?? 0} / {slimProgress?.total_dirs ?? 0}</strong>
+                {t('modals.clearCache.slimmingProgress')} <strong>{slimProgress?.current_idx ?? 0} / {slimProgress?.total_dirs ?? 0}</strong>
               </span>
               <span>
                 已清理: <strong>{slimProgress?.deleted_files ?? 0}</strong> 个文件 (
@@ -697,7 +707,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                       ? '最近一次版本清理部分完成（含失败项）'
                       : taskStatus.last_slim_result.cancelled
                         ? '最近一次版本清理已取消'
-                        : '最近一次版本清理完成'}
+                        : t('modals.clearCache.slimmingCompleted')}
                 </span>
               </div>
               <div className="font-mono text-[11px] flex items-center gap-2 flex-wrap">
@@ -844,10 +854,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                                     CATEGORY_COLORS[cat.category] || 'bg-slate-400'
                                   }`}
                                 />
-                                <span className="font-bold text-slate-900">{cat.label}</span>
+                                <span className="font-bold text-slate-900">{getCategoryLabel(cat.category, cat.label)}</span>
                                 {isCaution && (
                                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 border border-slate-200">
-                                    推荐不选
+                                    {t('modals.clearCache.recommendedNotSelect')}
                                   </span>
                                 )}
                               </div>
@@ -898,7 +908,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between flex-wrap gap-2">
                   <div className="space-y-0.5">
                     <div className="font-semibold text-slate-800">
-                      已选 {selectedCategories.length} 个类别 · 预计清理{' '}
+                      {t('modals.clearCache.selectedCategories', { count: selectedCategories.length })} · 预计清理{' '}
                       <span className="font-mono text-sky-700">
                         {selectedCategorySummary.assetFiles.toLocaleString()}
                       </span>{' '}

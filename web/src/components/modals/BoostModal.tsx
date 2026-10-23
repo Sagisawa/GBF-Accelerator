@@ -4,6 +4,7 @@ import { Button } from '../common/Button'
 import { Zap, CheckCircle2, AlertTriangle, ShieldAlert, XCircle, PauseCircle } from 'lucide-react'
 import { startBoost, disableBoost, cancelCacheTask, fetchCacheTaskStatus } from '../../api'
 import { CacheStats, BoostProgress } from '../../types'
+import { useI18n } from '../../i18n'
 
 export interface BoostModalProps {
   isOpen: boolean
@@ -20,6 +21,7 @@ export const BoostModal: React.FC<BoostModalProps> = ({
   onToast,
   cacheStats,
 }) => {
+  const { t } = useI18n()
   const [taskStatus, setTaskStatus] = useState<any | null>(null)
   const [actionLoading, setActionLoading] = useState<boolean>(false)
   const boostTaskIdRef = useRef<string | null>(null)
@@ -183,10 +185,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
-          <span>内存全量加速 (RAM Boost)</span>
+          <span>{t('modals.boost.title')}</span>
         </div>
       }
-      subtitle="把本地素材全量载入内存，减少游戏时的硬盘读写，提升响应速度。"
+      subtitle={t('modals.boost.subtitle')}
       maxWidth="max-w-lg"
     >
       <div className="space-y-4 text-xs text-slate-700">

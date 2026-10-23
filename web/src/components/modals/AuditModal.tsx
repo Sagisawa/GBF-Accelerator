@@ -3,6 +3,7 @@ import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { Stethoscope, CheckCircle2, RefreshCw, XCircle } from 'lucide-react'
 import { auditCache, fetchCacheTaskStatus, cancelCacheTask } from '../../api'
+import { useI18n } from '../../i18n'
 
 export interface AuditModalProps {
   isOpen: boolean
@@ -17,6 +18,7 @@ export const AuditModal: React.FC<AuditModalProps> = ({
   onRefresh,
   onToast,
 }) => {
+  const { t } = useI18n()
   const [running, setRunning] = useState(false)
   const [taskStatus, setTaskStatus] = useState<any | null>(null)
   const pollTimerRef = useRef<any>(null)
@@ -103,10 +105,10 @@ export const AuditModal: React.FC<AuditModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Stethoscope className="w-4 h-4 text-emerald-600" />
-          <span>本地静态缓存健康体检</span>
+          <span>{t('modals.audit.title')}</span>
         </div>
       }
-      subtitle="通过 Magic Bytes 二进制文件头深度扫描并清理 0 字节与损坏废件"
+      subtitle={t('modals.audit.subtitle')}
       maxWidth="max-w-md"
     >
       <div className="space-y-3.5 text-xs text-slate-700">
@@ -126,7 +128,7 @@ export const AuditModal: React.FC<AuditModalProps> = ({
             <div className="font-bold flex items-center justify-between">
               <span className="flex items-center gap-1.5">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600" />
-                <span>正在全量扫描本地缓存中...</span>
+                <span>{t('modals.audit.statusRunning')}</span>
               </span>
               <Button
                 variant="desktop"
@@ -134,7 +136,7 @@ export const AuditModal: React.FC<AuditModalProps> = ({
                 onClick={handleCancelAudit}
                 icon={<XCircle className="w-3 h-3 text-red-600" />}
               >
-                终止扫描
+                {t('modals.audit.stopAudit')}
               </Button>
             </div>
             <div className="grid grid-cols-3 gap-2 text-[11px] font-mono text-blue-800 pt-1">
@@ -149,7 +151,7 @@ export const AuditModal: React.FC<AuditModalProps> = ({
           <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 space-y-1">
             <div className="font-bold flex items-center gap-1.5 text-emerald-900">
               <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-              <span>最近一次体检完成</span>
+              <span>{t('modals.audit.statusCompleted')}</span>
             </div>
             <div className="text-[11px] text-emerald-700 font-mono">
               扫描总数: {taskStatus.last_audit_result.scanned ?? 0} ｜ 
@@ -165,7 +167,7 @@ export const AuditModal: React.FC<AuditModalProps> = ({
             size="sm"
             onClick={onClose}
           >
-            关闭 (Esc)
+            {t('common.close')} (Esc)
           </Button>
 
           {isAuditing ? (
@@ -175,7 +177,7 @@ export const AuditModal: React.FC<AuditModalProps> = ({
               onClick={handleCancelAudit}
               icon={<XCircle className="w-3.5 h-3.5 text-red-600" />}
             >
-              终止体检
+              {t('modals.audit.stopAudit')}
             </Button>
           ) : (
             <Button
@@ -189,7 +191,7 @@ export const AuditModal: React.FC<AuditModalProps> = ({
                 ? '瘦身任务执行中...'
                 : isOtherTaskActive
                   ? '其他缓存任务执行中...'
-                  : '立即开始体检'}
+                  : t('modals.audit.startAudit')}
             </Button>
           )}
         </div>

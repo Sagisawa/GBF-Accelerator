@@ -17,6 +17,7 @@ type Controller interface {
 	GetListenPort() int
 	GetControlPort() int
 	GetCacheDir() string
+	GetLanguage() string
 	OpenBrowser(url string) error
 	OpenAppWindow(url string) error
 	OpenFolder(path string) error

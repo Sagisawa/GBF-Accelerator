@@ -5,6 +5,7 @@ import { Button } from '../common/Button'
 import { QRCodeSVG } from 'qrcode.react'
 import { Smartphone, Wifi, Copy, Check, AlertCircle } from 'lucide-react'
 import { applyConfig, applyFirewallRule, fetchFirewallStatus, APIError, FirewallStatus } from '../../api'
+import { useI18n } from '../../i18n'
 
 export interface MobileGuideModalProps {
   isOpen: boolean
@@ -21,6 +22,7 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
   onConfigUpdated,
   onToast,
 }) => {
+  const { t } = useI18n()
   const [copied, setCopied] = React.useState(false)
   const [firewallStatus, setFirewallStatus] = React.useState<FirewallStatus | null>(null)
   const [firewallLoading, setFirewallLoading] = React.useState(false)
@@ -115,10 +117,10 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Smartphone className="w-4 h-4 text-apple-blue" />
-          <span>移动端跨设备 (iOS / Android) 连接指引</span>
+          <span>{t('modals.mobileGuide.title')}</span>
         </div>
       }
-      subtitle="在同一局域网 Wi-Fi 下免安装任何客户端，直接享受加速"
+      subtitle={t('modals.mobileGuide.subtitle')}
       maxWidth="max-w-lg"
     >
       <div className="space-y-4">

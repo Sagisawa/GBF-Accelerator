@@ -5,6 +5,7 @@ import { Network, Check, Radio, Loader2, Zap, RefreshCw, AlertCircle } from 'luc
 import { ProxyCandidate } from '../../types'
 import { testLatency } from '../../api'
 import { cn } from '../../utils/cn'
+import { useI18n } from '../../i18n'
 
 export interface UpstreamSelectModalProps {
   isOpen: boolean
@@ -35,6 +36,7 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
   title,
   subtitle,
 }) => {
+  const { t } = useI18n()
   const [selectedUrl, setSelectedUrl] = useState<string>('')
   const [submitting, setSubmitting] = useState(false)
   const [latencies, setLatencies] = useState<Record<string, LatencyState>>({})
@@ -255,11 +257,11 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
         title || (
           <div className="flex items-center gap-2">
             <Network className="w-4 h-4 text-blue-600" />
-            <span>选择上游网络代理</span>
+            <span>{t('modals.upstreamSelect.title')}</span>
           </div>
         )
       }
-      subtitle={subtitle || `检测到本机有 ${candidates.length} 个活跃代理端口，请选择要使用的服务`}
+      subtitle={subtitle || t('modals.upstreamSelect.subtitle')}
       maxWidth="max-w-lg"
     >
       <div className="space-y-3">

@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { fetchHealth, repairHealth, testLatency } from '../../api'
 import { HealthResponse, HealthItem, HealthStatusLevel } from '../../types'
+import { useI18n } from '../../i18n'
 
 export interface HealthCheckModalProps {
   isOpen: boolean
@@ -32,6 +33,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
   isOpen,
   onClose,
 }) => {
+  const { t } = useI18n()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<HealthResponse | null>(null)
   const [connError, setConnError] = useState<string | null>(null)
@@ -335,10 +337,10 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-sky-600" />
-          <span>系统运行自检 (Health Check)</span>
+          <span>{t('modals.healthCheck.title')}</span>
         </div>
       }
-      subtitle="全平面诊断核心运行、控制面、数据面、PAC、证书、缓存与网络"
+      subtitle={t('modals.healthCheck.subtitle')}
       maxWidth="max-w-2xl"
     >
       <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">

@@ -1194,6 +1194,9 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if val, ok := patch["window_maximized"].(bool); ok {
 		candidate.WindowMaximized = val
 	}
+	if val, ok := patch["language"].(string); ok {
+		candidate.Language = config.NormalizeLanguage(val)
+	}
 
 	proxyNeedsReload := c.proxySrv != nil &&
 		(candidate.AllowLAN != oldCandidate.AllowLAN || candidate.ListenPort != oldCandidate.ListenPort)

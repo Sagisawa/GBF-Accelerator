@@ -51,6 +51,7 @@ type Config struct {
 	AssetMaxKeepalive    int     `json:"asset_max_keepalive"`
 	AssetKeepaliveExpiry float64 `json:"asset_keepalive_expiry"`
 	EnableAPITelemetry   bool    `json:"enable_api_telemetry"`
+	Language             string  `json:"language"`
 	WindowWidth          int     `json:"window_width"`
 	WindowHeight         int     `json:"window_height"`
 	WindowMaximized      bool    `json:"window_maximized"`
@@ -101,6 +102,7 @@ func DefaultConfig() Config {
 		AssetMaxKeepalive:    16,
 		AssetKeepaliveExpiry: 60.0,
 		EnableAPITelemetry:   true,
+		Language:             "zh",
 		WindowWidth:          880,
 		WindowHeight:         640,
 		WindowMaximized:      false,
@@ -177,6 +179,17 @@ func normalizeUpstreamFailoverCooldownSeconds(v int) int {
 	if v < 1 { return 60 }
 	if v > 3600 { return 3600 }
 	return v
+}
+
+func NormalizeLanguage(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "en":
+		return "en"
+	case "ja":
+		return "ja"
+	default:
+		return "zh"
+	}
 }
 
 func (m *Manager) Load(cfgPath string) error {
@@ -282,6 +295,9 @@ func (m *Manager) Load(cfgPath string) error {
 	if _, ok := present["enable_api_telemetry"]; ok {
 		m.cfg.EnableAPITelemetry = loaded.EnableAPITelemetry
 	}
+	if _, ok := present["language"]; ok {
+		m.cfg.Language = NormalizeLanguage(loaded.Language)
+	}
 	if _, ok := present["window_width"]; ok && loaded.WindowWidth >= 400 {
 		m.cfg.WindowWidth = loaded.WindowWidth
 	}
@@ -324,6 +340,7 @@ func (m *Manager) Commit(candidate Config) error {
 	candidate.UpstreamFailoverThresholdMS = normalizeUpstreamFailoverThresholdMS(candidate.UpstreamFailoverThresholdMS)
 	candidate.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(candidate.UpstreamFailoverConsecutiveFailures)
 	candidate.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(candidate.UpstreamFailoverCooldownSeconds)
+	candidate.Language = NormalizeLanguage(candidate.Language)
 	m.commitMu.Lock()
 
 	m.mu.Lock()
@@ -376,6 +393,7 @@ func (m *Manager) UpdateWithError(fn func(c *Config)) (Config, error) {
 	m.cfg.UpstreamFailoverThresholdMS = normalizeUpstreamFailoverThresholdMS(m.cfg.UpstreamFailoverThresholdMS)
 	m.cfg.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(m.cfg.UpstreamFailoverConsecutiveFailures)
 	m.cfg.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(m.cfg.UpstreamFailoverCooldownSeconds)
+	m.cfg.Language = NormalizeLanguage(m.cfg.Language)
 	updated := m.cfg
 	m.snapshot.Store(&updated)
 	callbacks := make([]func(*Config), len(m.onSave))

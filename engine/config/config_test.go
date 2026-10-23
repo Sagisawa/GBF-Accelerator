@@ -374,3 +374,65 @@ func TestConfig_UpstreamFailoverNotification_SaveFailureRollback(t *testing.T) {
 	}
 }
 
+func TestConfig_Language(t *testing.T) {
+	if got := DefaultConfig().Language; got != "zh" {
+		t.Fatalf("expected default Language to be 'zh', got %q", got)
+	}
+
+	testCases := []struct {
+		input string
+		want  string
+	}{
+		{"zh", "zh"},
+		{"ZH", "zh"},
+		{"en", "en"},
+		{"EN", "en"},
+		{"ja", "ja"},
+		{"JA", "ja"},
+		{"fr", "zh"},
+		{"", "zh"},
+		{"   en  ", "en"},
+	}
+
+	for _, tc := range testCases {
+		if got := NormalizeLanguage(tc.input); got != tc.want {
+			t.Errorf("NormalizeLanguage(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+
+	// Test persistence and reload
+	tmpFile, err := os.CreateTemp("", "gbf_lang_test_*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	_ = tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	mgr := NewManager(tmpFile.Name())
+	cand := mgr.Candidate()
+	cand.Language = "en"
+	if err := mgr.Commit(cand); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	if mgr.Get().Language != "en" {
+		t.Fatalf("expected Language to be 'en', got %q", mgr.Get().Language)
+	}
+
+	// Reload from disk
+	mgr2 := NewManager(tmpFile.Name())
+	if mgr2.Get().Language != "en" {
+		t.Fatalf("expected reloaded Language to be 'en', got %q", mgr2.Get().Language)
+	}
+
+	// Commit invalid language -> normalizes to "zh"
+	cand2 := mgr2.Candidate()
+	cand2.Language = "invalid-lang"
+	if err := mgr2.Commit(cand2); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+	if mgr2.Get().Language != "zh" {
+		t.Fatalf("expected invalid Language to normalize to 'zh', got %q", mgr2.Get().Language)
+	}
+}
+

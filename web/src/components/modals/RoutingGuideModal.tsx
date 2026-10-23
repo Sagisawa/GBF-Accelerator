@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { Globe, Copy, Check } from 'lucide-react'
+import { useI18n } from '../../i18n'
 
 export interface RoutingGuideModalProps {
   isOpen: boolean
@@ -14,6 +15,7 @@ export const RoutingGuideModal: React.FC<RoutingGuideModalProps> = ({
   onClose,
   listenPort = 8124,
 }) => {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const pacUrl = `http://127.0.0.1:${listenPort}/proxy.pac`
 
@@ -30,10 +32,10 @@ export const RoutingGuideModal: React.FC<RoutingGuideModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Globe className="w-4 h-4 text-blue-600" />
-          <span>游戏分流与代理配置说明</span>
+          <span>{t('modals.routingGuide.title')}</span>
         </div>
       }
-      subtitle="仅对碧蓝幻想游戏流量与静态资源进行加速，不影响其他网页"
+      subtitle={t('modals.routingGuide.subtitle')}
       maxWidth="max-w-lg"
     >
       <div className="space-y-3.5 text-xs text-slate-700">
@@ -53,7 +55,7 @@ export const RoutingGuideModal: React.FC<RoutingGuideModalProps> = ({
               onClick={handleCopy}
               icon={copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
             >
-              {copied ? '已复制' : '复制'}
+              {copied ? t('common.copied') : t('common.copy')}
             </Button>
           </div>
         </div>

@@ -3,6 +3,7 @@ import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { Activity, RefreshCw } from 'lucide-react'
 import { testLatency } from '../../api'
+import { useI18n } from '../../i18n'
 
 export interface LatencyTestModalProps {
   isOpen: boolean
@@ -57,6 +58,7 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
   isDirect,
   upstreamProxy,
 }) => {
+  const { t } = useI18n()
   const [testing, setTesting] = useState(false)
   const [coldMs, setColdMs] = useState<number | null>(null)
   const [warmSummary, setWarmSummary] = useState<WarmLatencySummary>({
@@ -129,10 +131,10 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-emerald-600" />
-          <span>上游网络延迟测试结果</span>
+          <span>{t('modals.latencyTest.title')}</span>
         </div>
       }
-      subtitle="真实测量游戏主站链路 RTT 延迟与建链开销"
+      subtitle={t('modals.latencyTest.subtitle')}
       maxWidth="max-w-md"
     >
       <div className="space-y-3.5">

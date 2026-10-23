@@ -3,6 +3,7 @@ import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { ShieldCheck, Download, Copy, Check, Trash2, CheckCircle2, AlertCircle } from 'lucide-react'
 import { installCert, uninstallCert, cleanLegacyCert } from '../../api'
+import { useI18n } from '../../i18n'
 
 export interface CaCertModalProps {
   isOpen: boolean
@@ -23,6 +24,7 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
   onRefresh,
   onToast,
 }) => {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -175,10 +177,10 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-600" />
-          <span>HTTPS 根证书安装与信任指引</span>
+          <span>{t('modals.caCert.title')}</span>
         </div>
       }
-      subtitle="游戏静态资源 (Akamai CDN) 本地解析与极速加速必需组件"
+      subtitle={t('modals.caCert.subtitle')}
       maxWidth="max-w-lg"
     >
       <div className="space-y-3.5 text-xs text-slate-700">
