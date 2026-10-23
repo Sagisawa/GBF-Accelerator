@@ -22,7 +22,7 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
   onConfigUpdated,
   onToast,
 }) => {
-  const { t } = useI18n()
+  const { t, language } = useI18n()
   const [copied, setCopied] = React.useState(false)
   const [firewallStatus, setFirewallStatus] = React.useState<FirewallStatus | null>(null)
   const [firewallLoading, setFirewallLoading] = React.useState(false)
@@ -35,7 +35,7 @@ export const MobileGuideModal: React.FC<MobileGuideModalProps> = ({
   const port = status?.listen_port || 8124
   const canUseMobileAccess = isLanEnabled && isProxyRunning
   const pacUrl = `http://${host}:${port}/proxy.pac`
-  const guideUrl = `http://${host}:${port}/`
+  const guideUrl = language === 'zh' ? `http://${host}:${port}/` : `http://${host}:${port}/?lang=${language}`
   const caUrl = `http://${host}:${port}/ca.crt`
 
   const refreshFirewallStatus = React.useCallback(async () => {

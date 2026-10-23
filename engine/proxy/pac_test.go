@@ -45,6 +45,11 @@ func TestGetLandingHTML(t *testing.T) {
 		"SkyLeap",
 		"GBF Local Accelerator Root CA",
 		"8124",
+		"GBF-Accelerator Mobile LAN Setup Guide",
+		"GBF-Accelerator モバイル LAN 接続ガイド",
+		"lang-bar",
+		"setLang('en')",
+		"setLang('ja')",
 	}
 
 	for _, phrase := range expectedPhrases {
