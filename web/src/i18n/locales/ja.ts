@@ -334,12 +334,15 @@ export const ja: TranslationSchema = {
     "openDrawer": "下部ログターミナルを開く"
   },
   "footer": {
+    "openFolder": "フォルダ",
+    "clearCache": "キャッシュ削除",
+    "routingTips": "分流ガイド",
+    "checkUpdate": "更新確認",
+    "latencyTest": "遅延テスト",
+    "diagnostics": "自己診断",
+    "liveLogs": "ライブログ",
     "shortcuts": "ショートカット",
-    "diagnostics": "セルフチェック",
-    "liveLogs": "リアルタイムログ",
-    "checkUpdate": "更新を確認",
-    "mobileSetup": "モバイル接続",
-    "routingTips": "分流ガイド"
+    "mobileSetup": "モバイル接続"
   },
   "quitModal": {
     "title": "GBF-Accelerator を完全に終了しますか？",

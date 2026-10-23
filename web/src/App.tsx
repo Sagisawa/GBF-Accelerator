@@ -2311,80 +2311,88 @@ export const App: React.FC = () => {
   </main>
 
       {/* 3. Fixed Bottom Action Dock (Footer) */}
-      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-3 sm:px-4 py-2 sm:py-2.5 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
-        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[480px]:grid-cols-4 min-[768px]:grid-cols-8 gap-1.5 sm:gap-2">
+      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-2.5 sm:px-3 py-2 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
+        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[480px]:grid-cols-4 min-[768px]:grid-cols-8 gap-1 sm:gap-1.5">
           <button
             type="button"
             onClick={handleOpenCacheFolder}
             disabled={loadingOpenFolder}
-            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('common.openFolder')}
           >
-            <span className="text-base leading-none">📁</span>
-            <span>{loadingOpenFolder ? t('common.loading') : t('common.openFolder')}</span>
+            <span className="text-sm leading-none shrink-0">📁</span>
+            <span className="truncate">{loadingOpenFolder ? t('common.loading') : t('footer.openFolder')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsClearModalOpen(true)}
-            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('cards.cache.clearCache')}
           >
-            <span className="text-base leading-none">🗑</span>
-            <span>{t('cards.cache.clearCache')}</span>
+            <span className="text-sm leading-none shrink-0">🗑</span>
+            <span className="truncate">{t('footer.clearCache')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsRoutingModalOpen(true)}
-            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('footer.routingTips')}
           >
-            <span className="text-base leading-none">🌐</span>
-            <span>{t('footer.routingTips')}</span>
+            <span className="text-sm leading-none shrink-0">🌐</span>
+            <span className="truncate">{t('footer.routingTips')}</span>
           </button>
 
           <a
             href="https://github.com/Sagisawa/GBF-Accelerator"
             target="_blank"
             rel="noreferrer"
-            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title="GitHub"
           >
-            <span className="text-base leading-none">⭐</span>
-            <span>GitHub</span>
+            <span className="text-sm leading-none shrink-0">⭐</span>
+            <span className="truncate">GitHub</span>
           </a>
 
           <button
             type="button"
             onClick={() => setIsUpdateModalOpen(true)}
-            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('footer.checkUpdate')}
           >
-            <span className="text-base leading-none">🔄</span>
-            <span>{t('footer.checkUpdate')}</span>
+            <span className="text-sm leading-none shrink-0">🔄</span>
+            <span className="truncate">{t('footer.checkUpdate')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsLatencyModalOpen(true)}
-            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('cards.upstream.latencyTest')}
           >
-            <span className="text-base leading-none">📶</span>
-            <span>{t('cards.upstream.latencyTest')}</span>
+            <span className="text-sm leading-none shrink-0">📶</span>
+            <span className="truncate">{t('footer.latencyTest')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsHealthModalOpen(true)}
-            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('footer.diagnostics')}
           >
-            <span className="text-base leading-none">🩺</span>
-            <span>{t('footer.diagnostics')}</span>
+            <span className="text-sm leading-none shrink-0">🩺</span>
+            <span className="truncate">{t('footer.diagnostics')}</span>
           </button>
 
           <button
             type="button"
             onClick={openLogsWindow}
-            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('footer.liveLogs')}
           >
-            <span className="text-base leading-none">📜</span>
-            <span>{t('footer.liveLogs')}</span>
+            <span className="text-sm leading-none shrink-0">📜</span>
+            <span className="truncate">{t('footer.liveLogs')}</span>
           </button>
         </div>
       </footer>

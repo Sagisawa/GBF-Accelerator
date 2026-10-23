@@ -332,12 +332,15 @@ export const zh = {
     "openDrawer": "展开底部日志终端"
   },
   "footer": {
-    "shortcuts": "快捷键",
+    "openFolder": "打开目录",
+    "clearCache": "清除缓存",
+    "routingTips": "分流说明",
+    "checkUpdate": "检查更新",
+    "latencyTest": "延迟测试",
     "diagnostics": "运行自检",
     "liveLogs": "实时日志",
-    "checkUpdate": "检查更新",
-    "mobileSetup": "移动端接入",
-    "routingTips": "分流说明"
+    "shortcuts": "快捷键",
+    "mobileSetup": "移动端接入"
   },
   "quitModal": {
     "title": "确认彻底退出 GBF 加速器？",

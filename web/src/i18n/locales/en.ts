@@ -334,12 +334,15 @@ export const en: TranslationSchema = {
     "openDrawer": "Open Bottom Log Drawer"
   },
   "footer": {
-    "shortcuts": "Shortcuts",
+    "openFolder": "Open Folder",
+    "clearCache": "Clear Cache",
+    "routingTips": "Routing",
+    "checkUpdate": "Updates",
+    "latencyTest": "Latency",
     "diagnostics": "Diagnostics",
     "liveLogs": "Live Logs",
-    "checkUpdate": "Check Update",
-    "mobileSetup": "Mobile Setup",
-    "routingTips": "Routing Guide"
+    "shortcuts": "Shortcuts",
+    "mobileSetup": "Mobile Setup"
   },
   "quitModal": {
     "title": "Completely Exit GBF-Accelerator?",
