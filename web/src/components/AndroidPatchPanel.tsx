@@ -77,6 +77,77 @@ const formatBytes = (bytes?: number) => {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`
 }
 
+const BROWSER_PKG_KEY_MAP: Record<string, string> = {
+  'com.dena.skyleap': 'skyleap',
+  'mark.via.gp': 'via',
+  'mark.via': 'via',
+  'com.xbrowser.play': 'x',
+  'com.mb.browser': 'x',
+  'com.android.browser': 'android',
+  'acr.browser.lightning': 'lightning',
+  'com.android.chrome': 'chrome',
+  'com.kiwibrowser.browser': 'kiwi',
+  'com.microsoft.emmx': 'edge',
+  'com.brave.browser': 'brave',
+  'com.sec.android.app.sbrowser': 'samsung',
+  'org.mozilla.firefox': 'firefox',
+  'com.opera.browser': 'opera',
+  'com.quark.browser': 'quark',
+  'com.ucmobile': 'uc',
+  'com.UCMobile': 'uc',
+  'com.baidu.searchbox': 'baidu',
+  'com.heytap.browser': 'oppo',
+  'com.mi.globalbrowser': 'xiaomi',
+  'com.vivo.browser': 'vivo',
+  'com.huawei.browser': 'huawei',
+  'com.watanuki.tarou': 'tarou',
+}
+
+const getDeviceBrowserName = (b: DeviceBrowserItem, t: (k: string) => string): string => {
+  const subkey = BROWSER_PKG_KEY_MAP[b.package_name]
+  if (subkey) {
+    return t(`modals.androidPatch.browserNames.${subkey}`)
+  }
+  if (b.is_skyleap || b.package_name.toLowerCase().includes('skyleap')) {
+    return 'SkyLeap'
+  }
+  if (b.package_name.toLowerCase().includes('browser')) {
+    return t('modals.androidPatch.browserNames.genericApp')
+  }
+  const match = b.label?.match(/^([^(]+)/)
+  if (match && match[1].trim()) {
+    return match[1].trim()
+  }
+  return b.package_name
+}
+
+const formatDeviceBrowserOption = (b: DeviceBrowserItem, t: (k: string) => string): string => {
+  const name = getDeviceBrowserName(b, t)
+  const isInstalled = Boolean(b.is_installed)
+  const isWebView = b.is_system_webview !== false
+
+  const tags: string[] = []
+
+  if (b.package_name === 'com.dena.skyleap') {
+    tags.push(t('modals.androidPatch.tagOfficial'))
+    tags.push(t('modals.androidPatch.tagSystemWebView'))
+    tags.push(isInstalled ? t('modals.androidPatch.tagInstalled') : t('modals.androidPatch.tagNotInstalled'))
+    return `${name} (${tags.join(' · ')})`
+  }
+
+  tags.push(b.package_name)
+
+  if (!isWebView) {
+    tags.push(t('modals.androidPatch.tagStandaloneUnsupported'))
+  } else if (isInstalled && (Boolean(BROWSER_PKG_KEY_MAP[b.package_name]) || b.package_name.toLowerCase().includes('skyleap'))) {
+    tags.push(t('modals.androidPatch.tagSystemWebView'))
+  }
+
+  tags.push(isInstalled ? t('modals.androidPatch.tagInstalled') : t('modals.androidPatch.tagNotInstalled'))
+
+  return `${name} (${tags.join(' · ')})`
+}
+
 export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast }) => {
   const { t } = useI18n()
 
@@ -1188,7 +1259,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             <optgroup label={t('modals.androidPatch.groupInstalledWebView')}>
                               {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview !== false).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
-                                  {b.is_skyleap ? '⭐ ' : '🌐 '}{b.label}
+                                  {b.is_skyleap ? '⭐ ' : '🌐 '}{formatDeviceBrowserOption(b, t)}
                                 </option>
                               ))}
                             </optgroup>
@@ -1197,7 +1268,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             <optgroup label={t('modals.androidPatch.groupInstalledStandalone')}>
                               {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview === false).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
-                                  🚫 {b.label}
+                                  🚫 {formatDeviceBrowserOption(b, t)}
                                 </option>
                               ))}
                             </optgroup>
@@ -1206,7 +1277,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             <optgroup label={t('modals.androidPatch.groupOther')}>
                               {deviceBrowsers.filter(b => !b.is_installed).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
-                                  {b.is_system_webview !== false ? '🌐 ' : '🚫 '}{b.label}
+                                  {b.is_system_webview !== false ? '🌐 ' : '🚫 '}{formatDeviceBrowserOption(b, t)}
                                 </option>
                               ))}
                             </optgroup>
@@ -1242,7 +1313,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                           <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                           <div className="text-[11px] leading-relaxed">
                             <strong>{t('modals.androidPatch.unsupportedBrowserTitle')}</strong>
-                            <span>{t('modals.androidPatch.unsupportedBrowserDesc', { name: sel.label })}</span>
+                            <span>{t('modals.androidPatch.unsupportedBrowserDesc', { name: getDeviceBrowserName(sel, t) })}</span>
                           </div>
                         </div>
                       )

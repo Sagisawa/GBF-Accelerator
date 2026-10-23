@@ -35,6 +35,18 @@ describe('i18n dictionaries and translation', () => {
     expect(translate('zh', 'header.quitApp')).toBe('彻底退出')
     expect(translate('en', 'header.quitApp')).toBe('Exit')
     expect(translate('ja', 'header.quitApp')).toBe('終了')
+
+    expect(translate('zh', 'modals.androidPatch.browserNames.skyleap')).toBe('DeNA SkyLeap')
+    expect(translate('en', 'modals.androidPatch.browserNames.skyleap')).toBe('DeNA SkyLeap')
+    expect(translate('ja', 'modals.androidPatch.browserNames.skyleap')).toBe('DeNA SkyLeap')
+
+    expect(translate('zh', 'modals.androidPatch.tagOfficial')).toBe('官方推荐')
+    expect(translate('en', 'modals.androidPatch.tagOfficial')).toBe('Recommended')
+    expect(translate('ja', 'modals.androidPatch.tagOfficial')).toBe('公式推奨')
+
+    expect(translate('zh', 'modals.androidPatch.tagStandaloneUnsupported')).toBe('独立内核暂不支持')
+    expect(translate('en', 'modals.androidPatch.tagStandaloneUnsupported')).toBe('Standalone Engine Unsupported')
+    expect(translate('ja', 'modals.androidPatch.tagStandaloneUnsupported')).toBe('独自エンジン非対応')
   })
 
   it('interpolates variables properly', () => {
