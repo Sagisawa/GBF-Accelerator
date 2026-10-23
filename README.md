@@ -27,15 +27,21 @@
 
 | Web 控制台主面板 | Android 浏览器免 Root 全内置补丁 |
 | :---: | :---: |
-| ![Web 控制台主面板](docs/images/dashboard.png) | ![Android 浏览器免 Root 全内置补丁](docs/images/android_patch.png) |
+| ![Web 控制台主面板](docs/images/zh/dashboard.png) | ![Android 浏览器免 Root 全内置补丁](docs/images/zh/android_patch.png) |
 
 | 实时网络与转发日志 |
 | :---: |
-| ![实时网络与转发日志](docs/images/live_logs.png) |
+| ![实时网络与转发日志](docs/images/zh/live_logs.png) |
 
-| 移动端跨设备连接指引 (控制台) | 局域网移动端引导页 (手机浏览器) |
+| 移动端跨设备连接指引 | 智能缓存体检与安全瘦身 |
 | :---: | :---: |
-| ![移动端连接指引](docs/images/mobile_guide.png) | ![局域网移动端引导页](docs/images/mobile_landing.png) |
+| ![移动端跨设备连接指引](docs/images/zh/mobile_guide.png) | ![智能缓存体检与安全瘦身](docs/images/zh/clear_cache.png) |
+
+| 双路由智能延迟测速 |
+| :---: |
+| ![双路由智能延迟测速](docs/images/zh/latency_test.png) |
+
+---
 
 ## 架构设计与数据流向
 
