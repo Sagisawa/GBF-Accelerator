@@ -51,6 +51,7 @@ import {
   installToDevice,
   downloadAdbPlatformTools,
 } from '../api'
+import { useI18n } from '../i18n'
 
 interface AndroidPatchPanelProps {
   showToast: (msg: string, type: 'success' | 'error' | 'info') => void
@@ -77,6 +78,8 @@ const formatBytes = (bytes?: number) => {
 }
 
 export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast }) => {
+  const { t } = useI18n()
+
   // Environment state
   const [envStatus, setEnvStatus] = useState<AndroidEnvStatus | null>(null)
   const [loadingEnv, setLoadingEnv] = useState<boolean>(false)
@@ -144,11 +147,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         })
       }
     } catch (e: any) {
-      showToast(`检测环境失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.detectEnvFailed', { error: e.message }), 'error')
     } finally {
       setLoadingEnv(false)
     }
-  }, [showToast])
+  }, [showToast, t])
 
   useEffect(() => {
     checkEnv()
@@ -169,16 +172,16 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         } else {
           if (res.progress.done) {
             setInstallError(null)
-            showToast('Android Patch 组件下载完成并通过校验', 'success')
+            showToast(t('modals.androidPatch.componentDownloaded'), 'success')
             checkEnv()
           } else if (res.progress.stage === 'error') {
             const isPerm = Boolean(res.progress.is_permission_error || isPermissionErrorText(res.progress.error))
             setInstallError({
-              message: res.progress.error || '组件安装失败',
+              message: res.progress.error || t('modals.androidPatch.componentInstallFailed'),
               details: res.progress.error_details,
               isPermission: isPerm,
             })
-            showToast(`组件下载安装失败: ${res.progress.error || '未知错误'}`, 'error')
+            showToast(t('modals.androidPatch.componentDownloadFailed', { error: res.progress.error || 'Unknown' }), 'error')
             checkEnv()
           }
         }
@@ -192,16 +195,16 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     return () => {
       if (timer) window.clearTimeout(timer)
     }
-  }, [downloadProgress?.active, envStatus?.download?.active, checkEnv, showToast])
+  }, [downloadProgress?.active, envStatus?.download?.active, checkEnv, showToast, t])
 
   const handleCancelDownload = async () => {
     try {
       await cancelAndroidComponentDownload()
-      showToast('已取消下载', 'info')
+      showToast(t('modals.androidPatch.downloadCancelled'), 'info')
       setDownloadProgress(null)
       await checkEnv()
     } catch (e: any) {
-      showToast(`取消失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.cancelDownloadFailed', { error: e.message }), 'error')
     }
   }
 
@@ -210,14 +213,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     setInstallError(null)
     try {
       await installAllAndroidEnv()
-      showToast('已启动全套 Android 工具链与运行环境安装...', 'info')
+      showToast(t('modals.androidPatch.installAllStarted'), 'info')
       setDownloadProgress({
         active: true,
         percent: 0,
         stage: 'downloading',
       })
     } catch (e: any) {
-      const errMsg = e.message || '一键安装全环境失败'
+      const errMsg = e.message || t('modals.androidPatch.installAllFailed', { error: '' })
       const isPerm = isPermissionErrorText(errMsg)
       setInstallError({
         message: errMsg,
@@ -231,23 +234,23 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         error: errMsg,
         is_permission_error: isPerm,
       })
-      showToast(`一键安装全环境失败: ${errMsg}`, 'error')
+      showToast(t('modals.androidPatch.installAllFailed', { error: errMsg }), 'error')
     } finally {
       setIsInstallingAll(false)
     }
   }
 
   const handleUninstallAllEnv = async () => {
-    if (!window.confirm('确定要卸载全套 Android 工具链与 JRE 运行环境并彻底清理本地占用磁盘空间吗？')) {
+    if (!window.confirm(t('modals.androidPatch.uninstallConfirm'))) {
       return
     }
     setIsUninstallingAll(true)
     try {
       const res = await uninstallAllAndroidEnv()
-      showToast(res.message || '已成功卸载全套环境并释放磁盘空间', 'success')
+      showToast(res.message || t('modals.androidPatch.uninstallSuccess'), 'success')
       await checkEnv()
     } catch (e: any) {
-      showToast(`卸载失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.uninstallFailed', { error: e.message }), 'error')
     } finally {
       setIsUninstallingAll(false)
     }
@@ -256,9 +259,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const handleOpenBackup = async () => {
     try {
       const res = await openPatchBackupFolder()
-      showToast(`已打开备份目录: ${res.path || 'backups'}`, 'info')
+      showToast(t('modals.androidPatch.openBackupFolder', { path: res.path || 'backups' }), 'info')
     } catch (e: any) {
-      showToast(`打开备份目录失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.openBackupFailed', { error: e.message }), 'error')
     }
   }
 
@@ -358,17 +361,17 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     setIsExtracting(true)
     const pkg = targetExtractPackage.trim() || 'com.dena.skyleap'
     const appLabel = pkg === 'com.dena.skyleap' ? 'SkyLeap' : pkg
-    showToast(`正在从手机提取 ${appLabel} 安装包与分包组件...`, 'info')
+    showToast(t('modals.androidPatch.extractingApp', { name: appLabel }), 'info')
     try {
       const result = await extractDeviceApp(selectedDevice, pkg)
       setInspectedPkg(result)
       if (result.is_system_webview === false) {
-        showToast(`提取完成，但检测到该应用为独立内核浏览器 (${result.engine_desc || '非系统 WebView'})，GBF 补丁暂不支持`, 'error')
+        showToast(t('modals.androidPatch.extractedUnsupported', { desc: result.engine_desc || t('modals.androidPatch.nonSystemWebview') }), 'error')
       } else {
-        showToast(`提取成功！${appLabel} 版本 ${result.version_name || '已就绪'} (${result.total_apks} 个分包已就绪)`, 'success')
+        showToast(t('modals.androidPatch.extractedSuccess', { name: appLabel, version: result.version_name || t('modals.androidPatch.readyFallback'), count: result.total_apks }), 'success')
       }
     } catch (e: any) {
-      showToast(`从手机提取失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.extractFailed', { error: e.message }), 'error')
     } finally {
       setIsExtracting(false)
     }
@@ -376,7 +379,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
   const handleInstallToDevice = async (forceUninstall: boolean = false) => {
     if (!selectedDevice) {
-      showToast('未选择目标设备', 'error')
+      showToast(t('modals.androidPatch.noTargetDevice'), 'error')
       return
     }
 
@@ -398,9 +401,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         }
 
         if (isInstalled) {
-          const appName = targetPkg === 'com.dena.skyleap' ? 'SkyLeap 浏览器' : targetPkg
-          const verInfo = installedVer ? ` (版本: v${installedVer})` : ''
-          const confirmMsg = `检测到手机上已安装此应用【${appName}】${verInfo}。\n\n覆盖安装将使用新制作的加速补丁版替换手机上的原应用。\n是否确认覆盖安装？`
+          const appName = targetPkg === 'com.dena.skyleap' ? t('modals.androidPatch.skyleapBrowser') : targetPkg
+          const verInfo = installedVer ? ` (v${installedVer})` : ''
+          const confirmMsg = t('modals.androidPatch.overwriteConfirm', { name: appName, version: verInfo })
           if (!window.confirm(confirmMsg)) {
             return
           }
@@ -416,9 +419,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
     try {
       if (forceUninstall) {
-        showToast('正在通过 ADB 卸载原版并重新安装补丁版...', 'info')
+        showToast(t('modals.androidPatch.uninstallAndInstall'), 'info')
       } else {
-        showToast('正在推送安装到手机...', 'info')
+        showToast(t('modals.androidPatch.pushingToDevice'), 'info')
       }
 
       const res = await installToDevice(selectedDevice, targetPkg, forceUninstall)
@@ -426,14 +429,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
       if (res.signature_mismatch) {
         setShowUninstallModal(true)
-        showToast('检测到官方签名冲突，需先卸载手机上的旧版后再安装', 'info')
+        showToast(t('modals.androidPatch.signatureConflict'), 'info')
       } else if (res.ok) {
-        showToast('🎉 安装成功！加速补丁版已部署至手机', 'success')
+        showToast(t('modals.androidPatch.installSuccess'), 'success')
       } else {
-        showToast(`安装失败: ${res.error || '未知错误'}`, 'error')
+        showToast(t('modals.androidPatch.installFailed', { error: res.error || 'Unknown' }), 'error')
       }
     } catch (e: any) {
-      showToast(`安装失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.installFailed', { error: e.message }), 'error')
     } finally {
       setIsInstalling(false)
     }
@@ -441,18 +444,18 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
   const handleDownloadAdb = async () => {
     setIsDownloadingAdb(true)
-    showToast('正在下载轻量 ADB 平台工具...', 'info')
+    showToast(t('modals.androidPatch.downloadingAdb'), 'info')
     try {
       const res = await downloadAdbPlatformTools()
       if (res.ok) {
-        showToast('ADB 工具下载并解压成功', 'success')
+        showToast(t('modals.androidPatch.adbDownloaded'), 'success')
         await checkEnv()
         await refreshDevices()
       } else {
-        showToast(`下载 ADB 失败: ${res.message || '未知错误'}`, 'error')
+        showToast(t('modals.androidPatch.downloadAdbFailed', { error: res.message || 'Unknown' }), 'error')
       }
     } catch (e: any) {
-      showToast(`下载 ADB 失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.downloadAdbFailed', { error: e.message }), 'error')
     } finally {
       setIsDownloadingAdb(false)
     }
@@ -535,25 +538,25 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const handleFileUpload = async (file: File) => {
     const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase()
     if (!['.apk', '.apks', '.xapk', '.zip'].includes(ext)) {
-      showToast(`不支持的文件格式 ${ext}，请提供 .apk、.apks 或 .xapk`, 'error')
+      showToast(t('modals.androidPatch.unsupportedFormat', { ext }), 'error')
       return
     }
 
     setIsUploading(true)
     setUploadPercent(0)
     try {
-      showToast(`正在导入 ${file.name}...`, 'info')
+      showToast(t('modals.androidPatch.importingFile', { name: file.name }), 'info')
       const result = await uploadAndroidPackage(file, (percent) => {
         setUploadPercent(percent)
       })
       setInspectedPkg(result)
       if (result.is_system_webview === false) {
-        showToast(`检测到该安装包为独立内核浏览器 (${result.engine_desc || '非系统 WebView'})，GBF 补丁暂不支持`, 'error')
+        showToast(t('modals.androidPatch.inspectUnsupportedEngine', { desc: result.engine_desc || t('modals.androidPatch.nonSystemWebview') }), 'error')
       } else {
-        showToast(`解析成功: ${result.package_name} (v${result.version_name})`, 'success')
+        showToast(t('modals.androidPatch.inspectSuccess', { pkg: result.package_name, version: result.version_name }), 'success')
       }
     } catch (e: any) {
-      showToast(`上传解析失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.uploadInspectFailed', { error: e.message }), 'error')
     } finally {
       setIsUploading(false)
     }
@@ -562,7 +565,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const handleInspectManualPath = async () => {
     const path = manualPath.trim()
     if (!path) {
-      showToast('请输入有效的 APK / APKS 路径', 'error')
+      showToast(t('modals.androidPatch.invalidPath'), 'error')
       return
     }
 
@@ -571,12 +574,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       const result = await inspectAndroidPackage(path)
       setInspectedPkg(result)
       if (result.is_system_webview === false) {
-        showToast(`检测到该安装包为独立内核浏览器 (${result.engine_desc || '非系统 WebView'})，GBF 补丁暂不支持`, 'error')
+        showToast(t('modals.androidPatch.inspectUnsupportedEngine', { desc: result.engine_desc || t('modals.androidPatch.nonSystemWebview') }), 'error')
       } else {
-        showToast(`解析成功: ${result.package_name} (v${result.version_name})`, 'success')
+        showToast(t('modals.androidPatch.inspectSuccess', { pkg: result.package_name, version: result.version_name }), 'success')
       }
     } catch (e: any) {
-      showToast(`解析失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.inspectFailed', { error: e.message }), 'error')
     } finally {
       setIsInspecting(false)
     }
@@ -584,29 +587,29 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
   const handleStartPatch = async () => {
     if (!inspectedPkg) {
-      showToast('请先选择或拖入要处理的安装包', 'error')
+      showToast(t('modals.androidPatch.noPackageSelected'), 'error')
       return
     }
 
     if (inspectedPkg.is_system_webview === false) {
-      showToast(inspectedPkg.unsupported_reason || '不支持该浏览器内核，GBF 补丁仅支持系统 WebView 浏览器', 'error')
+      showToast(inspectedPkg.unsupported_reason || t('modals.androidPatch.onlyWebViewTip'), 'error')
       return
     }
 
     if (!envStatus?.components_verified) {
-      showToast('Android Patch 组件尚未就绪或已损坏，请先下载并启用组件', 'error')
+      showToast(t('modals.androidPatch.patchEnvNotReady'), 'error')
       return
     }
 
     if (patchStatus?.running) {
-      showToast('已有处理任务在运行中，请等待完成', 'info')
+      showToast(t('modals.androidPatch.jobRunning'), 'info')
       return
     }
 
     setIsPatchStarting(true)
     try {
       await startAndroidPatch(inspectedPkg.file_path, outputDir, autoBackup)
-      showToast('处理任务已启动', 'success')
+      showToast(t('modals.androidPatch.jobStarted'), 'success')
       setPatchStatus({
         ok: true,
         running: true,
@@ -621,7 +624,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         done: false,
       })
     } catch (e: any) {
-      showToast(`启动失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.jobStartFailed', { error: e.message }), 'error')
     } finally {
       setIsPatchStarting(false)
     }
@@ -630,22 +633,22 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const handleCancelPatch = async () => {
     try {
       await cancelAndroidPatch()
-      showToast('已请求取消处理任务', 'info')
+      showToast(t('modals.androidPatch.cancelRequested'), 'info')
       const status = await fetchAndroidPatchStatus().catch(() => null)
       if (status) {
         setPatchStatus(status)
       }
     } catch (e: any) {
-      showToast(`取消处理失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.cancelFailed', { error: e.message }), 'error')
     }
   }
 
   const handleOpenOutput = async () => {
     try {
       const res = await openPatchOutputFolder()
-      showToast(`已打开目录: ${res.path || outputDir}`, 'info')
+      showToast(t('modals.androidPatch.dirOpened', { path: res.path || outputDir }), 'info')
     } catch (e: any) {
-      showToast(`打开目录失败: ${e.message}`, 'error')
+      showToast(t('modals.androidPatch.dirOpenFailed', { error: e.message }), 'error')
     }
   }
 
@@ -730,7 +733,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 <Smartphone className="w-5 h-5" />
               </span>
               <h1 className="text-lg sm:text-xl font-bold tracking-tight">
-                Android 浏览器免 Root 全内置补丁
+                {t('modals.androidPatch.title')}
               </h1>
               <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-200 border border-sky-400/30">
                 All-in-One v2.0
@@ -745,14 +748,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 }`}
               >
                 {isEnvironmentReady
-                  ? '● 补丁环境齐备'
+                  ? t('modals.androidPatch.envReady')
                   : activeErrorMsg
-                  ? '● 环境安装失败'
-                  : '○ 缺少环境依赖'}
+                  ? t('modals.androidPatch.envFailed')
+                  : t('modals.androidPatch.envMissing')}
               </span>
             </div>
             <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              将 Go 原生加速核心直接内嵌至浏览器安装包，免 Root、安装即用。优先推荐 DeNA SkyLeap，亦支持任意系统 WebView 浏览器。
+              {t('modals.androidPatch.desc')}
             </p>
           </div>
 
@@ -761,20 +764,20 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               type="button"
               onClick={handleOpenBackup}
               className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs font-semibold border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer"
-              title="浏览已备份的原版安装包目录"
+              title={t('modals.androidPatch.backupTooltip')}
             >
               <Archive className="w-3.5 h-3.5" />
-              <span>原版备份</span>
+              <span>{t('modals.androidPatch.backupBtn')}</span>
             </button>
             <button
               type="button"
               onClick={checkEnv}
               disabled={loadingEnv}
               className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs font-semibold border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              title="重新检测运行库与工具链"
+              title={t('modals.androidPatch.checkDepsTooltip')}
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingEnv ? 'animate-spin' : ''}`} />
-              <span>检测依赖</span>
+              <span>{t('modals.androidPatch.checkDepsBtn')}</span>
             </button>
             {isEnvironmentReady ? (
               <button
@@ -782,10 +785,10 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 onClick={handleUninstallAllEnv}
                 disabled={isUninstallingAll || isDownloadActive}
                 className="px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-xs font-semibold border border-rose-400/30 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                title="安全停止 ADB 并彻底清理本地下载的工具与 JRE 缓存以释放磁盘"
+                title={t('modals.androidPatch.uninstallEnvTooltip')}
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                <span>一键卸载环境</span>
+                <span>{t('modals.androidPatch.uninstallEnvBtn')}</span>
               </button>
             ) : (
               <button
@@ -795,7 +798,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 className="px-3.5 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 select-none"
               >
                 <Zap className="w-3.5 h-3.5 fill-current" />
-                <span>一键安装全环境</span>
+                <span>{t('modals.androidPatch.installEnvBtn')}</span>
               </button>
             )}
           </div>
@@ -807,7 +810,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             {envStatus?.tools_disk_bytes ? (
               <div className="flex items-center gap-1.5">
                 <HardDrive className="w-3.5 h-3.5 text-sky-400" />
-                <span>工具链占用:</span>
+                <span>{t('modals.androidPatch.toolchainSize')}</span>
                 <span className="font-mono text-white font-semibold">
                   {formatBytes(envStatus?.tools_disk_bytes)}
                 </span>
@@ -816,12 +819,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             {adbDevices.filter(d => d.state === 'device').length > 0 ? (
               <div className="flex items-center gap-1.5 text-emerald-300 font-medium">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>已连接 {adbDevices.filter(d => d.state === 'device').length} 台手机设备</span>
+                <span>{t('modals.androidPatch.devicesConnected', { count: adbDevices.filter(d => d.state === 'device').length })}</span>
               </div>
             ) : (
               <div className="flex items-center gap-1.5 text-slate-400">
                 <Smartphone className="w-3.5 h-3.5" />
-                <span>USB 调试手机未连接 (插上即用)</span>
+                <span>{t('modals.androidPatch.devicesNotConnected')}</span>
               </div>
             )}
           </div>
@@ -836,7 +839,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
                   : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {isJavaFound ? '✓' : '✗'} Java 21+{!isPortableJava && isJavaFound ? ' (系统)' : ''}
+              {isJavaFound ? '✓' : '✗'} Java 21+{!isPortableJava && isJavaFound ? t('modals.androidPatch.systemTag') : ''}
             </span>
 
             {/* LSPatch */}
@@ -848,13 +851,13 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               {isLspatchInstalled ? '✓' : '✗'} LSPatch
             </span>
 
-            {/* 内置模块 */}
+            {/* Builtin Module */}
             <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
               isModuleInstalled
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                 : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {isModuleInstalled ? '✓' : '✗'} 内置模块
+              {isModuleInstalled ? '✓' : '✗'} {t('modals.androidPatch.builtinModule')}
             </span>
 
             {/* ADB */}
@@ -865,7 +868,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
                   : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {isAdbFound ? '✓' : '✗'} ADB{!isInternalAdb && isAdbFound ? ' (系统)' : ''}
+              {isAdbFound ? '✓' : '✗'} ADB{!isInternalAdb && isAdbFound ? t('modals.androidPatch.systemTag') : ''}
             </span>
           </div>
         </div>
@@ -875,7 +878,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           <div className="mt-3.5 pt-3.5 border-t border-white/10 space-y-2">
             <div className="flex items-center justify-between text-xs text-sky-200">
               <span className="font-semibold">
-                {downloadProgress?.stage === 'verifying' ? '正在执行 SHA-256 完整性校验...' : '环境组件传输中...'}
+                {downloadProgress?.stage === 'verifying' ? t('modals.androidPatch.verifyingSha') : t('modals.androidPatch.transferring')}
                 {downloadProgress?.current_file ? ` (${downloadProgress.current_file})` : ''}
               </span>
               <span className="font-mono font-bold text-white">
@@ -901,7 +904,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   onClick={handleCancelDownload}
                   className="text-rose-400 hover:text-rose-300 font-semibold cursor-pointer underline"
                 >
-                  取消
+                  {t('modals.androidPatch.cancel')}
                 </button>
               </div>
             </div>
@@ -921,11 +924,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 </span>
                 <div className="space-y-1 flex-1 min-w-0">
                   <h3 className="text-sm sm:text-base font-bold text-rose-900">
-                    {isActivePermissionError ? '环境安装失败：程序目录缺少写入权限' : 'Android 补丁环境配置失败'}
+                    {isActivePermissionError ? t('modals.androidPatch.permissionErrorTitle') : t('modals.androidPatch.envConfigFailedTitle')}
                   </h3>
                   <p className="text-xs sm:text-sm text-rose-700 leading-relaxed">
                     {isActivePermissionError
-                      ? '程序目录没有足够的写入权限，无法创建或写入 Android 工具链与 JRE 运行环境文件。'
+                      ? t('modals.androidPatch.permissionErrorDesc')
                       : activeErrorMsg}
                   </p>
                 </div>
@@ -934,15 +937,15 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               {/* If Permission error, show clear dual actionable solutions */}
               {isActivePermissionError && (
                 <div className="ml-11 bg-white/90 rounded-lg p-3 text-xs text-slate-700 border border-rose-200/60 space-y-2">
-                  <div className="font-semibold text-rose-800">推荐解决方式：</div>
+                  <div className="font-semibold text-rose-800">{t('modals.androidPatch.solutionTitle')}</div>
                   <div className="space-y-1.5 text-slate-600">
                     <div className="flex items-start gap-1.5">
-                      <span className="font-bold text-indigo-600 shrink-0">1. 推荐：</span>
-                      <span>将 GBF-Accelerator 移动或解压到普通用户拥有完整写入权限的目录（如 <code className="px-1 py-0.5 bg-slate-100 rounded font-mono text-[11px]">D:\GBF-Accelerator</code>、个人文档或桌面）后重新运行。</span>
+                      <span className="font-bold text-indigo-600 shrink-0">{t('modals.androidPatch.solution1Title')}</span>
+                      <span>{t('modals.androidPatch.solution1Desc')}</span>
                     </div>
                     <div className="flex items-start gap-1.5">
-                      <span className="font-bold text-indigo-600 shrink-0">2. 备选：</span>
-                      <span>右键点击本程序图标，选择【以管理员身份运行】后重新点击一键安装。</span>
+                      <span className="font-bold text-indigo-600 shrink-0">{t('modals.androidPatch.solution2Title')}</span>
+                      <span>{t('modals.androidPatch.solution2Desc')}</span>
                     </div>
                   </div>
                 </div>
@@ -951,7 +954,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               {/* Technical error details if available */}
               {activeErrorDetails && (
                 <details className="ml-11 text-xs text-rose-700/80 cursor-pointer">
-                  <summary className="font-medium hover:underline">查看底层错误详细信息</summary>
+                  <summary className="font-medium hover:underline">{t('modals.androidPatch.viewErrorDetails')}</summary>
                   <pre className="mt-1.5 p-2 bg-rose-100/60 rounded text-[11px] font-mono text-rose-900 whitespace-pre-wrap break-all">
                     {activeErrorDetails}
                   </pre>
@@ -962,32 +965,32 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             {/* Component status overview */}
             <div className="bg-slate-50/70 border border-slate-200/60 rounded-xl p-4 space-y-3">
               <div className="text-xs font-bold text-slate-700 flex items-center justify-between">
-                <span>环境组件就绪状态</span>
-                <span className="text-[11px] font-normal text-slate-500">已就绪项不会重复下载</span>
+                <span>{t('modals.androidPatch.compStatusTitle')}</span>
+                <span className="text-[11px] font-normal text-slate-500">{t('modals.androidPatch.compStatusDesc')}</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                 <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
-                  <span className="text-slate-600">Java 21+ 运行库 (JRE)</span>
+                  <span className="text-slate-600">{t('modals.androidPatch.compJava')}</span>
                   <span className={`font-mono font-medium ${isJavaFound ? 'text-emerald-600' : 'text-rose-500'}`}>
-                    {isJavaFound ? '✓ 已就绪' : '✗ 未就绪'}
+                    {isJavaFound ? t('modals.androidPatch.readyTag') : t('modals.androidPatch.notReadyTag')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
-                  <span className="text-slate-600">LSPatch 核心工具</span>
+                  <span className="text-slate-600">{t('modals.androidPatch.compLspatch')}</span>
                   <span className={`font-mono font-medium ${isLspatchInstalled ? 'text-emerald-600' : 'text-rose-500'}`}>
-                    {isLspatchInstalled ? '✓ 已就绪' : '✗ 未就绪'}
+                    {isLspatchInstalled ? t('modals.androidPatch.readyTag') : t('modals.androidPatch.notReadyTag')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
-                  <span className="text-slate-600">GBF 内置 Xposed 模块</span>
+                  <span className="text-slate-600">{t('modals.androidPatch.compModule')}</span>
                   <span className={`font-mono font-medium ${isModuleInstalled ? 'text-emerald-600' : 'text-rose-500'}`}>
-                    {isModuleInstalled ? '✓ 已就绪' : '✗ 未就绪'}
+                    {isModuleInstalled ? t('modals.androidPatch.readyTag') : t('modals.androidPatch.notReadyTag')}
                   </span>
                 </div>
                 <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
-                  <span className="text-slate-600">ADB 平台调试工具</span>
+                  <span className="text-slate-600">{t('modals.androidPatch.compAdb')}</span>
                   <span className={`font-mono font-medium ${isAdbFound ? 'text-emerald-600' : 'text-rose-500'}`}>
-                    {isAdbFound ? '✓ 已就绪' : '✗ 未就绪'}
+                    {isAdbFound ? t('modals.androidPatch.readyTag') : t('modals.androidPatch.notReadyTag')}
                   </span>
                 </div>
               </div>
@@ -1002,7 +1005,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-sm font-bold shadow-sm transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 select-none"
               >
                 <RefreshCw className={`w-4 h-4 ${isInstallingAll ? 'animate-spin' : ''}`} />
-                <span>{isDownloadActive ? '环境组件下载中...' : '重新尝试一键安装全环境'}</span>
+                <span>{isDownloadActive ? t('modals.androidPatch.componentDownloading') : t('modals.androidPatch.retryInstallAll')}</span>
               </button>
             </div>
           </div>
@@ -1013,11 +1016,10 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             </div>
             <div className="space-y-1.5 max-w-lg mx-auto">
               <h3 className="text-base sm:text-lg font-bold text-slate-800">
-                请先就绪 Android 补丁制作环境
+                {t('modals.androidPatch.onboardingTitle')}
               </h3>
               <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
-                制作全内置补丁需要依赖 LSPatch 核心、内置 Xposed 模块以及免配置的轻量 Java 21+ 运行库。
-                点击下方【一键安装全环境】，系统将全自动完成静默下载与校验，环境齐备后将自动展开制作面板。
+                {t('modals.androidPatch.onboardingDesc')}
               </p>
             </div>
             <div className="pt-2">
@@ -1028,7 +1030,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-sm font-bold shadow-sm transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 select-none"
               >
                 <Zap className="w-4 h-4 fill-current" />
-                <span>{isDownloadActive ? '环境组件下载中...' : '一键安装全环境 (约 120 MB)'}</span>
+                <span>{isDownloadActive ? t('modals.androidPatch.componentDownloading') : t('modals.androidPatch.installAllEnvSize')}</span>
               </button>
             </div>
           </div>
@@ -1042,7 +1044,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           <div className="flex items-center gap-2">
             <FileBox className="w-4 h-4 text-indigo-600" />
             <h2 className="text-sm sm:text-base font-bold text-slate-800">
-              选择官方安装包 (APK / Split APK / APKS / XAPK)
+              {t('modals.androidPatch.selectOfficialPackage')}
             </h2>
           </div>
           <div className="flex items-center gap-1 text-xs">
@@ -1056,7 +1058,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               }`}
             >
               <Smartphone className="w-3.5 h-3.5" />
-              <span>从手机提取</span>
+              <span>{t('modals.androidPatch.tabDeviceShort')}</span>
               {adbDevices.filter(d => d.state === 'device').length > 0 && (
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               )}
@@ -1070,7 +1072,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              拖拽上传
+              {t('modals.androidPatch.tabUploadShort')}
             </button>
             <button
               type="button"
@@ -1081,7 +1083,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   : 'text-slate-500 hover:text-slate-800'
               }`}
             >
-              本地路径
+              {t('modals.androidPatch.tabPathShort')}
             </button>
           </div>
         </div>
@@ -1095,9 +1097,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   <Smartphone className="w-5 h-5" />
                 </div>
                 <div>
-                  <div className="text-xs font-semibold text-slate-500">已连接手机设备</div>
+                  <div className="text-xs font-semibold text-slate-500">{t('modals.androidPatch.connectedDeviceTitle')}</div>
                   {adbDevices.length === 0 ? (
-                    <div className="text-sm font-bold text-slate-700">未检测到 USB 调试设备</div>
+                    <div className="text-sm font-bold text-slate-700">{t('modals.androidPatch.noAdbDevice')}</div>
                   ) : (
                     <div className="flex items-center gap-2">
                       <select
@@ -1112,7 +1114,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                         ))}
                       </select>
                       <span className="text-[11px] px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800">
-                        在线就绪
+                        {t('modals.androidPatch.onlineReady')}
                       </span>
                     </div>
                   )}
@@ -1124,17 +1126,17 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 className="px-2.5 py-1 text-xs text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg bg-white flex items-center gap-1.5 self-start sm:self-center cursor-pointer shadow-2xs hover:bg-slate-50"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>刷新设备</span>
+                <span>{t('modals.androidPatch.refreshDevicesBtn')}</span>
               </button>
             </div>
 
             {adbDevices.length === 0 ? (
               <div className="py-4 text-center space-y-2">
                 <p className="text-xs text-slate-600 max-w-md mx-auto">
-                  请使用 USB 数据线将 Android 手机连接到电脑，并确保手机已开启【开发者选项 → USB 调试】。
+                  {t('modals.androidPatch.adbUsbPrompt1')}
                 </p>
                 <div className="text-[11px] text-slate-400">
-                  若手机弹出“是否允许 USB 调试”提示，请勾选“始终允许”并点击确认。
+                  {t('modals.androidPatch.adbUsbPrompt2')}
                 </div>
                 {!envStatus?.adb?.found && (
                   <div className="pt-2">
@@ -1145,7 +1147,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                       className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs"
                     >
                       <Download className="w-3.5 h-3.5" />
-                      <span>{isDownloadingAdb ? '正在下载平台工具...' : '一键下载轻量 ADB 工具 (约 2.8 MB)'}</span>
+                      <span>{isDownloadingAdb ? t('modals.androidPatch.downloadingTools') : t('modals.androidPatch.downloadAdbBtn')}</span>
                     </button>
                   </div>
                 )}
@@ -1156,15 +1158,15 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 <div className="bg-white border border-slate-200/90 rounded-lg p-3 space-y-2">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
                     <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <span>待提取的目标浏览器应用：</span>
+                      <span>{t('modals.androidPatch.targetAppLabel')}</span>
                       {isLoadingBrowsers && (
                         <span className="text-[11px] text-indigo-600 font-normal animate-pulse">
-                          (正在扫描手机已安装应用...)
+                          {t('modals.androidPatch.scanningApps')}
                         </span>
                       )}
                     </span>
                     <span className="text-[11px] text-slate-500">
-                      自动探测手机已安装浏览器，优先推荐 SkyLeap，支持一键选取
+                      {t('modals.androidPatch.detectTip')}
                     </span>
                   </div>
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
@@ -1183,7 +1185,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                       {deviceBrowsers.length > 0 ? (
                         <>
                           {deviceBrowsers.some(b => b.is_installed && b.is_system_webview !== false) && (
-                            <optgroup label="✅ 手机已安装的系统 WebView 浏览器 (支持加速)">
+                            <optgroup label={t('modals.androidPatch.groupInstalledWebView')}>
                               {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview !== false).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
                                   {b.is_skyleap ? '⭐ ' : '🌐 '}{b.label}
@@ -1192,7 +1194,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             </optgroup>
                           )}
                           {deviceBrowsers.some(b => b.is_installed && b.is_system_webview === false) && (
-                            <optgroup label="⚠️ 手机已安装的独立内核浏览器 (暂不支持)">
+                            <optgroup label={t('modals.androidPatch.groupInstalledStandalone')}>
                               {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview === false).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
                                   🚫 {b.label}
@@ -1201,7 +1203,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             </optgroup>
                           )}
                           {deviceBrowsers.some(b => !b.is_installed) && (
-                            <optgroup label="🌐 其它常见浏览器 (未检测到安装)">
+                            <optgroup label={t('modals.androidPatch.groupOther')}>
                               {deviceBrowsers.filter(b => !b.is_installed).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
                                   {b.is_system_webview !== false ? '🌐 ' : '🚫 '}{b.label}
@@ -1212,22 +1214,22 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                         </>
                       ) : (
                         <>
-                          <option value="com.dena.skyleap">⭐ DeNA SkyLeap (官方推荐 · 系统 WebView)</option>
-                          <option value="mark.via.gp">🌐 Via 浏览器 (系统 WebView · 支持)</option>
-                          <option value="com.android.chrome">🚫 Google Chrome (独立 Chromium · 暂不支持)</option>
-                          <option value="com.kiwibrowser.browser">🚫 Kiwi Browser (独立 Chromium · 暂不支持)</option>
-                          <option value="com.microsoft.emmx">🚫 Microsoft Edge (独立 Chromium · 暂不支持)</option>
-                          <option value="com.brave.browser">🚫 Brave (独立 Chromium · 暂不支持)</option>
+                          <option value="com.dena.skyleap">{t('modals.androidPatch.optSkyleap')}</option>
+                          <option value="mark.via.gp">{t('modals.androidPatch.optVia')}</option>
+                          <option value="com.android.chrome">{t('modals.androidPatch.optChrome')}</option>
+                          <option value="com.kiwibrowser.browser">{t('modals.androidPatch.optKiwi')}</option>
+                          <option value="com.microsoft.emmx">{t('modals.androidPatch.optEdge')}</option>
+                          <option value="com.brave.browser">{t('modals.androidPatch.optBrave')}</option>
                         </>
                       )}
-                      <option value="__custom__">✍️ 自定义指定其它包名...</option>
+                      <option value="__custom__">{t('modals.androidPatch.optCustom')}</option>
                     </select>
                     {isCustomExtractPackage && (
                       <input
                         type="text"
                         value={targetExtractPackage}
                         onChange={(e) => setTargetExtractPackage(e.target.value.trim())}
-                        placeholder="输入手机中已安装的应用包名，如 com.example.browser"
+                        placeholder={t('modals.androidPatch.customPackagePlaceholder')}
                         className="text-xs font-mono text-slate-800 bg-white border border-indigo-300 rounded-lg px-2.5 py-1.5 flex-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
                     )}
@@ -1239,8 +1241,8 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                         <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-xs text-amber-900 flex items-start gap-2 mt-1">
                           <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                           <div className="text-[11px] leading-relaxed">
-                            <strong>暂不支持该浏览器：</strong>
-                            <span>{sel.label} 采用独立 Chromium / Gecko 内核。GBF 补丁专为基于 Android 系统原生 WebView 的浏览器设计（优先推荐 SkyLeap 或 Via）。</span>
+                            <strong>{t('modals.androidPatch.unsupportedBrowserTitle')}</strong>
+                            <span>{t('modals.androidPatch.unsupportedBrowserDesc', { name: sel.label })}</span>
                           </div>
                         </div>
                       )
@@ -1254,33 +1256,33 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-slate-900 text-sm">
-                          {deviceApp.package_name === 'com.dena.skyleap' ? 'SkyLeap 浏览器' : deviceApp.package_name}
+                          {deviceApp.package_name === 'com.dena.skyleap' ? t('modals.androidPatch.skyleapBrowser') : deviceApp.package_name}
                         </span>
                         <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">
-                          v{deviceApp.version_name || '已安装'}
+                          v{deviceApp.version_name || t('modals.androidPatch.installedStatus')}
                         </span>
                         <span className="text-[11px] text-emerald-700 font-medium">
-                          ({deviceApp.total_apks} 个分包组件)
+                          {t('modals.androidPatch.splitComponentsCount', { count: deviceApp.total_apks ?? 1 })}
                         </span>
                       </div>
                       <div className="text-xs text-slate-500 font-mono">
-                        包名: {deviceApp.package_name}
+                        {t('modals.androidPatch.packageNameLabel', { name: deviceApp.package_name })}
                       </div>
                     </div>
                     {isExtracting ? (
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-lg shrink-0">
                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>正在从手机提取...</span>
+                        <span>{t('modals.androidPatch.extractingState')}</span>
                       </div>
                     ) : inspectedPkg && inspectedPkg.package_name === deviceApp.package_name ? (
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg shrink-0">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>已提取并载入</span>
+                        <span>{t('modals.androidPatch.extractedLoadedState')}</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg shrink-0">
                         <span className="w-2 h-2 rounded-full bg-indigo-500" />
-                        <span>就绪待提取</span>
+                        <span>{t('modals.androidPatch.readyExtractState')}</span>
                       </div>
                     )}
                   </div>
@@ -1289,10 +1291,10 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                     <div className="space-y-1">
                       <div className="font-semibold">
-                        未在所选手机中检测到应用 [{targetExtractPackage || 'com.dena.skyleap'}]
+                        {t('modals.androidPatch.appNotFoundOnPhone', { pkg: targetExtractPackage || 'com.dena.skyleap' })}
                       </div>
                       <div className="text-amber-800 text-[11px]">
-                        请确认手机上已安装该应用，或检查包名拼写；亦可切换到上方【拖拽上传】标签页直接导入本地下载好的安装包。
+                        {t('modals.androidPatch.appNotFoundTip')}
                       </div>
                     </div>
                   </div>
@@ -1329,11 +1331,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               <div className="space-y-1">
                 <div className="text-sm font-bold text-slate-800">
                   {isUploading
-                    ? `正在上传导入 (${uploadPercent}%)...`
-                    : '将官方浏览器安装包拖入此处，或点击浏览文件'}
+                    ? t('modals.androidPatch.uploadingPercent', { percent: uploadPercent })
+                    : t('modals.androidPatch.dropOrBrowse')}
                 </div>
                 <div className="text-xs text-slate-500">
-                  优先推荐 SkyLeap 官方安装包；支持单 APK、Split APK 压缩包、.apks 以及 .xapk 格式 (最大 256MB)
+                  {t('modals.androidPatch.dropTip')}
                 </div>
               </div>
               {isUploading && (
@@ -1352,14 +1354,14 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         {inputMode === 'path' && (
           <div className="space-y-3">
             <label className="text-xs text-slate-600 font-medium block">
-              输入电脑上 APK / APKS 文件的绝对路径或工作区相对路径：
+              {t('modals.androidPatch.inputPathLabel')}
             </label>
             <div className="flex items-center gap-2">
               <input
                 type="text"
                 value={manualPath}
                 onChange={(e) => setManualPath(e.target.value)}
-                placeholder="例如: C:\Users\Downloads\com.dena.skyleap.apks"
+                placeholder={t('modals.androidPatch.pathPlaceholder')}
                 className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
               />
               <button
@@ -1368,7 +1370,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 disabled={isInspecting || !manualPath.trim()}
                 className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-semibold transition-all shadow-2xs disabled:opacity-50 cursor-pointer shrink-0"
               >
-                {isInspecting ? '解析中...' : '解析安装包'}
+                {isInspecting ? t('modals.androidPatch.inspectingBtn') : t('modals.androidPatch.inspectBtn')}
               </button>
             </div>
           </div>
@@ -1389,33 +1391,33 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   {inspectedPkg.is_system_webview === false ? (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200 inline-flex items-center gap-1">
                       <AlertTriangle className="w-3 h-3 text-rose-600" />
-                      <span>{inspectedPkg.engine_desc || '独立内核 · 暂不支持'}</span>
+                      <span>{inspectedPkg.engine_desc || t('modals.androidPatch.standaloneEngine')}</span>
                     </span>
                   ) : inspectedPkg.is_official_skyleap ? (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1">
                       <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      <span>官方 SkyLeap 认证 (系统 WebView)</span>
+                      <span>{t('modals.androidPatch.officialSkyleap')}</span>
                     </span>
                   ) : (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200 inline-flex items-center gap-1">
                       <Globe className="w-3 h-3 text-sky-600" />
-                      <span>通用系统 WebView 浏览器 (支持)</span>
+                      <span>{t('modals.androidPatch.genericWebView')}</span>
                     </span>
                   )}
                   {inspectedPkg.is_already_patched && (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 inline-flex items-center gap-1">
                       <Zap className="w-3 h-3 text-amber-600" />
-                      <span>已内嵌 LSPatch 核心</span>
+                      <span>{t('modals.androidPatch.lspatchEmbedded')}</span>
                     </span>
                   )}
                 </div>
                 <div className="text-xs text-slate-600 flex items-center gap-2 flex-wrap">
                   <span>
-                    结构: {inspectedPkg.is_split ? `Split APK (${inspectedPkg.total_apks} 个子文件)` : '单 APK 文件'}
+                    {t('modals.androidPatch.structureLabel', { structure: inspectedPkg.is_split ? t('modals.androidPatch.splitApkStructure', { count: inspectedPkg.total_apks }) : t('modals.androidPatch.singleApkStructure') })}
                   </span>
                   <span>·</span>
                   <span className="truncate max-w-xs sm:max-w-md" title={inspectedPkg.file_path}>
-                    文件: {inspectedPkg.base_input_name}
+                    {t('modals.androidPatch.fileLabel', { file: inspectedPkg.base_input_name })}
                   </span>
                 </div>
               </div>
@@ -1426,7 +1428,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   onClick={() => setInspectedPkg(null)}
                   className="text-xs text-slate-500 hover:text-slate-800 px-2 py-1 rounded transition-colors"
                 >
-                  清除
+                  {t('modals.androidPatch.clearBtn')}
                 </button>
               </div>
             </div>
@@ -1436,9 +1438,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2.5">
                 <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <div className="space-y-1">
-                  <div className="font-bold">检测到已内嵌 LSPatch 核心</div>
+                  <div className="font-bold">{t('modals.androidPatch.lspatchDetectedTitle')}</div>
                   <div className="text-amber-800 text-[11px] leading-relaxed">
-                    检测到该安装包已包含 LSPatch 核心{inspectedPkg.original_version_name ? `（原始版本: v${inspectedPkg.original_version_name}）` : ''}。重新修补时会自动从安装包中还原未注入核心的原始 APK，然后重新注入最新版模块。
+                    {t('modals.androidPatch.lspatchDetectedDesc', { version: inspectedPkg.original_version_name ? ` (v${inspectedPkg.original_version_name})` : '' })}
                   </div>
                 </div>
               </div>
@@ -1449,9 +1451,9 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
               <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-900 flex items-start gap-2.5">
                 <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
                 <div className="space-y-1">
-                  <div className="font-bold">❌ 暂不支持该浏览器内核</div>
+                  <div className="font-bold">{t('modals.androidPatch.unsupportedEngineTitle')}</div>
                   <div className="text-rose-800 text-[11px] leading-relaxed">
-                    {inspectedPkg.unsupported_reason || '检测到该安装包为独立 Chromium/Gecko 内核浏览器（如 Chrome、Kiwi 等）。GBF 补丁仅支持基于 Android 系统原生 WebView 的浏览器（如官方 SkyLeap、Via 等）。暂不支持为独立内核浏览器注入补丁。'}
+                    {inspectedPkg.unsupported_reason || t('modals.androidPatch.unsupportedEngineDesc')}
                   </div>
                 </div>
               </div>
@@ -1467,7 +1469,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
                 />
                 <span className="text-xs font-medium text-slate-700">
-                  自动备份原版安装包至 <code>backups/</code> 目录
+                  {t('modals.androidPatch.autoBackupCheckbox')}
                 </span>
               </label>
               <button
@@ -1475,7 +1477,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 onClick={handleOpenBackup}
                 className="text-xs text-indigo-700 hover:text-indigo-900 underline font-medium cursor-pointer"
               >
-                打开备份目录
+                {t('modals.androidPatch.openBackupDir')}
               </button>
             </div>
           </div>
@@ -1484,7 +1486,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         {/* Patch Options & Run Button */}
         <div className="mt-5 pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2 flex-1 max-w-md">
-            <label className="text-xs font-medium text-slate-600 shrink-0">输出目录：</label>
+            <label className="text-xs font-medium text-slate-600 shrink-0">{t('modals.androidPatch.outputDirLabel')}</label>
             <input
               type="text"
               value={outputDir}
@@ -1497,17 +1499,17 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2">
             {isModuleOutdated && (
               <span className="text-[11px] text-sky-700 font-medium">
-                模块非最新版，内嵌时将自动下载并更新至最新版
+                {t('modals.androidPatch.moduleNotLatestTip')}
               </span>
             )}
             {!isComponentsVerified && !isModuleOutdated && (
               <span className="text-[11px] text-amber-700 font-medium">
-                {isCorrupted ? '组件损坏，需重新下载' : '需先下载并启用组件'}
+                {isCorrupted ? t('modals.androidPatch.componentCorruptedTip') : t('modals.androidPatch.componentNeedDownloadTip')}
               </span>
             )}
             {((inspectedPkg && inspectedPkg.is_system_webview === false) || isSelectedBrowserUnsupported) && (
               <span className="text-[11px] text-rose-600 font-medium">
-                仅支持系统 WebView 浏览器
+                {t('modals.androidPatch.onlyWebViewTip')}
               </span>
             )}
             {isExtractStage ? (
@@ -1520,12 +1522,12 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 {isExtracting ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>正在从手机提取并解析...</span>
+                    <span>{t('modals.androidPatch.extractAndInspectState')}</span>
                   </>
                 ) : (
                   <>
                     <Zap className="w-4 h-4 fill-current" />
-                    <span>从手机一键提取并载入</span>
+                    <span>{t('modals.androidPatch.extractFromPhoneBtn')}</span>
                   </>
                 )}
               </button>
@@ -1535,34 +1537,34 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   type="button"
                   onClick={() => setPatchStatus(null)}
                   className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-semibold transition-all cursor-pointer"
-                  title="重新制作补丁包"
+                  title={t('modals.androidPatch.repatchTooltip')}
                 >
-                  重新制作
+                  {t('modals.androidPatch.repatchBtn')}
                 </button>
                 <button
                   type="button"
                   onClick={handleOpenOutput}
                   className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-semibold transition-all cursor-pointer"
-                  title="打开生成文件所在目录"
+                  title={t('modals.androidPatch.openOutputDirTooltip')}
                 >
-                  打开产物目录
+                  {t('modals.androidPatch.openOutputDirBtn')}
                 </button>
                 <button
                   type="button"
                   disabled={isInstalling || adbDevices.filter(d => d.state === 'device').length === 0}
                   onClick={() => handleInstallToDevice(false)}
-                  title={adbDevices.filter(d => d.state === 'device').length === 0 ? '未检测到已连接手机，请通过 USB 连接手机并开启 USB 调试' : '一键将补丁版安装到手机'}
+                  title={adbDevices.filter(d => d.state === 'device').length === 0 ? t('modals.androidPatch.installToPhoneTooltipNoDev') : t('modals.androidPatch.installToPhoneTooltip')}
                   className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
                 >
                   {isInstalling ? (
                     <>
                       <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>正在安装至手机...</span>
+                      <span>{t('modals.androidPatch.installingToPhoneState')}</span>
                     </>
                   ) : (
                     <>
                       <Zap className="w-4 h-4 fill-current" />
-                      <span>一键安装到手机</span>
+                      <span>{t('modals.androidPatch.installToPhoneBtn')}</span>
                     </>
                   )}
                 </button>
@@ -1575,7 +1577,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     onClick={handleCancelPatch}
                     className="px-4 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs sm:text-sm font-semibold transition-all cursor-pointer select-none"
                   >
-                    取消制作
+                    {t('modals.androidPatch.cancelPatchBtn')}
                   </button>
                 )}
                 <button
@@ -1587,22 +1589,22 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   {isRunning ? (
                     <>
                       <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>处理中 ({progressPercent}%)...</span>
+                      <span>{t('modals.androidPatch.processingPercent', { percent: progressPercent })}</span>
                     </>
                   ) : !inspectedPkg ? (
                     <>
                       <Play className="w-4 h-4 fill-current opacity-60" />
-                      <span>请先导入或选择安装包</span>
+                      <span>{t('modals.androidPatch.pleaseSelectPackage')}</span>
                     </>
                   ) : inspectedPkg.is_already_patched ? (
                     <>
                       <RefreshCw className="w-4 h-4" />
-                      <span>重新修补 / 升级核心</span>
+                      <span>{t('modals.androidPatch.repatchOrUpgrade')}</span>
                     </>
                   ) : (
                     <>
                       <Play className="w-4 h-4 fill-current" />
-                      <span>开始制作修补</span>
+                      <span>{t('modals.androidPatch.startPatchBtn')}</span>
                     </>
                   )}
                 </button>
@@ -1619,7 +1621,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             <div className="flex items-center gap-2">
               <Terminal className="w-4 h-4 text-slate-700" />
               <h2 className="text-sm sm:text-base font-bold text-slate-800">
-                处理进度与执行日志
+                {t('modals.androidPatch.progressAndLogs')}
               </h2>
             </div>
             <div className="flex items-center gap-2">
@@ -1630,7 +1632,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   className="px-3 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                 >
                   <FolderOpen className="w-3.5 h-3.5" />
-                  <span>打开产物文件夹</span>
+                  <span>{t('modals.androidPatch.openOutputFolderBtn')}</span>
                 </button>
               )}
               <button
@@ -1647,7 +1649,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           <div className="space-y-2 mb-4">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-slate-700">
-                {patchStatus?.stage_text || (isRunning ? '正在处理...' : '处理就绪')}
+                {patchStatus?.stage_text || (isRunning ? t('modals.androidPatch.stageProcessing') : t('modals.androidPatch.stageReady'))}
               </span>
               <span className="font-mono font-bold text-indigo-700">{progressPercent}%</span>
             </div>
@@ -1667,11 +1669,11 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             {/* Stages overview */}
             <div className="grid grid-cols-5 gap-1.5 text-[11px] text-center pt-1 font-medium">
               {[
-                '1. 环境工具',
-                '2. 解析与备份',
-                '3. LSPatch 注入',
-                '4. 组织产物',
-                '5. 完整性校验',
+                t('modals.androidPatch.step1'),
+                t('modals.androidPatch.step2'),
+                t('modals.androidPatch.step3'),
+                t('modals.androidPatch.step4'),
+                t('modals.androidPatch.step5'),
               ].map((name, i) => {
                 const stageNum = i + 1
                 const curStage = patchStatus?.stage ?? 0
@@ -1701,26 +1703,26 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             <div className="mb-4 p-4 rounded-xl bg-emerald-50/80 border border-emerald-200 text-xs text-emerald-950 space-y-2">
               <div className="flex items-center gap-2 font-bold text-emerald-900 text-sm">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <span>处理完成！已生成全内置加速产物 (无需独立 App)</span>
+                <span>{t('modals.androidPatch.successAllBuiltIn')}</span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-700 pt-1">
                 <div>
-                  <span className="font-semibold text-slate-900">输出类型：</span>
-                  <span>{isResultSplit ? `Split APK 套件${resultTotalApks > 0 ? ` (${resultTotalApks} 个分包)` : ''}` : '单 APK 安装包'}</span>
+                  <span className="font-semibold text-slate-900">{t('modals.androidPatch.outputTypeLabel')}</span>
+                  <span>{isResultSplit ? t('modals.androidPatch.splitApkSuite', { count: resultTotalApks > 0 ? t('modals.androidPatch.splitApkSubCount', { count: resultTotalApks }) : '' }) : t('modals.androidPatch.singleApkSuite')}</span>
                 </div>
                 <div>
-                  <span className="font-semibold text-slate-900">总大小：</span>
+                  <span className="font-semibold text-slate-900">{t('modals.androidPatch.totalSizeLabel')}</span>
                   <span>{resultTotalMb} MB</span>
                 </div>
                 <div className="sm:col-span-2 truncate">
-                  <span className="font-semibold text-slate-900">生成文件：</span>
+                  <span className="font-semibold text-slate-900">{t('modals.androidPatch.outputFilesLabel')}</span>
                   <span className="font-mono text-slate-800" title={resultGeneratedFile}>
                     {resultGeneratedFile}
                   </span>
                 </div>
                 {patchResult?.backup_path && (
                   <div className="sm:col-span-2 truncate text-slate-500">
-                    <span className="font-semibold text-slate-700">原版备份：</span>
+                    <span className="font-semibold text-slate-700">{t('modals.androidPatch.backupOriginLabel')}</span>
                     <span className="font-mono" title={patchResult.backup_path}>
                       {patchResult.backup_path}
                     </span>
@@ -1730,16 +1732,16 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
               {/* Installation guidance */}
               <div className="pt-2 border-t border-emerald-200/60 text-slate-600 space-y-2">
-                <div className="font-bold text-slate-800">在手机上的安装说明：</div>
+                <div className="font-bold text-slate-800">{t('modals.androidPatch.phoneInstallGuide')}</div>
                 <ul className="list-disc pl-4 space-y-0.5 pt-1">
                   <li>
-                    <span className="font-semibold">一键安装:</span> 若手机已连接电脑并开启 USB 调试，直接点击上方主操作栏「一键安装到手机」自动推入安装。
+                    <span className="font-semibold">{t('modals.androidPatch.oneClickGuideTitle')}</span>{t('modals.androidPatch.oneClickGuideDesc')}
                   </li>
                   <li>
-                    <span className="font-semibold">手机直接安装:</span> {isResultSplit ? '将生成的 .apks 传至手机，使用 SAI (Split APKs Installer) 安装。' : '将生成的 APK 传至手机并点击安装。'}
+                    <span className="font-semibold">{t('modals.androidPatch.manualGuideTitle')}</span>{isResultSplit ? t('modals.androidPatch.manualGuideSplitDesc') : t('modals.androidPatch.manualGuideSingleDesc')}
                   </li>
                   <li>
-                    <span className="font-semibold">开始使用:</span> 安装完成后直接在手机上打开补丁版浏览器即可，内置加速核心随浏览器启动自动开启，在浏览器访问 <code>http://127.0.0.1:8125</code> 可查看控制台。
+                    <span className="font-semibold">{t('modals.androidPatch.startUseTitle')}</span>{t('modals.androidPatch.startUseDesc')}
                   </li>
                 </ul>
               </div>
@@ -1751,21 +1753,21 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                     <div className="space-y-0.5">
                       <div className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
                         <Smartphone className="w-3.5 h-3.5 text-emerald-700" />
-                        <span>检测到已连接手机：{adbDevices.find(d => d.serial === selectedDevice)?.model || selectedDevice}</span>
+                        <span>{t('modals.androidPatch.deviceDetectedNotice', { model: adbDevices.find(d => d.serial === selectedDevice)?.model || selectedDevice })}</span>
                       </div>
                       <div className="text-[11px] text-slate-500">
-                        无需手动传包与安装 SAI，点击上方主操作栏【一键安装到手机】即可推送到手机部署。
+                        {t('modals.androidPatch.noNeedManualInstall')}
                       </div>
                     </div>
                     {isInstalling ? (
                       <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-800 bg-emerald-100/90 border border-emerald-300 px-3 py-1.5 rounded-lg shrink-0">
                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>正在推送到手机...</span>
+                        <span>{t('modals.androidPatch.pushingToPhoneState')}</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-800 bg-emerald-100/80 border border-emerald-300 px-3 py-1.5 rounded-lg shrink-0">
                         <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>已连接就绪</span>
+                        <span>{t('modals.androidPatch.connectedReady')}</span>
                       </div>
                     )}
                   </div>
@@ -1777,13 +1779,13 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                         <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                         <div className="space-y-1">
                           <div className="font-bold text-amber-900">
-                            检测到官方原版签名冲突 (INSTALL_FAILED_UPDATE_INCOMPATIBLE)
+                            {t('modals.androidPatch.sigConflictTitle')}
                           </div>
                           <div className="text-[11px] text-amber-800 leading-relaxed">
-                            手机上的 SkyLeap 是官方开发者签名，而注入补丁后的应用使用的是调试签名。Android 安全机制要求覆盖安装时签名必须一致。
+                            {t('modals.androidPatch.sigConflictDesc')}
                           </div>
                           <div className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 p-2 rounded">
-                            ⚠️ 重要提示：需先卸载手机上的旧版 SkyLeap。请务必确认您的 GBF 游戏账号已绑定 Mobage/邮箱/推特，以免游客数据丢失！
+                            {t('modals.androidPatch.sigConflictWarning')}
                           </div>
                         </div>
                       </div>
@@ -1793,7 +1795,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                           onClick={() => setShowUninstallModal(false)}
                           className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-medium cursor-pointer"
                         >
-                          取消
+                          {t('modals.androidPatch.cancelBtn')}
                         </button>
                         <button
                           type="button"
@@ -1802,7 +1804,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                           className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                          <span>确认先卸载旧版，再自动安装补丁版</span>
+                          <span>{t('modals.androidPatch.confirmReinstallBtn')}</span>
                         </button>
                       </div>
                     </div>
@@ -1811,7 +1813,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                   {installResult?.ok && (
                     <div className="bg-emerald-100/70 border border-emerald-300 rounded-lg p-2.5 text-xs text-emerald-900 flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span className="font-medium">🎉 安装成功！应用已成功部署至手机，可在手机桌面上直接打开开始游戏。</span>
+                      <span className="font-medium">{t('modals.androidPatch.deploySuccessNotice')}</span>
                     </div>
                   )}
                 </div>
@@ -1824,7 +1826,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
               <div>
-                <span className="font-bold">处理失败：</span>
+                <span className="font-bold">{t('modals.androidPatch.processFailed')}</span>
                 <span>{patchStatus.error}</span>
               </div>
             </div>
@@ -1852,17 +1854,17 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-4 sm:p-5 text-xs text-slate-600 space-y-2">
         <div className="flex items-center gap-1.5 font-bold text-slate-800">
           <ShieldCheck className="w-4 h-4 text-indigo-600" />
-          <span>使用须知与安全治理规范</span>
+          <span>{t('modals.androidPatch.complianceTitle')}</span>
         </div>
         <ul className="list-disc pl-4 space-y-1 leading-relaxed text-slate-600">
           <li>
-            <strong className="text-slate-700">浏览器支持与推荐：</strong> 推荐使用标准系统 WebView 浏览器（优先推荐 DeNA SkyLeap），亦兼容各类基于系统 WebView 打造的轻量浏览器。
+            <strong className="text-slate-700">{t('modals.androidPatch.complianceItem1Title')}</strong> {t('modals.androidPatch.complianceItem1Desc')}
           </li>
           <li>
-            <strong className="text-slate-700">全内置自包含架构：</strong> 补丁将 Go 加速核心内嵌于 APK 内部，应用启动时主进程会自动拉起本地代理与缓存服务，退出时自动终止，手机桌面无需再安装或常驻独立的加速器宿主 App。
+            <strong className="text-slate-700">{t('modals.androidPatch.complianceItem2Title')}</strong> {t('modals.androidPatch.complianceItem2Desc')}
           </li>
           <li>
-            <strong className="text-slate-700">100% 本地运算与合规：</strong> 所有解包、注入与签名过程完全在您的本地电脑完成，绝不向任何外部服务器上传安装包；本工具不分发、不篡改官方 SkyLeap 原始字节，用户需自行通过官方渠道获取安装包。
+            <strong className="text-slate-700">{t('modals.androidPatch.complianceItem3Title')}</strong> {t('modals.androidPatch.complianceItem3Desc')}
           </li>
         </ul>
       </div>

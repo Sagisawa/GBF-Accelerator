@@ -111,11 +111,11 @@ export const BoostModal: React.FC<BoostModalProps> = ({
       if (res?.task_id) {
         boostTaskIdRef.current = String(res.task_id)
       }
-      onToast('RAM Boost 全量预载入已启动', 'info')
+      onToast(t('modals.boost.boostRunning'), 'info')
       await fetchStatus()
       onRefresh()
     } catch (e: any) {
-      onToast(`启动失败: ${e.message}`, 'error')
+      onToast(t('toasts.startFailed', { error: e.message }), 'error')
     } finally {
       setActionLoading(false)
     }
@@ -135,11 +135,11 @@ export const BoostModal: React.FC<BoostModalProps> = ({
         return
       }
       await cancelCacheTask(targetTaskId)
-      onToast('已请求停止后续载入', 'info')
+      onToast(t('modals.boost.stopLoading'), 'info')
       await fetchStatus()
       onRefresh()
     } catch (e: any) {
-      onToast(`停止失败: ${e.message}`, 'error')
+      onToast(`${t('common.failed')}: ${e.message}`, 'error')
     } finally {
       setActionLoading(false)
     }
@@ -150,11 +150,11 @@ export const BoostModal: React.FC<BoostModalProps> = ({
     try {
       await disableBoost()
       boostTaskIdRef.current = null
-      onToast('RAM Boost 已关闭，驻留内存已释放', 'success')
+      onToast(t('modals.boost.disableBoost'), 'success')
       await fetchStatus()
       onRefresh()
     } catch (e: any) {
-      onToast(`关闭失败: ${e.message}`, 'error')
+      onToast(`${t('common.failed')}: ${e.message}`, 'error')
     } finally {
       setActionLoading(false)
     }
@@ -195,23 +195,23 @@ export const BoostModal: React.FC<BoostModalProps> = ({
         {/* Memory Budget & Resource Meters */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-lg">
-            <div className="text-[11px] text-slate-500 font-medium">常规内存缓存</div>
+            <div className="text-[11px] text-slate-500 font-medium">{t('modals.boost.ramCache')}</div>
             <div className="text-sm font-bold text-slate-800 font-mono mt-0.5">{Math.round(ramMB)} MB</div>
           </div>
           <div className="p-2.5 bg-amber-50/70 border border-amber-200/80 rounded-lg">
-            <div className="text-[11px] text-amber-700 font-medium">全量驻留内存</div>
+            <div className="text-[11px] text-amber-700 font-medium">{t('modals.boost.residentMemory')}</div>
             <div className="text-sm font-bold text-amber-900 font-mono mt-0.5">{Math.round(residentMB)} MB</div>
           </div>
           <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-lg">
-            <div className="text-[11px] text-slate-500 font-medium">加速器内存配额</div>
+            <div className="text-[11px] text-slate-500 font-medium">{t('modals.boost.acceleratorQuota')}</div>
             <div className="text-sm font-bold text-slate-800 font-mono mt-0.5">
               {Math.round(totalRamMB)} / {ramMaxMB} MB
             </div>
           </div>
           <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-lg">
-            <div className="text-[11px] text-slate-500 font-medium">系统可用物理内存</div>
+            <div className="text-[11px] text-slate-500 font-medium">{t('modals.boost.sysAvail')}</div>
             <div className="text-sm font-bold text-slate-800 font-mono mt-0.5">
-              {sysAvailMB > 0 ? (sysTotalMB > 0 ? `${(sysAvailMB / 1024).toFixed(1)} / ${(sysTotalMB / 1024).toFixed(1)} GB` : `${(sysAvailMB / 1024).toFixed(1)} GB`) : '检测中'}
+              {sysAvailMB > 0 ? (sysTotalMB > 0 ? `${(sysAvailMB / 1024).toFixed(1)} / ${(sysTotalMB / 1024).toFixed(1)} GB` : `${(sysAvailMB / 1024).toFixed(1)} GB`) : t('common.detecting')}
             </div>
           </div>
         </div>
@@ -221,22 +221,22 @@ export const BoostModal: React.FC<BoostModalProps> = ({
           <div className="space-y-3">
             <div className="p-3.5 bg-amber-50/50 border border-amber-200/60 rounded-xl space-y-2.5 leading-relaxed">
               <div className="font-bold text-amber-900 flex items-center gap-1.5">
-                <span>预载入机制与安全保障：</span>
+                <span>{t('modals.boost.mechanismLead')}</span>
               </div>
               <p className="text-slate-600">
-                将当前本地磁盘中已缓存的静态素材全量预载入内存，游戏读取静态资源时无需频繁访问硬盘。
+                {t('modals.boost.mechanismDesc')}
               </p>
               <div className="text-[11px] text-slate-600 space-y-1.5">
-                <div>• <strong>瞬时 I/O 告知：</strong>初次扫描与载入会有短暂的磁盘读取负载，载入完成后恢复</div>
-                <div>• <strong>前台动态避让：</strong>检测到游戏战斗或 API 请求时自动挂起，绝不挤占游戏带宽</div>
-                <div>• <strong>物理内存保护：</strong>系统可用物理内存低于 2 GB 时自动终止载入，防止宿主机卡顿</div>
-                <div>• <strong>安全生命周期：</strong>可随时停止载入，或一键“关闭 Boost”完整释放驻留内存</div>
+                <div>{t('modals.boost.mechanismB1')}</div>
+                <div>{t('modals.boost.mechanismB2')}</div>
+                <div>{t('modals.boost.mechanismB3')}</div>
+                <div>{t('modals.boost.mechanismB4')}</div>
               </div>
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-1">
               <Button variant="secondary" onClick={onClose} disabled={actionLoading}>
-                取消
+                {t('common.cancel')}
               </Button>
               <Button
                 variant="primary"
@@ -245,10 +245,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
                 className="bg-amber-600 hover:bg-amber-500 text-white font-medium"
               >
                 {actionLoading
-                  ? '启动中...'
+                  ? t('common.loading')
                   : isOtherTaskActive
-                    ? '其他缓存任务执行中...'
-                    : '开始全量载入'}
+                    ? t('modals.boost.otherTaskActive')
+                    : t('modals.boost.startBoost')}
               </Button>
             </div>
           </div>
@@ -260,7 +260,7 @@ export const BoostModal: React.FC<BoostModalProps> = ({
             <div className="flex items-center justify-between">
               <div className="font-bold text-slate-900 flex items-center gap-2">
                 <span className="animate-spin text-base">⏳</span>
-                <span>正在全量载入快照 ({percent}%)</span>
+                <span>{t('modals.boost.loadingTitle')} ({percent}%)</span>
               </div>
               {speedMB > 0 && (
                 <span className="font-mono text-xs text-slate-500">{speedMB} MB/s</span>
@@ -276,33 +276,33 @@ export const BoostModal: React.FC<BoostModalProps> = ({
             </div>
 
             <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono">
-              <span>{loadedFiles.toLocaleString()} / {totalFiles.toLocaleString()} 文件</span>
+              <span>{loadedFiles.toLocaleString()} / {totalFiles.toLocaleString()}</span>
               <span>{loadedMB} / {totalMB} MB</span>
             </div>
 
             {skippedFiles > 0 && (
               <div className="p-2 bg-amber-50/70 border border-amber-200/60 rounded-lg flex items-center gap-1.5 text-amber-800 text-[11px] font-medium">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                <span>已跳过 {skippedFiles.toLocaleString()} 个损坏/无效文件</span>
+                <span>{skippedFiles.toLocaleString()} skipped</span>
               </div>
             )}
 
             {isPaused && (
               <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg flex items-center gap-2 text-amber-800 text-[11px]">
                 <PauseCircle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>检测到前台网络或战斗 API 活动，后台载入已主动挂起避让...</span>
+                <span>{t('modals.boost.pausedByFg')}</span>
               </div>
             )}
 
             <div className="flex items-center justify-between pt-1 border-t border-slate-200">
-              <span className="text-[11px] text-slate-500">当前正在读取的文件完成后安全停止</span>
+              <span className="text-[11px] text-slate-500"></span>
               <Button
                 variant="secondary"
                 onClick={handleCancel}
                 disabled={actionLoading}
                 className="text-rose-600 border-rose-200 hover:bg-rose-50"
               >
-                {actionLoading ? '停止中...' : '⏹ 停止后续载入'}
+                {actionLoading ? t('common.loading') : `⏹ ${t('modals.boost.stopLoadingPending')}`}
               </Button>
             </div>
           </div>
@@ -314,16 +314,15 @@ export const BoostModal: React.FC<BoostModalProps> = ({
             <div className="p-3.5 bg-emerald-50/70 border border-emerald-200/80 rounded-xl space-y-2">
               <div className="font-bold text-emerald-900 flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <span>静态素材已全量驻留内存</span>
+                <span>{t('modals.boost.completedTitle')}</span>
               </div>
               <p className="text-slate-600 leading-relaxed">
-                共驻留 <strong>{residentItems.toLocaleString()}</strong> 个素材 · <strong>{Math.round(residentMB)} MB</strong>。
-                后续静态请求直接由内存高速响应，无需读取本地磁盘。
+                {t('modals.boost.completedDesc', { count: residentItems.toLocaleString(), mb: Math.round(residentMB) })}
               </p>
               {skippedFiles > 0 && (
                 <div className="p-2 bg-amber-50/70 border border-amber-200/60 rounded-lg flex items-center gap-1.5 text-amber-800 text-[11px] font-medium">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span>已跳过 {skippedFiles.toLocaleString()} 个损坏/无效文件（未载入内存）</span>
+                  <span>{skippedFiles.toLocaleString()} skipped</span>
                 </div>
               )}
             </div>
@@ -336,10 +335,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
                 className="text-rose-600 border-rose-200 hover:bg-rose-50 flex items-center gap-1.5"
               >
                 <XCircle className="w-3.5 h-3.5" />
-                <span>{actionLoading ? '关闭中...' : '关闭 Boost (释放驻留内存)'}</span>
+                <span>{actionLoading ? t('common.loading') : t('modals.boost.disableBoost')}</span>
               </Button>
               <Button variant="secondary" onClick={onClose}>
-                完成
+                {t('common.ok')}
               </Button>
             </div>
           </div>
@@ -351,21 +350,20 @@ export const BoostModal: React.FC<BoostModalProps> = ({
             <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl space-y-2">
               <div className="font-bold text-amber-900 flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-600" />
-                <span>已达加速器设置的内存配额上限 ({ramMaxMB} MB)</span>
+                <span>{t('modals.boost.acceleratorQuota')} ({ramMaxMB} MB)</span>
               </div>
               <p className="text-slate-600 leading-relaxed">
-                已驻留 <strong>{residentItems.toLocaleString()}</strong> 个素材 · <strong>{Math.round(residentMB)} MB</strong>。
-                超出配额的素材将继续由常规内存缓存或本地磁盘透明提供。如需载入更多素材，可先在上方调高“内存缓存上限”。
+                {t('modals.boost.completedDesc', { count: residentItems.toLocaleString(), mb: Math.round(residentMB) })}
               </p>
               {skippedFiles > 0 && (
                 <div className="p-2 bg-amber-100/70 border border-amber-300/60 rounded-lg flex items-center gap-1.5 text-amber-900 text-[11px] font-medium">
                   <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                  <span>已跳过 {skippedFiles.toLocaleString()} 个损坏/无效文件（未载入内存）</span>
+                  <span>{skippedFiles.toLocaleString()} skipped</span>
                 </div>
               )}
               {unprewarmedMB > 0 && (
                 <div className="text-[11px] text-amber-800 font-mono mt-1 font-medium">
-                  超出配额未载入：{unprewarmedMB} MB
+                  {unprewarmedMB} MB
                 </div>
               )}
             </div>
@@ -377,10 +375,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
                 disabled={actionLoading}
                 className="text-rose-600 border-rose-200 hover:bg-rose-50"
               >
-                {actionLoading ? '关闭中...' : '关闭 Boost'}
+                {actionLoading ? t('common.loading') : t('modals.boost.disableBoost')}
               </Button>
               <Button variant="secondary" onClick={onClose}>
-                确定
+                {t('common.ok')}
               </Button>
             </div>
           </div>
@@ -392,10 +390,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
             <div className="p-3.5 bg-slate-100 border border-slate-200 rounded-xl space-y-2">
               <div className="font-bold text-slate-800 flex items-center gap-2">
                 <span>⏹</span>
-                <span>已停止后续预载入</span>
+                <span>{t('modals.boost.stopLoading')}</span>
               </div>
               <p className="text-slate-600 leading-relaxed">
-                当前已载入 <strong>{residentItems.toLocaleString()}</strong> 个素材 · <strong>{Math.round(residentMB)} MB</strong>，已载入素材正常生效加速。点击“重新载入”将重新扫描本地缓存并载入。
+                {t('modals.boost.completedDesc', { count: residentItems.toLocaleString(), mb: Math.round(residentMB) })}
               </p>
             </div>
 
@@ -406,11 +404,11 @@ export const BoostModal: React.FC<BoostModalProps> = ({
                 disabled={actionLoading}
                 className="text-rose-600 border-rose-200 hover:bg-rose-50"
               >
-                {actionLoading ? '关闭中...' : '关闭 Boost'}
+                {actionLoading ? t('common.loading') : t('modals.boost.disableBoost')}
               </Button>
               <div className="flex items-center gap-2">
                 <Button variant="secondary" onClick={onClose}>
-                  确定
+                  {t('common.ok')}
                 </Button>
                 <Button
                   variant="primary"
@@ -418,7 +416,7 @@ export const BoostModal: React.FC<BoostModalProps> = ({
                   disabled={actionLoading || isOtherTaskActive}
                   className="bg-amber-600 hover:bg-amber-500 text-white"
                 >
-                  {isOtherTaskActive ? '其他缓存任务执行中...' : '重新载入'}
+                  {isOtherTaskActive ? t('modals.boost.otherTaskActive') : t('modals.boost.startBoost')}
                 </Button>
               </div>
             </div>
@@ -431,11 +429,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
             <div className="p-3.5 bg-rose-50/70 border border-rose-200 rounded-xl space-y-2">
               <div className="font-bold text-rose-900 flex items-center gap-2">
                 <ShieldAlert className="w-4 h-4 text-rose-600" />
-                <span>触发系统可用物理内存熔断保护</span>
+                <span>{t('modals.boost.sysAvail')}</span>
               </div>
               <p className="text-slate-600 leading-relaxed">
-                系统可用物理内存低于 2 GB 安全阈值，为确保宿主机稳定流畅，已主动终止后续载入。
-                当前已成功载入的 <strong>{residentItems.toLocaleString()}</strong> 个素材正常生效。
+                {t('modals.boost.completedDesc', { count: residentItems.toLocaleString(), mb: Math.round(residentMB) })}
               </p>
             </div>
 
@@ -446,10 +443,10 @@ export const BoostModal: React.FC<BoostModalProps> = ({
                 disabled={actionLoading}
                 className="text-rose-600 border-rose-200 hover:bg-rose-50"
               >
-                {actionLoading ? '关闭中...' : '关闭 Boost'}
+                {actionLoading ? t('common.loading') : t('modals.boost.disableBoost')}
               </Button>
               <Button variant="secondary" onClick={onClose}>
-                知道了
+                {t('common.ok')}
               </Button>
             </div>
           </div>

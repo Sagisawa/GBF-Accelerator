@@ -341,11 +341,11 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
         activeModalTaskIdRef.current = String(res.task_id)
       }
       prevBusyRef.current = true
-      onToast('磁盘缓存扫描已在后台启动', 'info')
+      onToast(t('modals.clearCache.scanStarted'), 'info')
       await loadTaskStatus()
       await loadBreakdown()
     } catch (e: any) {
-      onToast(`启动扫描失败: ${e.message}`, 'error')
+      onToast(t('modals.clearCache.scanFailedMsg', { error: e.message }), 'error')
     } finally {
       setStartingScan(false)
     }
@@ -370,11 +370,11 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
         return
       }
       await cancelCacheTask(activeId)
-      onToast('已发送取消请求', 'info')
+      onToast(t('modals.clearCache.taskCancelled'), 'info')
       await loadTaskStatus()
       await loadBreakdown()
     } catch (e: any) {
-      onToast(`取消任务失败: ${e.message}`, 'error')
+      onToast(t('modals.clearCache.cancelFailed', { error: e.message }), 'error')
     }
   }
 
@@ -400,11 +400,11 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
   const handleExecuteCategoryCleanup = async () => {
     if (!snapshot || !isSnapshotReady) {
-      onToast('当前扫描结果已过期，请先重新扫描', 'error')
+      onToast(t('modals.clearCache.snapshotExpired'), 'error')
       return
     }
     if (selectedCategories.length === 0) {
-      onToast('请先勾选需要清理的项目', 'error')
+      onToast(t('modals.clearCache.selectCategoryRequired'), 'error')
       return
     }
     setSubmittingCategoryClean(true)
@@ -419,7 +419,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
         if (res?.task_id) {
           activeModalTaskIdRef.current = String(res.task_id)
         }
-        onToast('历史旧版本清理已在后台启动（自动保留最新 8 个版本）', 'info')
+        onToast(t('modals.clearCache.slimStarted', { count: 8 }), 'info')
       } else {
         const res = await clearCacheCategories(
           snapshot.snapshot_id,
@@ -430,7 +430,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
         if (res?.task_id) {
           activeModalTaskIdRef.current = String(res.task_id)
         }
-        onToast('缓存清理任务已在后台启动', 'info')
+        onToast(t('modals.clearCache.cleanupStarted'), 'info')
       }
       prevBusyRef.current = true
       setConfirmingCategoryClean(false)
@@ -438,7 +438,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       await loadTaskStatus()
       await loadBreakdown()
     } catch (e: any) {
-      onToast(`清理启动失败: ${e.message}`, 'error')
+      onToast(t('modals.clearCache.cleanupFailed', { error: e.message }), 'error')
     } finally {
       setSubmittingCategoryClean(false)
     }
@@ -448,10 +448,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     setBusyRam(true)
     try {
       await clearCache(true)
-      onToast('内存缓存已清空（磁盘缓存文件不受影响）', 'success')
+      onToast(t('modals.clearCache.ramFlushed'), 'success')
       onRefresh()
     } catch (e: any) {
-      onToast(`清空内存缓存失败: ${e.message}`, 'error')
+      onToast(t('modals.clearCache.ramFlushFailed', { error: e.message }), 'error')
     } finally {
       setBusyRam(false)
     }
@@ -463,12 +463,12 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
       const res = await clearCache(false)
       const count = res.disk_files_deleted ?? 0
       setConfirmingFullClear(false)
-      onToast(`全部磁盘与内存缓存已清空，共删除文件 ${count} 个`, 'success')
+      onToast(t('modals.clearCache.fullResetCompleted', { count }), 'success')
       await loadBreakdown()
       onRefresh()
       onClose()
     } catch (e: any) {
-      onToast(`清空全部缓存失败: ${e.message}`, 'error')
+      onToast(t('modals.clearCache.fullResetFailed', { error: e.message }), 'error')
     } finally {
       setBusyAll(false)
     }
@@ -502,7 +502,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="space-y-0.5">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-bold text-slate-900">缓存快照状态：</span>
+                <span className="font-bold text-slate-900">{t('modals.clearCache.diskStatus')}</span>
                 {isScanning ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">
                     <RefreshCw className="w-3 h-3 animate-spin" />
@@ -510,12 +510,12 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   </span>
                 ) : !snapshot ? (
                   <span className="inline-flex items-center px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-medium">
-                    尚未扫描
+                    {t('modals.clearCache.notScanned')}
                   </span>
                 ) : snapshot.stale || !snapshot.valid ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">
                     <AlertTriangle className="w-3 h-3" />
-                    数据已更新，请重新扫描
+                    {t('modals.clearCache.cacheUpdatedSuggestRescan')}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">
@@ -526,14 +526,11 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
               </div>
               <div className="text-[11px] text-slate-500 flex items-center gap-2 flex-wrap">
                 <span className="font-mono break-all">
-                  目录: {breakdown?.cache_base || snapshot?.cache_base || '--'}
+                  {t('modals.clearCache.cacheDir', { dir: breakdown?.cache_base || snapshot?.cache_base || '--' })}
                 </span>
                 {snapshot && (
                   <span className="text-slate-700 font-medium">
-                    ｜ 已缓存 <strong className="font-mono">{snapshot.asset_files.toLocaleString()}</strong> 个文件 · 共占用{' '}
-                    <strong className="font-mono">
-                      {formatBytesBinary(snapshot.asset_bytes + snapshot.metadata_bytes)}
-                    </strong>
+                    ｜ {t('modals.clearCache.cachedFilesSize', { count: snapshot.asset_files.toLocaleString(), size: formatBytesBinary(snapshot.asset_bytes + snapshot.metadata_bytes) })}
                   </span>
                 )}
               </div>
@@ -547,7 +544,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   onClick={handleCancelActiveTask}
                   icon={<XCircle className="w-3.5 h-3.5 text-red-600" />}
                 >
-                  取消当前任务
+                  {t('modals.clearCache.cancelTask')}
                 </Button>
               ) : (
                 <Button
@@ -558,7 +555,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   onClick={handleStartScan}
                   icon={<RefreshCw className="w-3 h-3" />}
                 >
-                  {snapshot ? t('modals.clearCache.rescanDisk') : '开始扫描缓存'}
+                  {snapshot ? t('modals.clearCache.rescanDisk') : t('modals.clearCache.startScan')}
                 </Button>
               )}
             </div>
@@ -568,10 +565,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           {isScanning && (
             <div className="p-2.5 bg-sky-50 border border-sky-200 rounded text-[11px] text-sky-900 flex items-center justify-between flex-wrap gap-2 font-mono">
               <span>
-                已扫描文件: <strong>{(scanProgress?.scanned_files ?? 0).toLocaleString()}</strong> 个
+                {t('modals.clearCache.scannedFiles', { count: (scanProgress?.scanned_files ?? 0).toLocaleString() })}
               </span>
               <span>
-                已统计大小: <strong>{formatBytesBinary(scanProgress?.scanned_bytes ?? 0)}</strong>
+                {t('modals.clearCache.scannedSize', { size: formatBytesBinary(scanProgress?.scanned_bytes ?? 0) })}
               </span>
             </div>
           )}
@@ -592,8 +589,8 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   }`}
                 />
                 <span>
-                  {scanOutcomeStatus === 'failed' ? t('modals.clearCache.scanFailed') : '分类扫描已取消：'}
-                  {scanOutcomeMessage || (scanOutcomeStatus === 'failed' ? '分类扫描未完成' : '任务已取消')}
+                  {scanOutcomeStatus === 'failed' ? t('modals.clearCache.scanFailed') : t('modals.clearCache.scanCancelled')}
+                  {scanOutcomeMessage || (scanOutcomeStatus === 'failed' ? t('modals.clearCache.scanFailed') : t('modals.clearCache.scanCancelledTitle'))}
                 </span>
               </div>
             </div>
@@ -603,11 +600,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           {isCleaning && cleanupProgress && (
             <div className="p-2.5 bg-blue-50 border border-blue-200 rounded text-[11px] text-blue-900 flex items-center justify-between flex-wrap gap-2 font-mono">
               <span>
-                正在清理缓存: <strong>{cleanupProgress.processed_files} / {cleanupProgress.total_files}</strong>
+                {t('modals.clearCache.cleanupProgress', { processed: cleanupProgress.processed_files, total: cleanupProgress.total_files })}
               </span>
               <span>
-                已清理: <strong>{cleanupProgress.deleted_asset_files}</strong> 个文件 (
-                {formatBytesBinary(cleanupProgress.freed_bytes)})
+                {t('modals.clearCache.cleanedFiles', { count: cleanupProgress.deleted_asset_files, size: formatBytesBinary(cleanupProgress.freed_bytes) })}
               </span>
             </div>
           )}
@@ -619,8 +615,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 {t('modals.clearCache.slimmingProgress')} <strong>{slimProgress?.current_idx ?? 0} / {slimProgress?.total_dirs ?? 0}</strong>
               </span>
               <span>
-                已清理: <strong>{slimProgress?.deleted_files ?? 0}</strong> 个文件 (
-                {formatBytesBinary(slimProgress?.freed_bytes ?? 0)})
+                {t('modals.clearCache.cleanedFiles', { count: slimProgress?.deleted_files ?? 0, size: formatBytesBinary(slimProgress?.freed_bytes ?? 0) })}
               </span>
             </div>
           )}
@@ -652,7 +647,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                 )}
                 <span>
-                  最近一次清理结果：{lastCleanupResult.message || '执行完成'}
+                  {t('modals.clearCache.lastCleanupResult', { msg: lastCleanupResult.message || 'OK' })}
                 </span>
               </div>
               <div
@@ -665,10 +660,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                       : 'text-emerald-800'
                 }`}
               >
-                <span>共清理 {lastCleanupResult.deleted_asset_files} 个文件</span>
-                <span>释放 {formatBytesBinary(lastCleanupResult.freed_bytes)}</span>
+                <span>{t('modals.clearCache.cleanedResultFiles', { count: lastCleanupResult.deleted_asset_files })}</span>
+                <span>{t('modals.clearCache.freedSpace', { size: formatBytesBinary(lastCleanupResult.freed_bytes) })}</span>
                 {lastCleanupResult.failed_count > 0 && (
-                  <span className="text-red-600">失败 {lastCleanupResult.failed_count} 项</span>
+                  <span className="text-red-600">{t('modals.clearCache.failedItems', { count: lastCleanupResult.failed_count })}</span>
                 )}
               </div>
             </div>
@@ -702,17 +697,17 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 )}
                 <span>
                   {taskStatus.last_slim_result.status === 'failed'
-                    ? '最近一次版本清理失败'
+                    ? t('modals.clearCache.lastSlimFailed')
                     : taskStatus.last_slim_result.status === 'partial_failed'
-                      ? '最近一次版本清理部分完成（含失败项）'
+                      ? t('modals.clearCache.lastSlimPartial')
                       : taskStatus.last_slim_result.cancelled
-                        ? '最近一次版本清理已取消'
+                        ? t('modals.clearCache.lastSlimCancelled')
                         : t('modals.clearCache.slimmingCompleted')}
                 </span>
               </div>
               <div className="font-mono text-[11px] flex items-center gap-2 flex-wrap">
-                <span>清理旧版本 {taskStatus.last_slim_result.deleted_dirs ?? 0} 个</span>
-                <span>释放 {formatBytesBinary(taskStatus.last_slim_result.freed_bytes ?? 0)}</span>
+                <span>{t('modals.clearCache.slimmedOldVersions', { count: taskStatus.last_slim_result.deleted_dirs ?? 0 })}</span>
+                <span>{t('modals.clearCache.freedSpace', { size: formatBytesBinary(taskStatus.last_slim_result.freed_bytes ?? 0) })}</span>
               </div>
             </div>
           )}
@@ -730,7 +725,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
             }`}
           >
             <Layers className="w-3.5 h-3.5" />
-            <span>分类与版本清理</span>
+            <span>{t('modals.clearCache.tabCategories')}</span>
           </button>
           <button
             type="button"
@@ -742,7 +737,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
             }`}
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>内存与全量清空</span>
+            <span>{t('modals.clearCache.tabFullReset')}</span>
           </button>
         </div>
 
@@ -751,9 +746,9 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
           <div className="space-y-3">
             {!snapshot ? (
               <div className="p-6 text-center bg-slate-50 border border-dashed border-slate-300 rounded-lg space-y-2">
-                <div className="text-slate-700 font-semibold">尚未扫描缓存目录</div>
+                <div className="text-slate-700 font-semibold">{t('modals.clearCache.noScanYet')}</div>
                 <p className="text-[11px] text-slate-500 max-w-md mx-auto">
-                  点击上方“开始扫描缓存”，即可查看各类型文件占用大小，并勾选清理过期版本、剧情立绘或语音文件。
+                  {t('modals.clearCache.noScanYetDesc')}
                 </p>
               </div>
             ) : (
@@ -761,12 +756,13 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 {/* Visual Proportion Bar */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-[11px] text-slate-500">
-                    <span>各类型缓存占比：</span>
+                    <span>{t('modals.clearCache.categoryRatio')}</span>
                     <span className="font-mono">
-                      共{' '}
-                      {formatBytesBinary(
-                        effectiveCategoryStats.reduce((a, b) => a + b.asset_bytes, 0)
-                      )}
+                      {t('modals.clearCache.totalSize', {
+                        size: formatBytesBinary(
+                          effectiveCategoryStats.reduce((a, b) => a + b.asset_bytes, 0)
+                        ),
+                      })}
                     </span>
                   </div>
                   <div className="w-full h-3 bg-slate-200 rounded-full overflow-hidden flex">
@@ -790,7 +786,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                       snapshot.namespaces[0].namespace !== 'gbf')) && (
                   <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between flex-wrap gap-2 text-[11px]">
                     <span className="font-semibold text-slate-700">
-                      清理域名范围：
+                      {t('modals.clearCache.namespaceScope')}
                     </span>
                     <div className="flex items-center gap-3 flex-wrap">
                       {snapshot.namespaces.map((ns) => (
@@ -869,13 +865,13 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
                           <div className="text-right shrink-0 font-mono space-y-0.5">
                             <div className="text-xs font-bold text-slate-900">
-                              占用: {formatBytesBinary(cat.asset_bytes)}{' '}
+                              {t('modals.clearCache.occupied', { size: formatBytesBinary(cat.asset_bytes) })}{' '}
                               <span className="text-slate-500 font-normal">({cat.percentage}%)</span>
                             </div>
                             <div className="text-[11px] text-slate-500">
-                              共 {cat.asset_files.toLocaleString()} 个文件
+                              {t('modals.clearCache.filesCount', { count: cat.asset_files.toLocaleString() })}
                               {isVersioned && versionedPruneDirs > 0
-                                ? ` · 含 ${versionedPruneDirs} 个过期版本`
+                                ? t('modals.clearCache.expiredVersions', { count: versionedPruneDirs })
                                 : ''}
                             </div>
                             {isVersioned ? (
@@ -887,14 +883,14 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                                 }`}
                               >
                                 {versionedEstBytes > 0
-                                  ? `可释放旧版本: ${formatBytesBinary(versionedEstBytes)}`
+                                  ? t('modals.clearCache.releasableOldVersions', { size: formatBytesBinary(versionedEstBytes) })
                                   : versionedPruneDirs > 0
-                                    ? `可清理 ${versionedPruneDirs} 个空旧版目录`
-                                    : '无过期旧版本可清理'}
+                                    ? t('modals.clearCache.cleanableEmptyDirs', { count: versionedPruneDirs })
+                                    : t('modals.clearCache.noExpiredVersions')}
                               </div>
                             ) : (
                               <div className="text-[11px] text-sky-700 font-semibold">
-                                预计释放: {formatBytesBinary(cat.estimated_delete_bytes)}
+                                {t('modals.clearCache.estimatedRelease', { size: formatBytesBinary(cat.estimated_delete_bytes) })}
                               </div>
                             )}
                           </div>
@@ -908,17 +904,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between flex-wrap gap-2">
                   <div className="space-y-0.5">
                     <div className="font-semibold text-slate-800">
-                      {t('modals.clearCache.selectedCategories', { count: selectedCategories.length })} · 预计清理{' '}
-                      <span className="font-mono text-sky-700">
-                        {selectedCategorySummary.assetFiles.toLocaleString()}
-                      </span>{' '}
-                      个文件
+                      {t('modals.clearCache.selectedCategories', { count: selectedCategories.length })} · {t('modals.clearCache.estPruneFiles', { count: selectedCategorySummary.assetFiles.toLocaleString() })}
                     </div>
                     <div className="text-[11px] text-slate-500">
-                      预计释放空间:{' '}
-                      <strong className="font-mono text-sky-700">
-                        {formatBytesBinary(selectedCategorySummary.estDeleteBytes)}
-                      </strong>
+                      {t('modals.clearCache.estFreeSpace', { size: formatBytesBinary(selectedCategorySummary.estDeleteBytes) })}
                     </div>
                   </div>
 
@@ -930,7 +919,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                           size="xs"
                           onClick={() => setConfirmingCategoryClean(false)}
                         >
-                          取消
+                          {t('common.cancel')}
                         </Button>
                         <Button
                           variant="danger"
@@ -939,7 +928,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                           disabled={!isSnapshotReady || hasAnyActiveTask}
                           onClick={handleExecuteCategoryCleanup}
                         >
-                          确认清理
+                          {t('modals.clearCache.confirmClean')}
                         </Button>
                       </>
                     ) : (
@@ -955,7 +944,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                         }
                         onClick={() => setConfirmingCategoryClean(true)}
                       >
-                        清理所选缓存
+                        {t('modals.clearCache.cleanSelected')}
                       </Button>
                     )}
                   </div>
@@ -976,10 +965,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 </div>
                 <div className="space-y-1">
                   <h4 className="text-xs font-bold text-slate-900">
-                    仅清空内存缓存 (RAM)
+                    {t('modals.clearCache.clearRamOnlyTitle')}
                   </h4>
                   <p className="text-[11px] text-slate-600 leading-relaxed">
-                    仅释放当前占用的内存热缓存，<strong>不删除硬盘上的已下载文件</strong>，适合游戏页面显示异常时快速刷新。
+                    {t('modals.clearCache.clearRamOnlyDesc')}
                   </p>
                 </div>
               </div>
@@ -992,7 +981,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                   disabled={hasAnyActiveTask}
                   onClick={handleClearRam}
                 >
-                  仅清空内存缓存
+                  {t('modals.clearCache.clearRamOnlyBtn')}
                 </Button>
               </div>
             </div>
@@ -1005,10 +994,10 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                 </div>
                 <div className="space-y-1">
                   <h4 className="text-xs font-bold text-red-700 flex items-center gap-1.5">
-                    <span>清空全部磁盘与内存缓存</span>
+                    <span>{t('modals.clearCache.clearAllTitle')}</span>
                   </h4>
                   <p className="text-[11px] text-slate-600 leading-relaxed">
-                    彻底删除硬盘缓存目录下的全部已下载文件并清空内存。清空后所有游戏素材均需重新下载。
+                    {t('modals.clearCache.clearAllDesc')}
                   </p>
                 </div>
               </div>
@@ -1021,7 +1010,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                       size="sm"
                       onClick={() => setConfirmingFullClear(false)}
                     >
-                      取消
+                      {t('common.cancel')}
                     </Button>
                     <Button
                       variant="danger"
@@ -1030,7 +1019,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                       disabled={hasAnyActiveTask}
                       onClick={handleClearAll}
                     >
-                      确认清空全部缓存
+                      {t('modals.clearCache.fullResetConfirm')}
                     </Button>
                   </>
                 ) : (
@@ -1040,7 +1029,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                     disabled={hasAnyActiveTask}
                     onClick={() => setConfirmingFullClear(true)}
                   >
-                    清空全部磁盘与内存缓存
+                    {t('modals.clearCache.fullResetConfirm')}
                   </Button>
                 )}
               </div>
@@ -1050,10 +1039,9 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
 
         <div className="flex justify-between items-center pt-1 border-t border-slate-100 text-[11px] text-slate-500">
           <span>
-            说明：清理本地缓存仅移除加速器本地文件，不会清除浏览器自身的 Cookie 或登录状态。
           </span>
           <Button variant="desktop" size="sm" onClick={onClose}>
-            关闭 (Esc)
+            {t('common.closeEsc')}
           </Button>
         </div>
       </div>

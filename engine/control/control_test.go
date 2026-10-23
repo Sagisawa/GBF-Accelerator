@@ -2169,6 +2169,23 @@ func TestControlServer_LanguageConfig(t *testing.T) {
 	if cfgMgr.Get().Language != "ja" {
 		t.Fatalf("expected cfgMgr language to be 'ja', got %q", cfgMgr.Get().Language)
 	}
+
+	// 4. GET /api/status: verify status payload includes language = "ja"
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	reqStatus.Host = "127.0.0.1:8125"
+	reqStatus.RemoteAddr = "127.0.0.1:12345"
+	wStatus := httptest.NewRecorder()
+	ctrl.handleRoute(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK from /api/status, got %d", wStatus.Code)
+	}
+	var statusMap map[string]interface{}
+	if err := json.Unmarshal(wStatus.Body.Bytes(), &statusMap); err != nil {
+		t.Fatalf("failed to parse /api/status response: %v", err)
+	}
+	if gotLang, ok := statusMap["language"].(string); !ok || gotLang != "ja" {
+		t.Fatalf("expected status language to be 'ja', got %v", statusMap["language"])
+	}
 }
 
 func TestControlServer_ApplyConfig_PACFailure_DoesNotRollbackNetwork(t *testing.T) {

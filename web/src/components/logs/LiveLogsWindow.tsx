@@ -9,6 +9,7 @@ import {
   ChevronDown,
 } from 'lucide-react'
 import { parseSearchTokens, matchesAllTokens, highlightText } from './highlight'
+import { useI18n } from '../../i18n'
 
 export interface LiveLogsWindowProps {
   isOpen: boolean
@@ -427,9 +428,10 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
   hitRatioPercent = 100.0,
   isStandalone = false,
 }) => {
+  const { t } = useI18n()
   // --- UI Controls State ---
   const [filterText, setFilterText] = useState<string>('')
-  const [filterCat, setFilterCat] = useState<string>('全部 (All)')
+  const [filterCat, setFilterCat] = useState<string>('all')
   const [hideConnect, setHideConnect] = useState<boolean>(false)
   const [compactDomain, setCompactDomain] = useState<boolean>(false)
   const [muteAssets, setMuteAssets] = useState<boolean>(false)
@@ -519,17 +521,17 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
       }
 
       // 3. Category Filter
-      if (filterCat === '仅战斗 API (BYPASS-API)' && !rawMsg.includes('BYPASS-API')) {
+      if (filterCat === 'api' && !rawMsg.includes('BYPASS-API')) {
         return false
       }
-      if (filterCat === '仅缓存命中 (CACHE)' && !rawMsg.includes('CACHE')) {
+      if (filterCat === 'cache' && !rawMsg.includes('CACHE')) {
         return false
       }
-      if (filterCat === '仅素材拉取 (FETCH/PREFETCH)' && !rawMsg.includes('FETCH') && !rawMsg.includes('PREFETCH')) {
+      if (filterCat === 'fetch' && !rawMsg.includes('FETCH') && !rawMsg.includes('PREFETCH')) {
         return false
       }
       if (
-        filterCat === '仅重连与告警 (RETRY/ERROR)' &&
+        filterCat === 'warning' &&
         !rawMsg.includes('RETRY') &&
         !rawMsg.includes('ERR') &&
         !lvl.includes('ERR') &&
@@ -537,7 +539,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
       ) {
         return false
       }
-      if (filterCat === '仅慢请求 (>300ms)') {
+      if (filterCat === 'slow') {
         const msMatch = rawMsg.match(/(\d+)\s*ms/)
         if (!msMatch || parseInt(msMatch[1], 10) <= 300) {
           return false
@@ -769,17 +771,18 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
           <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
         </span>
-        <span className="font-semibold text-slate-200">实时网络与转发日志 (已最小化)</span>
-        <span className="text-slate-400">({renderedRecords.length} 行)</span>
+        <span className="font-semibold text-slate-200">{t('liveLogs.minimizedTitle')}</span>
+        <span className="text-slate-400">{t('liveLogs.minimizedLines', { count: renderedRecords.length })}</span>
         <button
           onClick={() => setIsMinimized(false)}
           className="ml-2 px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs transition-colors"
         >
-          还原窗口
+          {t('liveLogs.restoreWindow')}
         </button>
         <button
           onClick={onClose}
           className="p-1 hover:bg-slate-700 text-slate-400 hover:text-white rounded transition-colors"
+          title={t('liveLogs.closeTip')}
         >
           <X className="w-3.5 h-3.5" />
         </button>
@@ -890,9 +893,9 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
 
   useEffect(() => {
     if (isStandalone) {
-      document.title = '实时网络与转发日志 (Live Logs) - GBF 加速器'
+      document.title = t('liveLogs.windowTitle')
     }
-  }, [isStandalone])
+  }, [isStandalone, t])
 
   const handleClose = () => {
     if (isStandalone) {
@@ -923,7 +926,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
               </span>
               <span className="font-semibold text-slate-100">
-                实时网络与转发日志 (Live Logs) - GBF 加速器
+                {t('liveLogs.windowTitle')}
               </span>
             </div>
 
@@ -941,17 +944,17 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   window.open('/logs', 'GBFLiveLogsWindow', features)
                 }}
                 className="h-9 px-2 hover:bg-white/10 text-slate-300 hover:text-white flex items-center justify-center transition-colors text-xs gap-1"
-                title="独立窗口打开"
+                title={t('liveLogs.popoutTip')}
               >
                 <span>↗</span>
-                <span className="text-[11px] hidden sm:inline">独立窗口</span>
+                <span className="text-[11px] hidden sm:inline">{t('liveLogs.popout')}</span>
               </button>
 
               {/* Close */}
               <button
                 onClick={handleClose}
                 className="h-9 px-3 hover:bg-red-600 text-slate-300 hover:text-white flex items-center justify-center transition-colors"
-                title="关闭"
+                title={t('liveLogs.closeTip')}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -967,7 +970,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           <div className="flex flex-wrap items-center gap-3">
             {/* Search Input with Match Counter and Prev/Next */}
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-400">搜索:</span>
+              <span className="text-slate-400">{t('liveLogs.searchLabel')}</span>
               <div className="relative flex items-center">
                 <input
                   ref={searchInputRef}
@@ -978,7 +981,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                     setActiveMatchIndex(0)
                   }}
                   onKeyDown={handleSearchKeyDown}
-                  placeholder={`${modKey}+F 搜索 (多词空格)...`}
+                  placeholder={t('liveLogs.searchPlaceholder', { modKey })}
                   className={`bg-[#181818] border rounded py-0.5 pl-2 text-xs text-white placeholder-slate-500 focus:outline-none font-mono transition-all w-36 sm:w-52 ${
                     tokens.length > 0 && renderedRecords.length === 0
                       ? 'border-red-600/80 focus:border-red-500 pr-14'
@@ -1006,7 +1009,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                       setActiveMatchIndex(0)
                     }}
                     className="absolute right-1.5 text-slate-400 hover:text-white"
-                    title="清空搜索 (Esc)"
+                    title={t('liveLogs.resetSearch')}
                   >
                     <X className="w-3 h-3" />
                   </button>
@@ -1021,7 +1024,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                     onClick={prevMatch}
                     disabled={renderedRecords.length === 0}
                     className="p-1 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title={`上一个 (${isMac ? '⇧⌘G / ' : ''}Shift+Enter / ↑)`}
+                    title={t('liveLogs.prevMatch')}
                   >
                     <ChevronUp className="w-3.5 h-3.5" />
                   </button>
@@ -1031,7 +1034,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                     onClick={nextMatch}
                     disabled={renderedRecords.length === 0}
                     className="p-1 text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title={`下一个 (${isMac ? '⌘G / ' : ''}Enter / ↓)`}
+                    title={t('liveLogs.nextMatch')}
                   >
                     <ChevronDown className="w-3.5 h-3.5" />
                   </button>
@@ -1041,18 +1044,18 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
 
             {/* Category Dropdown */}
             <div className="flex items-center gap-1.5">
-              <span className="text-slate-400">类型:</span>
+              <span className="text-slate-400">{t('liveLogs.typeLabel')}</span>
               <select
                 value={filterCat}
                 onChange={(e) => setFilterCat(e.target.value)}
                 className="bg-[#181818] border border-slate-700/80 rounded px-2 py-0.5 text-xs text-slate-200 focus:outline-none focus:border-blue-500 cursor-pointer"
               >
-                <option value="全部 (All)">全部 (All)</option>
-                <option value="仅战斗 API (BYPASS-API)">仅战斗 API (BYPASS-API)</option>
-                <option value="仅缓存命中 (CACHE)">仅缓存命中 (CACHE)</option>
-                <option value="仅素材拉取 (FETCH/PREFETCH)">仅素材拉取 (FETCH/PREFETCH)</option>
-                <option value="仅慢请求 (>300ms)">仅慢请求 (&gt;300ms)</option>
-                <option value="仅重连与告警 (RETRY/ERROR)">仅重连与告警 (RETRY/ERROR)</option>
+                <option value="all">{t('liveLogs.filter.all')}</option>
+                <option value="api">{t('liveLogs.filter.api')}</option>
+                <option value="cache">{t('liveLogs.filter.cache')}</option>
+                <option value="fetch">{t('liveLogs.filter.fetch')}</option>
+                <option value="slow">{t('liveLogs.filter.slow')}</option>
+                <option value="warning">{t('liveLogs.filter.warning')}</option>
               </select>
             </div>
 
@@ -1065,7 +1068,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   onChange={(e) => setHideConnect(e.target.checked)}
                   className="rounded bg-black/40 border-slate-700 text-blue-500 focus:ring-0 cursor-pointer"
                 />
-                <span>隐藏握手</span>
+                <span>{t('liveLogs.hideHandshake')}</span>
               </label>
 
               <label className="flex items-center gap-1 cursor-pointer hover:text-white">
@@ -1075,7 +1078,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   onChange={(e) => setCompactDomain(e.target.checked)}
                   className="rounded bg-black/40 border-slate-700 text-blue-500 focus:ring-0 cursor-pointer"
                 />
-                <span>简化域名</span>
+                <span>{t('liveLogs.simplifyDomain')}</span>
               </label>
 
               <label className="flex items-center gap-1 cursor-pointer hover:text-white">
@@ -1085,7 +1088,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   onChange={(e) => setMuteAssets(e.target.checked)}
                   className="rounded bg-black/40 border-slate-700 text-blue-500 focus:ring-0 cursor-pointer"
                 />
-                <span>隐藏静态</span>
+                <span>{t('liveLogs.hideStatic')}</span>
               </label>
 
               <label className="flex items-center gap-1 cursor-pointer hover:text-white">
@@ -1095,7 +1098,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   onChange={(e) => setHideMocks(e.target.checked)}
                   className="rounded bg-black/40 border-slate-700 text-blue-500 focus:ring-0 cursor-pointer"
                 />
-                <span>隐藏打点</span>
+                <span>{t('liveLogs.hideProbes')}</span>
               </label>
 
               <label className="flex items-center gap-1 cursor-pointer hover:text-white">
@@ -1105,7 +1108,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   onChange={(e) => setMaskPrivacy(e.target.checked)}
                   className="rounded bg-black/40 border-slate-700 text-blue-500 focus:ring-0 cursor-pointer"
                 />
-                <span>脱敏隐私</span>
+                <span>{t('liveLogs.desensitize')}</span>
               </label>
 
               <label className="flex items-center gap-1 cursor-pointer hover:text-white">
@@ -1115,7 +1118,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   onChange={(e) => setAlignFormat(e.target.checked)}
                   className="rounded bg-black/40 border-slate-700 text-blue-500 focus:ring-0 cursor-pointer"
                 />
-                <span>对齐排版</span>
+                <span>{t('liveLogs.alignFormatting')}</span>
               </label>
 
               <label className="flex items-center gap-1 cursor-pointer hover:text-white">
@@ -1125,7 +1128,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   onChange={(e) => setAutoScroll(e.target.checked)}
                   className="rounded bg-black/40 border-slate-700 text-blue-500 focus:ring-0 cursor-pointer"
                 />
-                <span>自动滚屏</span>
+                <span>{t('liveLogs.autoScrollLogs')}</span>
               </label>
             </div>
           </div>
@@ -1140,10 +1143,10 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                   ? 'bg-amber-900/40 border-amber-700 text-amber-300 hover:bg-amber-900/60'
                   : 'bg-[#333333] hover:bg-[#3e3e3e] border-slate-700 text-slate-200'
               }`}
-              title="空格键亦可切换"
+              title={t('liveLogs.spaceToggleTip')}
             >
               {isPaused ? <Play className="w-3 h-3" /> : <Pause className="w-3 h-3" />}
-              <span>{isPaused ? '继续' : '暂停'}</span>
+              <span>{isPaused ? t('liveLogs.resume') : t('liveLogs.pause')}</span>
             </button>
 
             {/* Clear Display */}
@@ -1151,7 +1154,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
               onClick={onClearLogs}
               className="px-2.5 py-1 rounded text-xs font-medium bg-[#333333] hover:bg-[#3e3e3e] border border-slate-700 text-slate-200 hover:text-white transition-colors"
             >
-              清除显示
+              {t('liveLogs.clearDisplay')}
             </button>
 
             {/* Copy All */}
@@ -1159,7 +1162,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
               onClick={copyAllVisible}
               className="px-2.5 py-1 rounded text-xs font-medium bg-[#333333] hover:bg-[#3e3e3e] border border-slate-700 text-slate-200 hover:text-white transition-colors"
             >
-              复制全部
+              {t('liveLogs.copyAll')}
             </button>
 
             {/* Export Logs */}
@@ -1167,7 +1170,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
               onClick={exportLogs}
               className="px-2.5 py-1 rounded text-xs font-medium bg-[#333333] hover:bg-[#3e3e3e] border border-slate-700 text-slate-200 hover:text-white transition-colors"
             >
-              导出日志
+              {t('liveLogs.exportLogs')}
             </button>
           </div>
         </div>
@@ -1184,7 +1187,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           {renderedRecords.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-600 gap-2 select-none">
               <Terminal className="w-10 h-10 opacity-20" />
-              <span>暂无符合过滤条件的网络或转发日志</span>
+              <span>{t('liveLogs.emptyLogs')}</span>
             </div>
           ) : (
             renderedRecords.map((item, idx) => {
@@ -1256,7 +1259,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
             <span className="text-slate-600">|</span>
 
             <span>
-              长连接复用:{' '}
+              {t('liveLogs.keepaliveReuse')}
               <strong className="text-sky-400 font-semibold">
                 {telemetry?.reuse_rate_percent ?? 0}%
               </strong>
@@ -1265,7 +1268,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
             <span className="text-slate-600">|</span>
 
             <span>
-              缓存命中:{' '}
+              {t('liveLogs.cacheHit')}
               <strong className="text-emerald-400 font-semibold">
                 {hitRatioPercent.toFixed(1)}%
               </strong>
@@ -1274,7 +1277,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
             <span className="text-slate-600">|</span>
 
             <span>
-              当前显示: {renderedRecords.length} 行 / 历史: {activeLogs.length} 条
+              {t('liveLogs.currentDisplay', { rendered: renderedRecords.length, total: activeLogs.length })}
             </span>
 
             <span className="text-slate-600">|</span>
@@ -1286,20 +1289,20 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                 }`}
               />
               <span className={isPaused ? 'text-amber-400' : 'text-emerald-400'}>
-                {isPaused ? '已暂停刷新' : '实时监听中'}
+                {isPaused ? t('liveLogs.pausedRefresh') : t('liveLogs.listeningLive')}
               </span>
             </span>
           </div>
 
           {/* Right: Shortcut hints */}
           <div className="text-slate-500 hidden md:flex items-center gap-2">
-            <span>{modKey}+F 搜索</span>
+            <span>{modKey}+F</span>
             <span>|</span>
-            <span>{isMac ? '⌘G / ⇧⌘G 跳转' : 'Enter / Shift+Enter 换词跳转'}</span>
+            <span>{isMac ? '⌘G / ⇧⌘G' : 'Enter / Shift+Enter'}</span>
             <span>|</span>
-            <span>空格 暂停</span>
+            <span>Space</span>
             <span>|</span>
-            <span>{modKey}+滚轮 缩放</span>
+            <span>{modKey}+Wheel</span>
           </div>
         </div>
       </div>
@@ -1320,7 +1323,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>📋</span> 复制当前显示行
+          <span>📋</span> {t('liveLogs.copyRow')}
         </button>
 
         <button
@@ -1330,7 +1333,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>📜</span> 复制原始完整记录 (含参数)
+          <span>📜</span> {t('liveLogs.copyRaw')}
         </button>
 
         <button
@@ -1343,7 +1346,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>🔗</span> 复制完整 URL
+          <span>🔗</span> {t('liveLogs.copyUrl')}
         </button>
 
         <button
@@ -1355,7 +1358,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>🔍</span> 仅筛选此路径
+          <span>🔍</span> {t('liveLogs.filterPath')}
         </button>
 
         <div className="h-px bg-slate-700 my-1" />
@@ -1367,7 +1370,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>💾</span> 导出全量排查诊断日志...
+          <span>💾</span> {t('liveLogs.exportDiag')}
         </button>
 
         <button
@@ -1377,7 +1380,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-red-600 hover:text-white flex items-center gap-2 text-red-400 transition-colors"
         >
-          <span>🧹</span> 清除当前显示
+          <span>🧹</span> {t('liveLogs.clearCurrent')}
         </button>
       </div>
     )

@@ -1,6 +1,7 @@
 import React, { useEffect, useId } from 'react'
 import { cn } from '../../utils/cn'
 import { X } from 'lucide-react'
+import { useI18n } from '../../i18n'
 
 export interface ModalProps {
   isOpen: boolean
@@ -21,6 +22,7 @@ export const Modal: React.FC<ModalProps> = ({
   maxWidth = 'max-w-md',
   className,
 }) => {
+  const { t } = useI18n()
   const titleId = useId()
 
   useEffect(() => {
@@ -70,8 +72,8 @@ export const Modal: React.FC<ModalProps> = ({
             type="button"
             onClick={onClose}
             className="w-7 h-7 rounded-lg hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-700 transition-colors"
-            title="关闭 (Esc)"
-            aria-label="关闭对话框"
+            title={t('common.closeEsc')}
+            aria-label={t('common.closeDialog')}
           >
             <X className="w-4 h-4" />
           </button>

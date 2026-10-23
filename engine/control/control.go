@@ -873,7 +873,13 @@ func (c *ControlServer) sendJSON(w http.ResponseWriter, status int, data interfa
 
 func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 	cfg := c.cfgMgr.Get()
-	ramItems, ramBytes := c.cacheMgr.Stats()
+	var ramItems int
+	var ramBytes int64
+	cacheDir := cfg.CacheDir
+	if c.cacheMgr != nil {
+		ramItems, ramBytes = c.cacheMgr.Stats()
+		cacheDir = c.cacheMgr.GetCacheBase()
+	}
 
 	var lanIP interface{}
 	if cfg.AllowLAN {
@@ -920,6 +926,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"engine":                     "go",
 		"platform":                   runtime.GOOS,
 		"arch":                       runtime.GOARCH,
+		"language":                   cfg.Language,
 		"proxy_running":              proxyRunning,
 		"listen_host":                c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":                cfg.ListenPort,
@@ -949,7 +956,7 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"cache": map[string]interface{}{
 			"ram_items": ramItems,
 			"ram_mb":    math.Round(float64(ramBytes)/(1024*1024)*100) / 100,
-			"cache_dir": c.cacheMgr.GetCacheBase(),
+			"cache_dir": cacheDir,
 		},
 		"last_error": c.stats.LastError,
 	}

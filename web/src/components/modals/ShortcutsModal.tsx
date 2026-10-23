@@ -30,7 +30,7 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
           <span>{t('modals.shortcuts.title')}</span>
         </div>
       }
-      subtitle="全局单键快速中控操作 (打字时自动屏蔽防误触)"
+      subtitle={t('modals.shortcuts.subtitle')}
       maxWidth="max-w-md"
     >
       <div className="space-y-4">
@@ -50,12 +50,12 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
 
         <div className="p-3 bg-blue-50/60 border border-blue-100 rounded-lg flex items-center gap-2 text-[11px] text-blue-800">
           <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-          <span>在任何文本输入框打字时，单键快捷键会自动屏蔽，彻底杜绝误触。</span>
+          <span>{t('modals.shortcuts.typingGuard')}</span>
         </div>
 
         <div className="flex justify-end pt-1">
           <Button variant="desktop" size="sm" onClick={onClose}>
-            {t('common.close')} (Esc)
+            {t('common.closeEsc')}
           </Button>
         </div>
       </div>
