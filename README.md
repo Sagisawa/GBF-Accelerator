@@ -1,5 +1,9 @@
 # GBF Accelerator
 
+<p align="center">
+  <b>简体中文</b> | <a href="README.en.md">English</a> | <a href="README.ja.md">日本語</a>
+</p>
+
 碧蓝幻想（Granblue Fantasy）高性能本地静态资源缓存与透明代理工具。
 
 [![Release](https://img.shields.io/github/v/release/Sagisawa/GBF-Accelerator?color=blue&logo=github)](https://github.com/Sagisawa/GBF-Accelerator/releases)
@@ -480,6 +484,7 @@ go run . --headless
   "asset_max_keepalive": 16,
   "asset_keepalive_expiry": 60.0,
   "enable_api_telemetry": true,
+  "language": "zh",
   "window_width": 880,
   "window_height": 640,
   "window_maximized": false
@@ -521,6 +526,7 @@ go run . --headless
 | `asset_max_keepalive` | 整数 | `16` | 静态素材通道空闲长连接保留数（推荐保守水线 <= 16）。 |
 | `asset_keepalive_expiry` | 浮点 | `60.0` | 静态素材通道空闲长连接保活超时（秒）。 |
 | `enable_api_telemetry` | 布尔 | `true` | 是否启用 API 响应耗时分布（P50/P95/P99）及连接复用率遥测。 |
+| `language` | 字符串 | `"zh"` | 界面显示语言，支持 `"zh"` (简体中文)、`"en"` (English)、`"ja"` (日本語)。 |
 | `window_width` | 整数 | `880` | 独立控制台窗口宽度（像素，最低 400）。 |
 | `window_height` | 整数 | `640` | 独立控制台窗口高度（像素，最低 400）。 |
 | `window_maximized` | 布尔 | `false` | 独立控制台窗口是否记录为最大化状态。 |
