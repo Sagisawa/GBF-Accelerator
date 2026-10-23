@@ -109,7 +109,7 @@ if [[ "$(uname -s)" == "Darwin" ]] || [[ "${1:-}" == "--release" ]] || [[ "${2:-
 </plist>
 EOF
 
-    AUX_FILES=("SwitchyOmega_GBF.bak" "proxy.pac" "install_ca.sh" "start_proxy.sh" "使用说明.txt" "LICENSE")
+    AUX_FILES=("SwitchyOmega_GBF.bak" "proxy.pac" "install_ca.sh" "start_proxy.sh" "使用说明.txt" "INSTRUCTIONS_EN.txt" "INSTRUCTIONS_JA.txt" "LICENSE")
     for aux in "${AUX_FILES[@]}"; do
         if [[ -f "${ROOT_DIR}/${aux}" ]]; then
             cp "${ROOT_DIR}/${aux}" "${STAGING_DIR}/"

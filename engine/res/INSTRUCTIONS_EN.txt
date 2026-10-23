@@ -1,0 +1,127 @@
+=================================================================
+   GBF Accelerator - Quick Start & User Guide
+=================================================================
+
+[Security Warnings & Unsigned App Notice]
+-----------------------------------------------------------------
+GBF-Accelerator is an open-source, high-performance local static asset 
+caching and transparent proxy tool. Because it is an open-source project 
+without an expensive commercial EV code signing certificate, your operating 
+system may display a security prompt on first launch:
+
+• Windows 10/11 (Microsoft Defender SmartScreen):
+  If a popup says "Windows protected your PC" or "SmartScreen prevented an 
+  unrecognized app from starting":
+  1. Click "More info";
+  2. Click "Run anyway" in the bottom-right corner.
+  (If blocked by antivirus software, please allow and add to whitelist).
+
+• macOS (Gatekeeper):
+  If macOS alerts that the developer cannot be verified or the app is damaged:
+  1. Right-click (or Control-click) GBF_Accelerator.app in Finder and choose "Open";
+  2. Or open Terminal and run the quarantine removal command:
+     xattr -cr /Applications/GBF_Accelerator.app
+
+=================================================================
+[Quick Start: 4-Step Standard Setup]
+=================================================================
+
+Step 1: Prepare Your Upstream Proxy
+-----------------------------------------------------------------
+1. Make sure your proxy client (Clash, v2rayN, Surge, etc.) is running 
+   and connected to the internet normally.
+2. GBF-Accelerator functions as a local intermediary cache. By default, 
+   it automatically probes local upstream proxy ports:
+   • Clash Verge: 7897
+   • Clash: 7890
+   • v2rayN: 10809
+   • Shimakaze Go: 8099
+   • ACGPower: 8123
+   You can freely select or switch upstream proxies in the Web Console.
+3. If you have a fast, direct internet connection to Japan or want to use 
+   a commercial game booster with GBF-Accelerator, you can check 
+   [Direct Mode] in the Web Console to bypass upstream proxies.
+
+Step 2: Launch Program & Install HTTPS Root Certificate (Required, Once Only)
+-----------------------------------------------------------------
+Game static assets are served over HTTPS from Akamai CDN. The accelerator 
+must decrypt and cache these assets locally, which requires trusting the 
+locally generated private Root CA on your machine.
+
+1. Launch GBF_Accelerator.exe (Windows) or GBF_Accelerator.app (macOS).
+2. The Web Console will open automatically at http://127.0.0.1:8125
+   • Note: You can switch the console display language to English, 日本語, 
+     or 简体中文 anytime via the top-right [🌐 Language] menu.
+3. If the Root CA is not yet trusted, the console will show a setup modal.
+4. Choose an installation method:
+   • Method A (Recommended): Click "Install Root CA" in the Web Console. 
+     Confirm the native OS security prompt.
+   • Method B: Run install_ca.bat (Windows) or ./install_ca.sh (macOS).
+
+CRITICAL NOTICE: Completely restart your browser after installing the CA!
+If your browser (Chrome, Edge, etc.) is currently open, you MUST completely 
+quit and restart all browser windows after installing the certificate!
+Chromium browsers cache SSL/TLS handshake states in memory. A complete restart 
+ensures the browser reloads the trusted system root store, preventing 
+"Certificate Invalid" errors or blank screens.
+
+Step 3: Configure Browser Proxy Routing (SwitchyOmega / ZeroOmega)
+-----------------------------------------------------------------
+The goal of routing is to route ONLY Granblue Fantasy game traffic and CDN 
+assets through the accelerator, leaving all other browsing untouched.
+
+• Recommended Method (Automatic PAC):
+  1. Install ZeroOmega or SwitchyOmega extension in Chrome/Edge.
+  2. Open extension options -> "New Profile" -> Choose "PAC Profile".
+  3. Set PAC URL: http://127.0.0.1:8124/proxy.pac
+  4. Click "Download Profile Now", then click "Apply changes".
+  5. Click the extension icon in your browser toolbar and select this PAC profile.
+
+• Alternative Method (Windows System PAC):
+  In the Web Console, check "Auto-configure Windows System PAC Proxy".
+  (Note: If you use SwitchyOmega, set it to [System Proxy] or disable it, 
+   otherwise it will override system proxy settings).
+
+Step 4: Launch Granblue Fantasy & Confirm Acceleration
+-----------------------------------------------------------------
+1. Open official game URL in your browser:
+   https://game.granbluefantasy.jp
+   (Do NOT use SkyLeap URL gbf.game.mbga.jp, as it is only for mobile login 
+    redirection and contains no cacheable static assets).
+2. How Cache Hits Work (Browser Memory Cache vs Proxy Cache):
+   • First visit to a quest/raid: Assets are downloaded from CDN and cached 
+     to local SSD.
+   • Immediate repeated visits: Modern browsers (Chrome/Edge) serve assets 
+     directly from tab RAM ("from memory cache"), so requests do not reach 
+     the local proxy.
+   • Subsequent play / after browser restart: Browser memory cache expires, 
+     and requests hit the local proxy cache (RAM 0ms / SSD 1~3ms delivery). 
+     The "Local Cache Hits" counter on the Web Console will increment rapidly.
+
+=================================================================
+[Optional Features & Management]
+=================================================================
+
+1. Backup Upstream & Automatic Failover:
+   Configure a backup proxy (or "direct") in Web Console -> Upstream Proxy. 
+   When the primary proxy suffers high latency or connection failures, 
+   the engine will automatically failover to keep your gameplay smooth.
+
+2. In-App Updates:
+   Click "Updates" in the Web Console to check for new releases on GitHub. 
+   Downloads verify official SHA-256 integrity before self-updating.
+
+3. Cache Storage & Slimming:
+   Use "Trim Cache" in the console to safely remove deprecated game script 
+   fragments from past game updates while keeping all valuable character art 
+   and audio untouched.
+
+4. Uninstall / Certificate Cleanup:
+   Click "Revoke Root CA" in the Web Console to cleanly remove the root 
+   certificate from the system trust store.
+
+=================================================================
+For detailed documentation and source code, visit:
+https://github.com/Sagisawa/GBF-Accelerator
+Full English Guide: README.en.md
+=================================================================

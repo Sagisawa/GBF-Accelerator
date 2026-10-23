@@ -15,9 +15,15 @@ var SwitchyOmegaBak []byte
 //go:embed 使用说明.txt
 var InstructionsTxt []byte
 
+//go:embed INSTRUCTIONS_EN.txt
+var InstructionsEnTxt []byte
+
+//go:embed INSTRUCTIONS_JA.txt
+var InstructionsJaTxt []byte
+
 // EnsureHelperFiles writes the generated proxy.pac when it is absent or still
 // appears to be a previously generated helper, while preserving user-customized
-// PAC files. SwitchyOmega_GBF.bak and 使用说明.txt are created only when absent.
+// PAC files. SwitchyOmega_GBF.bak and instruction text files are created only when absent.
 func EnsureHelperFiles(targetDir string, proxyPort int) error {
 	if targetDir == "" {
 		targetDir = "."
@@ -56,10 +62,20 @@ func EnsureHelperFiles(targetDir string, proxyPort int) error {
 		_ = os.WriteFile(bakPath, SwitchyOmegaBak, 0644)
 	}
 
-	// 3. Ensure 使用说明.txt
-	txtPath := filepath.Join(targetDir, "使用说明.txt")
-	if fi, err := os.Stat(txtPath); err != nil || fi.Size() == 0 {
-		_ = os.WriteFile(txtPath, InstructionsTxt, 0644)
+	// 3. Ensure instruction text files
+	txtFiles := []struct {
+		name string
+		data []byte
+	}{
+		{"使用说明.txt", InstructionsTxt},
+		{"INSTRUCTIONS_EN.txt", InstructionsEnTxt},
+		{"INSTRUCTIONS_JA.txt", InstructionsJaTxt},
+	}
+	for _, tf := range txtFiles {
+		p := filepath.Join(targetDir, tf.name)
+		if fi, err := os.Stat(p); err != nil || fi.Size() == 0 {
+			_ = os.WriteFile(p, tf.data, 0644)
+		}
 	}
 
 	return nil
