@@ -193,7 +193,7 @@ const ReleaseNotesViewer: React.FC<{ content: string }> = ({ content }) => {
 export const UpdateModal: React.FC<UpdateModalProps> = ({
   isOpen,
   onClose,
-  currentVersion = '2.5.0',
+  currentVersion = '2.5.1',
   onUpdateSuccess,
 }) => {
   const { t } = useI18n()

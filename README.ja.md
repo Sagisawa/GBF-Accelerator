@@ -16,8 +16,8 @@ GBF-Accelerator は、ローカルの RAM / SSD 階層化キャッシュと HTTP
 同時に、ゲームの動的 API（戦闘、編成、ガチャ、リザルトなど）には独立した HTTP/1.1 Keep-Alive 専用接続プールを提供し、業務セマンティクスへの介入を一切行わない完全な透過プロキシ（Transparent Proxy）転送を行います。
 
 > 📥 **完成版のダウンロード**: [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) から最新のポータブルパッケージを入手できます：
-> - **Windows**: `GBF_Accelerator_v2.5.0_GUI.zip` を解凍して即実行可能。
-> - **macOS**: `GBF_Accelerator_v2.5.0_macOS_universal2.zip`（Intel / Apple Silicon 両対応の Universal 2 バイナリ）。
+> - **Windows**: `GBF_Accelerator_v2.5.1_GUI.zip` を解凍して即実行可能。
+> - **macOS**: `GBF_Accelerator_v2.5.1_macOS_universal2.zip`（Intel / Apple Silicon 両対応の Universal 2 バイナリ）。
 > - **Android**: **Root（LSPosed）** および **非Root（PC内蔵パッチャー）** の両方に対応。
 > - バージョン別の変更履歴は [CHANGELOG.md](CHANGELOG.md) をご覧ください。
 
@@ -197,7 +197,7 @@ flowchart TD
 ### 方法 1: 完成版ポータブル版を使用（推奨）
 
 #### Windows の場合
-1. [Releases ページ](https://github.com/Sagisawa/GBF-Accelerator/releases) から `GBF_Accelerator_v2.5.0_GUI.zip` をダウンロード。
+1. [Releases ページ](https://github.com/Sagisawa/GBF-Accelerator/releases) から `GBF_Accelerator_v2.5.1_GUI.zip` をダウンロード。
 2. 日本語やスペースを含まない任意のフォルダ（例: `D:\GBF_Accelerator\`）に解凍。
 3. **上流プロキシの確認**: Clash 等のプロキシが起動していることを確認（または設定で「ダイレクト接続」を有効化）。
 4. **起動**: `GBF_Accelerator.exe` を実行。
@@ -212,7 +212,7 @@ flowchart TD
 7. **プレイ開始**: ブラウザで `https://game.granbluefantasy.jp` を開いてプレイを開始します。
 
 #### macOS の場合
-1. `GBF_Accelerator_v2.5.0_macOS_universal2.zip` をダウンロードし、`GBF_Accelerator.app` を「アプリケーション」フォルダに移動。
+1. `GBF_Accelerator_v2.5.1_macOS_universal2.zip` をダウンロードし、`GBF_Accelerator.app` を「アプリケーション」フォルダに移動。
    > 💡 *Gatekeeper*: 開発者未確認の警告が出た場合は、右クリックして「開く」を選択するか、ターミナルで `xattr -cr /Applications/GBF_Accelerator.app` を実行してください。
 2. アプリを起動するとメニューバーに常駐します。
 3. メニューバーアイコンからコンソールを開き、「ルート証明書をインストール」を実行（Mac のパスワードまたは Touch ID で許可）。

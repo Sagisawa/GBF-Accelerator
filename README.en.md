@@ -15,8 +15,8 @@ High-performance local static asset caching and transparent proxy tool for Granb
 GBF-Accelerator caches static game assets (character portraits, audio, battle animations, scripts) to local RAM and SSD using hierarchical caching and HTTP/2 multiplexing. This minimizes cross-sea redundant downloads, substantially reduces asset loading latency, and mitigates upstream CDN load. Simultaneously, it provides a dedicated HTTP/1.1 Keep-Alive connection pool for core dynamic game APIs (battles, party formation, gacha, quests, settlements), delivering end-to-end transparent forwarding with zero business semantic modification.
 
 > 📥 **Download Ready-to-Use Releases**: Visit [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) for pre-built portable archives:
-> - **Windows**: Download `GBF_Accelerator_v2.5.0_GUI.zip`, extract and run.
-> - **macOS**: Download `GBF_Accelerator_v2.5.0_macOS_universal2.zip` (Universal 2 fat binary supporting Intel and Apple Silicon Macs natively), extract and run.
+> - **Windows**: Download `GBF_Accelerator_v2.5.1_GUI.zip`, extract and run.
+> - **macOS**: Download `GBF_Accelerator_v2.5.1_macOS_universal2.zip` (Universal 2 fat binary supporting Intel and Apple Silicon Macs natively), extract and run.
 > - **Android**: Supports both **Root (LSPosed module)** and **No-Root (built-in patcher)** modes.
 > - Detailed release notes and changelogs can be found in [CHANGELOG.md](CHANGELOG.md).
 
@@ -231,7 +231,7 @@ Dynamic configuration reloading (`POST /api/config/apply`) follows a 4-phase str
 ### Option 1: Pre-Built Portable Release (Recommended)
 
 #### Windows
-1. Download `GBF_Accelerator_v2.5.0_GUI.zip` from [Releases](https://github.com/Sagisawa/GBF-Accelerator/releases).
+1. Download `GBF_Accelerator_v2.5.1_GUI.zip` from [Releases](https://github.com/Sagisawa/GBF-Accelerator/releases).
 2. Extract to any directory without Chinese or special characters (e.g., `D:\GBF_Accelerator\`).
 3. **Ensure Upstream Proxy**: Make sure your proxy software (Clash, v2rayN, etc.) is running, or enable "Direct Mode" in settings if you have a direct connection to Japan.
 4. **Launch**: Double-click `GBF_Accelerator.exe`.
@@ -246,7 +246,7 @@ Dynamic configuration reloading (`POST /api/config/apply`) follows a 4-phase str
 7. **Start Game**: Open `https://game.granbluefantasy.jp` in your browser.
 
 #### macOS
-1. Download `GBF_Accelerator_v2.5.0_macOS_universal2.zip` from [Releases](https://github.com/Sagisawa/GBF-Accelerator/releases).
+1. Download `GBF_Accelerator_v2.5.1_macOS_universal2.zip` from [Releases](https://github.com/Sagisawa/GBF-Accelerator/releases).
 2. Extract and move `GBF_Accelerator.app` into your `/Applications` folder.
    > 💡 *Gatekeeper*: If prompted that the app is from an unidentified developer, right-click the app and choose **Open**, or run in Terminal: `xattr -cr /Applications/GBF_Accelerator.app`.
 3. Launch the app. It will run quietly in your top Menu Bar.
@@ -398,7 +398,7 @@ go vet ./...
   ```powershell
   .\build.ps1 -RebuildWeb
   ```
-  The compiled standalone binary is placed in `bin/GBF_Accelerator.exe` and packaged into `release/GBF_Accelerator_v2.5.0_GUI.zip`.
+  The compiled standalone binary is placed in `bin/GBF_Accelerator.exe` and packaged into `release/GBF_Accelerator_v2.5.1_GUI.zip`.
 - **macOS Universal 2**:
   ```bash
   ./build.sh --rebuild-web --release
