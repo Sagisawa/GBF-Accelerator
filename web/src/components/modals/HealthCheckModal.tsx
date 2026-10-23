@@ -262,6 +262,54 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
     }
   }
 
+  const getCheckItemName = useCallback(
+    (key: string, defaultName: string) => {
+      const k = `modals.healthCheck.checkNames.${key}`
+      const val = t(k)
+      return val !== k ? val : defaultName
+    },
+    [t]
+  )
+
+  const getCheckItemMessage = useCallback(
+    (item: HealthItem) => {
+      if (!item || !item.code) return item?.message || ''
+      const k = `modals.healthCheck.checkMessages.${item.code}`
+      const params: Record<string, any> = { ...(item.details || {}) }
+      if (item.code === 'CORE_OK' && !params.version && item.message) {
+        const m = item.message.match(/v([0-9a-zA-Z.-]+)/)
+        if (m) params.version = m[1]
+      }
+      if (item.code === 'DATA_PLANE_OK' && !params.addr && item.message) {
+        const m = item.message.match(/监听于\s+([^\s]+)/)
+        if (m) params.addr = m[1]
+      }
+      if (item.code === 'CONTROL_PLANE_OK' && !params.control_addr) {
+        if (params.addr) {
+          params.control_addr = params.addr
+        } else if (item.message) {
+          const m = item.message.match(/运行于\s+([^\s]+)/)
+          if (m) params.control_addr = m[1]
+        }
+      }
+      if (item.code === 'LAN_OK' && !params.ip && item.message) {
+        const m = item.message.match(/IP:\s*([^\s)]+)/)
+        if (m) params.ip = m[1]
+      }
+      if (item.code === 'LAN_FIREWALL_OK' && !params.ip && item.message) {
+        const m = item.message.match(/IP:\s*([^\s)]+)/)
+        if (m) params.ip = m[1]
+      }
+      if (item.code === 'FIREWALL_RULE_MISSING' && !params.port && item.message) {
+        const m = item.message.match(/端口\s*([0-9]+)/)
+        if (m) params.port = m[1]
+      }
+      const val = t(k, params)
+      return val !== k ? val : item.message
+    },
+    [t]
+  )
+
   const renderItemCard = (key: string, item?: HealthItem) => {
     if (!item) return null
     const isThisRepairing = repairingCode === item.code
@@ -280,7 +328,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             {renderStatusIcon(item.status)}
             <span className="text-xs font-bold text-slate-900 tracking-tight">
-              {item.name}
+              {getCheckItemName(key, item.name)}
             </span>
           </div>
 
@@ -320,7 +368,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
         </div>
 
         <div className="mt-1.5 pl-6 text-xs text-slate-700 leading-relaxed">
-          <p>{item.message}</p>
+          <p>{getCheckItemMessage(item)}</p>
           <div className="flex items-center gap-2 mt-1 text-[11px] font-mono text-slate-400">
             <span>code: {item.code}</span>
           </div>

@@ -241,6 +241,13 @@ export const App: React.FC = () => {
     status?.platform === 'android' ||
     (!status && typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent))
 
+  // Update page title dynamically when language changes
+  useEffect(() => {
+    if (!isStandaloneLogsPage) {
+      document.title = t('header.documentTitle')
+    }
+  }, [language, t, isStandaloneLogsPage])
+
   // First-launch Root CA install guide (restores the v1.6 behavior): when the
   // runtime status first authoritatively reports the CA as not installed, auto
   // open the cert guide modal exactly once per app launch. An already-trusted

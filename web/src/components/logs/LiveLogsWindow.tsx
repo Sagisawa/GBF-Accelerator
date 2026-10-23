@@ -793,9 +793,18 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
   // --- Render Individual Token Styling ---
   const renderLogContent = (item: ParsedLogLine, isActiveRow: boolean) => {
     if (item.isSystem || !alignFormat) {
+      let content = item.systemMsg || item.raw
+      if (
+        item.levelTag?.includes('READY') ||
+        content.includes('代理服务已成功启动') ||
+        content.includes('Proxy service successfully started') ||
+        content.includes('プロキシサービスが正常に起動しました')
+      ) {
+        content = t('liveLogs.readyLogMsg')
+      }
       return (
         <span className={item.isError ? 'text-red-400 font-bold' : 'text-slate-200'}>
-          {highlightText(item.systemMsg || item.raw, tokens, isActiveRow)}
+          {highlightText(content, tokens, isActiveRow)}
         </span>
       )
     }

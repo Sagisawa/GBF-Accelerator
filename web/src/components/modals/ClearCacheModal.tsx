@@ -117,6 +117,14 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
     },
     [t]
   )
+  const getCategoryDesc = useCallback(
+    (category: string, defaultDesc: string) => {
+      const key = `modals.clearCache.categoryDescriptions.${category}`
+      const val = t(key)
+      return val !== key ? val : defaultDesc
+    },
+    [t]
+  )
   const [activeTab, setActiveTab] = useState<'breakdown' | 'reset'>('breakdown')
 
   // Breakdown & Task State
@@ -858,7 +866,7 @@ export const ClearCacheModal: React.FC<ClearCacheModalProps> = ({
                                 )}
                               </div>
                               <p className="text-[11px] text-slate-500 leading-snug">
-                                {cat.description}
+                                {getCategoryDesc(cat.category, cat.description)}
                               </p>
                             </div>
                           </div>

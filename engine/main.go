@@ -315,7 +315,14 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "[-] Failed to start Proxy Server: %v\n", err)
 		os.Exit(1)
 	}
-	stats.Log("INFO", "[READY] 代理服务已成功启动！等待 GBF 请求接入...")
+	switch curCfg.Language {
+	case "en":
+		stats.Log("INFO", "[READY] Proxy service successfully started! Waiting for GBF requests...")
+	case "ja":
+		stats.Log("INFO", "[READY] プロキシサービスが正常に起動しました！GBF からのリクエストを待機中...")
+	default:
+		stats.Log("INFO", "[READY] 代理服务已成功启动！等待 GBF 请求接入...")
+	}
 
 	// 7. Initialize Control Server
 	ctrlSrv := control.NewControlServer(cfgMgr, certMgr, cacheMgr, proxySrv, stats)

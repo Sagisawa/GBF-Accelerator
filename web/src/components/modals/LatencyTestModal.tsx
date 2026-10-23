@@ -75,6 +75,18 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
     ? t('modals.latencyTest.directRoute')
     : t('modals.latencyTest.upstreamRoute', { proxy: upstreamProxy || t('cards.upstream.unconfigured') })
 
+  const formatRouteDesc = (rawRoute: string) => {
+    if (!rawRoute) return fallbackRouteDesc
+    if (rawRoute.includes('直连模式')) {
+      return t('modals.latencyTest.directRoute')
+    }
+    const match = rawRoute.match(/^经上游代理\s+(.+)$/)
+    if (match) {
+      return t('modals.latencyTest.upstreamRoute', { proxy: match[1] })
+    }
+    return rawRoute
+  }
+
   const runTest = async () => {
     setTesting(true)
     setErrorMsg('')
@@ -147,7 +159,7 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
             </div>
             <div className="flex justify-between">
               <span className="font-bold text-slate-800">{t('modals.latencyTest.routeLabel')}</span>
-              <span className="text-slate-700">{currentRoute || fallbackRouteDesc}</span>
+              <span className="text-slate-700">{formatRouteDesc(currentRoute)}</span>
             </div>
           </div>
 
