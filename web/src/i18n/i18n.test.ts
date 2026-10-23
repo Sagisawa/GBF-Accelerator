@@ -33,8 +33,8 @@ describe('i18n dictionaries and translation', () => {
     expect(translate('ja', 'common.ok')).toBe('確定')
 
     expect(translate('zh', 'header.quitApp')).toBe('彻底退出')
-    expect(translate('en', 'header.quitApp')).toBe('Completely Exit')
-    expect(translate('ja', 'header.quitApp')).toBe('完全終了')
+    expect(translate('en', 'header.quitApp')).toBe('Exit')
+    expect(translate('ja', 'header.quitApp')).toBe('終了')
   })
 
   it('interpolates variables properly', () => {

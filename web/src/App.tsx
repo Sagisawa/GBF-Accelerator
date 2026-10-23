@@ -1324,7 +1324,7 @@ export const App: React.FC = () => {
                 type="button"
                 disabled={loadingProxy || isTerminated}
                 onClick={handleToggleProxy}
-                className={`min-w-[100px] sm:min-w-[110px] px-4 sm:px-5 py-2.5 rounded-xl text-sm sm:text-base font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] ${
+                className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
                   isRunning
                     ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
                     : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
@@ -1336,7 +1336,7 @@ export const App: React.FC = () => {
                 type="button"
                 disabled={isTerminated}
                 onClick={() => setIsQuitModalOpen(true)}
-                className="px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs"
+                className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
                 title={t('header.quitAppTip')}
               >
                 <Power className="w-4 h-4 text-rose-500" />
@@ -1383,7 +1383,7 @@ export const App: React.FC = () => {
       </div>
 
       {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
-      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
+      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-20 sm:pb-24 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
         {activeTab === 'core' ? (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
@@ -1501,7 +1501,7 @@ export const App: React.FC = () => {
                         onClick={handleApplyRamMb}
                         disabled={Boolean(loadingAction)}
                         aria-busy={isActionLoading('ram-mb')}
-                        className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                        className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
                       >
                         {isActionLoading('ram-mb') ? t('cards.cache.applying') : t('cards.cache.apply')}
                       </button>
@@ -1623,13 +1623,13 @@ export const App: React.FC = () => {
                 <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
                   {t('cards.upstream.upstreamLabel')}
                 </label>
-                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                <div className="flex items-center gap-1.5 sm:gap-2">
                   <input
                     type="text"
                     disabled={isDirect || Boolean(loadingAction)}
                     value={upstreamInput}
                     onChange={(e) => setUpstreamInput(e.target.value)}
-                    className="flex-1 min-w-[160px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all disabled:bg-slate-100 disabled:text-slate-400"
+                    className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all disabled:bg-slate-100 disabled:text-slate-400"
                   />
                   <button
                     type="button"
@@ -1703,7 +1703,7 @@ export const App: React.FC = () => {
                   <div className="space-y-2.5 pt-0.5">
                     {/* Backup upstream input + probe button */}
                     <div className="space-y-1.5">
-                      <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                      <div className="flex items-center gap-1.5 sm:gap-2">
                         <label className="text-xs sm:text-[13px] text-slate-600 shrink-0">
                           {t('cards.upstream.backupAddress')}
                         </label>
@@ -1713,7 +1713,7 @@ export const App: React.FC = () => {
                           onChange={(e) => setBackupUpstreamInput(e.target.value)}
                           disabled={Boolean(loadingAction)}
                           placeholder={t('cards.upstream.backupPlaceholder')}
-                          className="flex-1 min-w-[180px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
+                          className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
                         />
                         <button
                           type="button"
@@ -1917,21 +1917,21 @@ export const App: React.FC = () => {
 
               {/* Listen Port & Allow LAN */}
               <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   <label className="text-[13px] sm:text-sm text-slate-700 font-medium">{t('cards.network.portLabel')}</label>
                   <input
                     type="text"
                     disabled={Boolean(loadingAction)}
                     value={portInput}
                     onChange={(e) => setPortInput(e.target.value)}
-                    className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                    className="w-16 sm:w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
                   />
                   <button
                     type="button"
                     onClick={handleSavePort}
                     disabled={Boolean(loadingAction)}
                     aria-busy={isActionLoading('save-port')}
-                    className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                    className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
                   >
                     {isActionLoading('save-port') ? t('common.saving') : t('cards.network.savePort')}
                   </button>
@@ -1940,14 +1940,14 @@ export const App: React.FC = () => {
                     onClick={handleResetPort}
                     disabled={Boolean(loadingAction)}
                     aria-busy={isActionLoading('reset-port')}
-                    className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/80 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                    className="px-2 sm:px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/80 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
                   >
                     {isActionLoading('reset-port') ? t('common.loading') : t('cards.network.resetDefault')}
                   </button>
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex items-center gap-2.5 flex-wrap">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -1961,7 +1961,7 @@ export const App: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setIsMobileModalOpen(true)}
-                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
+                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs shrink-0 whitespace-nowrap"
                     >
                       <span>📱</span>
                       <span>{t('cards.network.mobileGuide')}</span>
@@ -2304,13 +2304,13 @@ export const App: React.FC = () => {
   </main>
 
       {/* 3. Fixed Bottom Action Dock (Footer) */}
-      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-3 sm:px-4 py-2.5 sm:py-3 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
-        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[540px]:grid-cols-4 min-[840px]:grid-cols-8 gap-2">
+      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-3 sm:px-4 py-2 sm:py-2.5 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
+        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[480px]:grid-cols-4 min-[768px]:grid-cols-8 gap-1.5 sm:gap-2">
           <button
             type="button"
             onClick={handleOpenCacheFolder}
             disabled={loadingOpenFolder}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">📁</span>
             <span>{loadingOpenFolder ? t('common.loading') : t('common.openFolder')}</span>
@@ -2319,7 +2319,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={() => setIsClearModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">🗑</span>
             <span>{t('cards.cache.clearCache')}</span>
@@ -2328,7 +2328,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={() => setIsRoutingModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">🌐</span>
             <span>{t('footer.routingTips')}</span>
@@ -2338,7 +2338,7 @@ export const App: React.FC = () => {
             href="https://github.com/Sagisawa/GBF-Accelerator"
             target="_blank"
             rel="noreferrer"
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">⭐</span>
             <span>GitHub</span>
@@ -2347,7 +2347,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={() => setIsUpdateModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">🔄</span>
             <span>{t('footer.checkUpdate')}</span>
@@ -2356,7 +2356,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={() => setIsLatencyModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">📶</span>
             <span>{t('cards.upstream.latencyTest')}</span>
@@ -2365,7 +2365,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={() => setIsHealthModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">🩺</span>
             <span>{t('footer.diagnostics')}</span>
@@ -2374,7 +2374,7 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={openLogsWindow}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="px-1.5 sm:px-2 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
           >
             <span className="text-base leading-none">📜</span>
             <span>{t('footer.liveLogs')}</span>
