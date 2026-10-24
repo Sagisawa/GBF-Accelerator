@@ -26,11 +26,11 @@ GBF-Accelerator caches static game assets (character portraits, audio, battle an
 
 | Web Console Dashboard | Android No-Root Browser Patcher Workbench |
 | :---: | :---: |
-| ![Web Console Dashboard](docs/images/en/dashboard.png) | ![Android No-Root Patcher](docs/images/en/android_patch.png) |
+| ![Web Console Dashboard](docs/images/en/dashboard.png) | ![Android No-Root Browser Patcher Workbench](docs/images/en/android_patch.png) |
 
 | Real-Time Live Logs & Telemetry |
 | :---: |
-| ![Live Logs & Telemetry](docs/images/en/live_logs.png) |
+| ![Real-Time Live Logs & Telemetry](docs/images/en/live_logs.png) |
 
 | Mobile Setup Guide | Cache Health & Safe Slimming |
 | :---: | :---: |
