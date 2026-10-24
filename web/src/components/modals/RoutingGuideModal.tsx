@@ -1,7 +1,7 @@
-import React, { useState } from 'react'
+import React from 'react'
 import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
-import { Globe, Copy, Check } from 'lucide-react'
+import { Globe } from 'lucide-react'
 import { useI18n } from '../../i18n'
 
 export interface RoutingGuideModalProps {
@@ -16,14 +16,7 @@ export const RoutingGuideModal: React.FC<RoutingGuideModalProps> = ({
   listenPort = 8124,
 }) => {
   const { t } = useI18n()
-  const [copied, setCopied] = useState(false)
   const pacUrl = `http://127.0.0.1:${listenPort}/proxy.pac`
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(pacUrl)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
 
   return (
     <Modal
@@ -44,20 +37,6 @@ export const RoutingGuideModal: React.FC<RoutingGuideModalProps> = ({
           <p className="leading-relaxed text-slate-600">
             {t('modals.routingGuide.scheme1Desc')}
           </p>
-          <div className="flex items-center gap-2 pt-1 flex-wrap">
-            <span className="font-semibold text-slate-800">{t('modals.routingGuide.pacScriptUrl')}</span>
-            <code className="bg-white border border-slate-300 px-2 py-0.5 rounded text-blue-600 font-mono text-[11px] select-all">
-              {pacUrl}
-            </code>
-            <Button
-              variant="desktop"
-              size="xs"
-              onClick={handleCopy}
-              icon={copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-            >
-              {copied ? t('common.copied') : t('common.copy')}
-            </Button>
-          </div>
         </div>
 
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5">

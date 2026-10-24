@@ -827,7 +827,6 @@ export const ja: TranslationSchema = {
       "ruleDesc": "Clash等を利用している場合、本ツールと連携させてルール競合を防ぐことができます。",
       "scheme1Title": "方法 1: システムPAC自動振り分け (推奨・拡張機能不要)",
       "scheme1Desc": "メイン画面の「システムPACプロキシを自動設定」を有効にすると、OSが自動でGBF通信を振り分けます。ブラウザ拡張機能は不要です。",
-      "pacScriptUrl": "PACスクリプトURL: ",
       "scheme2Title": "方法 2: SwitchyOmega / ZeroOmega ブラウザ拡張機能",
       "scheme2Desc": "ブラウザ拡張機能でプロキシを管理したい場合は、以下のいずれかの方法を設定してください:",
       "methodATitle": "方法 A (推奨: PACプロファイル):",

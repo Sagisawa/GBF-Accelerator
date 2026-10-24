@@ -827,7 +827,6 @@ export const en: TranslationSchema = {
       "ruleDesc": "If using Clash, you can chain GBF-Accelerator as upstream or parallel proxy to avoid rule conflicts.",
       "scheme1Title": "Option 1: System PAC Auto-Routing (Recommended, Extension-Free)",
       "scheme1Desc": "Enable 'Auto-configure system PAC proxy' on the main screen. The OS will automatically route GBF domains without needing any Chrome/Edge extensions.",
-      "pacScriptUrl": "PAC Script URL: ",
       "scheme2Title": "Option 2: SwitchyOmega / ZeroOmega Browser Extension",
       "scheme2Desc": "If you prefer managing proxies via browser extensions, choose one of the following methods:",
       "methodATitle": "Method A (Recommended: PAC Profile):",
