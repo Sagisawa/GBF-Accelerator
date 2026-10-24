@@ -68,3 +68,38 @@ func TestEnsureHelperFilesPreservesCustomPAC(t *testing.T) {
 		t.Fatalf("custom PAC was overwritten")
 	}
 }
+
+func TestInstructionFilesParity(t *testing.T) {
+	rootDir := filepath.Join("..", "..")
+	pairs := []struct {
+		name       string
+		embedded   []byte
+		boosterHdr string
+	}{
+		{"使用说明.txt", InstructionsTxt, "chrome.exe"},
+		{"INSTRUCTIONS_EN.txt", InstructionsEnTxt, "chrome.exe"},
+		{"INSTRUCTIONS_JA.txt", InstructionsJaTxt, "chrome.exe"},
+		{"SwitchyOmega_GBF.bak", SwitchyOmegaBak, ""},
+	}
+
+	for _, p := range pairs {
+		rootFile := filepath.Join(rootDir, p.name)
+		data, err := os.ReadFile(rootFile)
+		if err != nil {
+			if os.IsNotExist(err) {
+				t.Skipf("skipping root parity test in isolated build environment: %s not found", rootFile)
+				return
+			}
+			t.Fatalf("failed to read root file %s: %v", p.name, err)
+		}
+		if string(data) != string(p.embedded) {
+			t.Errorf("file %s is out of sync between repository root and engine/res embedded asset", p.name)
+		}
+		if p.boosterHdr != "" {
+			text := string(p.embedded)
+			if !strings.Contains(text, p.boosterHdr) || !strings.Contains(text, "chrome.app") {
+				t.Errorf("file %s is missing commercial booster rename tips (chrome.exe / chrome.app)", p.name)
+			}
+		}
+	}
+}
