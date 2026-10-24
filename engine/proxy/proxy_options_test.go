@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -302,6 +303,238 @@ func TestProxy_Options_StrictZeroRetry(t *testing.T) {
 	}
 	if retries := stats.APIRetries.Load(); retries != 0 {
 		t.Fatalf("expected 0 api_retries in stats, got %d", retries)
+	}
+}
+
+// TestProxy_Options_TransportZeroReplay_StaleReusedConn validates that OPTIONS requests:
+// 1. Are never implicitly replayed by Go's net/http.Transport onto a second warm idle Keep-Alive
+//    connection after a post-write connection drop (guarded by nonReplayableBody in WroteHeaders).
+// 2. Are never replayed by Go's net/http.Transport onto a second warm idle connection on pre-write
+//    failure / nothingWrittenError (guarded by wrapAPITransportSingleAttempt and ClientTrace).
+// 3. Are never retried at the application level (maxAttempts = 1), even when targeting whitelisted
+//    read-only paths (e.g. /rest/multiraid/condition.json) where GET would be retried.
+// 4. Have zero upstream hit duplication, 0 stats.APIRetries, and return 502 Bad Gateway to the client.
+func TestProxy_Options_TransportZeroReplay_StaleReusedConn(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	certMgr, err := cert.NewManager(filepath.Join(tempDir, "certs"))
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := NewProxyServer(cfgMgr, certMgr, cacheMgr, stats)
+	defer srv.Stop()
+
+	var dropNextAfterRead atomic.Bool
+	var failNextConnWrite atomic.Bool
+	var upstreamReceived atomic.Int64
+	var warmBarrierGate atomic.Bool
+	warmEntered := make(chan struct{}, 4)
+	releaseWarm := make(chan struct{})
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+
+		if r.URL.Path == "/rest/warmup" {
+			if warmBarrierGate.Load() {
+				warmEntered <- struct{}{}
+				<-releaseWarm
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"warmup":true}`))
+			return
+		}
+
+		upstreamReceived.Add(1)
+
+		if dropNextAfterRead.Swap(false) {
+			if hj, ok := w.(http.Hijacker); ok {
+				if conn, _, hErr := hj.Hijack(); hErr == nil {
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", "https://game.granbluefantasy.jp")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Max-Age", "3600")
+		w.WriteHeader(http.StatusNoContent)
+		_ = body
+	}))
+	defer ts.Close()
+
+	apiHost := "game.granbluefantasy.jp"
+	tr := ts.Client().Transport.(*http.Transport).Clone()
+	tr.MaxIdleConns = 8
+	tr.MaxIdleConnsPerHost = 4
+	tr.IdleConnTimeout = 30 * time.Second
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, dErr := net.Dial("tcp", ts.Listener.Addr().String())
+		if dErr != nil {
+			return nil, dErr
+		}
+		return &failNextWriteConn{Conn: c, failWrite: &failNextConnWrite}, nil
+	}
+	tr.TLSClientConfig.InsecureSkipVerify = true
+	setTestAPIClient(srv, &http.Client{
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	})
+
+	warmTwoIdleConns := func() {
+		t.Helper()
+		releaseWarm = make(chan struct{})
+		warmBarrierGate.Store(true)
+		var wg sync.WaitGroup
+		for i := 0; i < 2; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req, _ := http.NewRequest(http.MethodGet, "https://"+apiHost+"/rest/warmup", nil)
+				var buf bytes.Buffer
+				srv.handleDecryptedRequest(&buf, req, apiHost)
+			}()
+		}
+		<-warmEntered
+		<-warmEntered
+		warmBarrierGate.Store(false)
+		close(releaseWarm)
+		wg.Wait()
+	}
+
+	// Subcase 1: Post-write drop on reused connection with 2 warm idle connections in pool.
+	// Standard Go net/http.Transport treats OPTIONS with nil body as replayable (isReplayable() == true).
+	// With prepareAPIRequestTrace setting nonReplayableBody in WroteHeaders, Transport MUST NOT
+	// replay the OPTIONS request onto the second idle connection.
+	warmTwoIdleConns()
+	beforeHits := upstreamReceived.Load()
+	beforeRetries := stats.APIRetries.Load()
+	beforeReused := stats.ReusedConns.Load()
+	dropNextAfterRead.Store(true)
+
+	reqOptions, err := http.NewRequest(http.MethodOptions, "https://"+apiHost+"/rest/multiraid/start.json", nil)
+	if err != nil {
+		t.Fatalf("failed to create OPTIONS request: %v", err)
+	}
+	reqOptions.Header.Set("Origin", "https://game.granbluefantasy.jp")
+	reqOptions.Header.Set("Access-Control-Request-Method", "POST")
+
+	var bufOptions bytes.Buffer
+	srv.handleDecryptedRequest(&bufOptions, reqOptions, apiHost)
+
+	if !strings.HasPrefix(bufOptions.String(), "HTTP/1.1 502 Bad Gateway") {
+		t.Fatalf("expected 502 Bad Gateway on dropped OPTIONS request, got: %s", firstLine(bufOptions.String()))
+	}
+	if gotHits := upstreamReceived.Load() - beforeHits; gotHits != 1 {
+		t.Fatalf("CRITICAL P0 VIOLATION: OPTIONS on dropped reused conn was sent to upstream %d times (want 1)", gotHits)
+	}
+	if gotRetries := stats.APIRetries.Load() - beforeRetries; gotRetries != 0 {
+		t.Fatalf("expected 0 application api_retries on OPTIONS, got %d", gotRetries)
+	}
+	if gotReused := stats.ReusedConns.Load() - beforeReused; gotReused < 1 {
+		t.Fatalf("expected at least 1 reused connection recorded, got %d", gotReused)
+	}
+
+	// Subcase 2: Pre-write failure (nothingWrittenError before WroteHeaders) with 2 warm idle connections in pool.
+	// When the first idle connection fails on Write (0 bytes written), wrapAPITransportSingleAttempt
+	// must abort iteration 2 before Transport pops or dials a second connection.
+	warmTwoIdleConns()
+	beforePreWriteHits := upstreamReceived.Load()
+	beforePreWriteRetries := stats.APIRetries.Load()
+	beforePreWriteReused := stats.ReusedConns.Load()
+	failNextConnWrite.Store(true)
+
+	reqPreWrite, err := http.NewRequest(http.MethodOptions, "https://"+apiHost+"/rest/multiraid/prewrite_fail.json", nil)
+	if err != nil {
+		t.Fatalf("failed to create prewrite OPTIONS request: %v", err)
+	}
+	reqPreWrite.Header.Set("Origin", "https://game.granbluefantasy.jp")
+
+	var bufPreWrite bytes.Buffer
+	srv.handleDecryptedRequest(&bufPreWrite, reqPreWrite, apiHost)
+
+	if !strings.HasPrefix(bufPreWrite.String(), "HTTP/1.1 502 Bad Gateway") {
+		t.Fatalf("expected 502 Bad Gateway on pre-write failure OPTIONS request, got: %s", firstLine(bufPreWrite.String()))
+	}
+	if gotHits := upstreamReceived.Load() - beforePreWriteHits; gotHits != 0 {
+		t.Fatalf("CRITICAL P0 VIOLATION: pre-write failure on 1st idle conn replayed OPTIONS onto 2nd idle conn (%d hits, want 0)", gotHits)
+	}
+	if gotRetries := stats.APIRetries.Load() - beforePreWriteRetries; gotRetries != 0 {
+		t.Fatalf("expected 0 application api_retries on pre-write failure OPTIONS, got %d", gotRetries)
+	}
+	if gotReused := stats.ReusedConns.Load() - beforePreWriteReused; gotReused < 1 {
+		t.Fatalf("expected at least 1 reused connection recorded on pre-write failure, got %d", gotReused)
+	}
+
+	// Subcase 3: OPTIONS targeting whitelisted idempotent path (/rest/multiraid/condition.json).
+	// Whitelist only applies to GET/HEAD. For OPTIONS, isGet is false, maxAttempts is strictly 1.
+	// Even on connection drop on a reused connection, zero application retries and zero Transport replays occur.
+	warmTwoIdleConns()
+	beforeWhiteHits := upstreamReceived.Load()
+	beforeWhiteRetries := stats.APIRetries.Load()
+	beforeWhiteReused := stats.ReusedConns.Load()
+	dropNextAfterRead.Store(true)
+
+	reqWhite, err := http.NewRequest(http.MethodOptions, "https://"+apiHost+"/rest/multiraid/condition.json", nil)
+	if err != nil {
+		t.Fatalf("failed to create whitelisted path OPTIONS request: %v", err)
+	}
+	reqWhite.Header.Set("Origin", "https://game.granbluefantasy.jp")
+
+	var bufWhite bytes.Buffer
+	srv.handleDecryptedRequest(&bufWhite, reqWhite, apiHost)
+
+	if !strings.HasPrefix(bufWhite.String(), "HTTP/1.1 502 Bad Gateway") {
+		t.Fatalf("expected 502 Bad Gateway on dropped whitelisted-path OPTIONS, got: %s", firstLine(bufWhite.String()))
+	}
+	if gotHits := upstreamReceived.Load() - beforeWhiteHits; gotHits != 1 {
+		t.Fatalf("whitelisted-path OPTIONS sent %d times to upstream (want 1)", gotHits)
+	}
+	if gotRetries := stats.APIRetries.Load() - beforeWhiteRetries; gotRetries != 0 {
+		t.Fatalf("expected 0 application api_retries on whitelisted-path OPTIONS, got %d", gotRetries)
+	}
+	if gotReused := stats.ReusedConns.Load() - beforeWhiteReused; gotReused < 1 {
+		t.Fatalf("expected at least 1 reused connection recorded on whitelisted path OPTIONS, got %d", gotReused)
+	}
+
+	// Subcase 4: OPTIONS with non-empty request body on reused connection drop.
+	// BodyReader is not nil, GetBody is nil, nonReplayableBody is set on WroteHeaders.
+	warmTwoIdleConns()
+	beforeBodyHits := upstreamReceived.Load()
+	beforeBodyRetries := stats.APIRetries.Load()
+	beforeBodyReused := stats.ReusedConns.Load()
+	dropNextAfterRead.Store(true)
+
+	reqBody, err := http.NewRequest(http.MethodOptions, "https://"+apiHost+"/rest/multiraid/body_drop.json", bytes.NewReader([]byte(`{"test":true}`)))
+	if err != nil {
+		t.Fatalf("failed to create OPTIONS with body: %v", err)
+	}
+	reqBody.Header.Set("Origin", "https://game.granbluefantasy.jp")
+	reqBody.Header.Set("Content-Type", "application/json")
+
+	var bufBody bytes.Buffer
+	srv.handleDecryptedRequest(&bufBody, reqBody, apiHost)
+
+	if !strings.HasPrefix(bufBody.String(), "HTTP/1.1 502 Bad Gateway") {
+		t.Fatalf("expected 502 Bad Gateway on dropped OPTIONS with body, got: %s", firstLine(bufBody.String()))
+	}
+	if gotHits := upstreamReceived.Load() - beforeBodyHits; gotHits != 1 {
+		t.Fatalf("OPTIONS with body sent %d times to upstream (want 1)", gotHits)
+	}
+	if gotRetries := stats.APIRetries.Load() - beforeBodyRetries; gotRetries != 0 {
+		t.Fatalf("expected 0 application api_retries on OPTIONS with body, got %d", gotRetries)
+	}
+	if gotReused := stats.ReusedConns.Load() - beforeBodyReused; gotReused < 1 {
+		t.Fatalf("expected at least 1 reused connection recorded on OPTIONS with body, got %d", gotReused)
 	}
 }
 
