@@ -1334,7 +1334,7 @@ export const en: TranslationSchema = {
       "componentDownloading": "Downloading components...",
       "retryInstallAll": "Retry Installing All Environments",
       "onboardingTitle": "Please Prepare Android Patch Environment First",
-      "onboardingDesc": "Building self-contained patches requires LSPatch core, built-in Xposed module, and portable Java 21+ JRE. Click 'Install All Environments' below to automatically download and verify; the patching panel will open once ready.",
+      "onboardingDesc": "Building self-contained patches requires LSPatch core, built-in Xposed module, and portable Java 21+ JRE. Click 'Install Toolchain' below to automatically download and verify; the patching panel will open once ready.",
       "installAllEnvSize": "Install Toolchain (~120 MB)",
       "selectOfficialPackage": "Select Official Package (APK / Split APK / APKS / XAPK)",
       "tabDeviceShort": "Extract from Device",

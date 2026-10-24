@@ -59,6 +59,26 @@ describe('i18n dictionaries and translation', () => {
     expect(translate('ja', 'header.runningWithPort', { port: 8124 })).toBe('稼働中 (ポート 8124)')
   })
 
+  it('verifies refined localization terminology and step punctuation', () => {
+    expect(translate('en', 'common.error')).toBe('Error')
+    expect(translate('ja', 'common.error')).toBe('エラー')
+
+    expect(translate('en', 'cards.optim.browserCache')).toBe('Aggressive Browser Caching (immutable)')
+    expect(translate('ja', 'cards.optim.browserCache')).toBe('ブラウザキャッシュ制御 (immutable)')
+
+    expect(translate('en', 'modals.androidPatch.backupBtn')).toBe('Backup Directory')
+    expect(translate('en', 'modals.androidPatch.installAllEnvSize')).toBe('Install Toolchain (~120 MB)')
+    expect(translate('ja', 'modals.androidPatch.desc')).toContain('Goネイティブの')
+
+    const enStep1 = translate('en', 'modals.routingGuide.methodAStep1')
+    const jaStep1 = translate('ja', 'modals.routingGuide.methodAStep1')
+    expect(enStep1.endsWith('.')).toBe(true)
+    expect(jaStep1.endsWith('。')).toBe(true)
+    expect(enStep1).not.toContain(';')
+    expect(jaStep1).not.toContain(';')
+    expect(jaStep1).not.toContain('；')
+  })
+
   it('falls back safely for unknown keys', () => {
     expect(translate('en', 'nonexistent.key')).toBe('nonexistent.key')
     expect(translate('ja', 'nonexistent.key')).toBe('nonexistent.key')

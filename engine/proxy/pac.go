@@ -316,7 +316,7 @@ func GetLandingHTML(lanIP string, port int) string {
                 <b>
                     <span lang="zh">方式 1：自动分流</span>
                     <span lang="en">Method 1: Auto PAC Routing</span>
-                    <span lang="ja">方法 1：PAC 自動分流</span>
+                    <span lang="ja">方法 1：PAC 自動振り分け</span>
                     <span class="badge">
                         <span lang="zh">推荐，仅游戏素材走代理</span>
                         <span lang="en">Recommended: Proxies game assets only</span>
