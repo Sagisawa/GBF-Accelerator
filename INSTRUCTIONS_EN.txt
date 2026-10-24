@@ -41,6 +41,10 @@ Step 1: Prepare Your Upstream Proxy
 3. If you have a fast, direct internet connection to Japan or want to use 
    a commercial game booster with GBF-Accelerator, you can check 
    [Direct Mode] in the Web Console to bypass upstream proxies.
+   (Note: Certain commercial game boosters operating in process mode may
+   require the program to be identified as Chrome: on Windows you can rename
+   the executable to `chrome.exe`; on macOS you can rename `GBF_Accelerator.app`
+   to `chrome.app` before launching.)
 
 Step 2: Launch Program & Install HTTPS Root Certificate (Required, Once Only)
 -----------------------------------------------------------------
