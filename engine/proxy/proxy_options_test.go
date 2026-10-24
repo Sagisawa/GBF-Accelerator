@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -43,7 +44,12 @@ func setupOptionsTestEnv(t *testing.T, upstreamHandler http.HandlerFunc) (*Proxy
 	}
 	tr.TLSClientConfig.InsecureSkipVerify = true
 
-	setTestAPIClient(srv, &http.Client{Transport: tr})
+	setTestAPIClient(srv, &http.Client{
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	})
 	setTestAssetClient(srv, &http.Client{Transport: tr})
 
 	return srv, ts, stats
@@ -463,3 +469,169 @@ func TestProxy_NoRegression_DynamicAndStaticPaths(t *testing.T) {
 		t.Errorf("expected exactly 1 upstream asset call (cache hit on second), got %d", assetCalls.Load())
 	}
 }
+
+// TestProxy_Options_WithRequestBody verifies that an OPTIONS request with a body
+// (e.g. non-standard preflight body or diagnostic payload) is correctly read,
+// forwarded to upstream without corruption or blocking, and answered.
+func TestProxy_Options_WithRequestBody(t *testing.T) {
+	var upstreamReceived atomic.Int64
+	var capturedBody []byte
+
+	srv, _, _ := setupOptionsTestEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamReceived.Add(1)
+		var err error
+		capturedBody, err = io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Access-Control-Allow-Origin", "https://game.granbluefantasy.jp")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"received":true}`))
+	})
+
+	targetHost := "game.granbluefantasy.jp"
+	testPayload := []byte(`{"ping":"options_body_test"}`)
+	req, err := http.NewRequest(http.MethodOptions, "https://"+targetHost+"/rest/multiraid/start.json", bytes.NewReader(testPayload))
+	if err != nil {
+		t.Fatalf("failed to create OPTIONS request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://game.granbluefantasy.jp")
+
+	var buf bytes.Buffer
+	srv.handleDecryptedRequest(&buf, req, targetHost)
+
+	if upstreamReceived.Load() != 1 {
+		t.Fatalf("expected upstream to receive 1 request, got %d", upstreamReceived.Load())
+	}
+	if !bytes.Equal(capturedBody, testPayload) {
+		t.Errorf("expected body %q, got %q", testPayload, capturedBody)
+	}
+	raw := buf.String()
+	if !strings.HasPrefix(raw, "HTTP/1.1 200 OK") {
+		t.Fatalf("expected 200 OK, got: %s", firstLine(raw))
+	}
+}
+
+// TestProxy_Options_RedirectResponse verifies that when the upstream responds
+// with a redirect (e.g. 302 Found) to an OPTIONS request, the proxy does NOT
+// follow the redirect (matching production CheckRedirect policy) and preserves
+// the redirect status line and Location header.
+func TestProxy_Options_RedirectResponse(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	redirectTarget := "https://game.granbluefantasy.jp/rest/new_endpoint"
+
+	srv, _, _ := setupOptionsTestEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Location", redirectTarget)
+		w.Header().Set("Access-Control-Allow-Origin", "https://game.granbluefantasy.jp")
+		w.WriteHeader(http.StatusFound)
+	})
+
+	targetHost := "game.granbluefantasy.jp"
+	req, err := http.NewRequest(http.MethodOptions, "https://"+targetHost+"/rest/multiraid/start.json", nil)
+	if err != nil {
+		t.Fatalf("failed to create OPTIONS request: %v", err)
+	}
+	req.Header.Set("Origin", "https://game.granbluefantasy.jp")
+
+	var buf bytes.Buffer
+	srv.handleDecryptedRequest(&buf, req, targetHost)
+
+	if upstreamCalls.Load() != 1 {
+		t.Errorf("expected strictly 1 upstream call (no redirect following), got %d", upstreamCalls.Load())
+	}
+	raw := buf.String()
+	if !strings.HasPrefix(raw, "HTTP/1.1 302 Found") {
+		t.Fatalf("expected 302 Found, got: %s", firstLine(raw))
+	}
+	if loc := extractHeader(raw, "Location"); loc != redirectTarget {
+		t.Errorf("expected Location %q, got %q", redirectTarget, loc)
+	}
+}
+
+// TestProxy_Options_MultipleSetCookies verifies that multiple Set-Cookie headers
+// returned on an upstream OPTIONS response are preserved as separate lines
+// without comma-folding (per P0 rule).
+func TestProxy_Options_MultipleSetCookies(t *testing.T) {
+	srv, _, _ := setupOptionsTestEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Set-Cookie", "c1=v1; Path=/; HttpOnly")
+		w.Header().Add("Set-Cookie", "c2=v2; Path=/; Secure")
+		w.Header().Set("Access-Control-Allow-Origin", "https://game.granbluefantasy.jp")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	targetHost := "game.granbluefantasy.jp"
+	req, err := http.NewRequest(http.MethodOptions, "https://"+targetHost+"/rest/multiraid/start.json", nil)
+	if err != nil {
+		t.Fatalf("failed to create OPTIONS request: %v", err)
+	}
+
+	var buf bytes.Buffer
+	srv.handleDecryptedRequest(&buf, req, targetHost)
+
+	raw := buf.String()
+	cookieLines := 0
+	for _, line := range strings.Split(raw, "\r\n") {
+		if strings.HasPrefix(line, "Set-Cookie: ") {
+			cookieLines++
+		}
+	}
+	if cookieLines != 2 {
+		t.Errorf("expected 2 separate Set-Cookie lines, got %d", cookieLines)
+	}
+}
+
+// TestProxy_Options_ConnectionClose verifies that an OPTIONS request with Connection: close
+// causes the proxy to output Connection: close and return keepAlive == false.
+func TestProxy_Options_ConnectionClose(t *testing.T) {
+	srv, _, _ := setupOptionsTestEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://game.granbluefantasy.jp")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	targetHost := "game.granbluefantasy.jp"
+	req, err := http.NewRequest(http.MethodOptions, "https://"+targetHost+"/rest/multiraid/start.json", nil)
+	if err != nil {
+		t.Fatalf("failed to create OPTIONS request: %v", err)
+	}
+	req.Close = true
+
+	var buf bytes.Buffer
+	keepAlive := srv.handleDecryptedRequest(&buf, req, targetHost)
+	if keepAlive {
+		t.Errorf("expected keepAlive == false when req.Close is true")
+	}
+
+	raw := buf.String()
+	if connHdr := extractHeader(raw, "Connection"); !strings.EqualFold(connHdr, "close") {
+		t.Errorf("expected Connection: close, got %q", connHdr)
+	}
+}
+
+// TestProxy_Options_QueryParameters verifies that query parameters on OPTIONS
+// are preserved in the forwarded RequestURI.
+func TestProxy_Options_QueryParameters(t *testing.T) {
+	var capturedURI string
+	srv, _, _ := setupOptionsTestEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		capturedURI = r.URL.RequestURI()
+		w.Header().Set("Access-Control-Allow-Origin", "https://game.granbluefantasy.jp")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	targetHost := "game.granbluefantasy.jp"
+	targetURI := "/rest/multiraid/start.json?foo=bar&category=123"
+	req, err := http.NewRequest(http.MethodOptions, "https://"+targetHost+targetURI, nil)
+	if err != nil {
+		t.Fatalf("failed to create OPTIONS request: %v", err)
+	}
+
+	var buf bytes.Buffer
+	srv.handleDecryptedRequest(&buf, req, targetHost)
+
+	if capturedURI != targetURI {
+		t.Errorf("expected upstream URI %q, got %q", targetURI, capturedURI)
+	}
+}
+
