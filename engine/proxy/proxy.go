@@ -1937,18 +1937,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 }
 
 func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, targetHost string) bool {
-	// Rule 1: CORS Preflight
-	if req.Method == http.MethodOptions {
-		hdr := make(http.Header)
-		hdr.Set("Access-Control-Allow-Origin", "*")
-		hdr.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		hdr.Set("Access-Control-Allow-Headers", "*")
-		hdr.Set("Access-Control-Max-Age", "604800")
-		writeHTTPResponse(w, http.StatusOK, hdr, nil, req.Method == http.MethodHead, req.Close)
-		return !req.Close
-	}
-
-	// Rule 2: Static Asset vs Dynamic Game API
+	// Static Asset vs Dynamic Game API
 	pathLower := strings.ToLower(req.URL.Path)
 	isStatic := (req.Method == http.MethodGet || req.Method == http.MethodHead) && isStaticTargetLower(targetHost, pathLower)
 	if isStatic {
