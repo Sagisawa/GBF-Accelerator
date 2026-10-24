@@ -81,9 +81,16 @@ describe('i18n dictionaries and translation', () => {
     // Verify asset terminology across Japanese locale
     expect(translate('ja', 'cards.cache.title')).toBe('ローカルキャッシュ & アセット保存')
     expect(translate('ja', 'cards.optim.prefetch')).toBe('静的アセットのスムーズプリフェッチ')
+    expect(translate('ja', 'cards.optim.browserCacheEnabled')).toBe('ブラウザキャッシュ制御を有効化しました')
+    expect(translate('ja', 'liveLogs.keepaliveReuse')).toBe('Keep-Alive 再利用: ')
+    expect(translate('ja', 'modals.clearCache.categoryDescriptions.core_ui')).toContain('基本UI、アイコン')
     expect(translate('ja', 'modals.boost.subtitle')).toBe('高頻度アセットをRAM常駐プールに展開し、0msの超高速読込を実現')
     expect(translate('ja', 'modals.audit.valid')).toBe('正常アセット')
+    expect(translate('ja', 'modals.audit.starting')).toBe('開始中...')
     expect(translate('ja', 'modals.clearCache.categories.other')).toBe('その他基本アセット')
+    expect(translate('ja', 'modals.androidPatch.uninstallConfirm')).toContain('完全に解放しますか？')
+    expect(translate('ja', 'modals.androidPatch.backupBtn')).toBe('元パッケージ保存先')
+    expect(translate('ja', 'modals.androidPatch.step3')).toBe('3. LSPatch 適用')
 
     function collectStrings(obj: any): string[] {
       let result: string[] = []
@@ -100,6 +107,13 @@ describe('i18n dictionaries and translation', () => {
     const jaStrings = collectStrings(ja)
     for (const str of jaStrings) {
       expect(str).not.toContain('素材')
+      expect(str).not.toContain('主画面')
+      expect(str).not.toContain('強キャッシュ')
+      expect(str).not.toContain('持続接続')
+      expect(str).not.toContain('常用UI')
+      expect(str).not.toContain('元版')
+      expect(str).not.toContain('フォルダー')
+      expect(str).not.toContain('パッチ注入')
     }
   })
 
