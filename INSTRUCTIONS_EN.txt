@@ -74,7 +74,7 @@ assets through the accelerator, leaving all other browsing untouched.
   1. Install ZeroOmega or SwitchyOmega extension in Chrome/Edge.
   2. Open extension options -> "New Profile" -> Choose "PAC Profile".
   3. Set PAC URL: http://127.0.0.1:8124/proxy.pac
-  4. Click "Download Profile Now", then click "Apply changes".
+  4. Click "Update profile now", then click "Apply changes".
   5. Click the extension icon in your browser toolbar and select this PAC profile.
 
 • Alternative Method (Windows System PAC):
@@ -112,12 +112,12 @@ Step 4: Launch Granblue Fantasy & Confirm Acceleration
    Downloads verify official SHA-256 integrity before self-updating.
 
 3. Cache Storage & Slimming:
-   Use "Trim Cache" in the console to safely remove deprecated game script 
+   Use "Clear Cache" in the console to safely remove deprecated game script 
    fragments from past game updates while keeping all valuable character art 
    and audio untouched.
 
 4. Uninstall / Certificate Cleanup:
-   Click "Revoke Root CA" in the Web Console to cleanly remove the root 
+   Click "Uninstall Root CA" in the Web Console to cleanly remove the root 
    certificate from the system trust store.
 
 =================================================================

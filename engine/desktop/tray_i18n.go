@@ -25,23 +25,23 @@ func getTrayText(lang string) TrayText {
 			MenuConsole:     "GBF-Accelerator Console",
 			MenuStatusRun:   "Status: Proxy Running (Port %d)",
 			MenuStatusPause: "Status: Proxy Paused",
-			MenuToggleStop:  "Pause Proxy Acceleration",
-			MenuToggleStart: "Start Proxy Acceleration",
-			MenuOpenCache:   "Open Local Cache Folder",
-			MenuQuit:        "Exit Application",
+			MenuToggleStop:  "Pause Proxy",
+			MenuToggleStart: "Resume Proxy",
+			MenuOpenCache:   "Open Cache Folder",
+			MenuQuit:        "Exit",
 		}
 	case "ja":
 		return TrayText{
 			TooltipRunning:  "稼働中",
-			TooltipPaused:   "一時停止",
+			TooltipPaused:   "一時停止中",
 			TooltipFormat:   "GBF-Accelerator (%s)\nプロキシポート: %d\nコンソールポート: %d",
 			MenuConsole:     "GBF-Accelerator コンソール",
 			MenuStatusRun:   "状態: プロキシ稼働中 (ポート %d)",
-			MenuStatusPause: "状態: プロキシ一時停止",
-			MenuToggleStop:  "プロキシ加速を一時停止",
-			MenuToggleStart: "プロキシ加速を開始",
+			MenuStatusPause: "状態: プロキシ一時停止中",
+			MenuToggleStop:  "プロキシを一時停止",
+			MenuToggleStart: "プロキシを再開",
 			MenuOpenCache:   "ローカルキャッシュフォルダを開く",
-			MenuQuit:        "アプリケーションを終了",
+			MenuQuit:        "終了",
 		}
 	default: // "zh"
 		return TrayText{

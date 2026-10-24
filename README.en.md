@@ -12,7 +12,7 @@ High-performance local static asset caching and transparent proxy tool for Granb
 [![CI](https://github.com/Sagisawa/GBF-Accelerator/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Sagisawa/GBF-Accelerator/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-GBF-Accelerator caches static game assets (character portraits, audio, battle animations, scripts) to local RAM and SSD using hierarchical caching and HTTP/2 multiplexing. This minimizes cross-sea redundant downloads, substantially reduces asset loading latency, and mitigates upstream CDN load. Simultaneously, it provides a dedicated HTTP/1.1 Keep-Alive connection pool for core dynamic game APIs (battles, party formation, gacha, quests, settlements), delivering end-to-end transparent forwarding with zero business semantic modification.
+GBF-Accelerator caches static game assets (character portraits, audio, battle animations, scripts) to local RAM and SSD using hierarchical caching and HTTP/2 multiplexing. This minimizes redundant overseas downloads, substantially reduces asset loading latency, and mitigates upstream CDN load. Simultaneously, it provides a dedicated HTTP/1.1 Keep-Alive connection pool for core dynamic game APIs (battles, party formation, gacha, quests, settlements), delivering end-to-end transparent forwarding with zero business semantic modification.
 
 > 📥 **Download Ready-to-Use Releases**: Visit [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) for pre-built portable archives:
 > - **Windows**: Download `GBF_Accelerator_v2.5.1_GUI.zip`, extract and run.
@@ -167,7 +167,7 @@ Dynamic configuration reloading (`POST /api/config/apply`) follows a 4-phase str
 - **QoS Foreground Yielding**:
   - Background prefetch workers dynamically monitor foreground requests. When active battles or page navigation calls are detected, background prefetching yields immediately to protect game bandwidth.
 - **Safe Multi-Layer Retry Guardrails**:
-  - **Zero Retry on Write Requests**: All state-modifying requests (attacks, skill casts, summons, purchases) have application-level `max_attempts = 1`. `upReq.GetBody` is explicitly nilled out at runtime to prevent Go's standard library from implicit retries.
+  - **Zero Retry on Write Requests**: All state-modifying requests (attacks, skill casts, summons, purchases) have application-level `max_attempts = 1`. `upReq.GetBody` is explicitly nilled out at runtime to mitigate implicit transport-level retries in Go's standard library.
   - **Audited Idempotent Read Retry**: Only pre-audited read-only GET endpoints (such as `/rest/multiraid/condition.json`, `/rest/quest/stage_list`, etc.) are permitted at most 1 fast reconnection attempt upon connection reset/EOF.
 - **Real-Time Telemetry & Multi-Keyword Log Analysis**:
   - Pushes connection reuse status, latency distributions (P50/P95/P99), and throughput stats via Server-Sent Events (SSE).

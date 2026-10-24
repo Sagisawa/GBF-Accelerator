@@ -44,10 +44,16 @@ func TestTrayLocalization(t *testing.T) {
 	if enTxt.MenuConsole != "GBF-Accelerator Console" {
 		t.Errorf("expected English console title, got %q", enTxt.MenuConsole)
 	}
+	if enTxt.MenuQuit != "Exit" || enTxt.MenuToggleStop != "Pause Proxy" || enTxt.MenuToggleStart != "Resume Proxy" || enTxt.MenuOpenCache != "Open Cache Folder" {
+		t.Errorf("unexpected English tray texts: %+v", enTxt)
+	}
 
 	jaTxt := getTrayText("ja")
 	if jaTxt.MenuConsole != "GBF-Accelerator コンソール" {
 		t.Errorf("expected Japanese console title, got %q", jaTxt.MenuConsole)
+	}
+	if jaTxt.TooltipPaused != "一時停止中" || jaTxt.MenuStatusPause != "状態: プロキシ一時停止中" || jaTxt.MenuQuit != "終了" || jaTxt.MenuToggleStop != "プロキシを一時停止" || jaTxt.MenuToggleStart != "プロキシを再開" {
+		t.Errorf("unexpected Japanese tray texts: %+v", jaTxt)
 	}
 
 	zhTxt := getTrayText("zh")

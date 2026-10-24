@@ -240,7 +240,7 @@ func GetLandingHTML(lanIP string, port int) string {
         <div class="card">
             <div class="card-title">
                 <span lang="zh">【第一步：安装并信任根证书（iOS 必需，Android 视情况）】</span>
-                <span lang="en">[Step 1: Install & Trust Root CA (Required on iOS, Optional on Android)]</span>
+                <span lang="en">[Step 1: Install & Trust Root CA (Required on iOS, Setup-dependent on Android)]</span>
                 <span lang="ja">【ステップ 1：ルート証明書のインストールと信頼設定（iOS 必須 / Android は環境による）】</span>
             </div>
             <ol>
@@ -283,7 +283,7 @@ func GetLandingHTML(lanIP string, port int) string {
                     </b><br>
                     <span lang="zh">打开手机【设置】-&gt;【通用】-&gt;【关于本机】-&gt; 底部【证书信任设置】；<br>找到【GBF Local Accelerator Root CA】，打开信任开关。</span>
                     <span lang="en">Open [Settings] -&gt; [General] -&gt; [About] -&gt; bottom [Certificate Trust Settings];<br>Locate [GBF Local Accelerator Root CA] and turn ON the trust switch.</span>
-                    <span lang="ja">「設定」-&gt;「一般」-&gt;「情報」-&gt; 画面一番下の「証明書信頼設定」を開きます；<br>「GBF Local Accelerator Root CA」を見つけ、信頼スイッチをオンにします。</span>
+                    <span lang="ja">「設定」-&gt;「一般」-&gt;「情報」-&gt; 画面一番下の「証明書信頼設定」を開きます。<br>「GBF Local Accelerator Root CA」を見つけ、信頼スイッチをオンにします。</span>
                 </li>
             </ol>
         </div>
@@ -319,7 +319,7 @@ func GetLandingHTML(lanIP string, port int) string {
                     <span lang="ja">方法 1：PAC 自動分流</span>
                     <span class="badge">
                         <span lang="zh">推荐，仅游戏素材走代理</span>
-                        <span lang="en">Recommended: Only Game Traffic</span>
+                        <span lang="en">Recommended: Proxies game assets only</span>
                         <span lang="ja">推奨（ゲーム素材のみプロキシ経由）</span>
                     </span>
                 </b>
@@ -337,7 +337,7 @@ func GetLandingHTML(lanIP string, port int) string {
                 <div>
                     <span lang="zh">• 存储。</span>
                     <span lang="en">• Save.</span>
-                    <span lang="ja">• 保存。</span>
+                    <span lang="ja">• 右上の「保存」をタップ。</span>
                 </div>
             </div>
 
@@ -367,7 +367,7 @@ func GetLandingHTML(lanIP string, port int) string {
                 <div>
                     <span lang="zh">• 存储。</span>
                     <span lang="en">• Save.</span>
-                    <span lang="ja">• 保存。</span>
+                    <span lang="ja">• 右上の「保存」をタップ。</span>
                 </div>
             </div>
         </div>
