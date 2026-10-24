@@ -2556,7 +2556,7 @@ export const App: React.FC = () => {
               className="px-5 py-2 rounded-xl text-xs sm:text-sm font-bold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
             >
               <Power className="w-4 h-4" />
-              <span>{quitting ? t('common.processing') : t('quitModal.confirm')}</span>
+              <span>{quitting ? t('common.quitting') : t('quitModal.confirm')}</span>
             </button>
           </div>
         </div>

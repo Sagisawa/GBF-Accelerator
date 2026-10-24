@@ -355,7 +355,7 @@ func GetLandingHTML(lanIP string, port int) string {
                 <div>
                     <span lang="zh">• 服务器填入：</span>
                     <span lang="en">• Server: </span>
-                    <span lang="ja">• サーバ：</span>
+                    <span lang="ja">• サーバー：</span>
                     <code>%[1]s</code>
                 </div>
                 <div>

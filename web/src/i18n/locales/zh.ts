@@ -824,7 +824,7 @@ export const zh = {
       "ruleTitle": "Clash / Mihomo 等代理工具分流规则建议",
       "ruleDesc": "若您使用 Clash 等工具，可将 GBF 加速器作为前置或并联代理，避免规则冲突。",
       "scheme1Title": "方案 1：系统 PAC 自动分流（推荐，免插件）",
-      "scheme1Desc": "勾选主界面的「自动配置 Windows 系统 PAC 代理」后，系统网络栈将自动接管 GBF 相关域名，无需在 Chrome/Edge 浏览器中安装任何代理切换扩展插件。",
+      "scheme1Desc": "勾选主界面的「自动配置系统 PAC 代理」后，系统网络栈将自动接管 GBF 相关域名，无需在 Chrome/Edge 浏览器中安装任何代理切换扩展插件。",
       "pacScriptUrl": "PAC 脚本地址：",
       "scheme2Title": "方案 2：SwitchyOmega / ZeroOmega 浏览器插件",
       "scheme2Desc": "若你习惯使用浏览器插件管理代理，推荐以下两种配置方式之一：",

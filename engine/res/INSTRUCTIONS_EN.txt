@@ -78,7 +78,7 @@ assets through the accelerator, leaving all other browsing untouched.
   5. Click the extension icon in your browser toolbar and select this PAC profile.
 
 • Alternative Method (Windows System PAC):
-  In the Web Console, check "Auto-configure Windows System PAC Proxy".
+  In the Web Console, check "Auto-configure system PAC proxy".
   (Note: If you use SwitchyOmega, set it to [System Proxy] or disable it, 
    otherwise it will override system proxy settings).
 

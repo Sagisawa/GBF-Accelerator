@@ -58,7 +58,7 @@ flowchart TD
     Client["クライアント (Chrome / Safari / Edge / Steam / Android WebView)"]
     Proxy["GBF Accelerator (プロキシ :8124 / コンソール :8125)"]
 
-    Client -->|"PAC / システムプロキシ / モバイル注入"| Proxy
+    Client -->|"PAC / システムプロキシ / Android パッチ"| Proxy
 
     subgraph AssetChannel ["⚡ 静的アセットチャネル (*.akamaized.net)"]
         RAMCheck{"RAM キャッシュ<br/>(SLRU / RAM Boost 0ms)"}
@@ -212,7 +212,7 @@ flowchart TD
    - **重要**: システムの証明書ストアを再読み込みするため、**ブラウザのウィンドウをすべて閉じて完全に再起動**してください。
 6. **ブラウザの振り分け設定**:
    - **拡張機能（推奨）**: SwitchyOmega または ZeroOmega で PAC プロファイルを作成し、URL に `http://127.0.0.1:8124/proxy.pac` を設定。
-   - **システムプロキシ**: コンソールで「Windows システム PAC プロキシを自動設定」にチェックを入れる方法でも利用可能です。
+   - **システムプロキシ**: コンソールで「システムPACプロキシを自動設定」にチェックを入れる方法でも利用可能です。
 7. **プレイ開始**: ブラウザで `https://game.granbluefantasy.jp` を開いてプレイを開始します。
 
 #### macOS の場合

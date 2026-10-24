@@ -57,7 +57,7 @@ flowchart TD
     Client["Client (Chrome / Safari / Edge / Steam / Android WebView)"]
     Proxy["GBF Accelerator (Proxy :8124 / Console :8125)"]
 
-    Client -->|"PAC / System Proxy / Mobile Injection"| Proxy
+    Client -->|"PAC / System Proxy / Mobile Patch"| Proxy
 
     subgraph AssetChannel ["⚡ Static Asset Channel (*.akamaized.net)"]
         RAMCheck{"RAM Cache<br/>(SLRU / RAM Boost 0ms)"}
@@ -197,7 +197,7 @@ Dynamic configuration reloading (`POST /api/config/apply`) follows a 4-phase str
 - **Automatic Patched APK Detection & Clean Upgrade**:
   - Automatically identifies existing LSPatch metadata, package names, and versions. Supports dropping in previously patched APKs to update the accelerator core seamlessly without manual decompilation.
 - **Root / LSPosed Module**:
-  - Provides a pre-compiled `GBF_Accelerator_v2.4.2_Xposed_arm64.apk` for rooted devices. Activate in LSPosed and select SkyLeap as scope for instant native acceleration.
+  - Provides a pre-compiled `GBF_Accelerator_v2.5.1_Xposed_arm64.apk` for rooted devices. Activate in LSPosed and select SkyLeap as scope for instant native acceleration.
 - **Mobile Sandbox & Battery Friendliness**:
   - RAM caching and background prefetching are disabled by default on mobile to minimize power and cellular data consumption.
   - *Android Process Freezer Note*: Android's cgroup v2 freezer suspends background processes. When switching between multiple patched browsers on the same phone, swipe away the previous browser from the recent apps switcher to release port 8124.

@@ -36,6 +36,10 @@ describe('i18n dictionaries and translation', () => {
     expect(translate('en', 'header.quitApp')).toBe('Exit')
     expect(translate('ja', 'header.quitApp')).toBe('終了')
 
+    expect(translate('zh', 'common.quitting')).toBe('正在退出...')
+    expect(translate('en', 'common.quitting')).toBe('Exiting...')
+    expect(translate('ja', 'common.quitting')).toBe('終了中...')
+
     expect(translate('zh', 'modals.androidPatch.browserNames.skyleap')).toBe('DeNA SkyLeap')
     expect(translate('en', 'modals.androidPatch.browserNames.skyleap')).toBe('DeNA SkyLeap')
     expect(translate('ja', 'modals.androidPatch.browserNames.skyleap')).toBe('DeNA SkyLeap')
@@ -91,6 +95,18 @@ describe('i18n dictionaries and translation', () => {
     expect(translate('ja', 'modals.androidPatch.uninstallConfirm')).toContain('完全に解放しますか？')
     expect(translate('ja', 'modals.androidPatch.backupBtn')).toBe('元パッケージ保存先')
     expect(translate('ja', 'modals.androidPatch.step3')).toBe('3. LSPatch 適用')
+    expect(translate('ja', 'modals.mobileGuide.step1OpenSettings')).toBe('「設定」→「プロファイルがダウンロード済み」を開き、「インストール」をタップします。')
+    expect(translate('ja', 'modals.mobileGuide.step2ManualAlt')).toContain('サーバー {host}')
+    expect(translate('ja', 'modals.androidPatch.retryInstallAll')).toBe('ツールチェーンの一括インストールを再試行')
+    expect(translate('ja', 'modals.androidPatch.installAllEnvSize')).toBe('ツールチェーンを一括インストール (約 120 MB)')
+    expect(translate('en', 'modals.androidPatch.retryInstallAll')).toBe('Retry Toolchain Installation')
+    expect(translate('en', 'modals.androidPatch.onboardingTitle')).toBe('Android Patcher Environment Required')
+    expect(translate('en', 'modals.androidPatch.startPatch')).toBe('Start Patching')
+    expect(translate('en', 'modals.androidPatch.step3')).toBe('3. Apply LSPatch')
+    expect(translate('zh', 'modals.routingGuide.scheme1Desc')).toContain('「自动配置系统 PAC 代理」')
+    expect(translate('zh', 'modals.routingGuide.scheme1Desc')).not.toContain('Windows 系统 PAC')
+    expect(translate('en', 'modals.routingGuide.scheme1Desc')).toContain('Auto-configure system PAC proxy')
+    expect(translate('ja', 'modals.routingGuide.scheme1Desc')).toContain('「システムPACプロキシを自動設定」')
 
     function collectStrings(obj: any): string[] {
       let result: string[] = []
@@ -114,6 +130,14 @@ describe('i18n dictionaries and translation', () => {
       expect(str).not.toContain('元版')
       expect(str).not.toContain('フォルダー')
       expect(str).not.toContain('パッチ注入')
+      expect(str).not.toContain('コアを注入')
+      expect(str).not.toContain('全環境')
+    }
+
+    const enStrings = collectStrings(en)
+    for (const str of enStrings) {
+      expect(str).not.toContain('Patch Injection')
+      expect(str).not.toContain('All Environments')
     }
   })
 
