@@ -94,7 +94,7 @@ flowchart TD
     end
 
     Proxy -->|"静的素材"| RAMCheck
-    Proxy -->|"業務リクエスト / 心拍"| APIClient
+    Proxy -->|"業務リクエスト / ハートビート"| APIClient
 
     AssetClient --> UpstreamMode
     ZeroRetry --> UpstreamMode
@@ -190,7 +190,7 @@ flowchart TD
 
 ### 🛡️ セキュリティ・透過性・信頼性
 - **業務セマンティクスの完全透過**: ガチャ、編成、クエスト、戦闘などの動的 API は、ステータスコード、ヘッダー、本文、Cookie を一切改変せずにそのまま転送。複数行の `Set-Cookie` も正しく保持。
-- **公式ハートビートの完全透過**: `/ob/r`（不正検知心拍）および `/rest/error/js`（エラー報告）は Cygames サーバーへ 100% そのまま通過。
+- **公式ハートビートの完全透過**: `/ob/r`（不正検知ハートビート）および `/rest/error/js`（エラー報告）は Cygames サーバーへ 100% そのまま通過。
 - **独自プロキシヘッダー汚染ゼロ**: `X-Proxy-*` などの独自ヘッダーをブラウザへ返却しません。
 - **ローカル限定の独自 Root CA**: 初回起動時に端末ローカルで一意の秘密鍵とルート証明書を生成（`certs/` に保存）。共有証明書は一切使用しません。
 
@@ -227,7 +227,7 @@ flowchart TD
 ##### 方法 A: 非Root（推奨）
 1. 公式 SkyLeap（または WebView 系ブラウザ）の APK を用意。
 2. PC 版のコンソールで「Android パッチ」タブを開き、APK をドラッグ＆ドロップ。
-3. 「制作開始」をクリックしてパッチを適用。
+3. 「パッチ作成を開始」をクリックしてパッチを適用。
 4. スマホを USB 接続して「端末に直接インストール」をクリック（または APK を転送してインストール）。
 5. スマホ上で VPN ツール（Clash 等）を接続し、パッチ版 SkyLeap を開きます。
 
@@ -320,7 +320,7 @@ go run . --headless
 | `control_port` | 整数 | `8125` | Web コンソールおよび管理 API の待受ポート（ローカル限定）。 |
 | `allow_lan` | 真偽 | `false` | LAN 内の他端末からの接続を許可するかどうか。 |
 | `upstream_proxy` | 文字列 | `"auto"` | 主上流プロキシ。`"auto"` で主要ポートを自動検出。 |
-| `backup_upstream_proxy` | 文字列 | `""` | 予備プロキシアドレス（または直連フォールバック用の `"direct"`）。 |
+| `backup_upstream_proxy` | 文字列 | `""` | 予備プロキシアドレス（または直接接続フォールバック用の `"direct"`）。 |
 | `enable_upstream_failover` | 真偽 | `false` | 予備プロキシへの自動フェイルオーバーを有効化。 |
 | `direct_mode` | 真偽 | `false` | ダイレクトモード（上流プロキシを使用せず通信、キャッシュは維持）。 |
 | `cache_dir` | 文字列 | `"auto"` | 静的アセットの保存ディレクトリ。 |
