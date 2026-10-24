@@ -268,7 +268,7 @@ Dynamic configuration reloading (`POST /api/config/apply`) follows a 4-phase str
 6. Ensure your phone has a VPN/proxy tool running (Clash, v2rayNG, etc.), then open SkyLeap to play.
 
 ##### Method B: Root / LSPosed
-1. Download `GBF_Accelerator_v2.4.2_Xposed_arm64.apk` from [Releases](https://github.com/Sagisawa/GBF-Accelerator/releases).
+1. Download `GBF_Accelerator_v2.5.1_Xposed_arm64.apk` from [Releases](https://github.com/Sagisawa/GBF-Accelerator/releases).
 2. Install the module, activate it in LSPosed Manager, and set SkyLeap as the scope.
 3. Restart SkyLeap.
 

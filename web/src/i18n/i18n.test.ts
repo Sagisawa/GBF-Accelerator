@@ -105,6 +105,12 @@ describe('i18n dictionaries and translation', () => {
     expect(translate('en', 'modals.androidPatch.step3')).toBe('3. Apply LSPatch')
     expect(translate('zh', 'modals.routingGuide.scheme1Desc')).toContain('「自动配置系统 PAC 代理」')
     expect(translate('zh', 'modals.routingGuide.scheme1Desc')).not.toContain('Windows 系统 PAC')
+    expect(translate('zh', 'modals.androidPatch.startPatch')).toBe('开始制作补丁')
+    expect(translate('zh', 'modals.androidPatch.step3')).toBe('3. 应用 LSPatch')
+    expect(translate('zh', 'modals.mobileGuide.faqAndroidDesc')).toContain('【Android 浏览器修补】')
+    expect(translate('zh', 'modals.mobileGuide.faqAndroidDesc')).toContain('一键嵌入全内置加速核心')
+    expect(translate('en', 'cards.optim.browserCacheDesc')).not.toContain('Injects')
+    expect(translate('en', 'modals.caGuide.installTip')).not.toContain('Injects')
     expect(translate('en', 'modals.routingGuide.scheme1Desc')).toContain('Auto-configure system PAC proxy')
     expect(translate('ja', 'modals.routingGuide.scheme1Desc')).toContain('「システムPACプロキシを自動設定」')
 
@@ -118,6 +124,15 @@ describe('i18n dictionaries and translation', () => {
         }
       }
       return result
+    }
+
+    const zhStrings = collectStrings(zh)
+    for (const str of zhStrings) {
+      expect(str).not.toContain('Patch 注入')
+      expect(str).not.toContain('正在注入')
+      expect(str).not.toContain('LSPatch 注入')
+      expect(str).not.toContain('注入核心')
+      expect(str).not.toContain('注入补丁')
     }
 
     const jaStrings = collectStrings(ja)
@@ -138,6 +153,8 @@ describe('i18n dictionaries and translation', () => {
     for (const str of enStrings) {
       expect(str).not.toContain('Patch Injection')
       expect(str).not.toContain('All Environments')
+      expect(str).not.toContain('LSPatch Injection')
+      expect(str).not.toContain('Injects')
     }
   })
 

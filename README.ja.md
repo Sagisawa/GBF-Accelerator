@@ -168,7 +168,7 @@ flowchart TD
 - **パッチ済み APK の自動認識と更新**:
   - 過去バージョンでパッチ済みの APK をそのまま再投入して、最新コアへワンクリック更新が可能。
 - **Root / LSPosed モジュール**:
-  - `GBF_Accelerator_v2.4.2_Xposed_arm64.apk` を LSPosed で有効化し、SkyLeap を対象に指定するだけで、APK の改造なしに即座に利用可能。
+  - `GBF_Accelerator_v2.5.1_Xposed_arm64.apk` を LSPosed で有効化し、SkyLeap を対象に指定するだけで、APK の改造なしに即座に利用可能。
 - **省電力とプロセス仕様**:
   - モバイルコアはバッテリー消費を抑えるため RAM キャッシュとプリフェッチを初期状態でオフに設定。
   - *Android プロセス凍結の注意点*: Android の cgroup v2 freezer 機構により、アプリがバックグラウンドに回ると内蔵コアが一時停止します。同一端末で複数の対応ブラウザを切り替える際は、前のブラウザをタスクスイッチャーで上スワイプして完全に終了させてください。
@@ -232,7 +232,7 @@ flowchart TD
 5. スマホ上で VPN ツール（Clash 等）を接続し、パッチ版 SkyLeap を開きます。
 
 ##### 方法 B: Root / LSPosed
-1. `GBF_Accelerator_v2.4.2_Xposed_arm64.apk` をダウンロードしてインストール。
+1. `GBF_Accelerator_v2.5.1_Xposed_arm64.apk` をダウンロードしてインストール。
 2. LSPosed でモジュールを有効化し、SkyLeap を対象にチェック。
 3. SkyLeap を再起動します。
 
