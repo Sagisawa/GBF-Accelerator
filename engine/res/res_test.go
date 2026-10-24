@@ -30,10 +30,12 @@ func TestEnsureHelperFiles(t *testing.T) {
 		t.Fatalf("SwitchyOmega_GBF.bak not written or empty")
 	}
 
-	txtPath := filepath.Join(tempDir, "使用说明.txt")
-	txtData, err := os.ReadFile(txtPath)
-	if err != nil || len(txtData) == 0 {
-		t.Fatalf("使用说明.txt not written or empty")
+	for _, name := range []string{"使用说明.txt", "INSTRUCTIONS_EN.txt", "INSTRUCTIONS_JA.txt"} {
+		txtPath := filepath.Join(tempDir, name)
+		txtData, err := os.ReadFile(txtPath)
+		if err != nil || len(txtData) == 0 {
+			t.Fatalf("%s not written or empty", name)
+		}
 	}
 
 	// Re-run with different port (e.g. 8126): proxy.pac must update!

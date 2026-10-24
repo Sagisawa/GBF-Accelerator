@@ -1,5 +1,9 @@
 # GBF Accelerator
 
+<p align="center">
+  <b>简体中文</b> | <a href="README.en.md">English</a> | <a href="README.ja.md">日本語</a>
+</p>
+
 碧蓝幻想（Granblue Fantasy）高性能本地静态资源缓存与透明代理工具。
 
 [![Release](https://img.shields.io/github/v/release/Sagisawa/GBF-Accelerator?color=blue&logo=github)](https://github.com/Sagisawa/GBF-Accelerator/releases)
@@ -12,8 +16,8 @@
 通过本地 RAM / SSD 层次化缓存与 HTTP/2 多路复用连接，将游戏静态资源（立绘、音频、战斗动画、脚本）缓存至本地，减少跨海重复下载，降低静态素材加载延迟与上游带宽负载；同时为核心游戏动态 API（战斗、编队、抽卡、结算等）提供独立的 HTTP/1.1 长连接通道，实现业务语义零干预的端到端透明转发。
 
 > 📥 **下载开箱即用版**：前往 [GitHub Releases](https://github.com/Sagisawa/GBF-Accelerator/releases) 获取预构建便携包：
-> - **Windows**：下载 `GBF_Accelerator_v2.5.0_GUI.zip`，解压即用。
-> - **macOS**：下载 `GBF_Accelerator_v2.5.0_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
+> - **Windows**：下载 `GBF_Accelerator_v2.5.1_GUI.zip`，解压即用。
+> - **macOS**：下载 `GBF_Accelerator_v2.5.1_macOS_universal2.zip`（Universal 2 双架构二进制包，同时原生支持 Intel 与 Apple Silicon Macs），解压即用。
 > - **Android**：支持 **Root（LSPosed）与免 Root** 两种使用方式。
 > - 各版本详细更新日志与改动说明请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -23,15 +27,21 @@
 
 | Web 控制台主面板 | Android 浏览器免 Root 全内置补丁 |
 | :---: | :---: |
-| ![Web 控制台主面板](docs/images/dashboard.png) | ![Android 浏览器免 Root 全内置补丁](docs/images/android_patch.png) |
+| ![Web 控制台主面板](docs/images/zh/dashboard.png) | ![Android 浏览器免 Root 全内置补丁](docs/images/zh/android_patch.png) |
 
 | 实时网络与转发日志 |
 | :---: |
-| ![实时网络与转发日志](docs/images/live_logs.png) |
+| ![实时网络与转发日志](docs/images/zh/live_logs.png) |
 
-| 移动端跨设备连接指引 (控制台) | 局域网移动端引导页 (手机浏览器) |
+| 移动端跨设备连接指引 | 智能缓存体检与安全瘦身 |
 | :---: | :---: |
-| ![移动端连接指引](docs/images/mobile_guide.png) | ![局域网移动端引导页](docs/images/mobile_landing.png) |
+| ![移动端跨设备连接指引](docs/images/zh/mobile_guide.png) | ![智能缓存体检与安全瘦身](docs/images/zh/clear_cache.png) |
+
+| 双路由智能延迟测速 |
+| :---: |
+| ![双路由智能延迟测速](docs/images/zh/latency_test.png) |
+
+---
 
 ## 架构设计与数据流向
 
@@ -48,7 +58,7 @@ flowchart TD
     Client["客户端 (Chrome / Safari / Edge / Steam / Android WebView)"]
     Proxy["GBF Accelerator (代理 :8124 / 控制台 :8125)"]
 
-    Client -->|"PAC / 系统代理 / 移动端注入"| Proxy
+    Client -->|"PAC / 系统代理 / 移动端修补"| Proxy
 
     subgraph AssetChannel ["⚡ 静态素材通道 (*.akamaized.net)"]
         RAMCheck{"RAM 内存缓存<br/>(SLRU / RAM Boost 0ms)"}
@@ -110,7 +120,7 @@ flowchart TD
 ======================================================================
 1. 客户端接入层 (Client & UI)
    ├─ 游戏客户端 (Browser / Steam / SkyLeap / Android WebView)
-   │    └─► PAC / 系统代理 / 移动端注入 ──► [数据平面: 核心代理 :8124]
+   │    └─► PAC / 系统代理 / 移动端修补 ──► [数据平面: 核心代理 :8124]
    └─ 管理终端 (Chromium App 独立窗口 / 移动端修补 / 浏览器)
         └─► HTTP / SSE 直连 ─────────────► [控制平面: Web 管理服务 :8125]
 ======================================================================
@@ -118,7 +128,7 @@ flowchart TD
    ├─ 内嵌 Web 控制台 (React 18 SPA / Go embed 内置)
    ├─ REST 管理 API (/api/config, /api/status, /api/cache/stats)
    ├─ SSE 实时遥测流 (连接复用状态 / 多词高亮检索 / API 耗时分布)
-   ├─ Android 移动端修补箱 (AAPT2 / LSPatch / 已修补包自动还原与重新注入)
+   ├─ Android 移动端修补箱 (AAPT2 / LSPatch / 已修补包自动还原与核心更新)
    ├─ 缓存运维引擎 (Magic Bytes 体检 / 历史版本安全瘦身 / RAM Boost)
    └─ 版本更新引擎 (GitHub Release 异步检测、SHA-256 校验与自动重启)
 ======================================================================
@@ -250,14 +260,14 @@ flowchart TD
 ### 📱 Android 移动端支持与修补体系
 - **免 Root PC 内嵌修补工具箱**：
   - Web 控制台内置【Android 浏览器修补】可视化工作台，整合 AAPT2、LSPatch 与 Go Core 移动端专用架构模块；
-  - 用户只需准备好官方原版 SkyLeap 安装包（或基于系统 WebView 的轻量浏览器如 Via），拖入页面即可一键检测依赖并注入加速核心；
+  - 用户只需准备好官方原版 SkyLeap 安装包（或基于系统 WebView 的轻量浏览器如 Via），拖入页面即可一键检测依赖并嵌入加速核心；
   - 手机开启 USB 调试连接电脑后，更可在控制台点击【一键安装到手机】完成安装，手机端打开即用，无需后台常驻独立应用。
 - **已修补 APK 自动特征识别与原版还原**：
   - Patcher 自动嗅探安装包内部的 LSPatch 特征，精准提取 Package Name、应用版本号与嵌入核心状态，在控制台清晰呈现；
   - 支持将已被旧版核心修补过的安装包直接拖入重新修补与升级，流式提取并还原 Origin APK，原生支持 Split APK / APKS 分包结构恢复；
   - 严格限制单层解包（防范嵌套注入风险），内置 Zip Slip 路径穿越防御与 CRC-32 损坏完整性自愈，无需手动解包即可直接升级最新加速核心。
 - **已 Root / LSPosed 模块直接接入**：
-  - 提供预编译的 `GBF_Accelerator_v2.4.2_Xposed_arm64.apk` 独立模块；
+  - 提供预编译的 `GBF_Accelerator_v2.5.1_Xposed_arm64.apk` 独立模块；
   - 安装后在 LSPosed 管理器中激活并勾选作用域（官方原版 SkyLeap 或 Via），重启浏览器即可免重打包原版应用直接生效。
 - **移动端轻量功耗与沙盒隔离**：
   - 移动端核心默认关闭 RAM 缓存与 Prefetch，优先保证低功耗、低发热与蜂窝流量安全；
@@ -317,7 +327,7 @@ flowchart TD
 ### 方式一：使用预构建便携版（推荐）
 
 #### Windows 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新便携包 `GBF_Accelerator_v2.4.2_GUI.zip`。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载最新便携包 `GBF_Accelerator_v2.5.1_GUI.zip`。
 2. 解压到任意非中文路径（例如 `D:\GBF_Accelerator\`）。
 3. **准备上游网络**：确保你的代理软件（Clash Verge / Clash / v2rayN 等）已开启并正常联网（若网络环境良好也可在界面中勾选【直连模式】）。
 4. **启动程序**：双击运行 `GBF_Accelerator.exe`。
@@ -328,12 +338,12 @@ flowchart TD
    - **【关键步骤】安装后完全重启浏览器**：若当前浏览器已开启，**请务必彻底关闭所有浏览器窗口并重新打开**（Chromium 会缓存系统证书库与历史握手状态，必须重启浏览器重新加载系统根证书，避免访问游戏时报错“证书不受信任”或白屏）。
 6. **配置浏览器分流**：
    - **插件分流（强烈推荐，永不漏分片）**：在 ZeroOmega / SwitchyOmega 扩展中新建【PAC 情景模式】，PAC 网址填入 `http://127.0.0.1:8124/proxy.pac`，保存后在扩展图标切换为该模式即可。
-   - **系统代理（免插件）**：在软件界面直接勾选【自动配置 Windows 系统 PAC 代理】（若安装了 SwitchyOmega，插件图标需切到 `[系统代理]` 或停用插件）。
+   - **系统代理（免插件）**：在软件界面直接勾选【自动配置系统 PAC 代理】（若安装了 SwitchyOmega，插件图标需切到 `[系统代理]` 或停用插件）。
 7. **开始游戏与加速确认**：浏览器直接打开 `https://game.granbluefantasy.jp` 开始游玩（勿通过 SkyLeap 的 `gbf.game.mbga.jp` 登录地址游玩，该地址不走素材缓存）。
    > 💡 **缓存命中技术说明**：首次游玩新副本时素材经网络首次下载并写入加速器本地磁盘缓存；**同一浏览器会话短时间内重复游玩时，现代浏览器自带的 Memory Cache（内存缓存）会直接在内部交付（开发者工具 Network 显示 from memory cache），根本不会向外部网络或本地代理发请求**。因此，只有游玩一段时间后（浏览器内部内存缓存置换淘汰）、重启浏览器、或第二天再次进入相同副本时，请求才会由加速器本地缓存（RAM 0ms / SSD 1~3ms）高速交付，控制台顶部的【本地缓存命中】数字会快速跳动增加。
 
 #### macOS 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.4.2_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.5.1_macOS_universal2.zip`（Universal 2 双架构独立 `.app` Bundle，同时原生支持 Intel 与 Apple Silicon Macs）。
 2. 解压并将 `GBF_Accelerator.app` 拖入系统的【应用程序】文件夹。
    > 💡 **Gatekeeper 提示**：首次打开若提示“无法验证开发者”或“已损坏”，请按住 Control 键并鼠标右键点击应用选择【打开】；或在终端执行 `xattr -cr /Applications/GBF_Accelerator.app` 解除系统隔离。
 3. 确保 Clash / Surge 等上游代理正常运行。
@@ -348,14 +358,14 @@ flowchart TD
    - 启动 PC 端 GBF Accelerator，打开 Web 控制台切换至【Android 浏览器修补】页面；
    - 将准备好的 APK 文件拖入修补区，工具箱自动完成 Java 环境与 Android 工具链检测；
    - 若检测到已被旧版核心修补，工具箱将自动流式提取原版并支持一键重新修补升级至最新核心（原生支持 Split APK / APKS 还原）；
-   - 点击【开始制作】注入最新版加速引擎。
+   - 点击【开始制作】嵌入最新版加速引擎。
 3. **安装与使用**：
    - 制作完成后，若手机已通过数据线连接电脑并开启 USB 调试，可直接点击控制台的【一键安装到手机】；
    - 亦可点击【打开输出目录】，将生成的安装包传至手机安装；
    - 手机端确保 Clash / v2rayNG 等 VPN 模式网络工具正常连接，直接打开修补版 SkyLeap 即可正常游玩，手机无需后台常驻加速器。
 
 ##### 方案 B：已 Root / LSPosed 用户
-1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.4.2_Xposed_arm64.apk`；
+1. 前往 [Releases 页面](https://github.com/Sagisawa/GBF-Accelerator/releases) 下载 `GBF_Accelerator_v2.5.1_Xposed_arm64.apk`；
 2. 在手机上安装并在 LSPosed 管理器中激活模块，勾选作用域（官方原版 SkyLeap 或 Via）；
 3. 彻底结束并重新打开 SkyLeap，即可直接生效，无需对官方原版 APK 进行任何修改或重打包。
 
@@ -480,6 +490,7 @@ go run . --headless
   "asset_max_keepalive": 16,
   "asset_keepalive_expiry": 60.0,
   "enable_api_telemetry": true,
+  "language": "zh",
   "window_width": 880,
   "window_height": 640,
   "window_maximized": false
@@ -506,7 +517,7 @@ go run . --headless
 | `auto_start` | 布尔 | `false` | 是否随系统开机自启并最小化（默认关闭）。 |
 | `enable_ram_cache` | 布尔 | `true` | 是否启用 RAM 内存热点缓存（SLRU 分段准入）。 |
 | `ram_cache_max_mb` | 整数 | `256` | RAM 缓存容量上限（MB），支持范围 16 ~ 65536（GUI 推荐 16 ~ 8192）。 |
-| `enable_browser_cache` | 布尔 | `true` | 是否对带版本哈希的静态资源注入 `immutable` 强缓存标头。 |
+| `enable_browser_cache` | 布尔 | `true` | 是否对带版本哈希的静态资源追加 `immutable` 强缓存标头。 |
 | `enable_auto_repair` | 布尔 | `true` | 自动检测并清理损坏/0字节的静态资源缓存并回源修复。 |
 | `enable_prefetch` | 布尔 | `true` | 启用后台资源平滑预加载（15~35ms 抖动调度，前台活动主动避让，DeadFilter 动态过滤）。 |
 | `enable_ram_warmup` | 布尔 | `false` | 启动时是否预热高频静态素材至 RAM 缓存。 |
@@ -521,6 +532,7 @@ go run . --headless
 | `asset_max_keepalive` | 整数 | `16` | 静态素材通道空闲长连接保留数（推荐保守水线 <= 16）。 |
 | `asset_keepalive_expiry` | 浮点 | `60.0` | 静态素材通道空闲长连接保活超时（秒）。 |
 | `enable_api_telemetry` | 布尔 | `true` | 是否启用 API 响应耗时分布（P50/P95/P99）及连接复用率遥测。 |
+| `language` | 字符串 | `"zh"` | 界面显示语言，支持 `"zh"` (简体中文)、`"en"` (English)、`"ja"` (日本語)。 |
 | `window_width` | 整数 | `880` | 独立控制台窗口宽度（像素，最低 400）。 |
 | `window_height` | 整数 | `640` | 独立控制台窗口高度（像素，最低 400）。 |
 | `window_maximized` | 布尔 | `false` | 独立控制台窗口是否记录为最大化状态。 |
@@ -650,7 +662,7 @@ go vet ./...
   - Stream-Through 与缓存管线：冷请求分块即时流式推送、磁盘元数据常驻内存索引、高并发大文件直读与 304 快速短路
   - Android 端实机验证：在 Android 16 (ARM64) 真机（`b0f42695`）上验证伴生模块安装运行、SkyLeap 宿主成功拉起独立 Go Core v2.4.1 守护进程、本地 `8124` / `8125` 双端口监听与网络代理正常工作；验证旧版独立模块（v2.3.0）存在时宿主防劫持逻辑生效，优先使用内嵌 2.4.1 核心
   - macOS Universal 2 胖二进制：由真实 macOS 环境完成 `arm64` 与 `amd64` 双架构 lipo 合成，完整包含 `.app` 目录结构与 `Info.plist`，原生兼容 Intel 与 Apple Silicon Macs
-  - Android 修补管线：普通 APK 与 Split APK 自动识别已修补特征、流式提取原版、AXML 身份识别及重新注入当前核心
+  - Android 修补管线：普通 APK 与 Split APK 自动识别已修补特征、流式提取原版、AXML 身份识别及重新嵌入当前核心
   - Linux amd64 与 arm64 交叉编译无头运行（nogui）
   - 本机真实非 loopback 局域网 IP（物理 NIC / 虚拟网卡）端到端 Socket 监听、连接与数据链路验证
 - **未验证 (Unverified)**：
@@ -667,7 +679,7 @@ go vet ./...
   # 若修改了 web/ 前端代码，需同步重新编译 React SPA
   .\build.ps1 -RebuildWeb
   ```
-  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v2.4.2_GUI.zip`。
+  打包完成后，可执行文件位于 `bin/GBF_Accelerator.exe`，发布包位于 `release/GBF_Accelerator_v2.5.1_GUI.zip`。
 
 - **macOS / Linux**（编译 Universal 2 双架构二进制并打包）：
   ```bash
@@ -677,7 +689,7 @@ go vet ./...
   # 若修改了 web/ 前端代码，需同步重新编译 React SPA
   ./build.sh --rebuild-web --release
   ```
-  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v2.4.2_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
+  打包完成后，通用二进制位于 `bin/GBF_Accelerator_darwin_universal`，发布包位于 `release/GBF_Accelerator_v2.5.1_macOS_universal2.zip`，原生双兼容 Apple Silicon（M 系列）与 Intel 芯片。
 
 > ⚠️ **发布构建说明**：macOS Universal 2 正式发布包（融合 arm64 与 amd64）必须在具备 `lipo` 工具的 macOS 主机环境下打包生成。在缺乏 `lipo` 的环境（如 Windows）运行 macOS 打包将严格报错并中断，防止输出非预期的单架构包。
 

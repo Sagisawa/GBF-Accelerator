@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
-import { Network, Check, Radio, Loader2, Zap, RefreshCw, AlertCircle } from 'lucide-react'
+import { Network, Check, Loader2, Zap, RefreshCw, AlertCircle } from 'lucide-react'
 import { ProxyCandidate } from '../../types'
 import { testLatency } from '../../api'
 import { cn } from '../../utils/cn'
+import { useI18n } from '../../i18n'
 
 export interface UpstreamSelectModalProps {
   isOpen: boolean
@@ -35,6 +36,7 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
   title,
   subtitle,
 }) => {
+  const { t } = useI18n()
   const [selectedUrl, setSelectedUrl] = useState<string>('')
   const [submitting, setSubmitting] = useState(false)
   const [latencies, setLatencies] = useState<Record<string, LatencyState>>({})
@@ -98,14 +100,14 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
         } else {
           setLatencies((prev) => ({
             ...prev,
-            [cand.url]: { status: 'error', error: res?.error || '连接失败' },
+            [cand.url]: { status: 'error', error: res?.error || t('modals.upstreamSelect.cannotConnectGbf') },
           }))
         }
       } catch (err: any) {
         if (sessionRef.current !== currentSession) return
         setLatencies((prev) => ({
           ...prev,
-          [cand.url]: { status: 'error', error: err?.message || '请求超时' },
+          [cand.url]: { status: 'error', error: err?.message || t('modals.upstreamSelect.timeoutUrl') },
         }))
       }
     })
@@ -196,7 +198,7 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
       return (
         <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
           <Loader2 className="w-3 h-3 animate-spin text-slate-400" />
-          <span>测速中</span>
+          <span>{t('common.checking')}</span>
         </span>
       )
     }
@@ -205,10 +207,10 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
       return (
         <span
           className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded bg-rose-50 text-rose-600 border border-rose-200"
-          title={lat.error || '无法连通 GBF 节点'}
+          title={lat.error || t('modals.upstreamSelect.cannotConnectGbf')}
         >
           <AlertCircle className="w-3 h-3 text-rose-500" />
-          <span>不可达</span>
+          <span>{t('common.failed')}</span>
         </span>
       )
     }
@@ -227,17 +229,17 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
 
     const tooltip =
       lat.warmMs !== undefined
-        ? `真实链路 RTT: ${lat.warmMs} ms (已排除首次握手建连开销)${
-            lat.coldMs !== undefined ? `\n首包建连耗时: ${lat.coldMs} ms` : ''
+        ? `${t('modals.upstreamSelect.realRtt', { warm: lat.warmMs })}${
+            lat.coldMs !== undefined ? '\n' + t('modals.upstreamSelect.coldRtt', { cold: lat.coldMs }) : ''
           }`
-        : `网络延迟: ${ms} ms`
+        : t('modals.upstreamSelect.latencyMs', { ms })
 
     return (
       <div className="flex items-center gap-1.5" title={tooltip}>
         {isLowest && (
           <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 shadow-2xs">
             <Zap className="w-2.5 h-2.5 text-amber-600 fill-amber-600" />
-            <span>最优</span>
+            <span>{t('modals.upstreamSelect.bestBadge')}</span>
           </span>
         )}
         <span className={cn('inline-flex items-center text-xs font-mono font-semibold px-2 py-0.5 rounded border cursor-help', colorClass)}>
@@ -255,11 +257,11 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
         title || (
           <div className="flex items-center gap-2">
             <Network className="w-4 h-4 text-blue-600" />
-            <span>选择上游网络代理</span>
+            <span>{t('modals.upstreamSelect.title')}</span>
           </div>
         )
       }
-      subtitle={subtitle || `检测到本机有 ${candidates.length} 个活跃代理端口，请选择要使用的服务`}
+      subtitle={subtitle || t('modals.upstreamSelect.subtitle')}
       maxWidth="max-w-lg"
     >
       <div className="space-y-3">
@@ -272,8 +274,8 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
               onChange={(e) => handleToggleTesting(e.target.checked)}
               className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer"
             />
-            <span className="font-medium">测速选优</span>
-            <span className="text-[10px] text-slate-400 font-normal">（测试 GBF 链路 RTT，已排除首次握手）</span>
+            <span className="font-medium">{t('modals.upstreamSelect.testOpt')}</span>
+            <span className="text-[10px] text-slate-400 font-normal">{t('modals.upstreamSelect.testOptNote')}</span>
           </label>
 
           {enableTesting && (
@@ -282,10 +284,10 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
               onClick={() => runBatchTests(candidates)}
               disabled={isAnyTesting}
               className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-700 disabled:text-slate-400 font-medium transition-colors cursor-pointer shrink-0"
-              title="重新测试所有候选代理延迟"
+              title={t('modals.upstreamSelect.retestAll')}
             >
               <RefreshCw className={cn('w-3 h-3', isAnyTesting && 'animate-spin')} />
-              <span>重新测速</span>
+              <span>{t('modals.upstreamSelect.retestBtn')}</span>
             </button>
           )}
         </div>
@@ -327,7 +329,7 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
                       <span>{cand.name}</span>
                       {isCurrent && (
                         <span className="text-[10px] font-normal px-1.5 py-0.2 bg-emerald-100 text-emerald-700 rounded border border-emerald-200">
-                          当前使用
+                          {t('modals.upstreamSelect.inUseBadge')}
                         </span>
                       )}
                     </div>
@@ -348,11 +350,6 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
           })}
         </div>
 
-        <div className="text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded border border-slate-200 flex items-start gap-1.5">
-          <Radio className="w-3.5 h-3.5 text-blue-600 shrink-0 mt-0.5" />
-          <span>选定后将即刻断开旧上游连接池，切换到所选代理地址并保存配置。</span>
-        </div>
-
         <div className="pt-2 flex justify-end gap-2 border-t border-slate-100">
           <Button
             variant="desktop"
@@ -360,7 +357,7 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
             onClick={onClose}
             disabled={submitting}
           >
-            取消
+            {t('common.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -368,7 +365,7 @@ export const UpstreamSelectModal: React.FC<UpstreamSelectModalProps> = ({
             onClick={handleConfirm}
             loading={submitting}
           >
-            确认选用
+            {t('modals.upstreamSelect.confirmBtn')}
           </Button>
         </div>
       </div>

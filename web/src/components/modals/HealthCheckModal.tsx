@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { fetchHealth, repairHealth, testLatency } from '../../api'
 import { HealthResponse, HealthItem, HealthStatusLevel } from '../../types'
+import { useI18n } from '../../i18n'
 
 export interface HealthCheckModalProps {
   isOpen: boolean
@@ -32,6 +33,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
   isOpen,
   onClose,
 }) => {
+  const { t } = useI18n()
   const [loading, setLoading] = useState(false)
   const [data, setData] = useState<HealthResponse | null>(null)
   const [connError, setConnError] = useState<string | null>(null)
@@ -66,7 +68,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
           tested: true,
           ok: false,
           latencyMs: null,
-          error: res?.error || '无法建立连接',
+          error: res?.error || t('modals.healthCheck.cannotConnectTarget'),
         })
       }
     } catch (e: any) {
@@ -75,10 +77,10 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
         tested: true,
         ok: false,
         latencyMs: null,
-        error: e?.message || '网络连接超时',
+        error: e?.message || t('modals.healthCheck.timeout'),
       })
     }
-  }, [])
+  }, [t])
 
   const runHealthCheck = useCallback(async () => {
     setLoading(true)
@@ -87,14 +89,13 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
       const res = await fetchHealth()
       setData(res)
     } catch (e: any) {
-      // Requirement 2: When /api/health request fails to connect, directly display:
-      // "Control Plane 无法连接 Accelerator"
-      setConnError('Control Plane 无法连接 Accelerator')
+      // Requirement 2: When /api/health request fails to connect, directly display error
+      setConnError(t('modals.healthCheck.connErrorLead'))
       setData(null)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     if (isOpen) {
@@ -137,7 +138,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
         await runHealthCheck()
       }
       setRepairMessage({
-        text: res.message || (res.success ? '修复完成' : '部分修复未成功'),
+        text: res.message || (res.success ? t('modals.healthCheck.repairCompleted') : t('modals.healthCheck.partialRepairFailed')),
         success: res.success,
       })
     } catch (err: any) {
@@ -157,10 +158,10 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                 setRepairMessage({
                   text:
                     code === 'CONTROL_PLANE_NON_LOOPBACK'
-                      ? '控制面已成功重新安全绑定至回环地址 (127.0.0.1)'
+                      ? t('modals.healthCheck.loopbackRebound')
                       : healthRes.status === 'ok'
-                      ? '全部修复操作完成，系统已恢复正常'
-                      : '已重新连接控制面，自检状态已更新',
+                      ? t('modals.healthCheck.allRepairedNormal')
+                      : t('modals.healthCheck.reconnectedUpdated'),
                   success: true,
                 })
                 return
@@ -168,7 +169,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                 setData(healthRes)
                 setConnError(null)
                 setRepairMessage({
-                  text: '已恢复与控制面的连接，系统状态已更新',
+                  text: t('modals.healthCheck.restoredUpdated'),
                   success: true,
                 })
                 return
@@ -176,7 +177,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                 // Reconnected, but Control Plane is still non-loopback -> repair truly failed
                 setData(healthRes)
                 setRepairMessage({
-                  text: '已重新连接控制面，但回环安全状态未恢复',
+                  text: t('modals.healthCheck.reconnectedLoopbackRisk'),
                   success: false,
                 })
                 return
@@ -189,16 +190,16 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
 
         // Bounded window expired without successful reconnection
         setData(null)
-        setConnError('Control Plane 无法连接 Accelerator')
+        setConnError(t('modals.healthCheck.connErrorLead'))
         setRepairMessage({
-          text: '控制面服务重载后未响应，请检查服务状态',
+          text: t('modals.healthCheck.reloadNoResponse'),
           success: false,
         })
         return
       }
 
       setRepairMessage({
-        text: err.message || '执行修复异常',
+        text: err.message || t('modals.healthCheck.repairException'),
         success: false,
       })
     } finally {
@@ -243,23 +244,71 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
       case 'ok':
         return (
           <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-            正常
+            {t('common.running')}
           </span>
         )
       case 'warning':
         return (
           <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-            警告
+            {t('common.warning')}
           </span>
         )
       case 'error':
         return (
           <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
-            异常
+            {t('common.error')}
           </span>
         )
     }
   }
+
+  const getCheckItemName = useCallback(
+    (key: string, defaultName: string) => {
+      const k = `modals.healthCheck.checkNames.${key}`
+      const val = t(k)
+      return val !== k ? val : defaultName
+    },
+    [t]
+  )
+
+  const getCheckItemMessage = useCallback(
+    (item: HealthItem) => {
+      if (!item || !item.code) return item?.message || ''
+      const k = `modals.healthCheck.checkMessages.${item.code}`
+      const params: Record<string, any> = { ...(item.details || {}) }
+      if (item.code === 'CORE_OK' && !params.version && item.message) {
+        const m = item.message.match(/v([0-9a-zA-Z.-]+)/)
+        if (m) params.version = m[1]
+      }
+      if (item.code === 'DATA_PLANE_OK' && !params.addr && item.message) {
+        const m = item.message.match(/监听于\s+([^\s]+)/)
+        if (m) params.addr = m[1]
+      }
+      if (item.code === 'CONTROL_PLANE_OK' && !params.control_addr) {
+        if (params.addr) {
+          params.control_addr = params.addr
+        } else if (item.message) {
+          const m = item.message.match(/运行于\s+([^\s]+)/)
+          if (m) params.control_addr = m[1]
+        }
+      }
+      if (item.code === 'LAN_OK' && !params.ip && item.message) {
+        const m = item.message.match(/IP:\s*([^\s)]+)/)
+        if (m) params.ip = m[1]
+      }
+      if (item.code === 'LAN_FIREWALL_OK' && !params.ip && item.message) {
+        const m = item.message.match(/IP:\s*([^\s)]+)/)
+        if (m) params.ip = m[1]
+      }
+      if (item.code === 'FIREWALL_RULE_MISSING' && !params.port && item.message) {
+        const m = item.message.match(/端口\s*([0-9]+)/)
+        if (m) params.port = m[1]
+      }
+      const val = t(k, params)
+      return val !== k ? val : item.message
+    },
+    [t]
+  )
 
   const renderItemCard = (key: string, item?: HealthItem) => {
     if (!item) return null
@@ -279,7 +328,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             {renderStatusIcon(item.status)}
             <span className="text-xs font-bold text-slate-900 tracking-tight">
-              {item.name}
+              {getCheckItemName(key, item.name)}
             </span>
           </div>
 
@@ -287,10 +336,10 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
             {item.requires_elevation && item.status !== 'ok' && (
               <span
                 className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-300 flex items-center gap-1"
-                title="操作需系统管理员授权 (UAC)"
+                title={t('modals.healthCheck.uacTooltip')}
               >
                 <ShieldAlert className="w-2.5 h-2.5 text-amber-600" />
-                <span>需管理员 (UAC)</span>
+                <span>UAC</span>
               </span>
             )}
             {item.repairable && item.status !== 'ok' && (
@@ -299,19 +348,19 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                 disabled={repairing || loading}
                 onClick={() => handleRepairClick(item)}
                 className="px-2 py-0.5 rounded text-[10px] font-semibold bg-sky-600 hover:bg-sky-700 text-white shadow-sm flex items-center gap-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                title={item.requires_confirmation ? '点击后需确认修复参数' : '点击立即修复此问题'}
+                title={item.requires_confirmation ? t('modals.healthCheck.confirmParamTooltip') : t('modals.healthCheck.repairNowTooltip')}
               >
                 {isThisRepairing ? (
                   <RefreshCw className="w-2.5 h-2.5 animate-spin" />
                 ) : (
                   <Wrench className="w-2.5 h-2.5" />
                 )}
-                <span>{isThisRepairing ? '修复中...' : '尝试修复'}</span>
+                <span>{isThisRepairing ? t('modals.healthCheck.repairing') : t('modals.healthCheck.tryRepair')}</span>
               </button>
             )}
             {!item.repairable && item.status !== 'ok' && (
               <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
-                需手动处理
+                {t('modals.healthCheck.manualRequired')}
               </span>
             )}
             {renderStatusBadge(item.status)}
@@ -319,7 +368,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
         </div>
 
         <div className="mt-1.5 pl-6 text-xs text-slate-700 leading-relaxed">
-          <p>{item.message}</p>
+          <p>{getCheckItemMessage(item)}</p>
           <div className="flex items-center gap-2 mt-1 text-[11px] font-mono text-slate-400">
             <span>code: {item.code}</span>
           </div>
@@ -335,10 +384,10 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-sky-600" />
-          <span>系统运行自检 (Health Check)</span>
+          <span>{t('modals.healthCheck.title')}</span>
         </div>
       }
-      subtitle="全平面诊断核心运行、控制面、数据面、PAC、证书、缓存与网络"
+      subtitle={t('modals.healthCheck.subtitle')}
       maxWidth="max-w-2xl"
     >
       <div className="space-y-4 max-h-[75vh] overflow-y-auto pr-1">
@@ -346,7 +395,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
         {loading && (
           <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-500">
             <RefreshCw className="w-6 h-6 animate-spin text-sky-600" />
-            <span className="text-xs font-medium">正在对各子系统执行就绪性与安全性自检...</span>
+            <span className="text-xs font-medium">{t('modals.healthCheck.checking')}</span>
           </div>
         )}
 
@@ -358,7 +407,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
               <span>{connError}</span>
             </div>
             <p className="text-xs text-rose-700/90 leading-relaxed">
-              无法与控制面服务建立通信连接。请检查 GBF-Accelerator 后台主程序是否正在运行，或控制端口 (8125) 是否被第三方程序占用或系统安全软件拦截。
+              {t('modals.healthCheck.connErrorDesc')}
             </p>
           </div>
         )}
@@ -418,13 +467,13 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                 <div>
                   <h4 className="text-xs sm:text-sm font-bold">
                     {data.status === 'ok'
-                      ? `核心服务全部正常 (通过 ${data.summary.passed}/${data.summary.total_checks} 项)`
+                      ? t('modals.healthCheck.statusOkBanner', { passed: data.summary.passed, total: data.summary.total_checks })
                       : data.status === 'warning'
-                      ? `存在 ${data.summary.warnings} 项警告 (${data.summary.passed}/${data.summary.total_checks} 项正常)`
-                      : `存在 ${data.summary.errors} 项严重错误 (${data.summary.warnings} 项警告)`}
+                      ? t('modals.healthCheck.statusWarnBanner', { warnings: data.summary.warnings, passed: data.summary.passed, total: data.summary.total_checks })
+                      : t('modals.healthCheck.statusErrBanner', { errors: data.summary.errors, warnings: data.summary.warnings })}
                   </h4>
                   <p className="text-[11px] opacity-80">
-                    自检时间: {new Date(data.timestamp).toLocaleTimeString()}
+                    {t('modals.healthCheck.checkTime', { time: new Date(data.timestamp).toLocaleTimeString() })}
                   </p>
                 </div>
               </div>
@@ -453,15 +502,15 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                   </div>
                   <div>
                     <div className="text-xs font-bold text-sky-950 flex items-center gap-2">
-                      <span>检测到 {repairableItems.length} 项可自动修复的系统问题</span>
+                      <span>{t('modals.healthCheck.detectedRepairable', { count: repairableItems.length })}</span>
                       {hasElevationItem && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-800 border border-amber-300">
-                          含需管理员权限项 (UAC)
+                          {t('modals.healthCheck.hasUacBadge')}
                         </span>
                       )}
                     </div>
                     <div className="text-[11px] text-sky-700">
-                      点击一键尝试修复将按安全依赖顺序自动恢复核心平面配置与服务状态。{hasElevationItem ? '涉及系统证书或防火墙时请在系统弹出提示时选择允许。' : ''}
+                      {t('modals.healthCheck.batchRepairDetail')}{hasElevationItem ? ' ' + t('modals.healthCheck.uacNoticeSuffix') : ''}
                     </div>
                   </div>
                 </div>
@@ -473,7 +522,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                   className="shrink-0 w-full sm:w-auto"
                   icon={<Wrench className={`w-3.5 h-3.5 ${repairingCode === 'all' ? 'animate-spin' : ''}`} />}
                 >
-                  {repairingCode === 'all' ? '正在批量修复中...' : '一键尝试修复'}
+                  {repairingCode === 'all' ? t('modals.healthCheck.batchRepairing') : t('modals.healthCheck.oneClickRepair')}
                 </Button>
               </div>
             )}
@@ -485,13 +534,13 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                 <div className="min-w-0">
                   <div className="font-bold">
                     {repairingCode === 'all'
-                      ? '正在逐项执行自动修复与环境校验...'
-                      : `正在修复: ${repairingCode}...`}
+                      ? t('modals.healthCheck.repairingAll')
+                      : t('modals.healthCheck.repairingSpecific', { code: repairingCode || '' })}
                   </div>
                   <p className="text-[11px] text-sky-700 mt-0.5">
                     {hasElevationItem
-                      ? '如系统弹出“用户账户控制 (UAC)”窗口，请选择“是”以允许完成证书或防火墙修复。'
-                      : '正在安全重载服务并验证健康状态，请稍候...'}
+                      ? t('modals.healthCheck.uacPromptNotice')
+                      : t('modals.healthCheck.waitingSecureLoopback')}
                   </p>
                 </div>
               </div>
@@ -500,9 +549,9 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
             {/* Core Health Grid */}
             <div className="space-y-2">
               <h5 className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                <span>核心安全与功能平面</span>
+                <span>{t('modals.healthCheck.coreSecurityHealth')}</span>
                 <span className="text-[10px] font-normal text-slate-400">
-                  (决定服务是否可正常代理与加速)
+                  {t('modals.healthCheck.corePlaneSub')}
                 </span>
               </h5>
 
@@ -521,31 +570,31 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
             {/* Runtime Status & Observations (Informational) */}
             <div className="space-y-2 pt-2 border-t border-slate-200/80">
               <h5 className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-                <span>运行时指标与异常观测</span>
+                <span>{t('modals.healthCheck.realtimeMetrics')}</span>
                 <span className="text-[10px] font-normal text-slate-400">
-                  (纯状态展示，不作为核心故障阻断)
+                  {t('modals.healthCheck.metricsSub')}
                 </span>
               </h5>
 
               <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-xs">
                 <div className="col-span-2 sm:col-span-2 p-2 sm:p-2.5 bg-slate-50 border border-slate-200 rounded-lg min-w-0">
-                  <div className="text-[10px] text-slate-500 font-medium">上游路由</div>
+                  <div className="text-[10px] text-slate-500 font-medium">{t('modals.healthCheck.upstreamRoute')}</div>
                   <div
                     className="font-mono text-[11px] sm:text-xs font-bold text-slate-800 mt-0.5 truncate select-all"
-                    title={String(data.runtime_status.upstream_route?.effective_proxy || '直连模式')}
+                    title={String(data.runtime_status.upstream_route?.effective_proxy || t('modals.healthCheck.directMode'))}
                   >
-                    {data.runtime_status.upstream_route?.effective_proxy || '直连模式'}
+                    {data.runtime_status.upstream_route?.effective_proxy || t('modals.healthCheck.directMode')}
                   </div>
                 </div>
 
                 <div className="col-span-1 sm:col-span-1 p-2 sm:p-2.5 bg-slate-50 border border-slate-200 rounded-lg min-w-0">
                   <div className="flex items-center justify-between text-[10px] text-slate-500 font-medium">
-                    <span title="目标: https://game.granbluefantasy.jp/">游戏连通性</span>
+                    <span title="Target: https://game.granbluefantasy.jp/">{t('modals.healthCheck.gameConnectivity')}</span>
                     <button
                       type="button"
                       onClick={runPingProbe}
                       disabled={pingState.loading}
-                      title="重新测速 (game.granbluefantasy.jp)"
+                      title={t('modals.healthCheck.retestSpeed')}
                       className="text-slate-400 hover:text-sky-600 cursor-pointer disabled:opacity-40 transition-colors p-0.5 -mr-1"
                     >
                       <RefreshCw className={`w-2.5 h-2.5 ${pingState.loading ? 'animate-spin text-sky-500' : ''}`} />
@@ -553,7 +602,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                   </div>
                   <div className="mt-0.5 truncate">
                     {pingState.loading ? (
-                      <span className="text-slate-400 text-xs font-mono animate-pulse">测速中...</span>
+                      <span className="text-slate-400 text-xs font-mono animate-pulse">{t('modals.healthCheck.testing')}</span>
                     ) : pingState.ok ? (
                       <div className="flex items-center gap-1 font-bold">
                         <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -573,36 +622,36 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                           {pingState.latencyMs}ms
                         </span>
                         <span className="text-[10px] font-normal text-slate-500 font-sans">
-                          {(pingState.latencyMs ?? 0) <= 150 ? '极佳' : (pingState.latencyMs ?? 0) <= 280 ? '优良' : '一般'}
+                          {(pingState.latencyMs ?? 0) <= 150 ? t('modals.healthCheck.latencyExcellent') : (pingState.latencyMs ?? 0) <= 280 ? t('modals.healthCheck.latencyGood') : t('modals.healthCheck.latencyFair')}
                         </span>
                       </div>
                     ) : pingState.tested ? (
-                      <div className="flex items-center gap-1 font-bold text-rose-600" title={pingState.error || '连通失败'}>
+                      <div className="flex items-center gap-1 font-bold text-rose-600" title={pingState.error || t('modals.healthCheck.connectFailed')}>
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
-                        <span className="text-[11px] truncate">无法连通</span>
+                        <span className="text-[11px] truncate">{t('modals.healthCheck.cannotConnectTarget')}</span>
                       </div>
                     ) : (
-                      <span className="text-slate-400 text-xs">未探测</span>
+                      <span className="text-slate-400 text-xs">{t('modals.healthCheck.notProbed')}</span>
                     )}
                   </div>
                 </div>
 
                 <div className="col-span-1 sm:col-span-1 p-2 sm:p-2.5 bg-slate-50 border border-slate-200 rounded-lg min-w-0">
-                  <div className="text-[10px] text-slate-500 font-medium">API 重试总计</div>
+                  <div className="text-[10px] text-slate-500 font-medium">{t('modals.healthCheck.apiRetriesTotal')}</div>
                   <div className="font-bold text-slate-800 mt-0.5">
-                    {data.runtime_status.api_retries} 次
+                    {t('modals.healthCheck.times', { count: data.runtime_status.api_retries })}
                   </div>
                 </div>
 
                 <div className="col-span-1 sm:col-span-1 p-2 sm:p-2.5 bg-slate-50 border border-slate-200 rounded-lg min-w-0">
-                  <div className="text-[10px] text-slate-500 font-medium">连接复用率</div>
+                  <div className="text-[10px] text-slate-500 font-medium">{t('modals.healthCheck.reuseRatio')}</div>
                   <div className="font-bold text-slate-800 mt-0.5">
                     {data.runtime_status.traffic_metrics?.reuse_rate_percent ?? 0}%
                   </div>
                 </div>
 
                 <div className="col-span-1 sm:col-span-1 p-2 sm:p-2.5 bg-slate-50 border border-slate-200 rounded-lg min-w-0">
-                  <div className="text-[10px] text-slate-500 font-medium">静态缓存命中</div>
+                  <div className="text-[10px] text-slate-500 font-medium">{t('modals.healthCheck.staticCacheHit')}</div>
                   <div className="font-bold text-slate-800 mt-0.5">
                     {data.runtime_status.traffic_metrics?.total_hits ?? 0}
                   </div>
@@ -612,7 +661,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
               {/* Recent Error Logs */}
               {data.runtime_status.recent_errors && data.runtime_status.recent_errors.length > 0 ? (
                 <div className="p-3 bg-slate-900 rounded-lg text-slate-300 text-[11px] font-mono space-y-1 max-h-32 overflow-y-auto">
-                  <div className="text-[10px] font-bold text-rose-400 mb-1">近期异常日志摘要:</div>
+                  <div className="text-[10px] font-bold text-rose-400 mb-1">{t('modals.healthCheck.recentErrorSummary')}</div>
                   {data.runtime_status.recent_errors.map((err, idx) => (
                     <div key={idx} className="leading-tight">
                       <span className="text-slate-500">[{err.time}]</span>{' '}
@@ -624,7 +673,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
               ) : (
                 <div className="p-2.5 bg-emerald-50/50 border border-emerald-200/60 rounded-lg text-[11px] text-emerald-800 flex items-center gap-1.5">
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>近期无任何未捕获 ERROR 异常日志，运行平稳</span>
+                  <span>{t('modals.healthCheck.noRecentErrors')}</span>
                 </div>
               )}
             </div>
@@ -637,17 +686,17 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
             <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
               <div className="flex items-center gap-2.5 text-amber-600">
                 <AlertTriangle className="w-5 h-5 shrink-0" />
-                <h4 className="text-sm font-bold text-slate-900">确认修复操作</h4>
+                <h4 className="text-sm font-bold text-slate-900">{t('modals.healthCheck.confirmRepairTitle')}</h4>
               </div>
               <p className="text-xs text-slate-700 leading-relaxed">
-                即将对 <strong className="text-slate-900">{confirmItem.name}</strong> 执行自动修复：
+                {t('modals.healthCheck.confirmRepairPrompt', { name: confirmItem.name })}
                 <br />
                 <span className="font-mono text-slate-500 text-[11px]">[{confirmItem.code}] {confirmItem.message}</span>
               </p>
               {confirmItem.requires_elevation && (
                 <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800 flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600" />
-                  <span>此操作将在系统中触发管理员授权提权 (UAC) 或证书存储写入，请在系统弹出的窗口中允许。</span>
+                  <span>{t('modals.healthCheck.confirmUacWarning')}</span>
                 </div>
               )}
               <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
@@ -657,7 +706,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                   onClick={() => setConfirmItem(null)}
                   disabled={repairing}
                 >
-                  取消
+                  {t('common.cancel')}
                 </Button>
                 <Button
                   variant="primary"
@@ -666,7 +715,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                   disabled={repairing}
                   icon={<Wrench className="w-3.5 h-3.5" />}
                 >
-                  确认修复
+                  {t('modals.healthCheck.tryRepair')}
                 </Button>
               </div>
             </div>
@@ -686,7 +735,7 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
               disabled={loading || repairing}
               icon={<RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />}
             >
-              重新自检
+              {t('modals.healthCheck.startCheck')}
             </Button>
             {hasRepairable && (
               <Button
@@ -696,13 +745,13 @@ export const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                 disabled={loading || repairing}
                 icon={<Wrench className={`w-3.5 h-3.5 ${repairingCode === 'all' ? 'animate-spin' : ''}`} />}
               >
-                {repairingCode === 'all' ? '修复中...' : '一键尝试修复'}
+                {repairingCode === 'all' ? t('modals.healthCheck.repairing') : t('modals.healthCheck.tryRepair')}
               </Button>
             )}
           </div>
 
           <Button variant="desktop" size="sm" onClick={onClose} disabled={repairing}>
-            关闭 (Esc)
+            {t('common.closeEsc')}
           </Button>
         </div>
       </div>

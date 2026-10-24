@@ -1,6 +1,6 @@
 # GBF-Accelerator PC Patch Tool (CLI)
 
-`gbf-acc-patcher` 是 GBF-Accelerator 的 PC 端辅助补丁工具，用于将当前项目的 `SkyLeapModule` (Modern libxposed 模块) 安全注入用户自行提供的官方 SkyLeap 浏览器安装包中。
+`gbf-acc-patcher` 是 GBF-Accelerator 的 PC 端辅助补丁工具，用于将当前项目的 `SkyLeapModule` (Modern libxposed 模块) 安全嵌入用户自行提供的官方 SkyLeap 浏览器安装包中。
 
 ---
 
@@ -8,7 +8,7 @@
 
 1. **零内置版权 APK**：本工具不提供、不下载、不内置任何 DeNA 官方 SkyLeap 安装包，用户需自行通过合法途径（如 Google Play、备份提取）获取。
 2. **复用成熟 LSPatch 链路**：不重复开发底层 APK 重打包与 DEX 注入，直接调用经过真机验证的 LSPatch Portable 模式。
-3. **输入无损与只读**：严禁修改原始输入文件，所有解包与注入均在独立的临时工作目录沙盒中完成，异常时自动清理。
+3. **输入无损与只读**：严禁修改原始输入文件，所有解包与修补均在独立的临时工作目录沙盒中完成，异常时自动清理。
 4. **签名安全透明**：明确提示用户补丁版本采用本地密钥重签名，与官方签名不兼容，手机端安装前必须先备份数据并卸载原版。
 
 ---

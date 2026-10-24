@@ -386,11 +386,11 @@ func (t *DarwinTray) updateTooltip() {
 	if btn == 0 {
 		return
 	}
-	state := "运行中"
-	if !t.ctrl.IsRunning() {
-		state = "已暂停"
+	lang := "zh"
+	if t.ctrl != nil {
+		lang = t.ctrl.GetLanguage()
 	}
-	tip := fmt.Sprintf("GBF-Accelerator (%s)\n代理端口: %d\n控制台端口: %d", state, t.ctrl.GetListenPort(), t.ctrl.GetControlPort())
+	tip := formatTrayTooltip(lang, t.ctrl.IsRunning(), t.ctrl.GetListenPort(), t.ctrl.GetControlPort())
 	btn.Send(selSetToolTip, nsString(tip))
 }
 
@@ -406,25 +406,25 @@ func (t *DarwinTray) buildMenu() objc.ID {
 	}
 	menu.Send(selSetAutoenablesItems, false)
 
+	lang := "zh"
+	if t.ctrl != nil {
+		lang = t.ctrl.GetLanguage()
+	}
+	txt := getTrayText(lang)
+
 	// 1. 打开控制台
-	t.addMenuItem(menu, "打开控制台", selOpenConsoleAction, t.handler, true)
+	t.addMenuItem(menu, txt.MenuConsole, selOpenConsoleAction, t.handler, true)
 
 	// 2. 状态：运行中 / 已暂停 (informational display line, disabled)
-	statusText := fmt.Sprintf("状态: 代理运行中 (端口 %d)", t.ctrl.GetListenPort())
-	if !t.ctrl.IsRunning() {
-		statusText = "状态: 代理已暂停"
-	}
+	statusText := formatTrayStatusMenu(lang, t.ctrl.IsRunning(), t.ctrl.GetListenPort())
 	t.addMenuItem(menu, statusText, 0, 0, false)
 
 	// 3. 暂停代理加速 / 启动代理加速
-	toggleText := "暂停代理加速"
-	if !t.ctrl.IsRunning() {
-		toggleText = "启动代理加速"
-	}
+	toggleText := formatTrayToggleMenu(lang, t.ctrl.IsRunning())
 	t.addMenuItem(menu, toggleText, selToggleProxyAction, t.handler, true)
 
 	// 4. 打开本地缓存目录
-	t.addMenuItem(menu, "打开本地缓存目录", selOpenCacheAction, t.handler, true)
+	t.addMenuItem(menu, txt.MenuOpenCache, selOpenCacheAction, t.handler, true)
 
 	// Separator
 	clsMenuItem := objc.ID(objc.GetClass("NSMenuItem"))
@@ -436,7 +436,7 @@ func (t *DarwinTray) buildMenu() objc.ID {
 	}
 
 	// 5. 退出程序
-	t.addMenuItem(menu, "退出程序", selQuitAppAction, t.handler, true)
+	t.addMenuItem(menu, txt.MenuQuit, selQuitAppAction, t.handler, true)
 
 	return menu
 }

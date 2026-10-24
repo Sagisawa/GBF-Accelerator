@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { LogItem } from '../../types'
 import { Drawer } from '../common/Drawer'
 import { Terminal, Search, Trash2, ArrowDown } from 'lucide-react'
+import { useI18n } from '../../i18n'
 
 export interface LogTerminalDrawerProps {
   isOpen: boolean
@@ -16,6 +17,7 @@ export const LogTerminalDrawer: React.FC<LogTerminalDrawerProps> = ({
   logs,
   onClearLogs,
 }) => {
+  const { t } = useI18n()
   const [filterLevel, setFilterLevel] = useState<string>('ALL')
   const [keyword, setKeyword] = useState<string>('')
   const [autoScroll, setAutoScroll] = useState<boolean>(true)
@@ -66,13 +68,13 @@ export const LogTerminalDrawer: React.FC<LogTerminalDrawerProps> = ({
       title={
         <>
           <Terminal className="w-4 h-4 text-blue-400" />
-          <span>实时请求与内核日志</span>
+          <span>{t('logDrawer.title')}</span>
           <span className="text-xs font-mono text-slate-400">
-            ({filteredLogs.length} 条)
+            {t('logDrawer.records', { count: filteredLogs.length })}
           </span>
         </>
       }
-      subtitle="透明转发流量流向、缓存命中状态与避让遥测 (按 L 键开关)"
+      subtitle={t('logDrawer.subtitle')}
       headerRight={
         <div className="flex items-center gap-2">
           {/* Segmented Filter */}
@@ -97,7 +99,7 @@ export const LogTerminalDrawer: React.FC<LogTerminalDrawerProps> = ({
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-2 text-slate-400 pointer-events-none" />
             <input
               type="text"
-              placeholder="过滤 URL / 关键字..."
+              placeholder={t('logDrawer.searchPlaceholder')}
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
               className="bg-black/50 border border-slate-700 rounded-lg pl-8 pr-3 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 w-44 transition-all"
@@ -112,7 +114,7 @@ export const LogTerminalDrawer: React.FC<LogTerminalDrawerProps> = ({
                 ? 'bg-blue-900/40 border-blue-700 text-blue-400'
                 : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-white'
             }`}
-            title={autoScroll ? '已开启自动滚底' : '已暂停自动滚底'}
+            title={autoScroll ? t('logDrawer.autoScrollEnabled') : t('logDrawer.autoScrollPaused')}
           >
             <ArrowDown className="w-3.5 h-3.5" />
           </button>
@@ -121,7 +123,7 @@ export const LogTerminalDrawer: React.FC<LogTerminalDrawerProps> = ({
           <button
             onClick={onClearLogs}
             className="p-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-red-400 hover:bg-red-950/30 transition-colors"
-            title="清空终端日志"
+            title={t('logDrawer.clearLogs')}
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -132,7 +134,7 @@ export const LogTerminalDrawer: React.FC<LogTerminalDrawerProps> = ({
       <div className="sm:hidden mb-3">
         <input
           type="text"
-          placeholder="过滤 URL / 关键字..."
+          placeholder={t('logDrawer.searchPlaceholder')}
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           className="w-full bg-black/50 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none"
@@ -147,7 +149,7 @@ export const LogTerminalDrawer: React.FC<LogTerminalDrawerProps> = ({
         {filteredLogs.length === 0 ? (
           <div className="text-slate-500 text-center py-24 flex flex-col items-center justify-center gap-2 select-none">
             <Terminal className="w-8 h-8 opacity-20" />
-            <span>暂无符合过滤条件的内核日志输出</span>
+            <span>{t('logDrawer.empty')}</span>
           </div>
         ) : (
           filteredLogs.map((item, idx) => (

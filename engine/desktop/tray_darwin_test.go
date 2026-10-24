@@ -25,6 +25,7 @@ func (m *darwinMockController) StopProxy()                   { m.running.Store(f
 func (m *darwinMockController) GetListenPort() int           { return 8124 }
 func (m *darwinMockController) GetControlPort() int          { return 8125 }
 func (m *darwinMockController) GetCacheDir() string          { return "/tmp/cache" }
+func (m *darwinMockController) GetLanguage() string          { return "zh" }
 func (m *darwinMockController) OpenBrowser(url string) error   { return nil }
 func (m *darwinMockController) OpenAppWindow(url string) error { return nil }
 func (m *darwinMockController) OpenFolder(path string) error   { return nil }

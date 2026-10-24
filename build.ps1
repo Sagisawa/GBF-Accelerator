@@ -163,7 +163,7 @@ function Build-Windows {
     Copy-Item -Path $ExePath -Destination (Join-Path $StagingDir "GBF_Accelerator.exe") -Force
 
     # Copy auxiliary helper scripts and documentation
-    $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.bat", "start_proxy.bat", "LICENSE", "使用说明.txt")
+    $AuxFiles = @("SwitchyOmega_GBF.bak", "proxy.pac", "install_ca.bat", "start_proxy.bat", "LICENSE", "使用说明.txt", "INSTRUCTIONS_EN.txt", "INSTRUCTIONS_JA.txt")
     foreach ($Aux in $AuxFiles) {
         $AuxPath = Join-Path $RootDir $Aux
         if (-not (Test-Path $AuxPath)) {

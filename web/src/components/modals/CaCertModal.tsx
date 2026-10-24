@@ -3,6 +3,7 @@ import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { ShieldCheck, Download, Copy, Check, Trash2, CheckCircle2, AlertCircle } from 'lucide-react'
 import { installCert, uninstallCert, cleanLegacyCert } from '../../api'
+import { useI18n } from '../../i18n'
 
 export interface CaCertModalProps {
   isOpen: boolean
@@ -23,6 +24,7 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
   onRefresh,
   onToast,
 }) => {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
@@ -42,17 +44,17 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
       if (res.ok) {
         setMessage({
           type: 'success',
-          text: (res.message || 'HTTPS 根证书已成功安装并受系统信任！') + ' 【注意】：若当前浏览器已打开，请彻底关闭并重启一次浏览器以刷新证书缓存。'
+          text: t('modals.caCert.installedSuccess') + ' ' + t('modals.caCert.restartBrowserTip')
         })
-        if (onToast) onToast('根证书已安装并信任！若浏览器已打开请完全重启浏览器', 'success')
+        if (onToast) onToast(t('modals.caCert.installedToast'), 'success')
         if (onRefresh) onRefresh()
       } else {
-        setMessage({ type: 'error', text: res.error || res.message || '安装失败' })
-        if (onToast) onToast(res.error || '安装失败', 'error')
+        setMessage({ type: 'error', text: res.error || res.message || t('modals.caCert.installFailed') })
+        if (onToast) onToast(res.error || t('modals.caCert.installFailed'), 'error')
       }
     } catch (e: any) {
-      setMessage({ type: 'error', text: e.message || '调用安装接口失败' })
-      if (onToast) onToast(`安装失败: ${e.message}`, 'error')
+      setMessage({ type: 'error', text: t('modals.caCert.installFailedError', { error: e.message }) })
+      if (onToast) onToast(t('modals.caCert.installFailedError', { error: e.message }), 'error')
     } finally {
       setLoading(false)
     }
@@ -64,16 +66,16 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
     try {
       const res = await uninstallCert()
       if (res.ok) {
-        setMessage({ type: 'success', text: res.message || 'HTTPS 根证书已从系统根证书库中注销' })
-        if (onToast) onToast('根证书已注销', 'info')
+        setMessage({ type: 'success', text: res.message || t('modals.caCert.uninstalledSuccess') })
+        if (onToast) onToast(t('modals.caCert.uninstalledToast'), 'info')
         if (onRefresh) onRefresh()
       } else {
-        setMessage({ type: 'error', text: res.error || res.message || '注销失败' })
-        if (onToast) onToast(res.error || '注销失败', 'error')
+        setMessage({ type: 'error', text: res.error || res.message || t('modals.caCert.uninstallFailed') })
+        if (onToast) onToast(res.error || t('modals.caCert.uninstallFailed'), 'error')
       }
     } catch (e: any) {
-      setMessage({ type: 'error', text: e.message || '调用注销接口失败' })
-      if (onToast) onToast(`注销失败: ${e.message}`, 'error')
+      setMessage({ type: 'error', text: t('modals.caCert.uninstallFailedError', { error: e.message }) })
+      if (onToast) onToast(t('modals.caCert.uninstallFailedError', { error: e.message }), 'error')
     } finally {
       setLoading(false)
     }
@@ -85,14 +87,14 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
     try {
       const res = await cleanLegacyCert()
       if (res.ok) {
-        setMessage({ type: 'success', text: res.message || `已成功清理 ${res.cleaned ?? 0} 个历史泄露证书` })
-        if (onToast) onToast(res.message || '清理完成', 'success')
+        setMessage({ type: 'success', text: res.message || t('modals.caCert.cleanedLegacy', { count: res.cleaned ?? 0 }) })
+        if (onToast) onToast(res.message || t('modals.caCert.cleanedLegacy', { count: res.cleaned ?? 0 }), 'success')
         if (onRefresh) onRefresh()
       } else {
-        setMessage({ type: 'error', text: res.error || res.message || '清理失败' })
+        setMessage({ type: 'error', text: res.error || res.message || t('common.failed') })
       }
     } catch (e: any) {
-      setMessage({ type: 'error', text: e.message || '清理历史证书失败' })
+      setMessage({ type: 'error', text: e.message || t('common.failed') })
     } finally {
       setLoading(false)
     }
@@ -106,10 +108,10 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
         title={
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-red-600" />
-            <span>注销 / 卸载 HTTPS 根证书</span>
+            <span>{t('modals.caCert.uninstallTitle')}</span>
           </div>
         }
-        subtitle="从系统受信任根证书库中完全移除 GBF 加速器自签根证书"
+        subtitle={t('modals.caCert.uninstallSubtitle')}
         maxWidth="max-w-md"
       >
         <div className="space-y-3.5 text-xs text-slate-700">
@@ -131,9 +133,9 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
           )}
 
           <div className="p-3 bg-red-50/70 border border-red-200 rounded-lg space-y-2 text-slate-700 leading-relaxed">
-            <div className="font-bold text-red-800">一键自动注销：</div>
+            <div className="font-bold text-red-800">{t('modals.caCert.uninstallLead')}</div>
             <p className="text-xs text-slate-600">
-              点击下方按钮即可通过系统接口自动从当前用户的受信任根证书库中移除该证书。
+              {t('modals.caCert.uninstallDesc')}
             </p>
             <div className="pt-1">
               <Button
@@ -143,24 +145,23 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
                 onClick={handleAutoUninstall}
                 icon={<Trash2 className="w-3.5 h-3.5 text-red-600" />}
               >
-                立即一键注销证书
+                {t('modals.caCert.uninstallBtn')}
               </Button>
             </div>
           </div>
 
           <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-1.5 text-slate-700 leading-relaxed">
-            <div className="font-bold text-slate-800">手动卸载说明（备用）：</div>
+            <div className="font-bold text-slate-800">{t('modals.caCert.guideTitle')}：</div>
             <ol className="list-decimal list-inside space-y-1 text-slate-600 text-xs">
-              <li>按 <strong>Win + R</strong> 打开运行窗口，输入 <strong>certmgr.msc</strong> 回车；</li>
-              <li>展开【受信任的根证书颁发机构】 -&gt; 【证书】；</li>
-              <li>找到名为 <strong>GBF Local Accelerator Root CA</strong> 的证书，右键点击【删除】；</li>
-              <li>macOS 用户可打开【钥匙串访问】搜索 GBF CA 并删除。</li>
+              <li>{t('modals.caCert.guideWin')}</li>
+              <li>{t('modals.caCert.guideMac')}</li>
+              <li>{t('modals.caCert.guideAndroid')}</li>
             </ol>
           </div>
 
           <div className="flex justify-end pt-1">
             <Button variant="desktop" size="sm" onClick={onClose}>
-              关闭 (Esc)
+              {t('common.closeEsc')}
             </Button>
           </div>
         </div>
@@ -175,10 +176,10 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-600" />
-          <span>HTTPS 根证书安装与信任指引</span>
+          <span>{t('modals.caCert.title')}</span>
         </div>
       }
-      subtitle="游戏静态资源 (Akamai CDN) 本地解析与极速加速必需组件"
+      subtitle={t('modals.caCert.subtitle')}
       maxWidth="max-w-lg"
     >
       <div className="space-y-3.5 text-xs text-slate-700">
@@ -201,22 +202,22 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
 
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2">
           <div className="flex items-center justify-between">
-            <span className="font-bold text-slate-800">当前信任状态：</span>
+            <span className="font-bold text-slate-800">{t('modals.caCert.statusLead')}</span>
             <span className={`font-bold ${isInstalled ? 'text-emerald-600' : 'text-red-600'}`}>
-              {isInstalled ? '已信任 (正常工作)' : '未安装信任'}
+              {isInstalled ? t('modals.caCert.statusTrusted') : t('modals.caCert.statusUntrusted')}
             </span>
           </div>
 
           <div className="space-y-1">
             <div className="flex items-center justify-between">
-              <span className="text-slate-500 font-mono text-xs">SHA-256 唯一指纹：</span>
+              <span className="text-slate-500 font-mono text-xs">{t('modals.caCert.fpLead')}</span>
               <Button
                 variant="desktop"
                 size="xs"
                 onClick={handleCopyFp}
                 icon={copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
               >
-                {copied ? '已复制' : '复制指纹'}
+                {copied ? t('modals.caCert.copiedFp') : t('modals.caCert.copyFp')}
               </Button>
             </div>
             <div className="bg-white p-2 rounded border border-slate-200 font-mono text-[11px] text-slate-700 break-all select-all">
@@ -227,7 +228,7 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
 
         {/* Action Panel: One click install & Clean legacy */}
         <div className="p-3 bg-emerald-50/60 border border-emerald-200 rounded-lg space-y-2 leading-relaxed">
-          <div className="font-bold text-emerald-950">一键快捷管理：</div>
+          <div className="font-bold text-emerald-950">{t('modals.caCert.manageLead')}</div>
           <div className="flex items-center gap-2 flex-wrap">
             <Button
               variant="primary"
@@ -236,7 +237,7 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
               onClick={handleAutoInstall}
               icon={<ShieldCheck className="w-3.5 h-3.5" />}
             >
-              一键自动安装并信任证书
+              {t('modals.caCert.installBtn')}
             </Button>
             <Button
               variant="desktop"
@@ -244,11 +245,11 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
               loading={loading}
               onClick={handleCleanLegacy}
             >
-              清理历史泄露 CA
+              {t('modals.caCert.cleanLegacyBtn')}
             </Button>
           </div>
           <p className="text-xs text-slate-600">
-            自动将证书注入系统根证书存储区（Windows: CurrentUser\Root；macOS: System Keychain）
+            {t('modals.caCert.installTip')}
           </p>
         </div>
 
@@ -256,25 +257,21 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 leading-relaxed flex items-start gap-2.5">
           <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 mt-0.5" />
           <div>
-            <strong className="font-semibold text-amber-950">【安装后重要提醒】：</strong>
-            证书安装/信任成功后，如果你的浏览器（Chrome / Edge 等）当前正处于打开状态，<strong>请务必完全退出并重新打开一次浏览器</strong>（关闭所有窗口）。Chromium 浏览器会缓存系统证书库与历史 SSL 握手状态，必须重启浏览器重载证书库，以避免访问游戏时报错“证书不受信任”或白屏。
+            <strong className="font-semibold text-amber-950">{t('modals.caCert.restartNoticeLead')}</strong>
+            {t('modals.caCert.restartNoticeDesc')}
           </div>
         </div>
 
         <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg space-y-2 leading-relaxed">
-          <div className="font-bold text-slate-900">手动安装方式（备用）：</div>
+          <div className="font-bold text-slate-900">{t('modals.caCert.manualLead')}</div>
           <div className="space-y-1.5 text-slate-600 text-xs">
             <div>
-              <strong>方式 1（脚本安装）：</strong>
-              直接运行本加速器根目录下的 <code className="font-mono bg-white px-1.5 py-0.5 border border-slate-200 rounded text-blue-600">install_ca.bat</code>（macOS 为 <code className="font-mono bg-white px-1.5 py-0.5 border border-slate-200 rounded text-blue-600">./install_ca.sh</code>）。
+              <strong>{t('modals.caCert.manualMethod1')}</strong>
+              <code className="font-mono bg-white px-1.5 py-0.5 border border-slate-200 rounded text-blue-600">install_ca.bat</code> (macOS: <code className="font-mono bg-white px-1.5 py-0.5 border border-slate-200 rounded text-blue-600">./install_ca.sh</code>)
             </div>
             <div>
-              <strong>方式 2（手动下载）：</strong>
-              点击下方按钮下载证书文件，双击打开 -&gt; 点击【安装证书】 -&gt; 存储位置选择【当前用户】 -&gt; 选择【将所有的证书都放入下列存储】 -&gt; 浏览选择【受信任的根证书颁发机构】 -&gt; 完成。
-            </div>
-            <div>
-              <strong>Firefox 浏览器说明：</strong>
-              Firefox 拥有独立证书库，需在 Firefox【设置】 -&gt; 【隐私与安全】 -&gt; 【证书】 -&gt; 【查看证书】中导入下载的 <code className="font-mono">ca.crt</code>。
+              <strong>{t('modals.caCert.manualMethod2')}</strong>
+              {t('modals.caCert.guideWin')}
             </div>
           </div>
         </div>
@@ -286,11 +283,11 @@ export const CaCertModal: React.FC<CaCertModalProps> = ({
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-700 text-white font-medium text-xs transition-colors"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>下载根证书 (ca.crt)</span>
+            <span>{t('modals.caCert.downloadCertBtn')}</span>
           </a>
 
           <Button variant="desktop" size="sm" onClick={onClose}>
-            完成 (Esc)
+            {t('common.closeEsc')}
           </Button>
         </div>
       </div>

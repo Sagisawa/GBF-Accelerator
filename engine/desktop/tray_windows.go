@@ -302,11 +302,11 @@ func (t *WindowsTray) loadIcon() uintptr {
 }
 
 func (t *WindowsTray) getTooltipText() string {
-	state := "运行中"
-	if !t.ctrl.IsRunning() {
-		state = "已暂停"
+	lang := "zh"
+	if t.ctrl != nil {
+		lang = t.ctrl.GetLanguage()
 	}
-	return fmt.Sprintf("GBF-Accelerator (%s)\n代理端口: %d\n控制台端口: %d", state, t.ctrl.GetListenPort(), t.ctrl.GetControlPort())
+	return formatTrayTooltip(lang, t.ctrl.IsRunning(), t.ctrl.GetListenPort(), t.ctrl.GetControlPort())
 }
 
 func (t *WindowsTray) setTooltip(text string) {
@@ -463,34 +463,34 @@ func (t *WindowsTray) showContextMenu() {
 	}
 	defer procDestroyMenu.Call(hMenu)
 
-	titleStr, _ := syscall.UTF16PtrFromString("GBF-Accelerator 控制台")
+	lang := "zh"
+	if t.ctrl != nil {
+		lang = t.ctrl.GetLanguage()
+	}
+	txt := getTrayText(lang)
+
+	titleStr, _ := syscall.UTF16PtrFromString(txt.MenuConsole)
 	procAppendMenuW.Call(hMenu, mfString, cmdOpenConsole, uintptr(unsafe.Pointer(titleStr)))
 
 	// Status informational line
-	statusText := fmt.Sprintf("状态: 代理运行中 (端口 %d)", t.ctrl.GetListenPort())
-	if !t.ctrl.IsRunning() {
-		statusText = "状态: 代理已暂停"
-	}
+	statusText := formatTrayStatusMenu(lang, t.ctrl.IsRunning(), t.ctrl.GetListenPort())
 	statStr, _ := syscall.UTF16PtrFromString(statusText)
 	procAppendMenuW.Call(hMenu, mfString|mfDisabled|mfGrayed, cmdStatusText, uintptr(unsafe.Pointer(statStr)))
 
 	// Toggle proxy
-	toggleText := "暂停代理加速"
-	if !t.ctrl.IsRunning() {
-		toggleText = "启动代理加速"
-	}
+	toggleText := formatTrayToggleMenu(lang, t.ctrl.IsRunning())
 	togStr, _ := syscall.UTF16PtrFromString(toggleText)
 	procAppendMenuW.Call(hMenu, mfString, cmdToggleProxy, uintptr(unsafe.Pointer(togStr)))
 
 	// Open cache folder
-	cacheStr, _ := syscall.UTF16PtrFromString("打开本地缓存目录")
+	cacheStr, _ := syscall.UTF16PtrFromString(txt.MenuOpenCache)
 	procAppendMenuW.Call(hMenu, mfString, cmdOpenCache, uintptr(unsafe.Pointer(cacheStr)))
 
 	// Separator
 	procAppendMenuW.Call(hMenu, mfSeparator, 0, 0)
 
 	// Quit
-	quitStr, _ := syscall.UTF16PtrFromString("退出程序")
+	quitStr, _ := syscall.UTF16PtrFromString(txt.MenuQuit)
 	procAppendMenuW.Call(hMenu, mfString, cmdQuitApp, uintptr(unsafe.Pointer(quitStr)))
 
 	var pt point

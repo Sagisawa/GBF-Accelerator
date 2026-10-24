@@ -23,6 +23,7 @@ import {
 } from '../../api'
 import { UpdateDownloadStatus } from '../../types'
 import { isNewerVersion } from '../../utils/version'
+import { useI18n } from '../../i18n'
 
 export interface UpdateModalProps {
   isOpen: boolean
@@ -192,9 +193,10 @@ const ReleaseNotesViewer: React.FC<{ content: string }> = ({ content }) => {
 export const UpdateModal: React.FC<UpdateModalProps> = ({
   isOpen,
   onClose,
-  currentVersion = '2.5.0',
+  currentVersion = '2.5.1',
   onUpdateSuccess,
 }) => {
+  const { t } = useI18n()
   const [checking, setChecking] = useState(false)
   const [hasChecked, setHasChecked] = useState(false)
   const [checkError, setCheckError] = useState<string | null>(null)
@@ -315,7 +317,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         setLatestVersion(data.latest_version || currentVersion)
         setReleaseTitle(data.release_title || '')
         setReleaseUrl(data.release_url || data.html_url || 'https://github.com/Sagisawa/GBF-Accelerator/releases')
-        setBodyText(data.release_notes || '暂无详细更新日志。')
+        setBodyText(data.release_notes || t('modals.update.noDetailedLogs'))
         setSha256(data.sha256 || '')
         setPublishedAt(data.published_at || '')
         setCheckError(null)
@@ -330,21 +332,21 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           setLatestVersion(tag)
           setReleaseTitle(data.name || '')
           setReleaseUrl(data.html_url || 'https://github.com/Sagisawa/GBF-Accelerator/releases')
-          setBodyText(data.body || '暂无详细更新日志。')
+          setBodyText(data.body || t('modals.update.noDetailedLogs'))
           setPublishedAt(data.published_at ? data.published_at.slice(0, 10) : '')
           setHasUpdate(isNewerVersion(tag, currentVersion))
           setCheckError(null)
         } else {
           setHasUpdate(false)
           setLatestVersion('')
-          setCheckError(backendErr?.message || `GitHub API 响应异常 (HTTP ${res.status})`)
-          setBodyText('未能获取最新版本信息，请检查网络连接或直接访问 Releases 页面。')
+          setCheckError(backendErr?.message || t('modals.update.githubResponseAbnormal', { status: res.status }))
+          setBodyText(t('modals.update.cannotFetchRelease'))
         }
       } catch (browserErr: any) {
         setHasUpdate(false)
         setLatestVersion('')
-        setCheckError(backendErr?.message || browserErr?.message || '网络请求失败，未能连接到 GitHub Releases')
-        setBodyText('未能获取最新版本信息，请检查网络连接或直接访问 Releases 页面。')
+        setCheckError(backendErr?.message || browserErr?.message || t('modals.update.checkFailedCannotConnect'))
+        setBodyText(t('modals.update.cannotFetchRelease'))
       }
     } finally {
       setChecking(false)
@@ -391,7 +393,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
         sha256: sha256,
         managed: true,
         applying: false,
-        error: e.message || '启动下载任务失败',
+        error: e.message || t('modals.update.downloadFailed', { error: '' }),
       })
     }
   }
@@ -406,7 +408,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       setDownloading(false)
       setDownloadStatus((prev) =>
         prev
-          ? { ...prev, error: '用户已取消下载', active: false }
+          ? { ...prev, error: t('modals.update.downloadCancelled'), active: false }
           : {
               ok: true,
               active: false,
@@ -419,7 +421,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
               sha256: sha256,
               managed: true,
               applying: false,
-              error: '用户已取消下载',
+              error: t('modals.update.downloadCancelled'),
             }
       )
     }
@@ -439,7 +441,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
       startReconnectPolling(targetVer)
     } catch (e: any) {
       setApplyingState('failed')
-      setApplyingError(e?.message || '启动自动更新失败')
+      setApplyingError(e?.message || t('modals.update.autoUpdateFailed', { error: '' }))
     }
   }
 
@@ -449,7 +451,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
     try {
       await openUpdateFolder()
     } catch (err: any) {
-      setOpenFolderError(err?.message || '打开下载目录失败')
+      setOpenFolderError(err?.message || t('modals.update.openFolderFailed', { error: '' }))
     } finally {
       setOpeningFolder(false)
     }
@@ -483,10 +485,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           <div className="w-8 h-8 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center border border-sky-200/60">
             <ArrowUpCircle className="w-5 h-5" />
           </div>
-          <span className="text-base sm:text-lg font-bold text-slate-900">软件版本检查与更新</span>
+          <span className="text-base sm:text-lg font-bold text-slate-900">{t('modals.update.title')}</span>
         </div>
       }
-      subtitle="对比本地引擎版本与 GitHub Releases 最新正式发布"
+      subtitle={t('modals.update.subtitle')}
       maxWidth="max-w-[760px]"
     >
       <div className="space-y-4 text-sm text-slate-700">
@@ -514,19 +516,19 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
               <div className="flex items-center gap-2.5 flex-wrap">
                 <span className="text-base sm:text-lg font-extrabold text-slate-900 tracking-tight">
                   {checking
-                    ? '正在检查新版本...'
+                    ? t('modals.update.checking')
                     : hasNew
-                    ? `发现新版本 v${latestVersion}`
-                    : `当前已是最新版本 (v${currentVersion})`}
+                    ? t('modals.update.foundNew', { version: latestVersion })
+                    : t('modals.update.isLatest', { version: currentVersion })}
                 </span>
                 {hasNew && !checking && (
                   <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300/80">
-                    可升级
+                    {t('modals.update.canUpgrade')}
                   </span>
                 )}
                 {!hasNew && hasChecked && !checking && (
                   <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300/80">
-                    最新稳定版
+                    {t('modals.update.latestStable')}
                   </span>
                 )}
               </div>
@@ -534,23 +536,23 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 <div className="mt-2 p-3 bg-white border border-slate-200/90 border-l-[4px] border-l-amber-500 rounded-xl shadow-2xs space-y-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[11px] font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200/80">
-                      版本定位
+                      {t('modals.update.positioning')}
                     </span>
                     {publishedAt && (
                       <span className="text-[11px] text-slate-400 font-medium">
-                        发布日期: {publishedAt}
+                        {t('modals.update.publishedAt', { date: publishedAt })}
                       </span>
                     )}
                   </div>
                   <div className="text-[15px] sm:text-base font-extrabold text-slate-900 leading-snug break-words [word-break:break-word] max-h-40 overflow-y-auto pt-0.5">
-                    {releaseTitle || '官方已发布新的性能优化与协议增强，建议升级以获得最佳加速体验。'}
+                    {releaseTitle || t('modals.update.releaseFallback')}
                   </div>
                 </div>
               ) : (
                 <p className="text-xs sm:text-sm text-slate-600 leading-snug">
                   {checking
-                    ? '正在连接 GitHub 获取最新版本信息与安全指纹...'
-                    : '本地运行的核心加速代理服务与静态缓存模块均处于最优状态。'}
+                    ? t('modals.update.fetchingGithub')
+                    : t('modals.update.runningStatus')}
                 </p>
               )}
             </div>
@@ -558,16 +560,16 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
 
           <div className="flex items-center gap-3 bg-white border border-slate-200/90 px-4 py-2.5 rounded-xl shrink-0 shadow-2xs">
             <div className="text-center">
-              <div className="text-[11px] text-slate-500 font-medium">当前运行</div>
+              <div className="text-[11px] text-slate-500 font-medium">{t('modals.update.currentVersion')}</div>
               <div className="font-mono text-sm sm:text-base font-bold text-slate-700">v{currentVersion}</div>
             </div>
             <span className="text-slate-300 font-bold text-sm">➔</span>
             <div className="text-center">
-              <div className="text-[11px] text-slate-500 font-medium">云端最新</div>
+              <div className="text-[11px] text-slate-500 font-medium">{t('modals.update.latestVersion')}</div>
               {checking ? (
                 <div className="flex items-center justify-center gap-1 text-xs text-slate-400 font-mono">
                   <RefreshCw className="w-3 h-3 animate-spin text-sky-500" />
-                  <span>查询中</span>
+                  <span>{t('common.checking')}</span>
                 </div>
               ) : (
                 <div className={`font-mono text-sm sm:text-base font-extrabold ${hasNew ? 'text-amber-600' : 'text-emerald-600'}`}>
@@ -585,13 +587,13 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
               <ShieldCheck className="w-5 h-5 text-sky-600 shrink-0 mt-0.5" />
               <div className="space-y-1 text-xs sm:text-sm">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-bold text-sky-950">官方 SHA-256 完整性指纹校验已就绪</span>
+                  <span className="font-bold text-sky-950">{t('modals.update.officialSha256Verified')}</span>
                   <span className="font-mono text-[11px] bg-white px-2 py-0.5 rounded border border-sky-200 text-sky-800">
                     {sha256.length > 20 ? `${sha256.slice(0, 16)}...${sha256.slice(-8)}` : sha256}
                   </span>
                 </div>
                 <p className="text-sky-700 leading-relaxed text-xs">
-                  自动更新程序将在下载后自动比对 SHA-256 校验和并验证安装包归档完整性，杜绝篡改与不完整下载。
+                  {t('modals.update.sha256Desc')}
                 </p>
               </div>
             </div>
@@ -599,9 +601,9 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             <div className="p-3.5 rounded-xl border bg-amber-50/80 border-amber-200/80 text-amber-900 flex items-start gap-3">
               <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
               <div className="space-y-1 text-xs sm:text-sm">
-                <span className="font-bold text-amber-950">未检测到官方 SHA-256 指纹</span>
+                <span className="font-bold text-amber-950">{t('modals.update.noOfficialSha256')}</span>
                 <p className="text-amber-800 leading-relaxed text-xs">
-                  出于工程安全治理要求，自动应用更新严格限定拥有 SHA-256 校验值的版本。当前 Release 暂未声明哈希，一键自动更新已被保护性限制，建议直接访问下方 GitHub Releases 页面手动下载。
+                  {t('modals.update.noSha256Desc')}
                 </p>
               </div>
             </div>
@@ -613,9 +615,9 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
           <div className="p-4 rounded-xl border bg-rose-50/80 border-rose-200/80 text-rose-900 flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
             <div className="space-y-1 flex-1">
-              <span className="font-bold text-sm">检查更新失败</span>
+              <span className="font-bold text-sm">{t('modals.update.checkFailedTitle')}</span>
               <p className="text-xs sm:text-sm text-rose-700 leading-relaxed">
-                {checkError}。请检查本地网络或上游代理配置，亦可直接通过下方链接手动下载。
+                {t('modals.update.checkFailedDesc', { error: checkError })}
               </p>
               <button
                 type="button"
@@ -623,7 +625,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white border border-rose-300 text-rose-800 text-xs font-semibold hover:bg-rose-100 transition-all cursor-pointer"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>重新检查</span>
+                <span>{t('modals.update.retryCheck')}</span>
               </button>
             </div>
           </div>
@@ -639,18 +641,18 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 </div>
                 <div className="space-y-1.5">
                   <h4 className="text-lg font-extrabold text-slate-900">
-                    正在应用更新并重启服务...
+                    {t('modals.update.restartingTitle')}
                   </h4>
                   <p className="text-xs sm:text-sm text-slate-600 max-w-md mx-auto leading-relaxed">
-                    更新助手已启动，正在解压安装包并安全替换程序文件。主服务即将自动重新连接，请稍候。
+                    {t('modals.update.restartingDesc')}
                   </p>
                 </div>
                 <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-sky-50 border border-sky-200/80 text-sky-800 text-xs font-mono font-medium">
                   <span className="w-2 h-2 rounded-full bg-sky-500 animate-ping" />
-                  <span>等待服务就绪 (第 {reconnectAttempt}/30 次检测)...</span>
+                  <span>{t('modals.update.reconnectAttempt', { current: reconnectAttempt })}</span>
                 </div>
                 <p className="text-[11px] text-slate-500 pt-1">
-                  提示：更新期间请勿强制关闭程序。若操作系统弹出安全或防火墙确认，请选择允许。
+                  {t('modals.update.reconnectTip')}
                 </p>
               </div>
             )}
@@ -662,10 +664,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 </div>
                 <div className="space-y-1">
                   <h4 className="text-lg font-extrabold text-slate-900">
-                    更新完成！程序已重新就绪
+                    {t('modals.update.updateSuccessTitle')}
                   </h4>
                   <p className="text-xs sm:text-sm text-emerald-700">
-                    核心引擎与静态缓存模块已成功升级，页面即将自动刷新...
+                    {t('modals.update.updateSuccessDesc')}
                   </p>
                 </div>
               </div>
@@ -678,10 +680,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 </div>
                 <div className="space-y-1.5">
                   <h4 className="text-lg font-extrabold text-slate-900">
-                    服务重启等待超时
+                    {t('modals.update.waitTimeoutTitle')}
                   </h4>
                   <p className="text-xs sm:text-sm text-slate-600 max-w-md mx-auto leading-relaxed">
-                    超过 45 秒未能自动连通服务。更新程序可能已完成替换但受系统杀毒软件阻滞，或正在后台完成自启动。
+                    {t('modals.update.waitTimeoutDesc')}
                   </p>
                 </div>
                 <div className="flex items-center justify-center gap-3 pt-2">
@@ -691,14 +693,14 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     className="px-4 py-2 rounded-xl bg-sky-600 text-white text-xs font-bold hover:bg-sky-700 transition-all cursor-pointer flex items-center gap-1.5"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    <span>再次尝试检测</span>
+                    <span>{t('modals.update.retryCheck')}</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => window.location.reload()}
                     className="px-4 py-2 rounded-xl bg-white border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-100 transition-all cursor-pointer"
                   >
-                    <span>刷新页面</span>
+                    <span>{t('modals.update.refreshPage')}</span>
                   </button>
                 </div>
               </div>
@@ -711,10 +713,10 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 </div>
                 <div className="space-y-1.5">
                   <h4 className="text-lg font-extrabold text-slate-900">
-                    启动更新失败
+                    {t('modals.update.applyFailedTitle')}
                   </h4>
                   <p className="text-xs sm:text-sm text-rose-700 max-w-md mx-auto leading-relaxed">
-                    {applyingError || '应用更新过程中遇到未知错误，请检查日志或手动下载。'}
+                    {applyingError || t('modals.update.applyFailedDesc')}
                   </p>
                 </div>
                 <div className="pt-2">
@@ -723,7 +725,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     onClick={() => setApplyingState('idle')}
                     className="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-bold transition-all cursor-pointer"
                   >
-                    返回
+                    {t('common.back')}
                   </button>
                 </div>
               </div>
@@ -740,17 +742,17 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     {downloadStatus?.done && !downloadStatus?.error ? (
                       <>
                         <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-                        <span className="text-emerald-700 font-bold">更新包已下载并校验通过</span>
+                        <span className="text-emerald-700 font-bold">{t('modals.update.downloadVerified')}</span>
                       </>
                     ) : downloadStatus?.error ? (
                       <>
                         <XCircle className="w-5 h-5 text-rose-600" />
-                        <span className="text-rose-700 font-bold">下载或校验遇到异常</span>
+                        <span className="text-rose-700 font-bold">{t('modals.update.downloadException')}</span>
                       </>
                     ) : (
                       <>
                         <Download className="w-5 h-5 text-sky-600 animate-bounce" />
-                        <span>正在通过上游下载更新安装包 ({downloadStatus?.percent?.toFixed(1) || 0}%)</span>
+                        <span>{t('modals.update.downloadingProgress', { percent: downloadStatus?.percent?.toFixed(1) || 0 })}</span>
                       </>
                     )}
                   </span>
@@ -775,7 +777,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                   <div className="space-y-2 pt-0.5">
                     <div className="flex items-center justify-between gap-2 bg-emerald-50/80 p-3 rounded-xl border border-emerald-200/60 flex-wrap">
                       <div className="space-y-0.5 min-w-0 flex-1">
-                        <div className="text-[11px] font-semibold text-emerald-800">安装包保存位置</div>
+                        <div className="text-[11px] font-semibold text-emerald-800">{t('modals.update.savedLocation')}</div>
                         <p className="text-xs text-emerald-900 break-all font-mono">
                           {downloadStatus.dest}
                         </p>
@@ -791,18 +793,18 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                         ) : (
                           <FolderOpen className="w-3.5 h-3.5 text-emerald-700" />
                         )}
-                        <span>打开下载目录</span>
+                        <span>{t('common.openFolder')}</span>
                       </button>
                     </div>
 
                     {openFolderError && (
                       <p className="text-xs text-rose-600 bg-rose-50/80 p-2.5 rounded-xl border border-rose-200/60">
-                        打开目录失败: {openFolderError}
+                        {t('modals.update.openFolderFailed', { error: openFolderError })}
                       </p>
                     )}
 
                     <p className="text-[11px] text-slate-500 px-1">
-                      您可以点击下方『立即更新并重启』由更新助手自动完成替换，或点击『打开下载目录』手动解压替换。
+                      {t('modals.update.replaceTip')}
                     </p>
                   </div>
                 )}
@@ -819,7 +821,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             {bodyText && (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-slate-500 text-xs sm:text-sm font-semibold px-1">
-                  <span>详细更新说明 (Release Notes)</span>
+                  <span>{t('modals.update.changelogHeader')}</span>
                   <span className="text-slate-400 font-mono text-xs">
                     v{latestVersion || currentVersion}
                   </span>
@@ -841,7 +843,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-50 hover:bg-slate-100 hover:text-slate-900 text-slate-700 font-medium text-sm border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
           >
             <ExternalLink className="w-4 h-4" />
-            <span>前往 GitHub Release 网页</span>
+            <span>{t('modals.update.githubBtn')}</span>
           </a>
 
           <div className="flex items-center gap-3">
@@ -852,7 +854,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 className="px-6 py-2.5 rounded-xl bg-slate-200 text-slate-500 text-sm font-bold flex items-center gap-2 cursor-not-allowed"
               >
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>正在重启服务…</span>
+                <span>{t('header.processing')}</span>
               </button>
             ) : !hasNew && !checking ? (
               <button
@@ -861,7 +863,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-sm font-bold transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
               >
                 <RefreshCw className="w-4 h-4" />
-                <span>重新检查</span>
+                <span>{t('common.refresh')}</span>
               </button>
             ) : hasNew && !checking && (
               <>
@@ -872,7 +874,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-rose-50 text-rose-600 text-sm font-semibold border border-slate-200 hover:border-rose-200 transition-all cursor-pointer flex items-center gap-2"
                   >
                     <XCircle className="w-4 h-4" />
-                    <span>取消下载</span>
+                    <span>{t('common.cancel')}</span>
                   </button>
                 ) : downloadStatus?.done && !downloadStatus?.error ? (
                   <>
@@ -887,7 +889,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                       ) : (
                         <FolderOpen className="w-4 h-4 text-slate-600" />
                       )}
-                      <span>打开下载目录</span>
+                      <span>{t('common.openFolder')}</span>
                     </button>
                     <button
                       type="button"
@@ -895,7 +897,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                       className="px-6 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 active:bg-sky-800 text-white text-sm font-bold shadow-xs transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
                     >
                       <ArrowUpCircle className="w-4 h-4" />
-                      <span>立即更新并重启</span>
+                      <span>{t('modals.update.applyBtn')}</span>
                     </button>
                   </>
                 ) : downloadStatus?.error ? (
@@ -905,7 +907,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-bold shadow-xs transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
                   >
                     <RefreshCw className="w-4 h-4" />
-                    <span>重试下载安装包</span>
+                    <span>{t('modals.update.downloadBtn')}</span>
                   </button>
                 ) : sha256 ? (
                   <button
@@ -914,7 +916,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-sm font-bold shadow-xs transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
                   >
                     <Download className="w-4 h-4" />
-                    <span>一键下载新版安装包</span>
+                    <span>{t('modals.update.downloadBtn')}</span>
                   </button>
                 ) : (
                   <a
@@ -924,7 +926,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                     className="px-6 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-700 active:bg-sky-800 text-white text-sm font-bold shadow-xs transition-all cursor-pointer flex items-center gap-2 active:scale-[0.98]"
                   >
                     <ExternalLink className="w-4 h-4" />
-                    <span>前往网页手动下载</span>
+                    <span>{t('modals.update.githubBtn')}</span>
                   </a>
                 )}
               </>
@@ -936,7 +938,7 @@ export const UpdateModal: React.FC<UpdateModalProps> = ({
                 onClick={onClose}
                 className="px-5 py-2.5 rounded-xl bg-slate-50 hover:bg-slate-100 hover:text-slate-900 text-slate-700 text-sm font-medium border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
               >
-                关闭 (Esc)
+                {t('common.closeEsc')}
               </button>
             )}
           </div>

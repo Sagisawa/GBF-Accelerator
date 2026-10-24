@@ -1,5 +1,6 @@
 export interface RuntimeStatus {
   version: string;
+  language?: string;
   platform?: string;
   arch?: string;
   proxy_running: boolean;

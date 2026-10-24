@@ -38,6 +38,7 @@ import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
 import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal'
 import { HealthCheckModal } from './components/modals/HealthCheckModal'
 import { AndroidPatchPanel } from './components/AndroidPatchPanel'
+import { useI18n } from './i18n'
 
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { isNewerVersion } from './utils/version'
@@ -83,6 +84,7 @@ const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ ba
 }
 
 const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: boolean }> = ({ status, running }) => {
+  const { t } = useI18n()
   const [counts, setCounts] = useState(() => ({
     totalHits: running ? (status?.requests?.total_hits ?? 0) : 0,
     ramHits: running ? (status?.requests?.ram_hits ?? 0) : 0,
@@ -122,7 +124,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">⚡</span> 本地缓存命中
+            <span className="text-sm sm:text-base">⚡</span> {t('hud.totalHits')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
             <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 font-mono tnum leading-tight">
@@ -130,7 +132,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
             </span>
             {counts.ramHits > 0 && (
               <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
-                RAM {counts.ramHits.toLocaleString()}
+                {t('hud.ramHits', { count: counts.ramHits.toLocaleString() })}
               </span>
             )}
           </div>
@@ -140,7 +142,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">📥</span> 远程下载缓存
+            <span className="text-sm sm:text-base">📥</span> {t('hud.remoteDownloads')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
             <span className="text-2xl sm:text-3xl font-extrabold text-sky-600 font-mono tnum leading-tight">
@@ -153,7 +155,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">🔄</span> 游戏 API 转发
+            <span className="text-sm sm:text-base">🔄</span> {t('hud.apiForwarding')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
             <span className="text-2xl sm:text-3xl font-extrabold text-slate-800 font-mono tnum leading-tight">
@@ -167,6 +169,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
 }
 
 export const App: React.FC = () => {
+  const { language, setLanguage, t } = useI18n()
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
   const [upstreamRuntime, setUpstreamRuntime] = useState<UpstreamRuntimeStatus | null>(null)
@@ -226,7 +229,7 @@ export const App: React.FC = () => {
   const [upstreamCandidates, setUpstreamCandidates] = useState<ProxyCandidate[]>([])
   const [upstreamSelectTarget, setUpstreamSelectTarget] = useState<'primary' | 'backup'>('primary')
   const [isShimakazeSuggestOpen, setIsShimakazeSuggestOpen] = useState<boolean>(false)
-  const [shimakazeTargetName, setShimakazeTargetName] = useState<string>('岛风 GO (8099)')
+  const [shimakazeTargetName, setShimakazeTargetName] = useState<string>('')
   const [caModalAction, setCaModalAction] = useState<'install' | 'uninstall' | null>(null)
   const [updateInfo, setUpdateInfo] = useState<{ available: boolean; version: string } | null>(null)
   const [isQuitModalOpen, setIsQuitModalOpen] = useState<boolean>(false)
@@ -237,6 +240,13 @@ export const App: React.FC = () => {
   const isAndroid =
     status?.platform === 'android' ||
     (!status && typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent))
+
+  // Update page title dynamically when language changes
+  useEffect(() => {
+    if (!isStandaloneLogsPage) {
+      document.title = t('header.documentTitle')
+    }
+  }, [language, t, isStandaloneLogsPage])
 
   // First-launch Root CA install guide (restores the v1.6 behavior): when the
   // runtime status first authoritatively reports the CA as not installed, auto
@@ -257,9 +267,9 @@ export const App: React.FC = () => {
       await quitApp()
       setIsQuitModalOpen(false)
       setIsTerminated(true)
-      showToast('加速器后台已安全退出，端口已释放。您可以直接关闭此标签页。', 'success')
+      showToast(t('header.quitSuccess'), 'success')
     } catch (err: any) {
-      showToast(err?.message || '退出失败', 'error')
+      showToast(err?.message || t('header.quitFailed'), 'error')
     } finally {
       setQuitting(false)
     }
@@ -329,6 +339,7 @@ export const App: React.FC = () => {
         setFailoverNotificationInput(Boolean(c.value.upstream_failover_notification ?? true))
         if (c.value.listen_port) setPortInput(String(c.value.listen_port))
         if (c.value.ram_cache_max_mb) setRamMbInput(String(c.value.ram_cache_max_mb))
+        if (c.value.language) setLanguage(c.value.language, false)
       }
       if (cs.status === 'fulfilled') setCacheStats(cs.value)
       if (us.status === 'fulfilled') setUpstreamRuntime(us.value)
@@ -336,7 +347,7 @@ export const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to fetch initial state', e)
     }
-  }, [])
+  }, [setLanguage])
 
   useEffect(() => {
     loadState()
@@ -383,9 +394,9 @@ export const App: React.FC = () => {
           const data = JSON.parse(e.data)
           window.dispatchEvent(new CustomEvent('gbf-boost-done', { detail: data }))
           if (data?.state === 'completed') {
-            showToast('RAM Boost 快照预载入完成', 'success')
+            showToast(t('toasts.boostCompleted'), 'success')
           } else if (data?.state === 'partial') {
-            showToast('RAM Boost 已载入部分素材 (达到内存预算上限)', 'info')
+            showToast(t('toasts.boostPartial'), 'info')
           }
         } catch {}
       })
@@ -415,7 +426,7 @@ export const App: React.FC = () => {
             if (!data?.tag_name) return
             const latest = data.tag_name.replace(/^v/, '').trim()
             fetchStatus().then((cur) => {
-              const current = (cur?.version || '2.5.0').replace(/^v/, '').trim()
+              const current = (cur?.version || '2.5.1').replace(/^v/, '').trim()
               if (latest && isNewerVersion(latest, current)) {
                 setUpdateInfo({ available: true, version: latest })
               }
@@ -543,10 +554,10 @@ export const App: React.FC = () => {
     try {
       const newStatus = await toggleProxy(targetRunning)
       setStatus(newStatus)
-      showToast(targetRunning ? '加速代理服务已成功启动' : '加速代理服务已停止', 'success')
+      showToast(targetRunning ? t('toasts.startSuccess') : t('toasts.stopSuccess'), 'success')
       loadState()
     } catch (e: any) {
-      showToast(`代理操作失败: ${e.message}`, 'error')
+      showToast(targetRunning ? t('toasts.startFailed', { error: e.message }) : t('toasts.stopFailed', { error: e.message }), 'error')
     } finally {
       setLoadingProxy(false)
     }
@@ -579,10 +590,10 @@ export const App: React.FC = () => {
         }
         await applyConfig(patch)
         setConfig((prev) => ({ ...prev, ...patch }))
-        showToast(nextDirect ? '已开启直连模式 (使用本机网络，不经过上游代理)' : '已恢复上游代理转发链路', 'info')
+        showToast(nextDirect ? t('toasts.directEnabled') : t('toasts.directDisabled'), 'info')
         loadState()
       } catch (e: any) {
-        showToast(`切换直连模式失败: ${e.message}`, 'error')
+        showToast(t('toasts.directFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -594,10 +605,10 @@ export const App: React.FC = () => {
       try {
         await applyConfig({ shimakaze_mode: next })
         setConfig((prev) => ({ ...prev, shimakaze_mode: next }))
-        showToast(next ? '已开启岛风GO 兼容优化模式' : '已关闭岛风GO 兼容优化模式', 'info')
+        showToast(next ? t('toasts.shimakazeEnabled') : t('toasts.shimakazeDisabled'), 'info')
         loadState()
       } catch (e: any) {
-        showToast(`设置岛风GO模式失败: ${e.message}`, 'error')
+        showToast(t('toasts.shimakazeFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -607,9 +618,9 @@ export const App: React.FC = () => {
     setLoadingOpenFolder(true)
     try {
       await openCacheFolder()
-      showToast('已在系统文件管理器中打开缓存目录', 'info')
+      showToast(t('toasts.openingCacheDir'), 'info')
     } catch (e: any) {
-      showToast(`打开目录失败: ${e.message}`, 'error')
+      showToast(t('toasts.openCacheDirFailed', { error: e.message }), 'error')
     } finally {
       setTimeout(() => setLoadingOpenFolder(false), 800)
     }
@@ -626,11 +637,11 @@ export const App: React.FC = () => {
         await applyConfig({ cache_dir: chosen })
         setCacheDirInput(chosen)
         setConfig((prev) => ({ ...prev, cache_dir: chosen }))
-        showToast(`缓存目录已成功更改为：${chosen}`, 'success')
+        showToast(t('toasts.cacheDirUpdated', { path: chosen }), 'success')
         loadState()
       }
     } catch (e: any) {
-      showToast(`选择目录失败: ${e.message}`, 'error')
+      showToast(t('toasts.cacheDirSelectFailed', { error: e.message }), 'error')
     } finally {
       setLoadingBrowse(false)
     }
@@ -640,7 +651,7 @@ export const App: React.FC = () => {
   const handleSaveCacheDir = async () => {
     const trimmed = cacheDirInput.trim()
     if (!trimmed) {
-      showToast('缓存目录路径不能为空', 'error')
+      showToast(t('toasts.cacheDirEmpty'), 'error')
       return
     }
     await runConfigAction('save-cache-dir', async () => {
@@ -648,10 +659,10 @@ export const App: React.FC = () => {
         await applyConfig({ cache_dir: trimmed })
         setCacheDirInput(trimmed)
         setConfig((prev) => ({ ...prev, cache_dir: trimmed }))
-        showToast(`缓存目录已成功更改为：${trimmed}`, 'success')
+        showToast(t('toasts.cacheDirUpdated', { path: trimmed }), 'success')
         loadState()
       } catch (e: any) {
-        showToast(`保存缓存目录失败: ${e.message}`, 'error')
+        showToast(t('toasts.cacheDirSelectFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -664,13 +675,13 @@ export const App: React.FC = () => {
         if (data && data.found && data.path) {
           await applyConfig({ cache_dir: data.path })
           setCacheDirInput(data.path)
-          showToast(`已检测并关联 ACGPower 缓存目录: ${data.path}`, 'success')
+          showToast(t('toasts.acgpDetected', { path: data.path }), 'success')
         } else {
-          showToast(data?.message || '未检测到正在运行的 ACGPower 或默认缓存目录', 'info')
+          showToast(data?.message || t('toasts.acgpNotFound'), 'info')
         }
         loadState()
       } catch (e: any) {
-        showToast(`检测 ACGP 失败: ${e.message}`, 'error')
+        showToast(t('toasts.acgpDetectFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -680,7 +691,7 @@ export const App: React.FC = () => {
     const is8123 = url.includes(':8123')
     const currentShimakaze = Boolean(config.shimakaze_mode ?? false)
     if ((is8099 || is8123) && !currentShimakaze) {
-      setShimakazeTargetName(is8123 ? 'ACGPower (8123)' : '岛风 GO (8099)')
+      setShimakazeTargetName(is8123 ? 'ACGPower (8123)' : t('modals.shimakazeSuggest.defaultTargetShimakaze'))
       setIsShimakazeSuggestOpen(true)
     }
   }
@@ -691,27 +702,27 @@ export const App: React.FC = () => {
       await applyConfig({ shimakaze_mode: true })
       setConfig((prev) => ({ ...prev, shimakaze_mode: true }))
       const isAcgp = shimakazeTargetName.includes('8123')
-      showToast(`已成功启用【${isAcgp ? 'ACGPower' : '岛风GO'} 兼容优化模式（放行证书）】`, 'success')
+      showToast(t('toasts.compatModeSet', { name: isAcgp ? 'ACGPower' : t('modals.shimakazeSuggest.clientShimakaze') }), 'success')
       loadState()
     } catch (e: any) {
-      showToast(`启用兼容模式失败: ${e.message}`, 'error')
+      showToast(t('toasts.compatModeFailed', { error: e.message }), 'error')
     }
   }  // Save Upstream Proxy
   const handleSaveUpstream = async () => {
     const trimmed = upstreamInput.trim()
     if (!trimmed) {
-      showToast('上游代理地址不能为空', 'error')
+      showToast(t('toasts.upstreamEmpty'), 'error')
       return
     }
     await runConfigAction('save-upstream', async () => {
       try {
         await applyConfig({ upstream_proxy: trimmed })
         setConfig((prev) => ({ ...prev, upstream_proxy: trimmed }))
-        showToast(`上游代理地址已保存并切换至：${trimmed}`, 'success')
+        showToast(t('toasts.upstreamUpdated', { url: trimmed }), 'success')
         loadState()
         checkShimakazeSuggest(trimmed)
       } catch (e: any) {
-        showToast(`保存上游代理失败: ${e.message}`, 'error')
+        showToast(t('toasts.upstreamSaveFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -724,10 +735,10 @@ export const App: React.FC = () => {
         try {
           await applyConfig({ enable_upstream_failover: false })
           setConfig((prev) => ({ ...prev, enable_upstream_failover: false }))
-          showToast('已关闭备用上游自动切换', 'info')
+          showToast(t('toasts.failoverDisabled'), 'info')
           loadState()
         } catch (e: any) {
-          showToast(`关闭自动切换失败: ${e.message}`, 'error')
+          showToast(t('toasts.failoverDisableFailed', { error: e.message }), 'error')
         }
       })
     }
@@ -737,7 +748,7 @@ export const App: React.FC = () => {
   const handleSaveFailover = async () => {
     const backup = backupUpstreamInput.trim()
     if (failoverEnabledInput && !backup) {
-      showToast('启用备用上游前，请先填写备用上游地址', 'error')
+      showToast(t('toasts.failoverRequiresUrl'), 'error')
       return
     }
 
@@ -746,15 +757,15 @@ export const App: React.FC = () => {
     const cooldown = Number(failoverCooldownInput.trim())
 
     if (!Number.isInteger(threshold) || threshold < 0 || threshold > 60000) {
-      showToast('延迟阈值须为 0 到 60000 ms', 'error')
+      showToast(t('toasts.thresholdRange'), 'error')
       return
     }
     if (!Number.isInteger(consecutive) || consecutive < 1 || consecutive > 10) {
-      showToast('连续异常次数须为 1 到 10 次', 'error')
+      showToast(t('toasts.failuresRange'), 'error')
       return
     }
     if (!Number.isInteger(cooldown) || cooldown < 1 || cooldown > 3600) {
-      showToast('切回等待时间须为 1 到 3600 秒', 'error')
+      showToast(t('toasts.cooldownRange'), 'error')
       return
     }
 
@@ -762,7 +773,7 @@ export const App: React.FC = () => {
       const lower = backup.toLowerCase()
       const supported = ['http://', 'https://', 'socks5://', 'socks5h://'].some((prefix) => lower.startsWith(prefix))
       if (!supported) {
-        showToast('备用上游仅支持 http://、https://、socks5://、socks5h:// 或 direct', 'error')
+        showToast(t('toasts.protocolSupported'), 'error')
         return
       }
     }
@@ -790,13 +801,13 @@ export const App: React.FC = () => {
         }))
         showToast(
           failoverEnabledInput
-            ? '备用上游故障转移配置已保存'
-            : '备用上游配置已保存，自动切换保持关闭',
+            ? t('toasts.failoverSaved')
+            : t('toasts.failoverSavedDisabled'),
           'success'
         )
         loadState()
       } catch (e: any) {
-        showToast(`保存备用上游配置失败: ${e.message}`, 'error')
+        showToast(t('toasts.failoverSaveFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -814,17 +825,17 @@ export const App: React.FC = () => {
           const chosen = candidates.length === 1 ? candidates[0].url : data.primary
           await applyConfig({ upstream_proxy: chosen })
           setUpstreamInput(chosen)
-          showToast(`已探测并应用上游代理: ${chosen}`, 'success')
+          showToast(t('toasts.backupProbed', { url: chosen }), 'success')
           loadState()
           checkShimakazeSuggest(chosen)
         } else {
           await applyConfig({ upstream_proxy: 'auto' })
           setUpstreamInput('auto')
-          showToast('未检测到活跃上游代理端口，已重置为 auto 模式', 'info')
+          showToast(t('toasts.backupNotFound'), 'info')
           loadState()
         }
       } catch (e: any) {
-        showToast(`探测上游代理失败: ${e.message}`, 'error')
+        showToast(t('toasts.upstreamSaveFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -836,14 +847,14 @@ export const App: React.FC = () => {
         const rawCandidates: ProxyCandidate[] = Array.isArray(data?.candidates) ? [...data.candidates] : []
         const candidates: ProxyCandidate[] = rawCandidates.filter((c) => c.url.toLowerCase() !== 'direct')
         candidates.push({
-          name: '⚡ 本机物理直连 (故障时降级直连，不走代理)',
+          name: t('cards.upstream.upstreamDirectFallback'),
           url: 'direct',
         })
         setUpstreamCandidates(candidates)
         setUpstreamSelectTarget('backup')
         setIsUpstreamSelectModalOpen(true)
       } catch (e: any) {
-        showToast(`探测备用代理失败: ${e.message}`, 'error')
+        showToast(t('toasts.backupProbeFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -851,18 +862,18 @@ export const App: React.FC = () => {
   const handleSelectUpstreamCandidate = async (candidate: ProxyCandidate) => {
     if (upstreamSelectTarget === 'backup') {
       setBackupUpstreamInput(candidate.url)
-      showToast(`已选择备用上游: ${candidate.name} (${candidate.url})，请点击保存`, 'success')
+      showToast(t('toasts.candidateSelectedBackup', { name: candidate.name, url: candidate.url }), 'success')
       return
     }
     await runConfigAction('upstream-select', async () => {
       try {
         await applyConfig({ upstream_proxy: candidate.url })
         setUpstreamInput(candidate.url)
-        showToast(`已切换至上游代理: ${candidate.name} (${candidate.url})`, 'success')
+        showToast(t('toasts.candidateSwitched', { name: candidate.name, url: candidate.url }), 'success')
         loadState()
         checkShimakazeSuggest(candidate.url)
       } catch (e: any) {
-        showToast(`切换上游代理失败: ${e.message}`, 'error')
+        showToast(t('toasts.candidateSwitchFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -870,7 +881,7 @@ export const App: React.FC = () => {
   const handleSavePort = async () => {
     const p = parseInt(portInput.trim(), 10)
     if (isNaN(p) || p < 1 || p > 65535) {
-      showToast('请输入 1 到 65535 之间的有效端口号', 'error')
+      showToast(t('toasts.invalidPort'), 'error')
       return
     }
     await runConfigAction('save-port', async () => {
@@ -882,13 +893,13 @@ export const App: React.FC = () => {
           setConfig((prev) => ({ ...prev, listen_port: p }))
         }
         if (resp.warnings && resp.warnings.length > 0) {
-          showToast(`本地监听端口已切换为 ${p}，但附带同步存在警告: ${resp.warnings.join('; ')}`, 'warning')
+          showToast(t('cards.network.portWarning', { port: p, warnings: resp.warnings.join('; ') }), 'warning')
         } else {
-          showToast(isRunning ? `本地监听端口已切换为 ${p}，运行中的代理已热重载` : `本地监听端口已保存为 ${p}，下次启动代理时生效`, 'success')
+          showToast(isRunning ? t('cards.network.portHotReloaded', { port: p }) : t('cards.network.portSaved', { port: p }), 'success')
         }
         loadState()
       } catch (e: any) {
-        showToast(`保存端口失败: ${e.message}`, 'error')
+        showToast(t('cards.network.portSaveFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -904,13 +915,13 @@ export const App: React.FC = () => {
           setConfig((prev) => ({ ...prev, listen_port: 8124 }))
         }
         if (resp.warnings && resp.warnings.length > 0) {
-          showToast(`监听端口已恢复默认 (8124)，但附带同步存在警告: ${resp.warnings.join('; ')}`, 'warning')
+          showToast(t('toasts.portResetWarning', { warnings: resp.warnings.join('; ') }), 'warning')
         } else {
-          showToast(isRunning ? '监听端口已恢复默认 (8124)，运行中的代理已热重载' : '监听端口已恢复默认 (8124)', 'info')
+          showToast(isRunning ? t('toasts.portResetRunning') : t('cards.network.portReset'), 'info')
         }
         loadState()
       } catch (e: any) {
-        showToast(`恢复端口失败: ${e.message}`, 'error')
+        showToast(t('cards.network.portResetFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -927,13 +938,13 @@ export const App: React.FC = () => {
           setConfig((prev) => ({ ...prev, allow_lan: next }))
         }
         if (resp.warnings && resp.warnings.length > 0) {
-          showToast(`局域网连接已切换，但附带同步存在警告: ${resp.warnings.join('; ')}`, 'warning')
+          showToast(t('toasts.lanWarning', { warnings: resp.warnings.join('; ') }), 'warning')
         } else {
-          showToast(next ? '允许局域网连接已开启 (绑定 0.0.0.0)' : '局域网连接已关闭', 'info')
+          showToast(next ? t('toasts.lanEnabled') : t('toasts.lanDisabled'), 'info')
         }
         loadState()
       } catch (e: any) {
-        showToast(`设置局域网共享失败: ${e.message}`, 'error')
+        showToast(t('toasts.lanFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -952,11 +963,11 @@ export const App: React.FC = () => {
         if (resp.warnings && resp.warnings.length > 0) {
           showToast(resp.warnings.join('; '), 'warning')
         } else {
-          showToast(next ? '自动配置系统 PAC 代理已开启' : '系统 PAC 代理已关闭', 'info')
+          showToast(next ? t('cards.optim.autoSysproxyEnabled') : t('cards.optim.autoSysproxyDisabled'), 'info')
         }
         loadState()
       } catch (e: any) {
-        showToast(`设置系统 PAC 代理失败: ${e.message}`, 'error')
+        showToast(t('toasts.autoPacFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -975,11 +986,11 @@ export const App: React.FC = () => {
         if (resp.warnings && resp.warnings.length > 0) {
           showToast(resp.warnings.join('; '), 'warning')
         } else {
-          showToast(next ? '开机自启已开启' : '开机自启已关闭', 'info')
+          showToast(next ? t('cards.optim.autoStartEnabled') : t('cards.optim.autoStartDisabled'), 'info')
         }
         loadState()
       } catch (e: any) {
-        showToast(`设置开机自启失败: ${e.message}`, 'error')
+        showToast(t('toasts.autoStartFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -991,10 +1002,10 @@ export const App: React.FC = () => {
       try {
         await applyConfig({ auto_check_update: next })
         setConfig((prev) => ({ ...prev, auto_check_update: next }))
-        showToast(next ? '启动时自动检测新版本已开启' : '自动检测更新已关闭', 'info')
+        showToast(next ? t('cards.optim.autoCheckUpdateEnabled') : t('cards.optim.autoCheckUpdateDisabled'), 'info')
         loadState()
       } catch (e: any) {
-        showToast(`设置自动更新失败: ${e.message}`, 'error')
+        showToast(t('toasts.autoUpdateFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1006,10 +1017,10 @@ export const App: React.FC = () => {
       try {
         await applyConfig({ enable_ram_cache: next })
         setConfig((prev) => ({ ...prev, enable_ram_cache: next }))
-        showToast(next ? '启用内存热点缓存 (RAM Cache)' : '已关闭内存热点缓存', 'info')
+        showToast(next ? t('cards.optim.ramCacheEnabled') : t('cards.optim.ramCacheDisabled'), 'info')
         loadState()
       } catch (e: any) {
-        showToast(`设置内存缓存失败: ${e.message}`, 'error')
+        showToast(t('toasts.ramCacheFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1017,17 +1028,17 @@ export const App: React.FC = () => {
     const mb = parseInt(ramMbInput.trim(), 10)
     const maxAllowed = 65536
     if (isNaN(mb) || mb < 16 || mb > maxAllowed) {
-      showToast(`请输入 16 到 ${maxAllowed} MB (64GB) 之间的有效内存上限`, 'error')
+      showToast(t('toasts.invalidRamMb', { max: maxAllowed }), 'error')
       return
     }
     await runConfigAction('ram-mb', async () => {
       try {
         await applyConfig({ ram_cache_max_mb: mb })
         setConfig((prev) => ({ ...prev, ram_cache_max_mb: mb }))
-        showToast(`内存缓存上限已设置为 ${mb} MB (${Math.round((mb / 1024) * 10) / 10} GB)`, 'success')
+        showToast(t('toasts.ramMbUpdated', { mb, gb: Math.round((mb / 1024) * 10) / 10 }), 'success')
         loadState()
       } catch (e: any) {
-        showToast(`设置内存上限失败: ${e.message}`, 'error')
+        showToast(t('toasts.ramMbFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1038,10 +1049,10 @@ export const App: React.FC = () => {
       try {
         await applyConfig({ enable_browser_cache: next })
         setConfig((prev) => ({ ...prev, enable_browser_cache: next }))
-        showToast(next ? '浏览器强缓存与渲染留存已开启' : '浏览器强缓存已关闭', 'info')
+        showToast(next ? t('cards.optim.browserCacheEnabled') : t('cards.optim.browserCacheDisabled'), 'info')
         loadState()
       } catch (e: any) {
-        showToast(`设置浏览器强缓存失败: ${e.message}`, 'error')
+        showToast(t('toasts.browserCacheFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1052,10 +1063,10 @@ export const App: React.FC = () => {
       try {
         await applyConfig({ enable_auto_repair: next })
         setConfig((prev) => ({ ...prev, enable_auto_repair: next }))
-        showToast(next ? '自动检测并修复损坏/空缓存已开启' : '自动修复已关闭', 'info')
+        showToast(next ? t('cards.optim.autoRepairEnabled') : t('cards.optim.autoRepairDisabled'), 'info')
         loadState()
       } catch (e: any) {
-        showToast(`设置自动修复失败: ${e.message}`, 'error')
+        showToast(t('toasts.autoRepairFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1066,10 +1077,10 @@ export const App: React.FC = () => {
       try {
         await applyConfig({ enable_prefetch: next })
         setConfig((prev) => ({ ...prev, enable_prefetch: next }))
-        showToast(next ? '场景素材智能预加载已开启' : '素材预加载已关闭', 'info')
+        showToast(next ? t('cards.optim.prefetchEnabled') : t('cards.optim.prefetchDisabled'), 'info')
         loadState()
       } catch (e: any) {
-        showToast(`设置预加载失败: ${e.message}`, 'error')
+        showToast(t('toasts.prefetchFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1080,10 +1091,10 @@ export const App: React.FC = () => {
       try {
         await applyConfig({ enable_ram_warmup: next })
         setConfig((prev) => ({ ...prev, enable_ram_warmup: next }))
-        showToast(next ? '启动时预热内存缓存已开启' : '预热内存已关闭', 'info')
+        showToast(next ? t('cards.optim.ramWarmupEnabled') : t('cards.optim.ramWarmupDisabled'), 'info')
         loadState()
       } catch (e: any) {
-        showToast(`设置预热内存失败: ${e.message}`, 'error')
+        showToast(t('toasts.ramWarmupFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1176,7 +1187,6 @@ export const App: React.FC = () => {
   const caFingerprint = status?.ca_fingerprint || status?.ca_thumbprint || ''
 
   const currentListenPort = config.listen_port ?? status?.listen_port ?? 8124
-  const currentControlPort = config.control_port ?? status?.control_port ?? 8125
   const ramUsageMb = Math.round(cacheStats?.ram_mb ?? (status?.cache?.ram_mb ?? 0))
   const ramMaxMb = config.ram_cache_max_mb ?? 256
 
@@ -1224,7 +1234,7 @@ export const App: React.FC = () => {
       {isTerminated && (
         <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200">
           <span>🛑</span>
-          <span>GBF-Accelerator 后台服务已安全退出，端口 8124 与 8125 已释放。您可以随时关闭此网页标签。</span>
+          <span>{t('header.terminatedNotice')}</span>
         </div>
       )}
 
@@ -1240,10 +1250,10 @@ export const App: React.FC = () => {
               <div className="flex flex-col min-w-0">
                 <div className="flex items-center gap-2.5 flex-wrap">
                   <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
-                    碧蓝幻想 GBF-Accelerator
+                    {t('header.title')}
                   </span>
                   <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                    v{status?.version || '2.5.0'}
+                    v{status?.version || '2.5.1'}
                   </span>
                   {updateInfo?.available && (
                     <button
@@ -1252,7 +1262,7 @@ export const App: React.FC = () => {
                       className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
                     >
                       <span className="text-sm">🔥</span>
-                      <span>发现新版 v{updateInfo.version}</span>
+                      <span>{t('header.updateFound', { version: updateInfo.version })}</span>
                     </button>
                   )}
                 </div>
@@ -1260,14 +1270,14 @@ export const App: React.FC = () => {
                   <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
                     <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
                     <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
-                      {isRunning ? `运行中 (监听端口 ${currentListenPort})` : '已停止'}
+                      {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
                     </span>
                   </span>
                   {isRunning && (
                     <>
                       <span className="text-slate-300">·</span>
                       <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
-                        <span className="text-slate-400">已运行:</span>
+                        <span className="text-slate-400">{t('header.uptime')}</span>
                         <span className="font-semibold text-slate-700">
                           <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
                         </span>
@@ -1278,29 +1288,66 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Top Right Master Start / Stop Action Button & Quit Button */}
-            <div className="flex items-center gap-2 sm:gap-2.5">
+            {/* Top Right Master Start / Stop Action Button, Quit Button & Language Switcher */}
+            <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
+              {/* Language Switcher Capsule */}
+              <div className="inline-flex items-center rounded-xl bg-slate-100 p-0.5 border border-slate-200/90 text-xs font-semibold shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setLanguage('zh')}
+                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
+                    language === 'zh'
+                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  简中
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLanguage('en')}
+                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
+                    language === 'en'
+                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  EN
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLanguage('ja')}
+                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
+                    language === 'ja'
+                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  日本語
+                </button>
+              </div>
+
               <button
                 type="button"
                 disabled={loadingProxy || isTerminated}
                 onClick={handleToggleProxy}
-                className={`min-w-[110px] px-5 py-2.5 rounded-xl text-sm sm:text-base font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] ${
+                className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
                   isRunning
                     ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
                     : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
                 }`}
               >
-                {loadingProxy ? '处理中...' : isRunning ? '停止加速' : '启动加速'}
+                {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
               </button>
               <button
                 type="button"
                 disabled={isTerminated}
                 onClick={() => setIsQuitModalOpen(true)}
-                className="px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs"
-                title="彻底退出 GBF 加速器后台服务 (释放 8124 与 8125 端口)"
+                className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
+                title={t('header.quitAppTip')}
               >
                 <Power className="w-4 h-4 text-rose-500" />
-                <span>彻底退出</span>
+                <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
               </button>
             </div>
           </div>
@@ -1323,7 +1370,7 @@ export const App: React.FC = () => {
             }`}
           >
             <Zap className="w-4 h-4" />
-            <span>核心加速与控制</span>
+            <span>{t('tabs.core')}</span>
           </button>
           {showAndroidPatch && (
             <button
@@ -1336,14 +1383,14 @@ export const App: React.FC = () => {
               }`}
             >
               <Smartphone className="w-4 h-4" />
-              <span>Android 浏览器 Patch</span>
+              <span>{t('tabs.android')}</span>
             </button>
           )}
         </div>
       </div>
 
       {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
-      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
+      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-20 sm:pb-24 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
         {activeTab === 'core' ? (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
@@ -1354,18 +1401,18 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-lg">📁</span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    本地缓存与存储管理
+                    {t('cards.cache.title')}
                   </h2>
                 </div>
                 <span className="text-xs text-emerald-700 font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200/60">
-                  RAM + 磁盘双层
+                  {t('cards.cache.badge')}
                 </span>
               </div>
 
               {/* Local Cache Dir */}
               <div className="space-y-2">
                 <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
-                  {isAndroid ? '本地缓存目录：' : '本地缓存目录（支持无缝复用 ACGPower 缓存）：'}
+                  {isAndroid ? t('cards.cache.dirLabelAndroid') : t('cards.cache.dirLabel')}
                 </label>
                 <div className="space-y-2">
                   <div className="flex items-center gap-2">
@@ -1389,7 +1436,7 @@ export const App: React.FC = () => {
                       aria-busy={isActionLoading('save-cache-dir')}
                       className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
                     >
-                      {isActionLoading('save-cache-dir') ? '保存中...' : '保存'}
+                      {isActionLoading('save-cache-dir') ? t('common.saving') : t('common.save')}
                     </button>
                     {!isAndroid && (
                       <button
@@ -1399,7 +1446,7 @@ export const App: React.FC = () => {
                         aria-busy={loadingBrowse}
                         className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
                       >
-                        {loadingBrowse ? '正在打开...' : '浏览...'}
+                        {loadingBrowse ? t('common.loading') : t('common.browse')}
                       </button>
                     )}
                   </div>
@@ -1411,7 +1458,7 @@ export const App: React.FC = () => {
                         disabled={loadingOpenFolder}
                         className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
                       >
-                        {loadingOpenFolder ? '打开中...' : '打开目录'}
+                        {loadingOpenFolder ? t('common.loading') : t('common.openFolder')}
                       </button>
                       <button
                         type="button"
@@ -1420,7 +1467,7 @@ export const App: React.FC = () => {
                         aria-busy={isActionLoading('detect-acgp')}
                         className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
                       >
-                        {isActionLoading('detect-acgp') ? '检测中...' : '检测 ACGP'}
+                        {isActionLoading('detect-acgp') ? t('common.loading') : t('cards.cache.detectAcgpower')}
                       </button>
                     </div>
                   )}
@@ -1438,14 +1485,17 @@ export const App: React.FC = () => {
                     className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                   />
                   <span>
-                    启用内存热点缓存 (RAM Cache) - 占用上限约 {ramMaxMb}MB{ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : ''}，高频静态资源 0 磁盘 I/O 直接响应
+                    {t('cards.cache.ramCacheLabel', {
+                      maxMb: ramMaxMb,
+                      gbText: ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : '',
+                    })}
                   </span>
                 </label>
 
                 {isRamCache && (
                   <div className="ml-6 space-y-2">
                     <div className="flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
-                      <span>上限 (MB):</span>
+                      <span>{t('cards.cache.limitMbLabel')}</span>
                       <input
                         type="text"
                         disabled={Boolean(loadingAction)}
@@ -1458,15 +1508,15 @@ export const App: React.FC = () => {
                         onClick={handleApplyRamMb}
                         disabled={Boolean(loadingAction)}
                         aria-busy={isActionLoading('ram-mb')}
-                        className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                        className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
                       >
-                        {isActionLoading('ram-mb') ? '应用中...' : '应用'}
+                        {isActionLoading('ram-mb') ? t('cards.cache.applying') : t('cards.cache.apply')}
                       </button>
                       {(cacheStats?.resident_bytes ?? 0) > 0 ? (
                         <div className="flex items-center gap-2.5 text-xs font-mono text-slate-600 flex-wrap">
-                          <span>常规: {ramUsageMb}MB</span>
-                          <span className="text-amber-700 font-medium">驻留: {cacheStats?.resident_mb ?? 0}MB</span>
-                          <span className="font-semibold text-slate-800">已用: {cacheStats?.total_ram_mb ?? (ramUsageMb + (cacheStats?.resident_mb ?? 0))} / {ramMaxMb}MB</span>
+                          <span>{t('cards.cache.regularLabel', { mb: ramUsageMb })}</span>
+                          <span className="text-amber-700 font-medium">{t('cards.cache.residentLabel', { mb: cacheStats?.resident_mb ?? 0 })}</span>
+                          <span className="font-semibold text-slate-800">{t('cards.cache.usedLabel', { used: cacheStats?.total_ram_mb ?? (ramUsageMb + (cacheStats?.resident_mb ?? 0)), max: ramMaxMb })}</span>
                         </div>
                       ) : (
                         <span className="text-slate-500 font-mono text-xs">
@@ -1491,20 +1541,20 @@ export const App: React.FC = () => {
                             ? 'text-sky-800 bg-sky-50 hover:bg-sky-100 border-sky-300 animate-pulse'
                             : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-300'
                         }`}
-                        title="把本地静态素材全量载入内存加速 (RAM Boost)"
+                        title={t('cards.cache.boostTooltip')}
                       >
                         <span>⚡</span>
                         <span>
                           {cacheStats?.boost_state === 'loading'
-                            ? '全量载入中...'
+                            ? t('cards.cache.boostLoading')
                             : (cacheStats?.resident_bytes ?? 0) > 0
-                            ? `已全量驻留 (${cacheStats?.resident_mb ?? 0} MB)`
-                            : '全量加速 (Boost)'}
+                            ? t('cards.cache.boostActiveWithMb', { mb: cacheStats?.resident_mb ?? 0 })
+                            : t('cards.cache.boostBtn')}
                         </span>
                       </button>
                       {(cacheStats?.system_total_mb ?? 0) > 0 && (
                         <span className="text-slate-400 text-xs font-mono ml-auto sm:ml-0">
-                          (本机: {Math.round((cacheStats?.system_total_mb ?? 0) / 1024)}GB)
+                          {t('cards.cache.hostRam', { gb: Math.round((cacheStats?.system_total_mb ?? 0) / 1024) })}
                         </span>
                       )}
                     </div>
@@ -1517,7 +1567,7 @@ export const App: React.FC = () => {
                         disabled={Boolean(loadingAction)}
                         className="w-3.5 h-3.5 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                       />
-                      <span>启动时预热内存缓存 - 把高频小文件预载入 RAM，消除初次会话磁盘 I/O 延迟</span>
+                      <span>{t('cards.cache.ramWarmupLabel')}</span>
                     </label>
                   </div>
                 )}
@@ -1534,7 +1584,7 @@ export const App: React.FC = () => {
                     disabled={Boolean(loadingAction)}
                     className="w-3.5 h-3.5 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                   />
-                  <span>自动检测并修复损坏/空缓存 - 自动识别并重下 0 字节损坏文件，防黑屏卡死</span>
+                  <span>{t('cards.cache.cleanZombiesLabel')}</span>
                 </label>
 
                 <div className="flex items-center gap-2 pt-0.5 flex-wrap">
@@ -1544,7 +1594,7 @@ export const App: React.FC = () => {
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
                     <span>🩺</span>
-                    <span>一键体检缓存</span>
+                    <span>{t('cards.cache.auditCache')}</span>
                   </button>
                   <button
                     type="button"
@@ -1552,7 +1602,7 @@ export const App: React.FC = () => {
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
                     <span>🧹</span>
-                    <span>缓存清理与瘦身</span>
+                    <span>{t('cards.cache.clearCache')}</span>
                   </button>
                 </div>
               </div>
@@ -1567,26 +1617,26 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-lg">🌐</span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    上游网络代理与分流
+                    {t('cards.upstream.title')}
                   </h2>
                 </div>
                 <span className="text-xs text-sky-700 font-semibold px-2.5 py-0.5 rounded-full bg-sky-50 border border-sky-200/60">
-                  Clash / 岛风GO / 直连
+                  {t('cards.upstream.badge')}
                 </span>
               </div>
 
               {/* Upstream Proxy */}
               <div className="space-y-1.5">
                 <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
-                  上游网络代理（Clash Verge / Clash / V2ray / 岛风GO 等）：
+                  {t('cards.upstream.upstreamLabel')}
                 </label>
-                <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                <div className="flex items-center gap-1.5 sm:gap-2">
                   <input
                     type="text"
                     disabled={isDirect || Boolean(loadingAction)}
                     value={upstreamInput}
                     onChange={(e) => setUpstreamInput(e.target.value)}
-                    className="flex-1 min-w-[160px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all disabled:bg-slate-100 disabled:text-slate-400"
+                    className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all disabled:bg-slate-100 disabled:text-slate-400"
                   />
                   <button
                     type="button"
@@ -1594,7 +1644,7 @@ export const App: React.FC = () => {
                     onClick={handleSaveUpstream}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
                   >
-                    {isActionLoading('save-upstream') ? '保存中...' : '确认'}
+                    {isActionLoading('save-upstream') ? t('common.saving') : t('common.save')}
                   </button>
                   <button
                     type="button"
@@ -1603,7 +1653,7 @@ export const App: React.FC = () => {
                     onClick={handleProbeUpstream}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
                   >
-                    {isActionLoading('probe-upstream') ? '探测中...' : '自动探测'}
+                    {isActionLoading('probe-upstream') ? t('common.loading') : t('cards.upstream.autoDetect')}
                   </button>
                 </div>
               </div>
@@ -1613,10 +1663,10 @@ export const App: React.FC = () => {
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div>
                     <div className="text-[13px] sm:text-sm text-slate-700 font-medium">
-                      备用上游（自动故障转移）
+                      {t('cards.upstream.failoverTitle')}
                     </div>
                     <div className="text-xs text-slate-400 mt-0.5">
-                      主上游连接失败立即切换；响应超时累计达到水线后切换
+                      {t('cards.upstream.failoverSubtitle')}
                     </div>
                   </div>
                   <span
@@ -1629,12 +1679,12 @@ export const App: React.FC = () => {
                     }
                   >
                     {isDirect
-                      ? '直连模式下不可用'
+                      ? t('cards.upstream.failoverDisabledDirect')
                       : !failoverEnabledInput || !backupUpstreamInput.trim()
-                        ? '未启用'
+                        ? t('cards.upstream.failoverNotEnabled')
                         : upstreamRuntime?.active === 'backup'
-                          ? '当前：备用'
-                          : '当前：主上游'}
+                          ? t('cards.upstream.activeBackup')
+                          : t('cards.upstream.activePrimary')}
                   </span>
                 </div>
 
@@ -1651,8 +1701,8 @@ export const App: React.FC = () => {
                     className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
                   />
                   <span>
-                    启用备用上游自动切换
-                    {isDirect && <span className="text-xs text-slate-400 ml-1">（直连模式下不走代理，此功能不可用）</span>}
+                    {t('cards.upstream.enableFailover')}
+                    {isDirect && <span className="text-xs text-slate-400 ml-1">{t('cards.upstream.failoverDirectNote')}</span>}
                   </span>
                 </label>
 
@@ -1660,17 +1710,17 @@ export const App: React.FC = () => {
                   <div className="space-y-2.5 pt-0.5">
                     {/* Backup upstream input + probe button */}
                     <div className="space-y-1.5">
-                      <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                      <div className="flex items-center gap-1.5 sm:gap-2">
                         <label className="text-xs sm:text-[13px] text-slate-600 shrink-0">
-                          备用地址
+                          {t('cards.upstream.backupAddress')}
                         </label>
                         <input
                           type="text"
                           value={backupUpstreamInput}
                           onChange={(e) => setBackupUpstreamInput(e.target.value)}
                           disabled={Boolean(loadingAction)}
-                          placeholder="例如 direct 或 http://127.0.0.1:8080 / socks5://127.0.0.1:1080"
-                          className="flex-1 min-w-[180px] bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
+                          placeholder={t('cards.upstream.backupPlaceholder')}
+                          className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
                         />
                         <button
                           type="button"
@@ -1679,19 +1729,19 @@ export const App: React.FC = () => {
                           onClick={handleProbeBackupUpstream}
                           className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
                         >
-                          {isActionLoading('probe-backup-upstream') ? '探测中...' : '自动探测'}
+                          {isActionLoading('probe-backup-upstream') ? t('cards.upstream.backupProbing') : t('cards.upstream.backupAutoDetect')}
                         </button>
                       </div>
                       <div className="text-[11px] sm:text-xs text-slate-500 leading-relaxed">
-                        💡 支持填写其他代理地址（如 <code className="text-slate-700 font-mono">http://127.0.0.1:7890</code>），或直接填写 <code className="text-sky-700 font-bold font-mono">direct</code>（当主代理故障时自动降级为本机直连，不走代理）。
+                        {t('cards.upstream.backupTip')}
                       </div>
                     </div>
 
                     {/* 3 Parameter Inputs: Redesigned with label on top, input on bottom, NEVER vertical wrapping */}
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                       <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
-                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap" title="在途首包响应耗时超过该阈值时判定为延迟异常；仅监测静态素材与只读白名单接口">
-                          上游响应阈值
+                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap" title={t('cards.upstream.thresholdTip')}>
+                          {t('cards.upstream.thresholdLabel')}
                         </span>
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <input
@@ -1709,8 +1759,8 @@ export const App: React.FC = () => {
                       </div>
 
                       <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
-                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap" title="响应超过阈值的连续异常次数达到此水线后切换备用；连接失败（端口关闭/拒绝）不受此限制，立即切换">
-                          连续异常水线
+                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap" title={t('cards.upstream.failuresTip')}>
+                          {t('cards.upstream.failuresLabel')}
                         </span>
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <input
@@ -1723,13 +1773,13 @@ export const App: React.FC = () => {
                             disabled={Boolean(loadingAction)}
                             className="w-full min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-xs text-slate-800 focus:ring-1 focus:ring-sky-500 focus:outline-none"
                           />
-                          <span className="text-xs text-slate-400 shrink-0">次</span>
+                          <span className="text-xs text-slate-400 shrink-0">{t('cards.upstream.times')}</span>
                         </div>
                       </div>
 
                       <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
                         <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap">
-                          切回等待
+                          {t('cards.upstream.cooldownLabel')}
                         </span>
                         <div className="flex items-center gap-1.5 mt-0.5">
                           <input
@@ -1742,13 +1792,13 @@ export const App: React.FC = () => {
                             disabled={Boolean(loadingAction)}
                             className="w-full min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-xs text-slate-800 focus:ring-1 focus:ring-sky-500 focus:outline-none"
                           />
-                          <span className="text-xs text-slate-400 shrink-0">秒</span>
+                          <span className="text-xs text-slate-400 shrink-0">{t('cards.upstream.seconds')}</span>
                         </div>
                       </div>
                     </div>
 
                     <div className="text-[11px] text-slate-400 leading-relaxed px-0.5">
-                      ⏱️ 上游连接失败（端口关闭/拒绝连接）<strong>立即切换备用</strong>；响应超过阈值仍未返回则计为延迟异常，累计达到水线后切换。
+                      {t('cards.upstream.failoverMechanismNotice')}
                     </div>
 
                     <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
@@ -1761,7 +1811,7 @@ export const App: React.FC = () => {
                             disabled={Boolean(loadingAction)}
                             className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                           />
-                          <span>冷却后自动尝试切回主上游</span>
+                          <span>{t('cards.upstream.autoRecoverCheckbox')}</span>
                         </label>
 
                         {status?.platform === 'windows' && (
@@ -1773,7 +1823,7 @@ export const App: React.FC = () => {
                               disabled={Boolean(loadingAction)}
                               className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                             />
-                            <span>切换到备用上游时弹出系统通知</span>
+                            <span>{t('cards.upstream.notificationCheckbox')}</span>
                           </label>
                         )}
                       </div>
@@ -1785,7 +1835,7 @@ export const App: React.FC = () => {
                         aria-busy={isActionLoading('save-failover')}
                         className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 active:bg-sky-800 border border-sky-600 active:scale-[0.98] transition-all cursor-pointer shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {isActionLoading('save-failover') ? '保存中...' : '保存备用上游'}
+                        {isActionLoading('save-failover') ? t('common.saving') : t('cards.upstream.saveFailoverBtn')}
                       </button>
                     </div>
 
@@ -1793,31 +1843,31 @@ export const App: React.FC = () => {
                       <div className="p-2.5 rounded-lg bg-slate-50/80 border border-slate-200/70 text-xs text-slate-600">
                         <div className="flex items-center justify-between gap-2 flex-wrap">
                           <span>
-                            当前链路：
+                            {t('cards.upstream.currentRoute')}
                             <strong className={upstreamRuntime?.active === 'backup' ? 'text-amber-700' : 'text-emerald-700'}>
-                              {upstreamRuntime?.active === 'backup' ? '备用上游' : '主上游'}
+                              {upstreamRuntime?.active === 'backup' ? t('cards.upstream.backupRoute') : t('cards.upstream.primaryRoute')}
                             </strong>
                           </span>
                           <span className="font-mono text-slate-500">
-                            连续异常 {upstreamRuntime?.failure_count ?? 0} / {upstreamRuntime?.consecutive_failures ?? (Number(failoverConsecutiveInput) || 3)}
+                            {t('cards.upstream.consecutiveAbnormal')} {upstreamRuntime?.failure_count ?? 0} / {upstreamRuntime?.consecutive_failures ?? (Number(failoverConsecutiveInput) || 3)}
                           </span>
                         </div>
                         <div className="mt-1.5 flex items-center justify-between gap-2 flex-wrap">
                           <span className="text-slate-500">
                             {upstreamRuntime?.reason
                               ? ({
-                                  timeout: '响应超时',
-                                  connection_error: '连接异常',
-                                  latency_threshold: '超过延迟阈值',
-                                  primary_recovered: '主上游已恢复',
-                                  primary_recovery_failed: '主上游恢复尝试未成功',
+                                  timeout: t('cards.upstream.reasonTimeout'),
+                                  connection_error: t('cards.upstream.reasonConnError'),
+                                  latency_threshold: t('cards.upstream.reasonLatency'),
+                                  primary_recovered: t('cards.upstream.reasonRecovered'),
+                                  primary_recovery_failed: t('cards.upstream.reasonRecoveryFailed'),
                                 } as Record<string, string>)[upstreamRuntime.reason] || upstreamRuntime.reason
-                              : '等待运行数据'}
+                              : t('cards.upstream.waitingTelemetry')}
                           </span>
                           <span className="font-mono text-slate-400">
                             {upstreamRuntime?.last_switch_at
-                              ? `上次切换 ${new Date(upstreamRuntime.last_switch_at).toLocaleTimeString('zh-CN', { hour12: false })}`
-                              : '尚未发生切换'}
+                              ? t('cards.upstream.lastSwitch', { time: new Date(upstreamRuntime.last_switch_at).toLocaleTimeString(language === 'zh' ? 'zh-CN' : language === 'ja' ? 'ja-JP' : 'en-US', { hour12: false }) })
+                              : t('cards.upstream.neverSwitched')}
                           </span>
                         </div>
                       </div>
@@ -1825,7 +1875,7 @@ export const App: React.FC = () => {
 
                     {!backupUpstreamInput.trim() && (
                       <div className="text-xs text-amber-700 bg-amber-50/80 border border-amber-200/70 rounded-lg px-3 py-2">
-                        已勾选自动切换，但尚未填写备用上游地址；保存时会要求补全。
+                        {t('cards.upstream.missingBackupWarning')}
                       </div>
                     )}
                   </div>
@@ -1842,7 +1892,7 @@ export const App: React.FC = () => {
                     disabled={Boolean(loadingAction)}
                     className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                   />
-                  <span>直连模式（使用本机网络，不经过上游代理；仍使用本地缓存）</span>
+                  <span>{t('cards.upstream.directModeCheckbox')}</span>
                 </label>
 
                 <div>
@@ -1855,17 +1905,17 @@ export const App: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
                     />
                     <span className="text-slate-800">
-                      岛风GO / ACGPower 兼容优化模式（放宽超时、自愈重试、放行自签证书；默认关闭）
+                      {t('cards.upstream.shimakazeCheckbox')}
                     </span>
                   </label>
 
                   {isShimakaze && (
                     <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs space-y-1">
                       <div>
-                        提示：已开启兼容优化模式，放行岛风GO / ACGPower 等本地自签证书并优化网络超时。
+                        {t('cards.upstream.shimakazeNotice')}
                       </div>
                       <div className="text-sky-800/95">
-                        新版本架构兼容升级，可以开启岛风GO远程缓存体验更快加载（若游戏版本更新拉取新素材时遇到报错或卡顿，可临时关闭“岛风GO远程缓存”）。
+                        {t('cards.upstream.shimakazeRemoteCacheNotice')}
                       </div>
                     </div>
                   )}
@@ -1874,37 +1924,37 @@ export const App: React.FC = () => {
 
               {/* Listen Port & Allow LAN */}
               <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <label className="text-[13px] sm:text-sm text-slate-700 font-medium">本地监听端口：</label>
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                  <label className="text-[13px] sm:text-sm text-slate-700 font-medium">{t('cards.network.portLabel')}</label>
                   <input
                     type="text"
                     disabled={Boolean(loadingAction)}
                     value={portInput}
                     onChange={(e) => setPortInput(e.target.value)}
-                    className="w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                    className="w-16 sm:w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
                   />
                   <button
                     type="button"
                     onClick={handleSavePort}
                     disabled={Boolean(loadingAction)}
                     aria-busy={isActionLoading('save-port')}
-                    className="px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                    className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
                   >
-                    {isActionLoading('save-port') ? '保存中...' : '保存配置'}
+                    {isActionLoading('save-port') ? t('common.saving') : t('cards.network.savePort')}
                   </button>
                   <button
                     type="button"
                     onClick={handleResetPort}
                     disabled={Boolean(loadingAction)}
                     aria-busy={isActionLoading('reset-port')}
-                    className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/80 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
+                    className="px-2 sm:px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/80 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
                   >
-                    {isActionLoading('reset-port') ? '恢复中...' : '恢复默认 (8124)'}
+                    {isActionLoading('reset-port') ? t('common.loading') : t('cards.network.resetDefault')}
                   </button>
                 </div>
 
                 <div className="space-y-1.5">
-                  <div className="flex items-center gap-2.5 flex-wrap">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
                     <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -1913,20 +1963,20 @@ export const App: React.FC = () => {
                         disabled={Boolean(loadingAction)}
                         className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                       />
-                      <span>允许局域网连接 (Allow LAN)</span>
+                      <span>{t('cards.network.allowLan')}</span>
                     </label>
                     <button
                       type="button"
                       onClick={() => setIsMobileModalOpen(true)}
-                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs"
+                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs shrink-0 whitespace-nowrap"
                     >
                       <span>📱</span>
-                      <span>移动端/iOS 连接指引...</span>
+                      <span>{t('cards.network.mobileGuide')}</span>
                     </button>
                   </div>
                   {isAllowLan && (
                     <div className="text-xs text-sky-700 font-medium pl-6">
-                      本机局域网 IP: {status?.lan_ip || '192.168.x.x'} (端口 {currentListenPort}) | 移动设备配置 Wi-Fi 代理为此地址
+                      {t('cards.network.lanIpDesc', { ip: status?.lan_ip || '192.168.x.x', port: currentListenPort })}
                     </div>
                   )}
                 </div>
@@ -1943,7 +1993,7 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-lg">🛡️</span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    HTTPS 根证书与系统集成
+                    {t('cards.network.certTitle')}
                   </h2>
                 </div>
                 <span
@@ -1955,7 +2005,7 @@ export const App: React.FC = () => {
                         : 'bg-rose-50 text-rose-700 border-rose-200/60'
                   }`}
                 >
-                  {!caStatusKnown ? '检查中' : isCaInstalled ? '已信任' : '未安装'}
+                  {!caStatusKnown ? t('common.loading') : isCaInstalled ? t('cards.network.certInstalled') : t('cards.network.certNotInstalled')}
                 </span>
               </div>
 
@@ -1963,9 +2013,9 @@ export const App: React.FC = () => {
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <span className="text-[13px] sm:text-sm text-slate-700 font-medium">
-                    证书状态：
+                    {t('cards.network.certStatusLabel')}
                     <strong className={!caStatusKnown ? 'text-slate-500 ml-1' : isCaInstalled ? 'text-emerald-700 ml-1' : 'text-rose-600 ml-1'}>
-                      {!caStatusKnown ? '检查中...' : isCaInstalled ? '已信任 (正常解析)' : '未安装信任'}
+                      {!caStatusKnown ? t('common.loading') : isCaInstalled ? t('cards.network.certInstalled') : t('cards.network.certNotInstalled')}
                     </strong>
                   </span>
                   <div className="flex items-center gap-2">
@@ -1974,19 +2024,19 @@ export const App: React.FC = () => {
                       onClick={() => setCaModalAction('install')}
                       className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                     >
-                      一键安装/修复根证书
+                      {t('cards.network.certInstallBtn')}
                     </button>
                     <button
                       type="button"
                       onClick={() => setCaModalAction('uninstall')}
                       className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
                     >
-                      一键注销/卸载根证书
+                      {t('cards.network.certUninstallBtn')}
                     </button>
                   </div>
                 </div>
                 <div className="text-xs font-mono text-slate-500 pt-0.5 select-all break-all leading-normal">
-                  SHA-256 指纹： {caFingerprint || '读取中...'}
+                  {t('cards.network.certFingerprintLabel')} {caFingerprint || t('common.loading')}
                 </div>
               </div>
 
@@ -2002,12 +2052,12 @@ export const App: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                     />
                     <span>
-                      自动配置系统 PAC 代理（开启后浏览器无需插件，仅分流 GBF 流量）
+                      {t('cards.network.autoPacCheckbox')}
                     </span>
                   </label>
                   {isAutoPac && status?.system_proxy_conflict && (
                     <div className="mt-2 ml-6 p-2.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 leading-relaxed shadow-2xs">
-                      <span className="font-semibold">⚠️ 检测到系统代理冲突：</span>
+                      <span className="font-semibold">{t('cards.network.conflictNotice')}</span>
                       <span className="ml-1 break-all">{status.system_proxy_conflict}</span>
                     </div>
                   )}
@@ -2022,7 +2072,7 @@ export const App: React.FC = () => {
                       disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                     />
-                    <span>开机自启（启动后自动缩小到系统托盘，默认关闭）</span>
+                    <span>{t('cards.network.autoStartCheckbox')}</span>
                   </label>
                 </div>
 
@@ -2035,7 +2085,7 @@ export const App: React.FC = () => {
                       disabled={Boolean(loadingAction)}
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
                     />
-                    <span>启动时自动检测新版本（发现新版时右上角提醒，默认开启）</span>
+                    <span>{t('cards.network.autoUpdateCheckbox')}</span>
                   </label>
                 </div>
               </div>
@@ -2050,11 +2100,11 @@ export const App: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <span className="text-lg">⚡</span>
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    性能加速与调度优化
+                    {t('cards.optim.title')}
                   </h2>
                 </div>
                 <span className="text-xs text-amber-800 font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200/60">
-                  削峰填谷 · 防黑屏
+                  {t('cards.optim.badge')}
                 </span>
               </div>
 
@@ -2069,7 +2119,7 @@ export const App: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
-                      启用资源预加载 - 解析场景 JS 引用的素材并后台预热，首次进新副本/活动更流畅
+                      {t('cards.optim.prefetch')}
                     </span>
                   </label>
                 </div>
@@ -2084,7 +2134,7 @@ export const App: React.FC = () => {
                       className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
                     />
                     <span>
-                      启用浏览器强缓存与渲染留存（仅对版本化静态资源注入 immutable，默认开启）
+                      {t('cards.optim.browserCache')}
                     </span>
                   </label>
                 </div>
@@ -2092,10 +2142,10 @@ export const App: React.FC = () => {
                 <div className="p-3 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 leading-relaxed shadow-2xs space-y-1">
                   <div className="font-semibold flex items-center gap-1.5 text-amber-800">
                     <span>🛡️</span>
-                    <span>动态避让与温和调度保障</span>
+                    <span>{t('cards.optim.subhead')}</span>
                   </div>
                   <p className="text-amber-800/90 text-[11px] sm:text-xs">
-                    资源预加载采用随机抖动平滑削峰填谷；当前台检测到战斗或动态 API 请求时主动挂起避让，绝不挤占游戏核心网络带宽。
+                    {t('cards.optim.pacingNotice')}
                   </p>
                 </div>
               </div>
@@ -2109,7 +2159,7 @@ export const App: React.FC = () => {
             <div className="flex items-center gap-2.5">
               <span className="w-2.5 h-2.5 rounded-full bg-sky-500 animate-pulse shrink-0" />
               <h3 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                加速效能与网络态势
+                {t('telemetry.title')}
               </h3>
               <span className="text-xs text-slate-400 font-mono hidden sm:inline">
                 ENGINE TELEMETRY
@@ -2123,7 +2173,7 @@ export const App: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
                   <span className="text-emerald-500 text-base">⚡</span>
-                  <span>分流与命中占比</span>
+                  <span>{t('telemetry.ratioTitle')}</span>
                 </span>
                 <span className="text-sm sm:text-base font-bold font-mono text-emerald-600">
                   {totalHitRate > 0 ? `${totalHitRate}%` : '--'}
@@ -2136,17 +2186,17 @@ export const App: React.FC = () => {
                   <div
                     className="h-full bg-emerald-500 transition-all duration-300"
                     style={{ width: `${ramHitPct}%` }}
-                    title={`RAM 即时命中: ${ramHitsCount} (${ramHitPct}%)`}
+                    title={t('telemetry.ramHitsTip', { count: ramHitsCount, pct: ramHitPct })}
                   />
                   <div
                     className="h-full bg-sky-500 transition-all duration-300"
                     style={{ width: `${diskHitPct}%` }}
-                    title={`磁盘命中: ${diskHitsCount} (${diskHitPct}%)`}
+                    title={t('telemetry.diskHitsTip', { count: diskHitsCount, pct: diskHitPct })}
                   />
                   <div
                     className="h-full bg-amber-400/90 transition-all duration-300"
                     style={{ width: `${missHitPct}%` }}
-                    title={`CDN 上游下载: ${downloadsCount} (${missHitPct}%)`}
+                    title={t('telemetry.downloadsTip', { count: downloadsCount, pct: missHitPct })}
                   />
                 </div>
                 <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
@@ -2156,18 +2206,18 @@ export const App: React.FC = () => {
                   </span>
                   <span className="flex items-center gap-1">
                     <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
-                    磁盘: {diskHitsCount}
+                    {t('telemetry.diskCount', { count: diskHitsCount })}
                   </span>
                   <span className="flex items-center gap-1">
                     <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                    下载: {downloadsCount}
+                    {t('telemetry.downloadsCount', { count: downloadsCount })}
                   </span>
                 </div>
               </div>
 
               <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
-                <span>累计节省外网请求</span>
-                <span className="font-mono font-semibold text-slate-800">{hitsCount} 次</span>
+                <span>{t('telemetry.savedRequests')}</span>
+                <span className="font-mono font-semibold text-slate-800">{t('telemetry.savedTimes', { count: hitsCount })}</span>
               </div>
             </div>
 
@@ -2176,7 +2226,7 @@ export const App: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
                   <span className="text-sky-500 text-base">🌐</span>
-                  <span>HTTP/2 连接复用态势</span>
+                  <span>{t('telemetry.h2Title')}</span>
                 </span>
                 <span className="text-sm sm:text-base font-bold font-mono text-sky-600">
                   {connReusePercent > 0 ? `${connReusePercent}%` : '--'}
@@ -2185,13 +2235,13 @@ export const App: React.FC = () => {
 
               <div className="space-y-2 text-xs sm:text-[13px] text-slate-600">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500">避免重复 TCP 握手:</span>
+                  <span className="text-slate-500">{t('telemetry.avoidHandshakes')}</span>
                   <span className="font-mono font-semibold text-emerald-600">
-                    +{reusedConnections} 次
+                    {t('telemetry.timesPlus', { count: reusedConnections })}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500">新建连接 / 活跃素材:</span>
+                  <span className="text-slate-500">{t('telemetry.newVsActive')}</span>
                   <span className="font-mono text-slate-700">
                     {newConnections} / {activeForeground}
                   </span>
@@ -2199,7 +2249,7 @@ export const App: React.FC = () => {
               </div>
 
               <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
-                <span>协议多路复用</span>
+                <span>{t('telemetry.protocolMultiplex')}</span>
                 <span className="font-mono font-medium text-sky-700">
                   H2: {h2Count} | H1: {h1Count}
                 </span>
@@ -2211,43 +2261,43 @@ export const App: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
                   <span className="text-indigo-500 text-base">📶</span>
-                  <span>上游延迟与调度水线</span>
+                  <span>{t('telemetry.upstreamLatencyTitle')}</span>
                 </span>
                 <span className="text-xs font-mono text-slate-500">
-                  样本: {latencySamples}
+                  {t('telemetry.sampleCount', { count: latencySamples })}
                 </span>
               </div>
 
               <div className="space-y-2 text-xs sm:text-[13px] text-slate-600">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500">P50 延迟 / P95 尾延迟:</span>
+                  <span className="text-slate-500">{t('telemetry.latencyMetrics')}</span>
                   <span className="font-mono font-semibold text-slate-800">
                     {p50Latency > 0 ? `${p50Latency}ms` : '--'} / {p95Latency > 0 ? `${p95Latency}ms` : '--'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500">前台战斗 API 避让:</span>
+                  <span className="text-slate-500">{t('telemetry.apiAvoidance')}</span>
                   <span className={`font-medium ${activeApiCount > 0 ? 'text-amber-600 font-semibold' : 'text-emerald-600'}`}>
-                    {activeApiCount > 0 ? `避让中 (${activeApiCount} 活动)` : '待命就绪 (0 活动)'}
+                    {activeApiCount > 0 ? t('telemetry.avoidingActive', { count: activeApiCount }) : t('telemetry.avoidingReady')}
                   </span>
                 </div>
               </div>
 
               <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
-                <span>预加载命中复用</span>
+                <span>{t('telemetry.prefetchHitsTitle')}</span>
                 {!isPrefetch ? (
-                  <span className="text-slate-400 font-medium">未启用</span>
+                  <span className="text-slate-400 font-medium">{t('cards.upstream.failoverNotEnabled')}</span>
                 ) : prefetchReusedCount > 0 ? (
                   <span className="font-mono font-semibold text-indigo-600">
-                    {prefetchReusedCount} 项 · 已命中
+                    {t('telemetry.prefetchHitItems', { count: prefetchReusedCount })}
                   </span>
                 ) : diskHitsCount + ramHitsCount > 0 ? (
                   <span className="font-medium text-emerald-600">
-                    0 项 (缓存已完备)
+                    {t('telemetry.prefetchReady')}
                   </span>
                 ) : (
                   <span className="font-medium text-slate-400">
-                    待命中 (0 项)
+                    {t('telemetry.prefetchPending')}
                   </span>
                 )}
               </div>
@@ -2261,80 +2311,88 @@ export const App: React.FC = () => {
   </main>
 
       {/* 3. Fixed Bottom Action Dock (Footer) */}
-      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-3 sm:px-4 py-2.5 sm:py-3 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
-        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[540px]:grid-cols-4 min-[840px]:grid-cols-8 gap-2">
+      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-2.5 sm:px-3 py-2 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
+        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[480px]:grid-cols-4 min-[768px]:grid-cols-8 gap-1 sm:gap-1.5">
           <button
             type="button"
             onClick={handleOpenCacheFolder}
             disabled={loadingOpenFolder}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('common.openFolder')}
           >
-            <span className="text-base leading-none">📁</span>
-            <span>{loadingOpenFolder ? '打开中...' : '缓存目录'}</span>
+            <span className="text-sm leading-none shrink-0">📁</span>
+            <span className="truncate">{loadingOpenFolder ? t('common.loading') : t('footer.openFolder')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsClearModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('cards.cache.clearCache')}
           >
-            <span className="text-base leading-none">🗑</span>
-            <span>清空缓存</span>
+            <span className="text-sm leading-none shrink-0">🗑</span>
+            <span className="truncate">{t('footer.clearCache')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsRoutingModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('footer.routingTips')}
           >
-            <span className="text-base leading-none">🌐</span>
-            <span>分流说明</span>
+            <span className="text-sm leading-none shrink-0">🌐</span>
+            <span className="truncate">{t('footer.routingTips')}</span>
           </button>
 
           <a
             href="https://github.com/Sagisawa/GBF-Accelerator"
             target="_blank"
             rel="noreferrer"
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title="GitHub"
           >
-            <span className="text-base leading-none">⭐</span>
-            <span>GitHub</span>
+            <span className="text-sm leading-none shrink-0">⭐</span>
+            <span className="truncate">GitHub</span>
           </a>
 
           <button
             type="button"
             onClick={() => setIsUpdateModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('footer.checkUpdate')}
           >
-            <span className="text-base leading-none">🔄</span>
-            <span>检查更新</span>
+            <span className="text-sm leading-none shrink-0">🔄</span>
+            <span className="truncate">{t('footer.checkUpdate')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsLatencyModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('cards.upstream.latencyTest')}
           >
-            <span className="text-base leading-none">📶</span>
-            <span>延迟测试</span>
+            <span className="text-sm leading-none shrink-0">📶</span>
+            <span className="truncate">{t('footer.latencyTest')}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setIsHealthModalOpen(true)}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('footer.diagnostics')}
           >
-            <span className="text-base leading-none">🩺</span>
-            <span>运行自检</span>
+            <span className="text-sm leading-none shrink-0">🩺</span>
+            <span className="truncate">{t('footer.diagnostics')}</span>
           </button>
 
           <button
             type="button"
             onClick={openLogsWindow}
-            className="px-2 py-2 sm:py-2.5 rounded-xl text-xs font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs whitespace-nowrap"
+            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
+            title={t('footer.liveLogs')}
           >
-            <span className="text-base leading-none">📜</span>
-            <span>实时日志</span>
+            <span className="text-sm leading-none shrink-0">📜</span>
+            <span className="truncate">{t('footer.liveLogs')}</span>
           </button>
         </div>
       </footer>
@@ -2418,13 +2476,13 @@ export const App: React.FC = () => {
           upstreamSelectTarget === 'backup' ? (
             <div className="flex items-center gap-2">
               <Network className="w-4 h-4 text-sky-600" />
-              <span>选择备用上游代理</span>
+              <span>{t('modals.upstreamSelect.titleBackup')}</span>
             </div>
           ) : undefined
         }
         subtitle={
           upstreamSelectTarget === 'backup'
-            ? '检测到本机候选网络出口，支持选择其他代理或降级为直连'
+            ? t('modals.upstreamSelect.subtitleApp')
             : undefined
         }
         onSelect={handleSelectUpstreamCandidate}
@@ -2440,7 +2498,7 @@ export const App: React.FC = () => {
       <UpdateModal
         isOpen={isUpdateModalOpen}
         onClose={() => setIsUpdateModalOpen(false)}
-        currentVersion={status?.version || '2.5.0'}
+        currentVersion={status?.version || '2.5.1'}
       />
 
       <LiveLogsWindow
@@ -2459,26 +2517,29 @@ export const App: React.FC = () => {
         title={
           <div className="flex items-center gap-2 text-rose-600 font-bold text-base">
             <Power className="w-5 h-5" />
-            <span>确认彻底退出 GBF 加速器？</span>
+            <span>{t('quitModal.title')}</span>
           </div>
         }
-        subtitle="终止后台代理与管理服务"
+        subtitle={t('quitModal.desc')}
         maxWidth="max-w-md"
       >
         <div className="space-y-4 text-xs sm:text-sm text-slate-600">
-          <div className="p-3.5 bg-rose-50/80 border border-rose-200/80 rounded-xl space-y-2 text-rose-900">
-            <p className="font-semibold text-xs sm:text-sm">
-              退出后将完全关闭代理与后台管理服务：
+          <div className="p-3.5 bg-rose-50/80 border border-rose-200/80 rounded-xl space-y-2 text-rose-900 leading-relaxed">
+            <p className="text-xs sm:text-sm">
+              {t('quitModal.warning')}
             </p>
-            <ul className="list-disc list-inside space-y-1 text-xs text-rose-800">
-              <li>释放数据代理端口 <strong>{currentListenPort}</strong></li>
-              <li>释放 Web 控制台端口 <strong>{currentControlPort}</strong></li>
-              <li>安全回写内存缓存数据至磁盘</li>
+            <p className="font-semibold text-xs pt-1">
+              {t('quitModal.warningLead')}
+            </p>
+            <ul className="list-disc list-inside text-xs space-y-0.5 pl-1 text-rose-800">
+              <li>{t('quitModal.releaseProxyPort', { port: currentListenPort })}</li>
+              <li>{t('quitModal.releaseControlPort', { port: config.control_port || 8125 })}</li>
+              <li>{t('quitModal.safeFlush')}</li>
             </ul>
+            <p className="text-[11px] text-rose-700/80 pt-1">
+              {t('quitModal.restartTip')}
+            </p>
           </div>
-          <p className="text-slate-500 text-xs leading-relaxed">
-            如需再次使用，需在电脑桌面或终端重新启动程序。
-          </p>
           <div className="pt-2 flex justify-end gap-2.5 border-t border-slate-100">
             <button
               type="button"
@@ -2486,7 +2547,7 @@ export const App: React.FC = () => {
               onClick={() => setIsQuitModalOpen(false)}
               className="px-4 py-2 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 transition-all cursor-pointer"
             >
-              取消
+              {t('quitModal.cancel')}
             </button>
             <button
               type="button"
@@ -2495,7 +2556,7 @@ export const App: React.FC = () => {
               className="px-5 py-2 rounded-xl text-xs sm:text-sm font-bold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
             >
               <Power className="w-4 h-4" />
-              <span>{quitting ? '正在退出...' : '确认彻底退出'}</span>
+              <span>{quitting ? t('common.quitting') : t('quitModal.confirm')}</span>
             </button>
           </div>
         </div>

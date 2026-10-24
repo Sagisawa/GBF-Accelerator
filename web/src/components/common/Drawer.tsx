@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react'
 import { cn } from '../../utils/cn'
 import { X } from 'lucide-react'
+import { useI18n } from '../../i18n'
 
 export interface DrawerProps {
   isOpen: boolean
@@ -23,6 +24,7 @@ export const Drawer: React.FC<DrawerProps> = ({
   className,
   headerRight,
 }) => {
+  const { t } = useI18n()
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && isOpen) {
@@ -78,7 +80,7 @@ export const Drawer: React.FC<DrawerProps> = ({
             <button
               onClick={onClose}
               className="w-7 h-7 rounded-lg bg-slate-700/60 hover:bg-slate-600 flex items-center justify-center text-slate-300 hover:text-white transition-colors"
-              title="关闭 (Esc)"
+              title={t('common.closeEsc')}
             >
               <X className="w-4 h-4" />
             </button>

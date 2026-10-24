@@ -3,6 +3,7 @@ import { Modal } from '../common/Modal'
 import { Button } from '../common/Button'
 import { Activity, RefreshCw } from 'lucide-react'
 import { testLatency } from '../../api'
+import { useI18n } from '../../i18n'
 
 export interface LatencyTestModalProps {
   isOpen: boolean
@@ -57,6 +58,7 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
   isDirect,
   upstreamProxy,
 }) => {
+  const { t } = useI18n()
   const [testing, setTesting] = useState(false)
   const [coldMs, setColdMs] = useState<number | null>(null)
   const [warmSummary, setWarmSummary] = useState<WarmLatencySummary>({
@@ -70,8 +72,20 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
   const [currentTarget, setCurrentTarget] = useState<string>('https://game.granbluefantasy.jp/')
 
   const fallbackRouteDesc = isDirect
-    ? '直连模式（不经过上游代理）'
-    : `经上游代理 ${upstreamProxy || '（未配置）'}`
+    ? t('modals.latencyTest.directRoute')
+    : t('modals.latencyTest.upstreamRoute', { proxy: upstreamProxy || t('cards.upstream.unconfigured') })
+
+  const formatRouteDesc = (rawRoute: string) => {
+    if (!rawRoute) return fallbackRouteDesc
+    if (rawRoute.includes('直连模式')) {
+      return t('modals.latencyTest.directRoute')
+    }
+    const match = rawRoute.match(/^经上游代理\s+(.+)$/)
+    if (match) {
+      return t('modals.latencyTest.upstreamRoute', { proxy: match[1] })
+    }
+    return rawRoute
+  }
 
   const runTest = async () => {
     setTesting(true)
@@ -84,13 +98,13 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
       if (res.target) setCurrentTarget(res.target)
       if (res.route_desc) setCurrentRoute(res.route_desc)
       if (!res.ok) {
-        setErrorMsg(res.error || '测试失败')
+        setErrorMsg(res.error || t('modals.latencyTest.testFailed'))
         return
       }
       setColdMs(res.cold_ms !== undefined ? Math.round(res.cold_ms) : null)
       setWarmSummary(summarizeWarmLatency(res))
     } catch (e: any) {
-      setErrorMsg(e.message || '网络请求超时')
+      setErrorMsg(e.message || t('modals.latencyTest.testFailed'))
     } finally {
       setTesting(false)
     }
@@ -116,10 +130,10 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
   }
 
   const getEvalText = () => {
-    if (wMid <= 120) return '● 延迟极佳（<120ms），游戏接口响应丝滑'
-    if (wMid <= 220) return '● 延迟优良（120~220ms），满足多人战与战斗流畅需求'
-    if (wMid <= 350) return '● 延迟尚可（220~350ms），可正常游玩'
-    return '● 延迟较高（>350ms），建议检查代理节点或网络线路'
+    if (wMid <= 120) return t('modals.latencyTest.evalExcellent')
+    if (wMid <= 220) return t('modals.latencyTest.evalGood')
+    if (wMid <= 350) return t('modals.latencyTest.evalFair')
+    return t('modals.latencyTest.evalPoor')
   }
 
   return (
@@ -129,10 +143,10 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
       title={
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-emerald-600" />
-          <span>上游网络延迟测试结果</span>
+          <span>{t('modals.latencyTest.title')}</span>
         </div>
       }
-      subtitle="真实测量游戏主站链路 RTT 延迟与建链开销"
+      subtitle={t('modals.latencyTest.subtitle')}
       maxWidth="max-w-md"
     >
       <div className="space-y-3.5">
@@ -140,12 +154,12 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
         <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg space-y-2.5 text-xs">
           <div className="space-y-1 text-slate-600">
             <div className="flex justify-between">
-              <span className="font-bold text-slate-800">测试目标：</span>
+              <span className="font-bold text-slate-800">{t('modals.latencyTest.targetLabel')}</span>
               <span className="font-mono text-slate-800">{currentTarget}</span>
             </div>
             <div className="flex justify-between">
-              <span className="font-bold text-slate-800">路由通道：</span>
-              <span className="text-slate-700">{currentRoute || fallbackRouteDesc}</span>
+              <span className="font-bold text-slate-800">{t('modals.latencyTest.routeLabel')}</span>
+              <span className="text-slate-700">{formatRouteDesc(currentRoute)}</span>
             </div>
           </div>
 
@@ -154,31 +168,31 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
           {testing ? (
             <div className="py-6 flex flex-col items-center justify-center gap-2 text-slate-500">
               <RefreshCw className="w-5 h-5 animate-spin text-blue-600" />
-              <span>正在连通游戏服务器测速中...</span>
+              <span>{t('modals.latencyTest.testing')}</span>
             </div>
           ) : errorMsg ? (
             <div className="py-4 text-center text-red-600 space-y-1">
-              <div className="font-bold">测试失败</div>
+              <div className="font-bold">{t('modals.latencyTest.testFailed')}</div>
               <div className="text-[11px]">{errorMsg}</div>
             </div>
           ) : (
             <div className="space-y-2">
               <div className="flex justify-between">
-                <span className="font-bold text-slate-800">冷连接耗时：</span>
+                <span className="font-bold text-slate-800">{t('modals.latencyTest.coldLatencyLabel')}</span>
                 <span className="font-mono text-slate-800">
-                  {coldMs !== null ? `${coldMs} ms (含代理握手与 TLS 建链)` : '未测'}
+                  {coldMs !== null ? t('modals.latencyTest.coldLatencyVal', { ms: coldMs }) : t('modals.latencyTest.notTested')}
                 </span>
               </div>
 
               {warmList.length > 0 && (
                 <div className="space-y-1.5 pt-1">
                   <div className="flex justify-between">
-                    <span className="font-bold text-slate-800">热连接 RTT：</span>
+                    <span className="font-bold text-slate-800">{t('modals.latencyTest.warmLatencyLabel')}</span>
                     <span
                       className="font-bold font-mono"
                       style={{ color: getEvalColor() }}
                     >
-                      最快 {wMin} ms ｜ 中位 {wMid} ms ｜ 最慢 {wMax} ms
+                      {t('modals.latencyTest.warmStats', { min: wMin, mid: wMid, max: wMax })}
                     </span>
                   </div>
                   <div
@@ -201,11 +215,11 @@ export const LatencyTestModal: React.FC<LatencyTestModalProps> = ({
             disabled={testing}
             icon={<RefreshCw className={`w-3.5 h-3.5 ${testing ? 'animate-spin' : ''}`} />}
           >
-            重新测试
+            {t('modals.latencyTest.retestBtn')}
           </Button>
 
           <Button variant="desktop" size="sm" onClick={onClose}>
-            确定 (Esc)
+            {t('common.ok')} (Esc)
           </Button>
         </div>
       </div>
