@@ -320,7 +320,7 @@ func GetLandingHTML(lanIP string, port int) string {
                     <span class="badge">
                         <span lang="zh">推荐，仅游戏素材走代理</span>
                         <span lang="en">Recommended: Proxies game assets only</span>
-                        <span lang="ja">推奨（ゲーム素材のみプロキシ経由）</span>
+                        <span lang="ja">推奨（ゲームアセットのみプロキシ経由）</span>
                     </span>
                 </b>
                 <div style="margin-top: 4px;">
@@ -393,7 +393,7 @@ func GetLandingHTML(lanIP string, port int) string {
                 <p style="color: #64748b; font-size: 12px; line-height: 1.5;">
                     <span lang="zh">说明：SkyLeap 内置使用的是 <code>gbf.game.mbga.jp</code>，该地址主要用于账号登录和跳转，不包含游戏静态素材，无法触发本地缓存加速；在手机浏览器中访问 <code>game.granbluefantasy.jp</code> 才能正常走本地缓存。</span>
                     <span lang="en">Note: SkyLeap uses <code>gbf.game.mbga.jp</code> internally, which is only used for authentication and redirection without game assets. Visiting <code>game.granbluefantasy.jp</code> in your mobile browser ensures game assets are accelerated via local cache.</span>
-                    <span lang="ja">注意：SkyLeap アプリは内部で <code>gbf.game.mbga.jp</code> を使用しており、認証専用で素材を含まないためキャッシュによる高速化が機能しません。ブラウザから <code>game.granbluefantasy.jp</code> にアクセスすることでローカルキャッシュが正常に機能します。</span>
+                    <span lang="ja">注意：SkyLeap アプリは内部で <code>gbf.game.mbga.jp</code> を使用しており、認証専用でゲームアセットを含まないためキャッシュによる高速化が機能しません。ブラウザから <code>game.granbluefantasy.jp</code> にアクセスすることでローカルキャッシュが正常に機能します。</span>
                 </p>
             </div>
             <hr>

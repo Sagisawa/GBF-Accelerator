@@ -77,6 +77,30 @@ describe('i18n dictionaries and translation', () => {
     expect(enStep1).not.toContain(';')
     expect(jaStep1).not.toContain(';')
     expect(jaStep1).not.toContain('；')
+
+    // Verify asset terminology across Japanese locale
+    expect(translate('ja', 'cards.cache.title')).toBe('ローカルキャッシュ & アセット保存')
+    expect(translate('ja', 'cards.optim.prefetch')).toBe('静的アセットのスムーズプリフェッチ')
+    expect(translate('ja', 'modals.boost.subtitle')).toBe('高頻度アセットをRAM常駐プールに展開し、0msの超高速読込を実現')
+    expect(translate('ja', 'modals.audit.valid')).toBe('正常アセット')
+    expect(translate('ja', 'modals.clearCache.categories.other')).toBe('その他基本アセット')
+
+    function collectStrings(obj: any): string[] {
+      let result: string[] = []
+      for (const val of Object.values(obj)) {
+        if (typeof val === 'string') {
+          result.push(val)
+        } else if (typeof val === 'object' && val !== null) {
+          result = result.concat(collectStrings(val))
+        }
+      }
+      return result
+    }
+
+    const jaStrings = collectStrings(ja)
+    for (const str of jaStrings) {
+      expect(str).not.toContain('素材')
+    }
   })
 
   it('falls back safely for unknown keys', () => {
