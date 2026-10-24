@@ -23,14 +23,14 @@ import (
 )
 
 const (
-	CanonicalModuleSHA256               = "afdd6aa85cf95b994034628ba71e33f41e0df26f3d1e994303bfe580b5900936"
+	CanonicalModuleSHA256               = "817594681bddf3a413364335db3e490dffdc6d8b6c366317ca27b4863c92f736"
 	CanonicalLicensesSHA256             = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
 	CanonicalPlatformToolsWindowsSHA256 = "e79e5d613cda3912f8dbf77a1ec1b2eaf5de96d93b7fca0a88d9b97c4253ee25"
 	CanonicalPlatformToolsDarwinSHA256  = "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d"
 	CanonicalJreWindowsSHA256           = "c7677f06a0a92f593d13c3640718efad034a2ae57bf6e35a813c40399d35a277"
 	GitHubRepo                          = "Sagisawa/GBF-Accelerator"
 	AssetsRepo                          = "Sagisawa/GBF-Accelerator-Assets"
-	AssetsTag                           = "v2.5.0"
+	AssetsTag                           = "v2.5.1"
 	ToolchainAssetsTag                  = "v2.3.0"
 )
 
