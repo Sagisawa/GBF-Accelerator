@@ -83,6 +83,11 @@ export const zh = {
       "cacheDirPlaceholder": "例如: cache/gbf/https 或 ACGPower 缓存目录",
       "browse": "浏览选择",
       "detectAcgpower": "自动探测 ACGPower",
+      "migrateStandard": "移至 macOS 标准目录",
+      "migrateStandardTooltip": "将缓存平滑迁移至 macOS 标准应用数据目录，彻底避免系统权限弹窗",
+      "migrating": "迁移中...",
+      "migrateSuccess": "缓存已成功迁移至 macOS 标准目录：{path}",
+      "migrateFailed": "缓存迁移失败: {error}",
       "openFolder": "打开目录",
       "save": "保存路径",
       "saving": "保存中...",
@@ -492,6 +497,20 @@ export const zh = {
     "ramWarmupFailed": "设置预热内存失败: {error}"
   },
   "modals": {
+    "migrateStandard": {
+      "title": "迁移缓存至 macOS 标准目录",
+      "subtitle": "消除 macOS 系统隐私权限弹窗，无缝平移素材",
+      "prompt": "当前缓存目录位于受保护的文件夹中，macOS 系统会对该目录进行隐私权限拦截并弹出警告。迁移至标准目录可彻底消除弹窗干扰。",
+      "currentDir": "当前源目录：",
+      "targetDir": "目标标准目录：",
+      "featurePoint1": "无损继承：现有全部游戏素材完整保留，无需在游戏中重新下载",
+      "featurePoint2": "极速迁移：优先采用 APFS Copy-on-Write 毫秒级克隆，不重复占用物理磁盘空间",
+      "featurePoint3": "热重载生效：迁移完成后自动更新配置并生效，无需重启加速器",
+      "note": "注：迁移完成后，加速器将自动重定向至标准目录，原有下载文件夹将不再被加速器访问。",
+      "dontRemind": "不再主动提示",
+      "confirm": "开始迁移",
+      "cancel": "取消"
+    },
     "clearCache": {
       "title": "清除本地缓存",
       "subtitle": "定向清理历史版本、指定资源分类或重置全部缓存",

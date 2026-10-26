@@ -36,7 +36,13 @@ func autoDetectACGPowerCache() string {
 		}
 	}
 
-	// 2. Common directories
+	// 2. Standard Application Support directory (prioritized to prevent protected folder access)
+	gbfAccCache := filepath.Join(home, "Library", "Application Support", "GBF-Accelerator", "cache")
+	if fi, err := os.Stat(gbfAccCache); err == nil && fi.IsDir() {
+		return NormalizeCacheDir(gbfAccCache)
+	}
+
+	// 3. Common directories
 	searchDirs := []string{
 		filepath.Join(home, "Downloads"),
 		filepath.Join(home, "Desktop"),
@@ -73,11 +79,6 @@ func autoDetectACGPowerCache() string {
 				}
 			}
 		}
-	}
-
-	gbfAccCache := filepath.Join(home, "Library", "Application Support", "GBF-Accelerator", "cache")
-	if fi, err := os.Stat(gbfAccCache); err == nil && fi.IsDir() {
-		return NormalizeCacheDir(gbfAccCache)
 	}
 
 	return ""

@@ -85,6 +85,11 @@ export const en: TranslationSchema = {
       "cacheDirPlaceholder": "e.g. cache/gbf/https or ACGPower cache dir",
       "browse": "Browse",
       "detectAcgpower": "Auto Detect ACGPower",
+      "migrateStandard": "Move to macOS Standard Directory",
+      "migrateStandardTooltip": "Migrate cache to standard macOS application support directory to eliminate system permission prompts",
+      "migrating": "Migrating...",
+      "migrateSuccess": "Cache successfully migrated to macOS standard directory: {path}",
+      "migrateFailed": "Cache migration failed: {error}",
       "openFolder": "Open Folder",
       "save": "Save Path",
       "saving": "Saving...",
@@ -494,6 +499,20 @@ export const en: TranslationSchema = {
     "ramWarmupFailed": "Failed to set RAM prewarm: {error}"
   },
   "modals": {
+    "migrateStandard": {
+      "title": "Migrate Cache to macOS Standard Directory",
+      "subtitle": "Eliminate macOS privacy permission dialogs and smoothly migrate assets",
+      "prompt": "Your current cache directory is located in a protected folder, causing macOS to intercept file operations with permission prompts. Migrating to the standard Application Support directory permanently eliminates these dialogs.",
+      "currentDir": "Current Directory:",
+      "targetDir": "Target Standard Directory:",
+      "featurePoint1": "Zero Data Loss: All existing game assets are completely preserved without re-downloading",
+      "featurePoint2": "Instant Migration: Leverages APFS Copy-on-Write cloning without using extra physical disk space",
+      "featurePoint3": "Hot Reload: Configuration and runtime cache base are updated automatically without restarting",
+      "note": "Note: Once migrated, GBF-Accelerator will only access the standard directory, leaving Downloads untouched.",
+      "dontRemind": "Don't show this again",
+      "confirm": "Start Migration",
+      "cancel": "Cancel"
+    },
     "clearCache": {
       "title": "Clear Local Cache",
       "subtitle": "Clean historical game versions, selected categories, or perform a full cache reset",

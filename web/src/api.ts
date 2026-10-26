@@ -777,6 +777,19 @@ export async function installHostAppToDevice(
   return data
 }
 
+export async function migrateToStandardCache(): Promise<{ ok: boolean; new_dir: string; message: string }> {
+  const res = await fetch(`${BASE}/api/cache/migrate-standard`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  }
+  return data
+}
+
+
 
 
 

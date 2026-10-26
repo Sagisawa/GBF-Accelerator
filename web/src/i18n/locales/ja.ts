@@ -85,6 +85,11 @@ export const ja: TranslationSchema = {
       "cacheDirPlaceholder": "例: cache/gbf/https または ACGPowerキャッシュフォルダ",
       "browse": "参照",
       "detectAcgpower": "ACGPowerを自動検出",
+      "migrateStandard": "macOS標準ディレクトリへ移動",
+      "migrateStandardTooltip": "キャッシュをmacOS標準のApplication Supportへ移行し、システム権限ダイアログを防止します",
+      "migrating": "移行中...",
+      "migrateSuccess": "キャッシュがmacOS標準ディレクトリに正常に移行されました: {path}",
+      "migrateFailed": "キャッシュの移行に失敗しました: {error}",
       "openFolder": "フォルダを開く",
       "save": "パスを保存",
       "saving": "保存中...",
@@ -494,6 +499,20 @@ export const ja: TranslationSchema = {
     "ramWarmupFailed": "RAMウォームアップの設定に失敗しました: {error}"
   },
   "modals": {
+    "migrateStandard": {
+      "title": "キャッシュをmacOS標準ディレクトリへ移行",
+      "subtitle": "macOSのプライバシー権限ダイアログを防止し、アセットを安全に移行",
+      "prompt": "現在のキャッシュは保護されたフォルダ（ダウンロード等）にあるため、macOSの権限確認ダイアログが表示されます。標準ディレクトリへ移行することで完全に解消されます。",
+      "currentDir": "現在のディレクトリ:",
+      "targetDir": "移行先標準ディレクトリ:",
+      "featurePoint1": "アセット完全保持: 既存のゲームアセットはすべて保持され、再ダウンロードは不要です",
+      "featurePoint2": "極速クローン: APFS Copy-on-Write により物理ディスク容量を二重消費せず即時移行",
+      "featurePoint3": "ホットリロード: 移行完了後に設定とランタイムが自動更新され、再起動は不要です",
+      "note": "注: 移行後、GBF-Acceleratorは標準ディレクトリのみを参照し、ダウンロードフォルダへのアクセスは行いません。",
+      "dontRemind": "今後このメッセージを表示しない",
+      "confirm": "移行を開始",
+      "cancel": "キャンセル"
+    },
     "clearCache": {
       "title": "ローカルキャッシュを削除",
       "subtitle": "バージョン別・カテゴリ別キャッシュの整理や全データのリセット",
