@@ -10,6 +10,7 @@ import {
   clearCacheCategories,
   slimCache,
   cancelCacheTask,
+  migrateToStandardCache,
 } from './api'
 import { HealthResponse, RepairResponse } from './types'
 
@@ -343,6 +344,25 @@ describe('cache breakdown & targeted management APIs', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ task_id: 'slim-1' }),
+    })
+  })
+
+  it('calls POST /api/cache/migrate-standard in migrateToStandardCache', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        new_dir: '/Users/test/Library/Application Support/GBF-Accelerator/cache',
+        message: 'Successfully migrated cache',
+      }),
+    }) as any
+
+    const res = await migrateToStandardCache()
+    expect(res.ok).toBe(true)
+    expect(res.new_dir).toContain('Application Support')
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/migrate-standard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
     })
   })
 })

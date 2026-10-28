@@ -570,6 +570,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 			c.handleDetectACGPower(w, req)
 			return
 		}
+	case "/api/cache/migrate-standard":
+		if req.Method == http.MethodPost {
+			c.handleMigrateStandardCache(w, req)
+			return
+		}
 	case "/api/upstream/detect":
 		if req.Method == http.MethodGet || req.Method == http.MethodPost {
 			c.handleDetectUpstream(w, req)
@@ -954,9 +959,11 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"requests":                 c.stats.RequestsMap(),
 		"telemetry":                c.getTelemetrySummary(),
 		"cache": map[string]interface{}{
-			"ram_items": ramItems,
-			"ram_mb":    math.Round(float64(ramBytes)/(1024*1024)*100) / 100,
-			"cache_dir": cacheDir,
+			"ram_items":          ramItems,
+			"ram_mb":             math.Round(float64(ramBytes)/(1024*1024)*100) / 100,
+			"cache_dir":          cacheDir,
+			"is_standard_dir":    isStandardCacheDir(cacheDir),
+			"standard_cache_dir": getStandardCacheDir(),
 		},
 		"last_error": c.stats.LastError,
 	}

@@ -21,6 +21,7 @@ import {
   fetchUpstreamStatus,
   checkForUpdate,
   quitApp,
+  migrateToStandardCache,
 } from './api'
 
 import { Modal } from './components/common/Modal'
@@ -33,6 +34,7 @@ import { LatencyTestModal } from './components/modals/LatencyTestModal'
 import { AuditModal } from './components/modals/AuditModal'
 import { BoostModal } from './components/modals/BoostModal'
 import { CaCertModal } from './components/modals/CaCertModal'
+import { MigrateStandardModal } from './components/modals/MigrateStandardModal'
 import { UpdateModal } from './components/modals/UpdateModal'
 import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
 import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal'
@@ -225,6 +227,7 @@ export const App: React.FC = () => {
   const [isAuditModalOpen, setIsAuditModalOpen] = useState<boolean>(false)
   const [isBoostModalOpen, setIsBoostModalOpen] = useState<boolean>(false)
   const [isUpdateModalOpen, setIsUpdateModalOpen] = useState<boolean>(false)
+  const [isMigrateStandardModalOpen, setIsMigrateStandardModalOpen] = useState<boolean>(false)
   const [isUpstreamSelectModalOpen, setIsUpstreamSelectModalOpen] = useState<boolean>(false)
   const [upstreamCandidates, setUpstreamCandidates] = useState<ProxyCandidate[]>([])
   const [upstreamSelectTarget, setUpstreamSelectTarget] = useState<'primary' | 'backup'>('primary')
@@ -260,6 +263,27 @@ export const App: React.FC = () => {
       setCaModalAction('install')
     }
   }, [status, isAndroid])
+
+  // Proactive suggestion for macOS standard cache directory migration:
+  // If running on macOS with cache outside the standard directory,
+  // suggest migration to eliminate OS permission prompts. Respects "Don't show again".
+  const darwinMigratePromptedRef = useRef(false)
+  useEffect(() => {
+    if (
+      status?.platform === 'darwin' &&
+      status.cache &&
+      status.cache.is_standard_dir === false &&
+      !darwinMigratePromptedRef.current
+    ) {
+      darwinMigratePromptedRef.current = true
+      const dismissed =
+        typeof localStorage !== 'undefined' &&
+        localStorage.getItem('gbf_dismiss_darwin_cache_migrate') === 'true'
+      if (!dismissed) {
+        setIsMigrateStandardModalOpen(true)
+      }
+    }
+  }, [status])
 
   const handleQuitApp = async () => {
     setQuitting(true)
@@ -682,6 +706,23 @@ export const App: React.FC = () => {
         loadState()
       } catch (e: any) {
         showToast(t('toasts.acgpDetectFailed', { error: e.message }), 'error')
+      }
+    })
+  }
+
+  // Migrate Cache to macOS Standard Application Support Directory
+  const handleMigrateStandardCache = async () => {
+    await runConfigAction('migrate-standard', async () => {
+      try {
+        const res = await migrateToStandardCache()
+        if (res && res.new_dir) {
+          setCacheDirInput(res.new_dir)
+          setConfig((prev) => ({ ...prev, cache_dir: res.new_dir }))
+          showToast(t('cards.cache.migrateSuccess', { path: res.new_dir }), 'success')
+        }
+        await loadState()
+      } catch (e: any) {
+        showToast(t('cards.cache.migrateFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1110,6 +1151,7 @@ export const App: React.FC = () => {
     setIsAuditModalOpen(false)
     setIsBoostModalOpen(false)
     setIsUpdateModalOpen(false)
+    setIsMigrateStandardModalOpen(false)
     setIsUpstreamSelectModalOpen(false)
     setIsShimakazeSuggestOpen(false)
     if (!quitting) {
@@ -1129,6 +1171,7 @@ export const App: React.FC = () => {
     isAuditModalOpen ||
     isBoostModalOpen ||
     isUpdateModalOpen ||
+    isMigrateStandardModalOpen ||
     isUpstreamSelectModalOpen ||
     isShimakazeSuggestOpen ||
     isQuitModalOpen ||
@@ -1451,25 +1494,38 @@ export const App: React.FC = () => {
                     )}
                   </div>
                   {!isAndroid && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleOpenCacheFolder}
-                        disabled={loadingOpenFolder}
-                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
-                      >
-                        {loadingOpenFolder ? t('common.loading') : t('common.openFolder')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleDetectAcgp}
-                        disabled={Boolean(loadingAction)}
-                        aria-busy={isActionLoading('detect-acgp')}
-                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
-                      >
-                        {isActionLoading('detect-acgp') ? t('common.loading') : t('cards.cache.detectAcgpower')}
-                      </button>
-                    </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <button
+                          type="button"
+                          onClick={handleOpenCacheFolder}
+                          disabled={loadingOpenFolder}
+                          className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
+                        >
+                          {loadingOpenFolder ? t('common.loading') : t('common.openFolder')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDetectAcgp}
+                          disabled={Boolean(loadingAction)}
+                          aria-busy={isActionLoading('detect-acgp')}
+                          className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
+                        >
+                          {isActionLoading('detect-acgp') ? t('common.loading') : t('cards.cache.detectAcgpower')}
+                        </button>
+                        {status?.platform === 'darwin' && !status?.cache?.is_standard_dir && (
+                          <button
+                            type="button"
+                            onClick={() => setIsMigrateStandardModalOpen(true)}
+                            disabled={Boolean(loadingAction)}
+                            aria-busy={isActionLoading('migrate-standard')}
+                            className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 hover:text-amber-800 border border-amber-200 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs flex items-center gap-1.5"
+                            title={t('cards.cache.migrateStandardTooltip')}
+                          >
+                            <span>📦</span>
+                            <span>{isActionLoading('migrate-standard') ? t('cards.cache.migrating') : t('cards.cache.migrateStandard')}</span>
+                          </button>
+                        )}
+                      </div>
                   )}
                 </div>
               </div>
@@ -2494,6 +2550,16 @@ export const App: React.FC = () => {
         onEnable={handleEnableShimakaze}
         targetName={shimakazeTargetName}
       />
+
+      {status?.platform === 'darwin' && (
+        <MigrateStandardModal
+          isOpen={isMigrateStandardModalOpen}
+          onClose={() => setIsMigrateStandardModalOpen(false)}
+          currentDir={status?.cache?.cache_dir || cacheDirInput}
+          targetDir={status?.cache?.standard_cache_dir || '~/Library/Application Support/GBF-Accelerator/cache'}
+          onMigrate={handleMigrateStandardCache}
+        />
+      )}
 
       <UpdateModal
         isOpen={isUpdateModalOpen}

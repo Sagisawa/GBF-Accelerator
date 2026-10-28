@@ -109,6 +109,11 @@ if [[ "$(uname -s)" == "Darwin" ]] || [[ "${1:-}" == "--release" ]] || [[ "${2:-
 </plist>
 EOF
 
+    if command -v codesign >/dev/null 2>&1; then
+        echo "[*] Ad-hoc signing GBF_Accelerator.app bundle with stable identifier..."
+        codesign --force --deep -s - -i com.sagisawa.gbf-accelerator "${STAGING_DIR}/GBF_Accelerator.app"
+    fi
+
     AUX_FILES=("SwitchyOmega_GBF.bak" "proxy.pac" "install_ca.sh" "start_proxy.sh" "使用说明.txt" "INSTRUCTIONS_EN.txt" "INSTRUCTIONS_JA.txt" "LICENSE")
     for aux in "${AUX_FILES[@]}"; do
         if [[ -f "${ROOT_DIR}/${aux}" ]]; then

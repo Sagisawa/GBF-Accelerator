@@ -467,6 +467,13 @@ func TestChecker_SummaryAndRuntimeStatus(t *testing.T) {
 	stats.Log("INFO", "normal log")
 	stats.Log("ERROR", "test error log entry")
 
+	for i := 0; i < 100; i++ {
+		if len(stats.GetLogs()) >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	checker := NewChecker(cfgMgr, nil, nil, nil, stats, func() string {
 		return "127.0.0.1:8125"
 	})
