@@ -2413,6 +2413,10 @@ func (m *Manager) ClearRAM() {
 	m.ramCache.Clear()
 }
 
+// testBeforeClearAllRemoveHook is an internal test-only hook invoked immediately before the pre-removal
+// identity check and removal in ClearAll, allowing tests to simulate TOCTOU file replacement.
+var testBeforeClearAllRemoveHook func(relPath string)
+
 func (m *Manager) ClearAll() (int, int64, int) {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
@@ -2450,7 +2454,22 @@ func (m *Manager) ClearAll() (int, int64, int) {
 	defer root.Close()
 
 	hasRootMarker := HasRootMarker(base)
-	var dirs []string
+	affectedDirs := make(map[string]struct{})
+
+	recordAffectedDir := func(fileRel string) {
+		dir := filepath.Dir(fileRel)
+		for dir != "." && dir != "" && dir != "/" {
+			slashDir := filepath.ToSlash(dir)
+			if isConfirmedCacheDir(slashDir) {
+				affectedDirs[dir] = struct{}{}
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
 
 	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -2467,7 +2486,9 @@ func (m *Manager) ClearAll() (int, int64, int) {
 		slashRel := filepath.ToSlash(rel)
 
 		if d.IsDir() {
-			dirs = append(dirs, rel)
+			// Do NOT unconditionally add walked directories to the pruning list.
+			// Only directories that actually contained confirmed deleted cache files
+			// and belong to valid cache namespaces will be considered for reclamation.
 			return nil
 		}
 
@@ -2483,14 +2504,28 @@ func (m *Manager) ClearAll() (int, int64, int) {
 			return nil
 		}
 
+		// Recheck via root.Lstat to ensure we operate on regular files and do not follow symlinks.
+		// Non-regular files (symlinks, devices, named pipes, etc.) are strictly rejected.
+		entryFi, lstatErr := root.Lstat(rel)
+		if lstatErr != nil || !entryFi.Mode().IsRegular() {
+			skippedFiles++
+			return nil
+		}
+
 		// Temporary files created by accelerator
 		if strings.Contains(slashRel, ".tmp.") {
 			if isAcceleratorTempFile(slashRel) {
 				if !m.isActiveTempFileLocked(p) {
-					if info, err := d.Info(); err == nil {
+					if testBeforeClearAllRemoveHook != nil {
+						testBeforeClearAllRemoveHook(rel)
+					}
+					// Pre-removal TOCTOU verification
+					preRemoveFi, err := root.Lstat(rel)
+					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
 						if root.Remove(rel) == nil {
 							deletedFiles++
-							freedBytes += info.Size()
+							freedBytes += preRemoveFi.Size()
+							recordAffectedDir(rel)
 						}
 					}
 				}
@@ -2501,40 +2536,69 @@ func (m *Manager) ClearAll() (int, int64, int) {
 
 		// Standalone or orphan .ext metadata file
 		if strings.HasSuffix(slashRel, ".ext") {
-			if _, statErr := root.Stat(rel); statErr != nil {
+			baseRel := rel[:len(rel)-len(".ext")]
+			if baseFi, err := root.Lstat(baseRel); err == nil && baseFi.Mode().IsRegular() {
+				// The paired data file exists on disk.
+				// If it was not deleted when the data file was processed (e.g. skipped or identity changed),
+				// do NOT delete this companion .ext file as an orphan.
+				skippedFiles++
 				return nil
 			}
 			if metaBytes, err := root.ReadFile(rel); err == nil {
 				if isAcceleratorOrphanExtFile(slashRel, metaBytes) {
-					if root.Remove(rel) == nil {
-						deletedFiles++
-						freedBytes += int64(len(metaBytes))
+					if testBeforeClearAllRemoveHook != nil {
+						testBeforeClearAllRemoveHook(rel)
 					}
-					return nil
+					preRemoveFi, err := root.Lstat(rel)
+					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
+						if root.Remove(rel) == nil {
+							deletedFiles++
+							freedBytes += int64(len(metaBytes))
+							recordAffectedDir(rel)
+						}
+						return nil
+					}
 				}
 			}
 			skippedFiles++
 			return nil
 		}
 
-		// Regular data file: verify cache attribution
-		info, err := d.Info()
-		if err != nil {
-			skippedFiles++
-			return nil
-		}
+		// Regular data file: verify cache attribution via root handle
+		if isConfirmedCacheFileInRoot(root, rel, entryFi, hasRootMarker) {
+			// Check if paired .ext exists before deleting data file
+			extRel := rel + ".ext"
+			extFi, extErr := root.Lstat(extRel)
+			hasPairedExt := (extErr == nil && extFi.Mode().IsRegular())
 
-		if IsConfirmedCacheFileWithInfo(base, p, info, hasRootMarker) {
+			if testBeforeClearAllRemoveHook != nil {
+				testBeforeClearAllRemoveHook(rel)
+			}
+
+			// Pre-removal TOCTOU verification: re-stat and confirm identity
+			preRemoveFi, err := root.Lstat(rel)
+			if err != nil || !preRemoveFi.Mode().IsRegular() || !os.SameFile(entryFi, preRemoveFi) {
+				// Object identity changed or replaced, abort deletion!
+				skippedFiles++
+				return nil
+			}
+
 			if root.Remove(rel) == nil {
 				deletedFiles++
-				freedBytes += info.Size()
+				freedBytes += preRemoveFi.Size()
+				recordAffectedDir(rel)
 
-				// Concurrently remove paired .ext file if present
-				extRel := rel + ".ext"
-				if extFi, err := root.Stat(extRel); err == nil && !extFi.IsDir() {
-					if root.Remove(extRel) == nil {
-						deletedFiles++
-						freedBytes += extFi.Size()
+				if hasPairedExt {
+					if testBeforeClearAllRemoveHook != nil {
+						testBeforeClearAllRemoveHook(extRel)
+					}
+					preExtFi, err := root.Lstat(extRel)
+					if err == nil && preExtFi.Mode().IsRegular() && os.SameFile(extFi, preExtFi) {
+						if root.Remove(extRel) == nil {
+							deletedFiles++
+							freedBytes += preExtFi.Size()
+							recordAffectedDir(extRel)
+						}
 					}
 				}
 			} else {
@@ -2555,6 +2619,12 @@ func (m *Manager) ClearAll() (int, int64, int) {
 		realBase = absBase
 	}
 	expectedRootFi, _ := os.Stat(absBase)
+
+	// Collect candidate directories from affectedDirs
+	var dirs []string
+	for d := range affectedDirs {
+		dirs = append(dirs, d)
+	}
 
 	// Prune empty subdirectories bottom-up
 	sort.Slice(dirs, func(i, j int) bool {

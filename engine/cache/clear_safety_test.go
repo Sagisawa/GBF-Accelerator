@@ -3,6 +3,7 @@ package cache
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -213,5 +214,291 @@ func TestClearAll_RefusesUnsafeDirectory(t *testing.T) {
 	deleted, freed, skipped := mgr.ClearAll()
 	if deleted != 0 || freed != 0 || skipped != 0 {
 		t.Errorf("expected ClearAll on user home to immediately return (0, 0, 0), got (%d, %d, %d)", deleted, freed, skipped)
+	}
+}
+
+// 1. 原本为空的用户目录，执行 ClearAll 后必须保留。
+func TestClearAll_PreservesPreExistingEmptyUserDirectories(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	// Legitimate cache file that will be deleted
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	headers := map[string]string{"content-type": "image/png"}
+	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/btn.png", headers, validPng) {
+		t.Fatalf("failed to save cache asset")
+	}
+
+	// Pre-existing empty user directories
+	emptyPersonal := filepath.Join(tmpDir, "personal_data")
+	emptyWorkspace := filepath.Join(tmpDir, "user_workspace")
+	nestedEmptyParent := filepath.Join(tmpDir, "custom_project")
+	nestedEmptyChild := filepath.Join(nestedEmptyParent, "empty_sub")
+
+	if err := os.MkdirAll(emptyPersonal, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.MkdirAll(emptyWorkspace, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.MkdirAll(nestedEmptyChild, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	deleted, _, _ := mgr.ClearAll()
+	if deleted < 2 {
+		t.Errorf("expected at least 2 deleted cache items (asset + ext), got %d", deleted)
+	}
+
+	// Pre-existing empty user directories MUST be preserved!
+	if fi, err := os.Stat(emptyPersonal); err != nil || !fi.IsDir() {
+		t.Errorf("BUG: pre-existing empty directory %s was deleted by ClearAll: %v", emptyPersonal, err)
+	}
+	if fi, err := os.Stat(emptyWorkspace); err != nil || !fi.IsDir() {
+		t.Errorf("BUG: pre-existing empty directory %s was deleted by ClearAll: %v", emptyWorkspace, err)
+	}
+	if fi, err := os.Stat(nestedEmptyChild); err != nil || !fi.IsDir() {
+		t.Errorf("BUG: pre-existing empty directory %s was deleted by ClearAll: %v", nestedEmptyChild, err)
+	}
+	if fi, err := os.Stat(nestedEmptyParent); err != nil || !fi.IsDir() {
+		t.Errorf("BUG: pre-existing empty directory %s was deleted by ClearAll: %v", nestedEmptyParent, err)
+	}
+
+	// Empty cache subdirectory should be pruned
+	prunedCacheDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
+	if _, err := os.Stat(prunedCacheDir); !os.IsNotExist(err) {
+		t.Errorf("expected empty cache directory %s to be pruned", prunedCacheDir)
+	}
+}
+
+// 2. personal_data/photo.png.tmp.123.456 必须保留。
+func TestClearAll_PreservesUserTempFilePattern(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	userDir := filepath.Join(tmpDir, "personal_data")
+	_ = os.MkdirAll(userDir, 0755)
+
+	// User file matching .tmp. with 2 numeric fields
+	userPhotoTmp := filepath.Join(userDir, "photo.png.tmp.123.456")
+	if err := os.WriteFile(userPhotoTmp, []byte("user photo temp data"), 0644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	// User file matching .tmp. with 3 numeric fields in non-cache dir
+	userPhotoTmp3 := filepath.Join(userDir, "photo.png.tmp.123.456.789")
+	if err := os.WriteFile(userPhotoTmp3, []byte("user photo temp data 3"), 0644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	// Also add a legit cache asset so ClearAll does real work
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	_ = mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/btn.png", map[string]string{"content-type": "image/png"}, validPng)
+
+	deleted, _, skipped := mgr.ClearAll()
+	if deleted < 2 {
+		t.Errorf("expected cache asset and ext to be deleted, got deleted=%d", deleted)
+	}
+	if skipped < 2 {
+		t.Errorf("expected at least 2 skipped user temp files, got skipped=%d", skipped)
+	}
+
+	// User temp files MUST NOT be deleted!
+	if _, err := os.Stat(userPhotoTmp); err != nil {
+		t.Errorf("BUG: user temp file %s was deleted by ClearAll: %v", userPhotoTmp, err)
+	}
+	if _, err := os.Stat(userPhotoTmp3); err != nil {
+		t.Errorf("BUG: user temp file %s was deleted by ClearAll: %v", userPhotoTmp3, err)
+	}
+	if _, err := os.Stat(userDir); err != nil {
+		t.Errorf("BUG: user directory %s was deleted by ClearAll: %v", userDir, err)
+	}
+}
+
+// 3. personal_data/photo.png.ext 必须保留。
+func TestClearAll_PreservesUserExtFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	userDir := filepath.Join(tmpDir, "personal_data")
+	_ = os.MkdirAll(userDir, 0755)
+
+	userPhoto := filepath.Join(userDir, "photo.png")
+	_ = os.WriteFile(userPhoto, []byte("user photo contents"), 0644)
+
+	// User .ext file that has valid JSON metadata
+	userPhotoExt := filepath.Join(userDir, "photo.png.ext")
+	validExtJSON := []byte(`{"v":1,"size":19,"mtime_nano":123456789,"ns":"gbf"}`)
+	if err := os.WriteFile(userPhotoExt, validExtJSON, 0644); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	// Also add an orphan .ext in another user directory
+	userWorkspaceDir := filepath.Join(tmpDir, "user_workspace")
+	_ = os.MkdirAll(userWorkspaceDir, 0755)
+	orphanUserExt := filepath.Join(userWorkspaceDir, "document.png.ext")
+	_ = os.WriteFile(orphanUserExt, validExtJSON, 0644)
+
+	_, _, skipped := mgr.ClearAll()
+	if skipped < 3 {
+		t.Errorf("expected at least 3 skipped user files, got skipped=%d", skipped)
+	}
+
+	// User files and .ext files in user directories MUST NOT be deleted!
+	if _, err := os.Stat(userPhoto); err != nil {
+		t.Errorf("BUG: user photo %s was deleted by ClearAll: %v", userPhoto, err)
+	}
+	if _, err := os.Stat(userPhotoExt); err != nil {
+		t.Errorf("BUG: user ext file %s was deleted by ClearAll: %v", userPhotoExt, err)
+	}
+	if _, err := os.Stat(orphanUserExt); err != nil {
+		t.Errorf("BUG: user orphan ext file %s was deleted by ClearAll: %v", orphanUserExt, err)
+	}
+}
+
+// 4. 指向外部文件的符号链接不能被当作缓存删除。
+func TestClearAll_RejectsSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	extDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	externalPng := filepath.Join(extDir, "important_secret.png")
+	if err := os.WriteFile(externalPng, validPng, 0644); err != nil {
+		t.Fatalf("write external file failed: %v", err)
+	}
+
+	cacheSubDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
+	if err := os.MkdirAll(cacheSubDir, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	// 1. Symlink pointing to external PNG
+	symlinkPng := filepath.Join(cacheSubDir, "symlink_asset.png")
+	if err := os.Symlink(externalPng, symlinkPng); err != nil {
+		t.Skipf("skipping symlink test due to OS permission: %v", err)
+	}
+
+	// 2. Symlink disguised as accelerator temp file
+	symlinkTmp := filepath.Join(cacheSubDir, "fake.png.tmp.1234.5678.1")
+	_ = os.Symlink(externalPng, symlinkTmp)
+
+	// 3. Symlink disguised as .ext metadata file
+	symlinkExt := filepath.Join(cacheSubDir, "symlink_asset.png.ext")
+	_ = os.Symlink(externalPng, symlinkExt)
+
+	_ = EnsureRootMarker(tmpDir)
+
+	deleted, _, skipped := mgr.ClearAll()
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted files for symlinks, got %d", deleted)
+	}
+	if skipped < 3 {
+		t.Errorf("expected at least 3 skipped symlink entries, got %d", skipped)
+	}
+
+	// External file MUST remain intact
+	if content, err := os.ReadFile(externalPng); err != nil || len(content) != len(validPng) {
+		t.Errorf("BUG: external file was deleted or corrupted by ClearAll: %v", err)
+	}
+
+	// Symlinks MUST NOT be removed
+	if _, err := os.Lstat(symlinkPng); err != nil {
+		t.Errorf("BUG: symlink %s was deleted by ClearAll: %v", symlinkPng, err)
+	}
+	if _, err := os.Lstat(symlinkTmp); err != nil {
+		t.Errorf("BUG: symlink %s was deleted by ClearAll: %v", symlinkTmp, err)
+	}
+	if _, err := os.Lstat(symlinkExt); err != nil {
+		t.Errorf("BUG: symlink %s was deleted by ClearAll: %v", symlinkExt, err)
+	}
+}
+
+// 5. 验证过程中替换文件对象，必须拒绝删除。
+func TestClearAll_RejectsReplacedFileObject(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	headers := map[string]string{"content-type": "image/png"}
+	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/replace_me.png", headers, validPng) {
+		t.Fatalf("failed to save cache asset")
+	}
+
+	targetFullPath, _ := mgr.resolvePathWithNamespace("gbf", "assets/12345/img/sp/replace_me.png")
+
+	// Set hook to simulate TOCTOU replacement immediately after verification
+	testBeforeClearAllRemoveHook = func(relPath string) {
+		if strings.HasSuffix(filepath.ToSlash(relPath), "replace_me.png") {
+			_ = os.Remove(targetFullPath)
+			_ = os.WriteFile(targetFullPath, []byte("attacker replaced content"), 0644)
+		}
+	}
+	defer func() {
+		testBeforeClearAllRemoveHook = nil
+	}()
+
+	deleted, _, skipped := mgr.ClearAll()
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted files when object replaced, got %d", deleted)
+	}
+	if skipped < 1 {
+		t.Errorf("expected at least 1 skipped file due to identity mismatch, got %d", skipped)
+	}
+
+	// Replaced file must NOT be deleted
+	if content, err := os.ReadFile(targetFullPath); err != nil || string(content) != "attacker replaced content" {
+		t.Errorf("expected replaced file to remain untouched, got err=%v, content=%q", err, string(content))
+	}
+}
+
+// 6. 非缓存目录中的空目录和系统垃圾必须保留。
+func TestClearAll_PreservesNonCacheEmptySubdirsAndSystemJunk(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	userFolder := filepath.Join(tmpDir, "user_folder")
+	emptySub := filepath.Join(userFolder, "empty_sub")
+	if err := os.MkdirAll(emptySub, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	dsStore := filepath.Join(userFolder, ".DS_Store")
+	_ = os.WriteFile(dsStore, []byte("fake .DS_Store"), 0644)
+	thumbsDb := filepath.Join(userFolder, "Thumbs.db")
+	_ = os.WriteFile(thumbsDb, []byte("fake Thumbs.db"), 0644)
+	desktopIni := filepath.Join(userFolder, "desktop.ini")
+	_ = os.WriteFile(desktopIni, []byte("fake desktop.ini"), 0644)
+
+	// Also add a legitimate cache file so ClearAll runs real cleanup
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	_ = mgr.SaveWithNamespace("gbf", "assets/1000/sound/se.png", map[string]string{"content-type": "image/png"}, validPng)
+
+	deleted, _, _ := mgr.ClearAll()
+	if deleted < 2 {
+		t.Errorf("expected legitimate cache files to be deleted, got %d", deleted)
+	}
+
+	// Non-cache empty subdirectory and system junk MUST be preserved!
+	if fi, err := os.Stat(emptySub); err != nil || !fi.IsDir() {
+		t.Errorf("BUG: non-cache empty directory %s was deleted: %v", emptySub, err)
+	}
+	if _, err := os.Stat(dsStore); err != nil {
+		t.Errorf("BUG: system junk %s was deleted: %v", dsStore, err)
+	}
+	if _, err := os.Stat(thumbsDb); err != nil {
+		t.Errorf("BUG: system junk %s was deleted: %v", thumbsDb, err)
+	}
+	if _, err := os.Stat(desktopIni); err != nil {
+		t.Errorf("BUG: system junk %s was deleted: %v", desktopIni, err)
+	}
+	if fi, err := os.Stat(userFolder); err != nil || !fi.IsDir() {
+		t.Errorf("BUG: non-cache directory %s was deleted: %v", userFolder, err)
 	}
 }

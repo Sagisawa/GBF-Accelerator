@@ -163,10 +163,15 @@ func TestIsAcceleratorTempFile(t *testing.T) {
 		{"assets/12345/img/sp/btn.png.tmp.1234.5678.1", true},
 		{"assets/12345/img/sp/btn.png.ext.tmp.1234.5678.1", true},
 		{"hosts/example.com/assets/app.js.tmp.999.1.2", true},
-		// User files with .tmp. in name
+		// User files with .tmp. in name or non-cache directories
 		{"draft.tmp.txt", false},
 		{"notes.tmp.pdf", false},
 		{"personal_data/report.tmp.docx", false},
+		{"personal_data/photo.png.tmp.123.456", false},     // 2 numeric fields in user dir
+		{"personal_data/photo.png.tmp.123.456.789", false}, // 3 numeric fields in user dir
+		{"user_workspace/app.js.tmp.1.2.3", false},         // user dir
+		{"assets/12345/img/sp/btn.png.tmp.123.456", false}, // only 2 numeric fields (must be 3)
+		{"assets/12345/img/sp/btn.png.tmp.1.2.3.4", false}, // 4 numeric fields (must be 3)
 		{"assets/12345/img/sp/btn.png.tmp.bad_suffix", false},
 		{"temp.tmp.123.456.1", false},                    // root file
 		{"assets/12345/img/sp/btn.csv.tmp.1.2.3", false}, // .csv is excluded
@@ -177,6 +182,66 @@ func TestIsAcceleratorTempFile(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("isAcceleratorTempFile(%q) = %v; want %v", tc.rel, got, tc.want)
 		}
+	}
+}
+
+func TestIsAcceleratorOrphanExtFile(t *testing.T) {
+	validMetaGBF := []byte(`{"v":1,"size":100,"mtime_nano":12345,"ns":"gbf"}`)
+	validMetaHosts := []byte(`{"v":1,"size":100,"mtime_nano":12345,"ns":"example.com"}`)
+	mismatchedMetaHosts := []byte(`{"v":1,"size":100,"mtime_nano":12345,"ns":"other.com"}`)
+	invalidMetaV2 := []byte(`{"v":2,"size":100,"mtime_nano":12345}`)
+
+	cases := []struct {
+		rel  string
+		meta []byte
+		want bool
+	}{
+		// Valid cache paths
+		{"assets/12345/img/sp/btn.png.ext", validMetaGBF, true},
+		{"hosts/example.com/assets/app.js.ext", validMetaHosts, true},
+		// Mismatched namespace
+		{"hosts/example.com/assets/app.js.ext", mismatchedMetaHosts, false},
+		// Invalid version
+		{"assets/12345/img/sp/btn.png.ext", invalidMetaV2, false},
+		// User directories - MUST return false even with valid metadata
+		{"personal_data/photo.png.ext", validMetaGBF, false},
+		{"user_workspace/document.png.ext", validMetaGBF, false},
+		{"user_config.ext", validMetaGBF, false}, // root file
+	}
+
+	for _, tc := range cases {
+		got := isAcceleratorOrphanExtFile(tc.rel, tc.meta)
+		if got != tc.want {
+			t.Errorf("isAcceleratorOrphanExtFile(%q) = %v; want %v", tc.rel, got, tc.want)
+		}
+	}
+}
+
+func TestIsConfirmedCacheFile_RejectsSymlinks(t *testing.T) {
+	tmpDir := t.TempDir()
+	extDir := t.TempDir()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	externalPng := filepath.Join(extDir, "secret.png")
+	if err := os.WriteFile(externalPng, validPng, 0644); err != nil {
+		t.Fatalf("failed to write external png: %v", err)
+	}
+
+	// Create symlink pointing outside baseDir to externalPng
+	cacheSubDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
+	if err := os.MkdirAll(cacheSubDir, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	symlinkPath := filepath.Join(cacheSubDir, "btn.png")
+	if err := os.Symlink(externalPng, symlinkPath); err != nil {
+		t.Skipf("skipping symlink test due to OS permission: %v", err)
+	}
+
+	_ = EnsureRootMarker(tmpDir)
+
+	// IsConfirmedCacheFile MUST reject symlinks even if pointing to a valid PNG
+	if IsConfirmedCacheFile(tmpDir, symlinkPath, true) {
+		t.Errorf("IsConfirmedCacheFile must reject symbolic link pointing outside cache root")
 	}
 }
 
