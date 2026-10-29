@@ -166,3 +166,80 @@ func verifyCacheFileMagic(filePath, cleanLower string) bool {
 
 	return checkMagicBytes(cleanLower, sample)
 }
+
+// CanAutoWriteRootMarker returns whether the root marker (.gbf_cache) can be automatically written
+// according to Rule 3:
+// 1. Directory is the application's default cache directory (isDefaultDir == true); OR
+// 2. Directory is clean/empty (only system junk allowed); OR
+// 3. All files in directory are confirmed cache files (allFilesConfirmed == true).
+// In all other cases, automatic writing is prohibited and requires explicit user confirmation.
+func CanAutoWriteRootMarker(dirPath string, isDefaultDir bool, allFilesConfirmed bool) (bool, error) {
+	if isDefaultDir || allFilesConfirmed {
+		return true, nil
+	}
+	clean, err := config.IsDirClean(dirPath)
+	if err != nil {
+		return false, err
+	}
+	return clean, nil
+}
+
+// TryAutoWriteRootMarker writes .gbf_cache to baseDir if Rule 3 conditions are satisfied.
+func TryAutoWriteRootMarker(baseDir string, isDefaultDir bool, allFilesConfirmed bool) (bool, error) {
+	can, err := CanAutoWriteRootMarker(baseDir, isDefaultDir, allFilesConfirmed)
+	if err != nil || !can {
+		return false, err
+	}
+	return true, EnsureRootMarker(baseDir)
+}
+
+// isAcceleratorTempFile checks whether slashRel matches the exact naming pattern of temporary files
+// written during cache streaming: <assetPath>.tmp.<pid>.<ts>.<seq> or <assetPath>.ext.tmp.<pid>.<ts>.<seq>.
+// The prefix must be a valid cache key structure with an asset extension, and all trailing numeric
+// components must be strictly digits. Arbitrary user files with ".tmp." (e.g. "draft.tmp.txt") return false.
+func isAcceleratorTempFile(slashRel string) bool {
+	parts := strings.Split(slashRel, ".tmp.")
+	if len(parts) < 2 {
+		return false
+	}
+	numParts := strings.Split(parts[len(parts)-1], ".")
+	if len(numParts) < 2 {
+		return false
+	}
+	for _, np := range numParts {
+		if np == "" {
+			return false
+		}
+		for i := 0; i < len(np); i++ {
+			if np[i] < '0' || np[i] > '9' {
+				return false
+			}
+		}
+	}
+
+	baseRel := strings.Join(parts[:len(parts)-1], ".tmp.")
+	baseRel = strings.TrimSuffix(baseRel, ".ext")
+	baseLower := strings.ToLower(baseRel)
+
+	segs := splitCleanSegments(baseLower)
+	if len(segs) < 2 {
+		return false
+	}
+	return isAssetExtension(baseLower)
+}
+
+// isAcceleratorOrphanExtFile checks whether an .ext file belongs to the accelerator cache
+// by verifying that its base name is an asset path and its metadata parses with version 1.
+func isAcceleratorOrphanExtFile(slashRel string, metaBytes []byte) bool {
+	if !strings.HasSuffix(slashRel, ".ext") {
+		return false
+	}
+	baseRel := strings.TrimSuffix(slashRel, ".ext")
+	baseLower := strings.ToLower(baseRel)
+	segs := splitCleanSegments(baseLower)
+	if len(segs) < 2 || !isAssetExtension(baseLower) {
+		return false
+	}
+	meta, ok := parseExtFile(metaBytes)
+	return ok && meta.Version == 1
+}

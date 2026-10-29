@@ -41,6 +41,28 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 		t.Fatalf("failed to create nested file: %v", err)
 	}
 
+	// User files with .tmp. in name (must NOT be misidentified as accelerator temp files)
+	userTmpDocPath := filepath.Join(tmpDir, "draft.tmp.txt")
+	if err := os.WriteFile(userTmpDocPath, []byte("important user draft with tmp in name"), 0644); err != nil {
+		t.Fatalf("failed to create draft.tmp.txt: %v", err)
+	}
+	nestedTmpDocPath := filepath.Join(nestedUserDir, "notes.tmp.pdf")
+	if err := os.WriteFile(nestedTmpDocPath, []byte("user notes with tmp in name"), 0644); err != nil {
+		t.Fatalf("failed to create notes.tmp.pdf: %v", err)
+	}
+
+	// User files with .ext in name but not accelerator cache assets
+	userExtPath := filepath.Join(tmpDir, "user_config.ext")
+	if err := os.WriteFile(userExtPath, []byte(`{"v":1,"custom_user_setting":true}`), 0644); err != nil {
+		t.Fatalf("failed to create user_config.ext: %v", err)
+	}
+
+	// Legitimate stale accelerator temp file that SHOULD be removed
+	staleTmpPath := filepath.Join(tmpDir, "assets", "12345", "img", "sp", "stale.png.tmp.9999.123456789.1")
+	if err := os.WriteFile(staleTmpPath, []byte("stale temp data"), 0644); err != nil {
+		t.Fatalf("failed to create stale accelerator temp file: %v", err)
+	}
+
 	// 3. Create system junk files that must remain untouched
 	dsStorePath := filepath.Join(tmpDir, ".DS_Store")
 	if err := os.WriteFile(dsStorePath, []byte("fake .DS_Store"), 0644); err != nil {
@@ -61,7 +83,7 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 	deleted, freed, skipped := mgr.ClearAll()
 
 	// 5. Assertions:
-	// Legit cache file and its .ext metadata should be deleted
+	// Legit cache file and its .ext metadata and stale temp file should be deleted
 	cacheFilePath, _ := mgr.resolvePathWithNamespace("gbf", "assets/12345/img/sp/btn.png")
 	if _, err := os.Stat(cacheFilePath); !os.IsNotExist(err) {
 		t.Errorf("expected cache asset %s to be deleted, err: %v", cacheFilePath, err)
@@ -69,15 +91,18 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 	if _, err := os.Stat(cacheFilePath + ".ext"); !os.IsNotExist(err) {
 		t.Errorf("expected cache metadata %s.ext to be deleted, err: %v", cacheFilePath, err)
 	}
+	if _, err := os.Stat(staleTmpPath); !os.IsNotExist(err) {
+		t.Errorf("expected stale accelerator temp file %s to be deleted, err: %v", staleTmpPath, err)
+	}
 
-	if deleted < 2 {
-		t.Errorf("expected at least 2 deleted files (asset + ext), got deleted=%d", deleted)
+	if deleted < 3 {
+		t.Errorf("expected at least 3 deleted files (asset + ext + stale tmp), got deleted=%d", deleted)
 	}
 	if freed <= 0 {
 		t.Errorf("expected positive freed bytes, got freed=%d", freed)
 	}
-	if skipped < 3 {
-		t.Errorf("expected at least 3 skipped non-cache user files, got skipped=%d", skipped)
+	if skipped < 5 {
+		t.Errorf("expected at least 5 skipped non-cache user files, got skipped=%d", skipped)
 	}
 
 	// User files MUST NOT be deleted
@@ -89,6 +114,15 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 	}
 	if _, err := os.Stat(nestedFilePath); err != nil {
 		t.Errorf("BUG DETECTED: nested user file %s was deleted by ClearAll: %v", nestedFilePath, err)
+	}
+	if _, err := os.Stat(userTmpDocPath); err != nil {
+		t.Errorf("BUG DETECTED: user file with .tmp. %s was deleted by ClearAll: %v", userTmpDocPath, err)
+	}
+	if _, err := os.Stat(nestedTmpDocPath); err != nil {
+		t.Errorf("BUG DETECTED: nested user file with .tmp. %s was deleted by ClearAll: %v", nestedTmpDocPath, err)
+	}
+	if _, err := os.Stat(userExtPath); err != nil {
+		t.Errorf("BUG DETECTED: user file with .ext %s was deleted by ClearAll: %v", userExtPath, err)
 	}
 
 	// System junk files MUST NOT be deleted

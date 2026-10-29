@@ -2485,15 +2485,18 @@ func (m *Manager) ClearAll() (int, int64, int) {
 
 		// Temporary files created by accelerator
 		if strings.Contains(slashRel, ".tmp.") {
-			if !m.isActiveTempFileLocked(p) {
-				if info, err := d.Info(); err == nil {
-					if root.Remove(rel) == nil {
-						deletedFiles++
-						freedBytes += info.Size()
+			if isAcceleratorTempFile(slashRel) {
+				if !m.isActiveTempFileLocked(p) {
+					if info, err := d.Info(); err == nil {
+						if root.Remove(rel) == nil {
+							deletedFiles++
+							freedBytes += info.Size()
+						}
 					}
 				}
+				return nil
 			}
-			return nil
+			// Non-accelerator file with .tmp. in name falls through to regular attribution check!
 		}
 
 		// Standalone or orphan .ext metadata file
@@ -2502,7 +2505,7 @@ func (m *Manager) ClearAll() (int, int64, int) {
 				return nil
 			}
 			if metaBytes, err := root.ReadFile(rel); err == nil {
-				if meta, ok := parseExtFile(metaBytes); ok && meta.Version == 1 {
+				if isAcceleratorOrphanExtFile(slashRel, metaBytes) {
 					if root.Remove(rel) == nil {
 						deletedFiles++
 						freedBytes += int64(len(metaBytes))

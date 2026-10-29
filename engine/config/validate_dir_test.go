@@ -22,12 +22,16 @@ func TestValidateCacheDir_WindowsPaths(t *testing.T) {
 		{"drive root slash", `C:/`, true, ErrCodeDriveRoot},
 		{"drive root colon only", `C:`, true, ErrCodeDriveRoot},
 		{"drive root D", `D:\`, true, ErrCodeDriveRoot},
+		{"win32 extended drive root", `\\?\C:\`, true, ErrCodeDriveRoot},
+		{"win32 extended drive root slash", `\\?\C:/`, true, ErrCodeDriveRoot},
 
 		// 2. UNC share root vs subdirectories
 		{"UNC share root backslash", `\\fileserver\share`, true, ErrCodeUNCRoot},
 		{"UNC share root trailing backslash", `\\fileserver\share\`, true, ErrCodeUNCRoot},
 		{"UNC share root slash", `//fileserver/share`, true, ErrCodeUNCRoot},
+		{"win32 extended UNC share root", `\\?\UNC\fileserver\share`, true, ErrCodeUNCRoot},
 		{"UNC share subdirectory", `\\fileserver\share\gbf_cache`, false, ""},
+		{"win32 extended UNC share subdir", `\\?\UNC\fileserver\share\gbf_cache`, false, ""},
 		{"UNC share deep subdir", `\\fileserver\share\games\cache`, false, ""},
 
 		// 3. System directories (case-insensitive)

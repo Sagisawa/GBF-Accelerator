@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -76,6 +77,10 @@ func resolveSymlinksWithAncestors(p string) string {
 	if p == "" {
 		return ""
 	}
+	abs, err := filepath.Abs(p)
+	if err == nil {
+		p = abs
+	}
 	// Try direct EvalSymlinks
 	if resolved, err := filepath.EvalSymlinks(p); err == nil {
 		return resolved
@@ -113,11 +118,19 @@ func ValidateCacheDir(rawPath string) error {
 }
 
 // splitPathSegments splits a path into cleaned segments for robust ancestor/descendant matching.
-// Handles both Windows and Unix slash styles.
+// Handles both Windows and Unix slash styles in a platform-independent way so Windows paths
+// are accurately evaluated on Linux CI and vice versa.
 func splitPathSegments(p string, isWindows bool) []string {
-	clean := filepath.ToSlash(filepath.Clean(p))
-	clean = strings.TrimPrefix(clean, "//?/")
-	clean = strings.TrimPrefix(clean, `\\?\`)
+	clean := p
+	if isWindows {
+		clean = strings.ReplaceAll(clean, `\`, `/`)
+	}
+	if strings.HasPrefix(clean, `//?/unc/`) || strings.HasPrefix(clean, `//?/UNC/`) {
+		clean = "//" + clean[8:]
+	} else if strings.HasPrefix(clean, `//?/`) {
+		clean = clean[4:]
+	}
+	clean = path.Clean(clean)
 	parts := strings.Split(clean, "/")
 	var res []string
 	for _, part := range parts {
@@ -145,7 +158,12 @@ func isDriveRoot(segs []string) bool {
 
 // isUNCRoot checks whether a path represents a Windows UNC share root (e.g. \\server\share or //server/share).
 func isUNCRoot(p string) bool {
-	norm := filepath.ToSlash(p)
+	norm := strings.ReplaceAll(p, `\`, `/`)
+	if strings.HasPrefix(norm, `//?/unc/`) || strings.HasPrefix(norm, `//?/UNC/`) {
+		norm = "//" + norm[8:]
+	} else if strings.HasPrefix(norm, `//?/`) {
+		norm = norm[4:]
+	}
 	if !strings.HasPrefix(norm, "//") {
 		return false
 	}
@@ -157,7 +175,12 @@ func isUNCRoot(p string) bool {
 
 // isUNCShare checks whether a path is under a Windows UNC share.
 func isUNCShare(p string) bool {
-	norm := filepath.ToSlash(p)
+	norm := strings.ReplaceAll(p, `\`, `/`)
+	if strings.HasPrefix(norm, `//?/unc/`) || strings.HasPrefix(norm, `//?/UNC/`) {
+		norm = "//" + norm[8:]
+	} else if strings.HasPrefix(norm, `//?/`) {
+		norm = norm[4:]
+	}
 	return strings.HasPrefix(norm, "//")
 }
 

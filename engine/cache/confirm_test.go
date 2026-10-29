@@ -154,3 +154,65 @@ func TestRootMarkerLifecycle(t *testing.T) {
 		t.Fatalf("second EnsureRootMarker failed: %v", err)
 	}
 }
+
+func TestIsAcceleratorTempFile(t *testing.T) {
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{"assets/12345/img/sp/btn.png.tmp.1234.5678.1", true},
+		{"assets/12345/img/sp/btn.png.ext.tmp.1234.5678.1", true},
+		{"hosts/example.com/assets/app.js.tmp.999.1.2", true},
+		// User files with .tmp. in name
+		{"draft.tmp.txt", false},
+		{"notes.tmp.pdf", false},
+		{"personal_data/report.tmp.docx", false},
+		{"assets/12345/img/sp/btn.png.tmp.bad_suffix", false},
+		{"temp.tmp.123.456.1", false},                    // root file
+		{"assets/12345/img/sp/btn.csv.tmp.1.2.3", false}, // .csv is excluded
+	}
+
+	for _, tc := range cases {
+		got := isAcceleratorTempFile(tc.rel)
+		if got != tc.want {
+			t.Errorf("isAcceleratorTempFile(%q) = %v; want %v", tc.rel, got, tc.want)
+		}
+	}
+}
+
+func TestAutoWriteRootMarkerLifecycle(t *testing.T) {
+	// Case 1: Empty dir -> allowed
+	emptyDir := t.TempDir()
+	can, err := CanAutoWriteRootMarker(emptyDir, false, false)
+	if err != nil || !can {
+		t.Fatalf("expected clean dir to allow auto root marker, got can=%v, err=%v", can, err)
+	}
+	wrote, err := TryAutoWriteRootMarker(emptyDir, false, false)
+	if err != nil || !wrote || !HasRootMarker(emptyDir) {
+		t.Fatalf("expected TryAutoWriteRootMarker to succeed on empty dir")
+	}
+
+	// Case 2: Dir with user files -> forbidden unless isDefaultDir or allFilesConfirmed
+	userDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(userDir, "user_doc.txt"), []byte("hello"), 0644)
+	can, _ = CanAutoWriteRootMarker(userDir, false, false)
+	if can {
+		t.Errorf("expected dir with user files NOT to allow auto root marker")
+	}
+	wrote, _ = TryAutoWriteRootMarker(userDir, false, false)
+	if wrote || HasRootMarker(userDir) {
+		t.Errorf("expected TryAutoWriteRootMarker to fail on dir with user files")
+	}
+
+	// If isDefaultDir is true -> allowed
+	can, _ = CanAutoWriteRootMarker(userDir, true, false)
+	if !can {
+		t.Errorf("expected isDefaultDir=true to allow auto root marker")
+	}
+
+	// If allFilesConfirmed is true -> allowed
+	can, _ = CanAutoWriteRootMarker(userDir, false, true)
+	if !can {
+		t.Errorf("expected allFilesConfirmed=true to allow auto root marker")
+	}
+}
