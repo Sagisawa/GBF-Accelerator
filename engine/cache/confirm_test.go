@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -186,17 +187,26 @@ func TestIsAcceleratorTempFile(t *testing.T) {
 }
 
 func TestIsAcceleratorOrphanExtFile(t *testing.T) {
-	validMetaGBF := []byte(`{"v":1,"size":100,"mtime_nano":12345,"ns":"gbf"}`)
-	validMetaHosts := []byte(`{"v":1,"size":100,"mtime_nano":12345,"ns":"example.com"}`)
-	mismatchedMetaHosts := []byte(`{"v":1,"size":100,"mtime_nano":12345,"ns":"other.com"}`)
-	invalidMetaV2 := []byte(`{"v":2,"size":100,"mtime_nano":12345}`)
+	validMetaGBF := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
+	validMetaHosts := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"application/javascript","verified":true,"ns":"example.com"}`)
+	mismatchedMetaHosts := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"application/javascript","verified":true,"ns":"other.com"}`)
+	invalidMetaV2 := []byte(`{"v":2,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true}`)
+
+	// Incomplete / forged metadata variants
+	incompleteNoVerified := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","ns":"gbf"}`)
+	incompleteNoMtime := []byte(`{"v":1,"size":100,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
+	incompleteNoSize := []byte(`{"v":1,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
+	incompleteNoAt := []byte(`{"v":1,"size":100,"mtime":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
+	incompleteNoCt := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"verified":true,"ns":"gbf"}`)
+	forgedZeroSize := []byte(`{"v":1,"size":0,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
+	forgedZeroMtime := []byte(`{"v":1,"size":100,"mtime":0,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
 
 	cases := []struct {
 		rel  string
 		meta []byte
 		want bool
 	}{
-		// Valid cache paths
+		// Valid cache paths with authentic metadata
 		{"assets/12345/img/sp/btn.png.ext", validMetaGBF, true},
 		{"hosts/example.com/assets/app.js.ext", validMetaHosts, true},
 		// Mismatched namespace
@@ -207,6 +217,16 @@ func TestIsAcceleratorOrphanExtFile(t *testing.T) {
 		{"personal_data/photo.png.ext", validMetaGBF, false},
 		{"user_workspace/document.png.ext", validMetaGBF, false},
 		{"user_config.ext", validMetaGBF, false}, // root file
+		{"assets/personal_data/photo.png.ext", validMetaGBF, false},
+		{"assets/12345/personal_data/photo.png.ext", validMetaGBF, false},
+		// Incomplete / forged JSON without full accelerator fields - MUST be rejected (preserved)
+		{"assets/12345/img/sp/btn.png.ext", incompleteNoVerified, false},
+		{"assets/12345/img/sp/btn.png.ext", incompleteNoMtime, false},
+		{"assets/12345/img/sp/btn.png.ext", incompleteNoSize, false},
+		{"assets/12345/img/sp/btn.png.ext", incompleteNoAt, false},
+		{"assets/12345/img/sp/btn.png.ext", incompleteNoCt, false},
+		{"assets/12345/img/sp/btn.png.ext", forgedZeroSize, false},
+		{"assets/12345/img/sp/btn.png.ext", forgedZeroMtime, false},
 	}
 
 	for _, tc := range cases {
@@ -214,6 +234,92 @@ func TestIsAcceleratorOrphanExtFile(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("isAcceleratorOrphanExtFile(%q) = %v; want %v", tc.rel, got, tc.want)
 		}
+	}
+}
+
+func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		// Legitimate cache paths
+		{"assets/12345/img/sp/btn.png", true},
+		{"assets/img/sp/btn.png", true},
+		{"assets/12345/js/app.js", true},
+		{"assets/12345/sound/bgm.mp3", true},
+		{"assets/app/sample.png", true},
+		{"assets/app/js/set-error-handler.js", true},
+		{"assets/app.js", true},
+		{"assets_en/app.js", true},
+		{"assets_jp/app.js", true},
+		{"img/sp/btn.png", true},
+		{"sound/bgm.mp3", true},
+		{"manifest/app.js", true},
+		{"hosts/example.com/assets/app.js", true},
+		{"hosts/example.com/assets/12345/img/sp/btn.png", true},
+		{"hosts/example.com/img/sp/btn.png", true},
+
+		// User files in non-cache paths or invalid categories - MUST be rejected
+		{"assets/personal_data/photo.png", false},
+		{"assets/12345/personal_data/photo.png", false},
+		{"assets_en/personal_data/photo.png", false},
+		{"assets_jp/personal_data/photo.png", false},
+		{"personal_data/photo.png", false},
+		{"user_workspace/doc.png", false},
+		{"assets/12345/btn.png", false}, // inside version dir without category
+		{"12345/img/sp/btn.png", false},  // bare version number at root
+		{"12345/btn.png", false},
+		{"hosts/example.com/assets/personal_data/photo.png", false},
+		{"hosts/example.com/personal_data/photo.png", false},
+		{"hosts/example.com/12345/img/sp/btn.png", false},
+	}
+
+	for _, tc := range cases {
+		_, _, got := isConfirmedCachePathStructure(tc.rel)
+		if got != tc.want {
+			t.Errorf("isConfirmedCachePathStructure(%q) = %v; want %v", tc.rel, got, tc.want)
+		}
+	}
+}
+
+func TestIsConfirmedCacheFile_StrictExtAndPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+	// 1. User file on non-cache path with valid paired .ext JSON: MUST BE REJECTED!
+	userDir := filepath.Join(tmpDir, "assets", "personal_data")
+	_ = os.MkdirAll(userDir, 0755)
+	userPhoto := filepath.Join(userDir, "photo.png")
+	_ = os.WriteFile(userPhoto, validPng, 0644)
+	fi, _ := os.Stat(userPhoto)
+	userExt := userPhoto + ".ext"
+	_ = os.WriteFile(userExt, []byte(fmt.Sprintf(`{"v":1,"size":%d,"mtime":%d,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`, fi.Size(), fi.ModTime().UnixNano())), 0644)
+
+	if IsConfirmedCacheFile(tmpDir, userPhoto, true) {
+		t.Errorf("IsConfirmedCacheFile must reject user file on non-cache path even with valid .ext")
+	}
+
+	// 2. Legitimate cache path with corrupted / empty .ext: MUST NOT fall through to Tier 2!
+	cacheDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
+	_ = os.MkdirAll(cacheDir, 0755)
+	cacheFile := filepath.Join(cacheDir, "broken_ext.png")
+	_ = os.WriteFile(cacheFile, validPng, 0644)
+	brokenExt := cacheFile + ".ext"
+	_ = os.WriteFile(brokenExt, []byte("not valid json at all"), 0644)
+
+	// Even with root marker, because broken .ext exists, it must NOT fall through to Tier 2
+	if IsConfirmedCacheFile(tmpDir, cacheFile, true) {
+		t.Errorf("IsConfirmedCacheFile must NOT fall through to Tier 2 when companion .ext is corrupted")
+	}
+
+	// 3. Legitimate cache path with 0-byte .ext: MUST NOT fall through to Tier 2!
+	emptyExtFile := filepath.Join(cacheDir, "empty_ext.png")
+	_ = os.WriteFile(emptyExtFile, validPng, 0644)
+	emptyExt := emptyExtFile + ".ext"
+	_ = os.WriteFile(emptyExt, []byte{}, 0644)
+
+	if IsConfirmedCacheFile(tmpDir, emptyExtFile, true) {
+		t.Errorf("IsConfirmedCacheFile must NOT fall through to Tier 2 when companion .ext is 0-byte empty")
 	}
 }
 

@@ -51,9 +51,76 @@ func (m *Manager) EnsureRootMarker() error {
 	return EnsureRootMarker(base)
 }
 
+func isKnownGBFCategory(cat string) bool {
+	switch cat {
+	case "js", "css", "img", "sound", "font", "manifest", "html", "misc", "cjs", "json", "model", "app":
+		return true
+	default:
+		return false
+	}
+}
+
+func isRootFallbackCategory(cat string) bool {
+	switch cat {
+	case "img", "sound", "js", "css", "font", "manifest", "html", "misc":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidCachePathHierarchy(segs []string) bool {
+	if len(segs) == 0 {
+		return false
+	}
+	first := segs[0]
+	if first == "assets" || first == "assets_en" || first == "assets_jp" {
+		if len(segs) < 2 {
+			return false
+		}
+		if len(segs) == 2 {
+			return strings.EqualFold(segs[1], "app.js")
+		}
+		if _, isVer := parsePositiveVersionSegment(segs[1]); isVer {
+			if len(segs) < 4 {
+				return false
+			}
+			return isKnownGBFCategory(segs[2])
+		}
+		return isKnownGBFCategory(segs[1])
+	}
+	if isRootFallbackCategory(first) {
+		return len(segs) >= 2
+	}
+	return false
+}
+
+func isValidCacheDirHierarchy(segs []string) bool {
+	if len(segs) == 0 {
+		return false
+	}
+	first := segs[0]
+	if first == "assets" || first == "assets_en" || first == "assets_jp" {
+		if len(segs) == 1 {
+			return true
+		}
+		if _, isVer := parsePositiveVersionSegment(segs[1]); isVer {
+			if len(segs) == 2 {
+				return true
+			}
+			return isKnownGBFCategory(segs[2])
+		}
+		return isKnownGBFCategory(segs[1])
+	}
+	if isRootFallbackCategory(first) {
+		return true
+	}
+	return false
+}
+
 // isConfirmedCachePathStructure checks whether slashRel matches the canonical cache namespace and directory
-// hierarchy of GBF-Accelerator (either under "hosts/<ns>/..." or under "assets", "assets_en", "assets_jp", "img", "sound",
-// or a positive integer version segment). It also verifies that the target file has a valid asset extension.
+// hierarchy of GBF-Accelerator (strictly following positive integer version + category, direct category fallback,
+// root category fallback, or multi-host paths). It also verifies that the target file has a valid asset extension.
 func isConfirmedCachePathStructure(slashRel string) (ns string, cleanKey string, ok bool) {
 	if slashRel == "" || slashRel == "." || strings.HasPrefix(slashRel, "..") {
 		return "", "", false
@@ -75,20 +142,21 @@ func isConfirmedCachePathStructure(slashRel string) (ns string, cleanKey string,
 		if nsCandidate == "" || nsCandidate == "hosts" || nsCandidate == "gbf" || nsCandidate != strings.ToLower(rawNS) {
 			return "", "", false
 		}
-		subKey := strings.Join(segs[2:], "/")
+		subSegs := segs[2:]
+		subKey := strings.Join(subSegs, "/")
 		if !isAssetExtension(strings.ToLower(subKey)) {
+			return "", "", false
+		}
+		if !isValidCachePathHierarchy(subSegs) {
 			return "", "", false
 		}
 		return nsCandidate, subKey, true
 	}
 
-	first := segs[0]
-	if first != "assets" && first != "assets_en" && first != "assets_jp" && first != "img" && first != "sound" {
-		if _, isVer := parsePositiveVersionSegment(first); !isVer {
-			return "", "", false
-		}
-	}
 	if !isAssetExtension(strings.ToLower(slashRel)) {
+		return "", "", false
+	}
+	if !isValidCachePathHierarchy(segs) {
 		return "", "", false
 	}
 	return "gbf", slashRel, true
@@ -107,19 +175,23 @@ func isConfirmedCacheDir(slashRelDir string) bool {
 		return false
 	}
 	if segs[0] == "hosts" {
-		if len(segs) >= 2 {
-			rawNS := segs[1]
-			ns := sanitizeNamespace(rawNS)
-			return ns != "" && ns != "hosts" && ns != "gbf" && ns == strings.ToLower(rawNS)
+		if len(segs) == 1 {
+			return true // the top-level "hosts" directory itself
 		}
-		return true // the top-level "hosts" directory itself
+		rawNS := segs[1]
+		if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) {
+			return false
+		}
+		ns := sanitizeNamespace(rawNS)
+		if ns == "" || ns == "hosts" || ns == "gbf" || ns != strings.ToLower(rawNS) {
+			return false
+		}
+		if len(segs) == 2 {
+			return true // "hosts/<ns>"
+		}
+		return isValidCacheDirHierarchy(segs[2:])
 	}
-	first := segs[0]
-	if first == "assets" || first == "assets_en" || first == "assets_jp" || first == "img" || first == "sound" {
-		return true
-	}
-	_, isVer := parsePositiveVersionSegment(first)
-	return isVer
+	return isValidCacheDirHierarchy(segs)
 }
 
 // IsConfirmedCacheFile determines whether a file on disk belongs to GBF-Accelerator/ACGPower cache.
@@ -162,7 +234,8 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 		return false
 	}
 
-	// Must match canonical cache directory structure and asset extensions
+	// Strict canonical cache hierarchy check for both Tier 1 and Tier 2.
+	// GBF-Accelerator never places cache files in arbitrary user paths (e.g. assets/personal_data/...).
 	ns, cleanKey, ok := isConfirmedCachePathStructure(slashRel)
 	if !ok {
 		return false
@@ -170,16 +243,36 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 
 	// --- Tier 1: Strong evidence via valid paired .ext metadata file ---
 	extPath := fullPath + ".ext"
-	if extFi, err := os.Lstat(extPath); err == nil && extFi.Mode().IsRegular() {
-		if metaBytes, err := os.ReadFile(extPath); err == nil {
-			if meta, ok := parseExtFile(metaBytes); ok && meta.Version == 1 {
-				if meta.Size == fi.Size() && meta.MTimeNano == fi.ModTime().UnixNano() {
-					if meta.Namespace == "" || sanitizeNamespace(meta.Namespace) == ns {
-						return true
-					}
-				}
-			}
+	extFi, extErr := os.Lstat(extPath)
+	if extErr == nil {
+		// A companion .ext exists. If it exists, this file CANNOT be treated as Tier 2 legacy cache.
+		// It MUST strictly validate as an authentic Tier 1 asset; if not, return false immediately.
+		if !extFi.Mode().IsRegular() {
+			return false
 		}
+		metaBytes, err := os.ReadFile(extPath)
+		if err != nil {
+			return false
+		}
+		meta, ok := parseExtFile(metaBytes)
+		if !ok || meta.Version != 1 {
+			return false
+		}
+		if meta.Size != fi.Size() || meta.MTimeNano != fi.ModTime().UnixNano() {
+			return false
+		}
+		if meta.Namespace != "" && meta.Namespace != "gbf" {
+			if sanitizeNamespace(meta.Namespace) != ns {
+				return false
+			}
+		} else if ns != "gbf" {
+			return false
+		}
+		return true
+	} else if !os.IsNotExist(extErr) {
+		// Lstat failed with an error other than NotExist (e.g. permission error).
+		// Since we cannot verify whether .ext exists or not, preserve the file.
+		return false
 	}
 
 	// --- Tier 2: Legacy ACGPower asset without .ext metadata file ---
@@ -214,6 +307,8 @@ func isConfirmedCacheFileInRoot(root *os.Root, rel string, fi os.FileInfo, hasRo
 		return false
 	}
 
+	// Strict canonical cache hierarchy check for both Tier 1 and Tier 2.
+	// GBF-Accelerator never places cache files in arbitrary user paths (e.g. assets/personal_data/...).
 	ns, cleanKey, ok := isConfirmedCachePathStructure(slashRel)
 	if !ok {
 		return false
@@ -221,16 +316,34 @@ func isConfirmedCacheFileInRoot(root *os.Root, rel string, fi os.FileInfo, hasRo
 
 	// Tier 1: Check paired .ext metadata file via root
 	extRel := rel + ".ext"
-	if extFi, err := root.Lstat(extRel); err == nil && extFi.Mode().IsRegular() {
-		if metaBytes, err := root.ReadFile(extRel); err == nil {
-			if meta, ok := parseExtFile(metaBytes); ok && meta.Version == 1 {
-				if meta.Size == fi.Size() && meta.MTimeNano == fi.ModTime().UnixNano() {
-					if meta.Namespace == "" || sanitizeNamespace(meta.Namespace) == ns {
-						return true
-					}
-				}
-			}
+	extFi, extErr := root.Lstat(extRel)
+	if extErr == nil {
+		// A companion .ext exists. If it exists, this file CANNOT be treated as Tier 2 legacy cache.
+		// It MUST strictly validate as an authentic Tier 1 asset; if not, return false immediately.
+		if !extFi.Mode().IsRegular() {
+			return false
 		}
+		metaBytes, err := root.ReadFile(extRel)
+		if err != nil {
+			return false
+		}
+		meta, ok := parseExtFile(metaBytes)
+		if !ok || meta.Version != 1 {
+			return false
+		}
+		if meta.Size != fi.Size() || meta.MTimeNano != fi.ModTime().UnixNano() {
+			return false
+		}
+		if meta.Namespace != "" && meta.Namespace != "gbf" {
+			if sanitizeNamespace(meta.Namespace) != ns {
+				return false
+			}
+		} else if ns != "gbf" {
+			return false
+		}
+		return true
+	} else if !os.IsNotExist(extErr) {
+		return false
 	}
 
 	// Tier 2: Legacy asset without .ext (requires root marker)
@@ -339,7 +452,9 @@ func isAcceleratorTempFile(slashRel string) bool {
 
 // isAcceleratorOrphanExtFile checks whether an .ext file belongs to the accelerator cache
 // by verifying that its base name is a valid cache asset path in a legitimate cache directory,
-// its metadata parses with version 1, and its namespace matches.
+// its metadata parses with version 1, and all authentic Accelerator metadata fields
+// (verified == true, size > 0, mtime > 0, at > 0, ct != "", and matching namespace) are valid.
+// Incomplete or forged JSON files lacking full metadata are rejected to prevent accidental deletion.
 func isAcceleratorOrphanExtFile(slashRel string, metaBytes []byte) bool {
 	if !strings.HasSuffix(slashRel, ".ext") {
 		return false
@@ -351,7 +466,7 @@ func isAcceleratorOrphanExtFile(slashRel string, metaBytes []byte) bool {
 		return false
 	}
 	meta, ok := parseExtFile(metaBytes)
-	if !ok || meta.Version != 1 {
+	if !ok || meta.Version != 1 || !meta.Verified || meta.Size <= 0 || meta.MTimeNano <= 0 || meta.AccessTime <= 0 || meta.ContentType == "" {
 		return false
 	}
 	if meta.Namespace != "" && meta.Namespace != "gbf" {

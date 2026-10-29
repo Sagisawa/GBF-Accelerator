@@ -44,6 +44,7 @@ type diskMeta struct {
 	Verified          bool   `json:"verified,omitempty"`
 	Size              int64  `json:"size,omitempty"`
 	MTimeNano         int64  `json:"mtime,omitempty"`
+	LegacyMTimeNano   int64  `json:"mtime_nano,omitempty"`
 	LegacyContentType string `json:"ContentType,omitempty"`
 }
 
@@ -278,6 +279,9 @@ func parseExtFile(metaBytes []byte) (diskMeta, bool) {
 	}
 	if meta.ContentType == "" && meta.LegacyContentType != "" {
 		meta.ContentType = meta.LegacyContentType
+	}
+	if meta.MTimeNano == 0 && meta.LegacyMTimeNano != 0 {
+		meta.MTimeNano = meta.LegacyMTimeNano
 	}
 	return meta, true
 }
@@ -2522,7 +2526,9 @@ func (m *Manager) ClearAll() (int, int64, int) {
 					if testBeforeClearAllRemoveHook != nil {
 						testBeforeClearAllRemoveHook(rel)
 					}
-					// Pre-removal TOCTOU verification
+					// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile).
+					// Narrows the race window between identity verification and unlinking, but cannot eliminate
+					// all filesystem races without atomic descriptor-based unlink primitives.
 					preRemoveFi, err := root.Lstat(rel)
 					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
 						if root.Remove(rel) == nil {
@@ -2542,10 +2548,15 @@ func (m *Manager) ClearAll() (int, int64, int) {
 		// Standalone or orphan .ext metadata file
 		if strings.HasSuffix(slashRel, ".ext") {
 			baseRel := rel[:len(rel)-len(".ext")]
-			if baseFi, err := root.Lstat(baseRel); err == nil && baseFi.Mode().IsRegular() {
+			if _, err := root.Lstat(baseRel); err == nil {
 				// The paired data file exists on disk.
 				// If it was not deleted when the data file was processed (e.g. skipped or identity changed),
 				// do NOT delete this companion .ext file as an orphan.
+				skippedFiles++
+				return nil
+			}
+			// Root marker is strictly required for un-paired orphan .ext files
+			if !hasRootMarker {
 				skippedFiles++
 				return nil
 			}
@@ -2554,11 +2565,14 @@ func (m *Manager) ClearAll() (int, int64, int) {
 					if testBeforeClearAllRemoveHook != nil {
 						testBeforeClearAllRemoveHook(rel)
 					}
+					// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile).
+					// Narrows the race window between identity verification and unlinking, but cannot eliminate
+					// all filesystem races without atomic descriptor-based unlink primitives.
 					preRemoveFi, err := root.Lstat(rel)
 					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
 						if root.Remove(rel) == nil {
 							deletedFiles++
-							freedBytes += int64(len(metaBytes))
+							freedBytes += preRemoveFi.Size()
 							recordAffectedDir(rel)
 							return nil
 						}
@@ -2577,7 +2591,18 @@ func (m *Manager) ClearAll() (int, int64, int) {
 			var hasPairedExt bool
 			if extErr == nil && extFi.Mode().IsRegular() {
 				if metaBytes, err := root.ReadFile(extRel); err == nil {
-					hasPairedExt = isAcceleratorOrphanExtFile(filepath.ToSlash(extRel), metaBytes)
+					if meta, ok := parseExtFile(metaBytes); ok && meta.Version == 1 {
+						if meta.Size == entryFi.Size() && meta.MTimeNano == entryFi.ModTime().UnixNano() {
+							nsCandidate, _, _ := isConfirmedCachePathStructure(slashRel)
+							if meta.Namespace != "" && meta.Namespace != "gbf" {
+								if sanitizeNamespace(meta.Namespace) == nsCandidate {
+									hasPairedExt = true
+								}
+							} else if nsCandidate == "gbf" {
+								hasPairedExt = true
+							}
+						}
+					}
 				}
 			}
 
@@ -2585,7 +2610,9 @@ func (m *Manager) ClearAll() (int, int64, int) {
 				testBeforeClearAllRemoveHook(rel)
 			}
 
-			// Pre-removal TOCTOU verification: re-stat and confirm identity
+			// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile).
+			// Narrows the race window between identity verification and unlinking, but cannot eliminate
+			// all filesystem races without atomic descriptor-based unlink primitives.
 			preRemoveFi, err := root.Lstat(rel)
 			if err != nil || !preRemoveFi.Mode().IsRegular() || !os.SameFile(entryFi, preRemoveFi) {
 				// Object identity changed or replaced, abort deletion!

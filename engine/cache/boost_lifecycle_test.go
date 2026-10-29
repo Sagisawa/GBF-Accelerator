@@ -17,11 +17,12 @@ func TestBoostLifecycle_ClearAll(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
+	_ = EnsureRootMarker(tempDir)
 	mgr := NewManager(tempDir, 16)
 	defer mgr.Close()
 
 	// 1. Prewarm with an asset
-	assetsDir := filepath.Join(tempDir, "assets", "clearall")
+	assetsDir := filepath.Join(tempDir, "assets", "12345", "img", "sp")
 	_ = os.MkdirAll(assetsDir, 0755)
 	p := filepath.Join(assetsDir, "test.png")
 	data := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtest")
@@ -29,7 +30,7 @@ func TestBoostLifecycle_ClearAll(t *testing.T) {
 	_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
 
 	mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
-	if item, src := mgr.GetWithNamespace("gbf", "assets/clearall/test.png"); item == nil || src != "RAM-BOOST" {
+	if item, src := mgr.GetWithNamespace("gbf", "assets/12345/img/sp/test.png"); item == nil || src != "RAM-BOOST" {
 		t.Fatalf("expected RAM-BOOST hit before ClearAll, got src=%s", src)
 	}
 
@@ -43,7 +44,7 @@ func TestBoostLifecycle_ClearAll(t *testing.T) {
 	}
 
 	// 4. Verify request cannot hit Resident Pool
-	if item, _ := mgr.GetWithNamespace("gbf", "assets/clearall/test.png"); item != nil {
+	if item, _ := mgr.GetWithNamespace("gbf", "assets/12345/img/sp/test.png"); item != nil {
 		t.Fatalf("expected nil item after ClearAll, got %v", item)
 	}
 }
