@@ -1432,7 +1432,7 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 	}()
 
 	c.cacheMgr.ClearRAM()
-	diskDeleted, diskFreed := c.cacheMgr.ClearAll()
+	diskDeleted, diskFreed, diskSkipped := c.cacheMgr.ClearAll()
 	c.cacheTaskMu.Lock()
 	c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
 	c.lastBoostResult = c.boostProgress
@@ -1449,6 +1449,7 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 		"disk_cleared":       true,
 		"disk_files_deleted": diskDeleted,
 		"disk_bytes_freed":   diskFreed,
+		"disk_files_skipped": diskSkipped,
 	}
 	c.sendJSON(w, http.StatusOK, clearRes)
 }

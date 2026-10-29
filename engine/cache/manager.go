@@ -16,6 +16,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"gbf-proxy/config"
 )
 
 // MaxDiskDirectReadSize is the threshold (2MB) for RAM SLRU admission on disk hits.
@@ -2411,7 +2413,7 @@ func (m *Manager) ClearRAM() {
 	m.ramCache.Clear()
 }
 
-func (m *Manager) ClearAll() (int, int64) {
+func (m *Manager) ClearAll() (int, int64, int) {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	m.generation++
@@ -2423,17 +2425,142 @@ func (m *Manager) ClearAll() (int, int64) {
 
 	var deletedFiles int
 	var freedBytes int64
+	var skippedFiles int
+
+	// Guardrail: If base directory fails validation (e.g. drive root or user home),
+	// refuse to perform destructive disk operations.
+	if err := config.ValidateCacheDir(base); err != nil {
+		m.clearMissing()
+		m.clearDiskMeta()
+		m.clearTokenShards()
+		m.clearTempTokens()
+		m.invalidateSnapshots("已执行全盘清空")
+		return 0, 0, 0
+	}
+
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		m.clearMissing()
+		m.clearDiskMeta()
+		m.clearTokenShards()
+		m.clearTempTokens()
+		m.invalidateSnapshots("已执行全盘清空")
+		return 0, 0, 0
+	}
+	defer root.Close()
+
+	hasRootMarker := HasRootMarker(base)
+	var dirs []string
 
 	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() {
-			if info, err := d.Info(); err == nil {
-				freedBytes += info.Size()
+		if err != nil {
+			return nil
+		}
+		if p == base {
+			return nil
+		}
+
+		rel, err := filepath.Rel(base, p)
+		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
+			return nil
+		}
+		slashRel := filepath.ToSlash(rel)
+
+		if d.IsDir() {
+			dirs = append(dirs, rel)
+			return nil
+		}
+
+		baseName := filepath.Base(p)
+
+		// Root marker is strictly preserved and not counted as a skipped user file
+		if slashRel == RootMarkerFileName {
+			return nil
+		}
+
+		// System junk files are strictly left untouched (rule 2)
+		if config.IsSystemJunk(baseName) {
+			return nil
+		}
+
+		// Temporary files created by accelerator
+		if strings.Contains(slashRel, ".tmp.") {
+			if !m.isActiveTempFileLocked(p) {
+				if info, err := d.Info(); err == nil {
+					if root.Remove(rel) == nil {
+						deletedFiles++
+						freedBytes += info.Size()
+					}
+				}
 			}
-			deletedFiles++
-			_ = os.Remove(p)
+			return nil
+		}
+
+		// Standalone or orphan .ext metadata file
+		if strings.HasSuffix(slashRel, ".ext") {
+			if _, statErr := root.Stat(rel); statErr != nil {
+				return nil
+			}
+			if metaBytes, err := root.ReadFile(rel); err == nil {
+				if meta, ok := parseExtFile(metaBytes); ok && meta.Version == 1 {
+					if root.Remove(rel) == nil {
+						deletedFiles++
+						freedBytes += int64(len(metaBytes))
+					}
+					return nil
+				}
+			}
+			skippedFiles++
+			return nil
+		}
+
+		// Regular data file: verify cache attribution
+		info, err := d.Info()
+		if err != nil {
+			skippedFiles++
+			return nil
+		}
+
+		if IsConfirmedCacheFileWithInfo(base, p, info, hasRootMarker) {
+			if root.Remove(rel) == nil {
+				deletedFiles++
+				freedBytes += info.Size()
+
+				// Concurrently remove paired .ext file if present
+				extRel := rel + ".ext"
+				if extFi, err := root.Stat(extRel); err == nil && !extFi.IsDir() {
+					if root.Remove(extRel) == nil {
+						deletedFiles++
+						freedBytes += extFi.Size()
+					}
+				}
+			} else {
+				skippedFiles++
+			}
+		} else {
+			skippedFiles++
 		}
 		return nil
 	})
+
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		absBase = base
+	}
+	realBase, err := filepath.EvalSymlinks(absBase)
+	if err != nil {
+		realBase = absBase
+	}
+	expectedRootFi, _ := os.Stat(absBase)
+
+	// Prune empty subdirectories bottom-up
+	sort.Slice(dirs, func(i, j int) bool {
+		return len(dirs[i]) > len(dirs[j])
+	})
+	for _, relDir := range dirs {
+		targetDir := filepath.Join(base, relDir)
+		_, _, _ = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, nil, targetDir)
+	}
 
 	m.clearMissing()
 	m.clearDiskMeta()
@@ -2441,7 +2568,7 @@ func (m *Manager) ClearAll() (int, int64) {
 	m.clearTempTokens()
 	m.invalidateSnapshots("已执行全盘清空")
 
-	return deletedFiles, freedBytes
+	return deletedFiles, freedBytes, skippedFiles
 }
 
 func (m *Manager) Stats() (items int, bytes int64) {
