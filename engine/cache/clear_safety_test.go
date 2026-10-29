@@ -502,3 +502,78 @@ func TestClearAll_PreservesNonCacheEmptySubdirsAndSystemJunk(t *testing.T) {
 		t.Errorf("BUG: non-cache directory %s was deleted: %v", userFolder, err)
 	}
 }
+
+// 7. 即使合法资源存在伴生 .ext 文件，但如果该 .ext 为非 Accelerator 元数据（如用户笔记），必须保留该 .ext 并保留所在目录。
+func TestClearAll_PreservesUserInvalidExtAdjacentToLegacyAsset(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	_ = EnsureRootMarker(tmpDir)
+
+	subDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	pngPath := filepath.Join(subDir, "btn.png")
+	if err := os.WriteFile(pngPath, validPng, 0644); err != nil {
+		t.Fatalf("write png failed: %v", err)
+	}
+
+	// User note file disguised with .ext suffix adjacent to legacy png
+	userNotePath := filepath.Join(subDir, "btn.png.ext")
+	userNoteContent := []byte("confidential user notes: not json metadata")
+	if err := os.WriteFile(userNotePath, userNoteContent, 0644); err != nil {
+		t.Fatalf("write user note failed: %v", err)
+	}
+
+	deleted, _, skipped := mgr.ClearAll()
+	if deleted != 1 {
+		t.Errorf("expected exactly 1 deleted file (btn.png), got %d", deleted)
+	}
+	if skipped < 1 {
+		t.Errorf("expected at least 1 skipped file (btn.png.ext), got %d", skipped)
+	}
+
+	// btn.png should be deleted
+	if _, err := os.Stat(pngPath); !os.IsNotExist(err) {
+		t.Errorf("expected legacy cache asset %s to be deleted, got err=%v", pngPath, err)
+	}
+
+	// btn.png.ext MUST be preserved
+	if data, err := os.ReadFile(userNotePath); err != nil || string(data) != string(userNoteContent) {
+		t.Errorf("BUG: user note %s was deleted or corrupted: %v, content=%q", userNotePath, err, string(data))
+	}
+
+	// Directory must be preserved since it still contains userNotePath
+	if fi, err := os.Stat(subDir); err != nil || !fi.IsDir() {
+		t.Errorf("BUG: directory %s containing user file was deleted: %v", subDir, err)
+	}
+}
+
+// 8. 干净缓存清空时，删除的配对 .ext 不应误记入 skippedFiles。
+func TestClearAll_CleanCacheNoFalseSkippedCount(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	headers := map[string]string{"content-type": "image/png"}
+	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/clean.png", headers, validPng) {
+		t.Fatalf("failed to save cache asset")
+	}
+
+	deleted, freed, skipped := mgr.ClearAll()
+	if deleted != 2 {
+		t.Errorf("expected exactly 2 deleted items (data + paired ext), got deleted=%d", deleted)
+	}
+	if freed <= 0 {
+		t.Errorf("expected positive freed bytes, got %d", freed)
+	}
+	if skipped != 0 {
+		t.Errorf("expected 0 skipped files for a purely clean cache, got skipped=%d", skipped)
+	}
+}
+

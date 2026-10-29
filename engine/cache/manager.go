@@ -2508,6 +2508,9 @@ func (m *Manager) ClearAll() (int, int64, int) {
 		// Non-regular files (symlinks, devices, named pipes, etc.) are strictly rejected.
 		entryFi, lstatErr := root.Lstat(rel)
 		if lstatErr != nil || !entryFi.Mode().IsRegular() {
+			if lstatErr != nil && os.IsNotExist(lstatErr) {
+				return nil
+			}
 			skippedFiles++
 			return nil
 		}
@@ -2526,9 +2529,11 @@ func (m *Manager) ClearAll() (int, int64, int) {
 							deletedFiles++
 							freedBytes += preRemoveFi.Size()
 							recordAffectedDir(rel)
+							return nil
 						}
 					}
 				}
+				skippedFiles++
 				return nil
 			}
 			// Non-accelerator file with .tmp. in name falls through to regular attribution check!
@@ -2555,8 +2560,8 @@ func (m *Manager) ClearAll() (int, int64, int) {
 							deletedFiles++
 							freedBytes += int64(len(metaBytes))
 							recordAffectedDir(rel)
+							return nil
 						}
-						return nil
 					}
 				}
 			}
@@ -2566,10 +2571,15 @@ func (m *Manager) ClearAll() (int, int64, int) {
 
 		// Regular data file: verify cache attribution via root handle
 		if isConfirmedCacheFileInRoot(root, rel, entryFi, hasRootMarker) {
-			// Check if paired .ext exists before deleting data file
+			// Check if valid paired .ext exists before deleting data file
 			extRel := rel + ".ext"
 			extFi, extErr := root.Lstat(extRel)
-			hasPairedExt := (extErr == nil && extFi.Mode().IsRegular())
+			var hasPairedExt bool
+			if extErr == nil && extFi.Mode().IsRegular() {
+				if metaBytes, err := root.ReadFile(extRel); err == nil {
+					hasPairedExt = isAcceleratorOrphanExtFile(filepath.ToSlash(extRel), metaBytes)
+				}
+			}
 
 			if testBeforeClearAllRemoveHook != nil {
 				testBeforeClearAllRemoveHook(rel)
@@ -2598,7 +2608,11 @@ func (m *Manager) ClearAll() (int, int64, int) {
 							deletedFiles++
 							freedBytes += preExtFi.Size()
 							recordAffectedDir(extRel)
+						} else {
+							skippedFiles++
 						}
+					} else {
+						skippedFiles++
 					}
 				}
 			} else {
