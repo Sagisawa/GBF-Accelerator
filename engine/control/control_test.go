@@ -3032,7 +3032,9 @@ func TestControlServer_ApplyConfig_ProxyRebindFail_RollsBackConfig(t *testing.T)
 
 func TestCacheMaintenanceRejectsProtectedLegacyRoot(t *testing.T) {
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" { t.Skip("home directory unavailable") }
+	if err != nil || home == "" {
+		t.Skip("home directory unavailable")
+	}
 	tempDir := t.TempDir()
 	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
 	cacheMgr := cache.NewManager(tempDir, 16)
@@ -3053,9 +3055,13 @@ func TestCacheMaintenanceRejectsProtectedLegacyRoot(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/api/cache/"+tc.name, nil)
 			w := httptest.NewRecorder()
 			tc.handler(w, req)
-			if w.Code != http.StatusConflict { t.Fatalf("expected HTTP 409, got %d: %s", w.Code, w.Body.String()) }
+			if w.Code != http.StatusConflict {
+				t.Fatalf("expected HTTP 409, got %d: %s", w.Code, w.Body.String())
+			}
 			var payload map[string]interface{}
-			if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil { t.Fatal(err) }
+			if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
 			if payload["code"] != "CACHE_DIR_REQUIRES_RELOCATION" || payload["destructive_operations_blocked"] != true {
 				t.Fatalf("expected structured relocation response, got %+v", payload)
 			}
