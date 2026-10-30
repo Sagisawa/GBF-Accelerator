@@ -2854,7 +2854,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		} else {
 			healthy++
 		}
-		if scanned%500 == 0 { emitProgress(false) }
+		if scanned%500 == 0 {
+			emitProgress(false)
+		}
 		return nil
 	})
 	if corrupted > 0 {
