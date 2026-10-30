@@ -19,6 +19,9 @@ import (
 
 func seedControlTestCache(t *testing.T, baseDir string) {
 	t.Helper()
+	if err := cache.EnsureRootMarker(baseDir); err != nil {
+		t.Fatalf("create cache root marker: %v", err)
+	}
 	writePair := func(relPath, content string) {
 		full := filepath.Join(baseDir, filepath.FromSlash(relPath))
 		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
@@ -27,8 +30,31 @@ func seedControlTestCache(t *testing.T, baseDir string) {
 		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
 			t.Fatalf("write %s: %v", full, err)
 		}
-		ext := fmt.Sprintf(`{"ct":"image/png","lm":"Mon, 01 Jan 2026 00:00:00 GMT","cl":%d}`, len(content))
-		if err := os.WriteFile(full+".ext", []byte(ext), 0644); err != nil {
+		fi, err := os.Stat(full)
+		if err != nil {
+			t.Fatalf("stat %s: %v", full, err)
+		}
+		ns := "gbf"
+		if strings.HasPrefix(relPath, "hosts/") {
+			parts := strings.SplitN(relPath, "/", 3)
+			if len(parts) != 3 {
+				t.Fatalf("invalid host fixture path: %s", relPath)
+			}
+			ns = parts[1]
+		}
+		meta := map[string]interface{}{
+			"ct":       "application/octet-stream",
+			"ns":       ns,
+			"v":        1,
+			"verified": true,
+			"size":     fi.Size(),
+			"mtime":    fi.ModTime().UnixNano(),
+		}
+		metaBytes, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatalf("marshal ext metadata: %v", err)
+		}
+		if err := os.WriteFile(full+".ext", metaBytes, 0644); err != nil {
 			t.Fatalf("write ext %s: %v", full, err)
 		}
 	}
@@ -42,8 +68,8 @@ func seedControlTestCache(t *testing.T, baseDir string) {
 	writePair("assets/img/sp/event/common/btn.png", "PNG-EVENT-COMMON")
 	writePair("assets/img/sp/event/teamraid075/top.png", "PNG-EVENT-RAID")
 	writePair("assets/sound/voice/3040001000_v_001.mp3", "MP3-VOICE")
-	writePair("assets/unknown_folder/misc.bin", "MISC-OTHER")
-	writePair("hosts/gbf_mbga_static/mbga/banner/top.png", "MBGA-BANNER")
+	writePair("assets/misc/bin/misc.bin", "MISC-OTHER")
+	writePair("hosts/gbf_mbga_static/assets/img/sp/ui/banner/top.png", "MBGA-BANNER")
 }
 
 func waitForControlCacheTaskIdle(t *testing.T, ctrl *ControlServer) map[string]interface{} {

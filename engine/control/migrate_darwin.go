@@ -53,16 +53,24 @@ func isStandardCacheDir(cacheDir string) bool {
 // ensureNoSymlinkPathComponents rejects paths with symlink components or non-directory ancestors.
 func ensureNoSymlinkPathComponents(path string) error {
 	abs, err := filepath.Abs(path)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	volume := filepath.VolumeName(abs)
 	cur := volume + string(filepath.Separator)
 	rest := strings.TrimPrefix(abs, cur)
 	for _, seg := range strings.Split(rest, string(filepath.Separator)) {
-		if seg == "" || seg == "." { continue }
+		if seg == "" || seg == "." {
+			continue
+		}
 		cur = filepath.Join(cur, seg)
 		fi, statErr := os.Lstat(cur)
-		if os.IsNotExist(statErr) { continue }
-		if statErr != nil { return statErr }
+		if os.IsNotExist(statErr) {
+			continue
+		}
+		if statErr != nil {
+			return statErr
+		}
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("路径组件不能是符号链接: %s", cur)
 		}
@@ -77,20 +85,30 @@ func ensureNoSymlinkPathComponents(path string) error {
 // cannot be established from the same Tier-1/Tier-2 proof used by cache maintenance.
 func validateCacheMigrationTree(root string) error {
 	fi, err := os.Lstat(root)
-	if os.IsNotExist(err) { return nil }
-	if err != nil { return err }
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
 		return fmt.Errorf("迁移源必须是普通目录: %s", root)
 	}
 	hasMarker := cache.HasRootMarker(root)
 	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil { return walkErr }
-		if path == root { return nil }
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
 		if entry.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
 			return fmt.Errorf("迁移目录包含符号链接或特殊文件: %s", path)
 		}
 		rel, relErr := filepath.Rel(root, path)
-		if relErr != nil { return relErr }
+		if relErr != nil {
+			return relErr
+		}
 		slashRel := filepath.ToSlash(rel)
 		if entry.IsDir() {
 			if !cache.IsConfirmedCacheDirectory(slashRel) {
@@ -99,15 +117,21 @@ func validateCacheMigrationTree(root string) error {
 			return nil
 		}
 		info, infoErr := entry.Info()
-		if infoErr != nil { return infoErr }
+		if infoErr != nil {
+			return infoErr
+		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("迁移目录包含非普通文件: %s", path)
 		}
 		if slashRel == cache.RootMarkerFileName {
-			if !hasMarker { return fmt.Errorf("缓存根标记无效: %s", path) }
+			if !hasMarker {
+				return fmt.Errorf("缓存根标记无效: %s", path)
+			}
 			return nil
 		}
-		if config.IsSystemJunk(filepath.Base(path)) { return nil }
+		if config.IsSystemJunk(filepath.Base(path)) {
+			return nil
+		}
 		if strings.HasSuffix(slashRel, ".ext") {
 			assetPath := strings.TrimSuffix(path, ".ext")
 			if !cache.IsConfirmedCacheFile(root, assetPath, hasMarker) {
@@ -124,13 +148,19 @@ func validateCacheMigrationTree(root string) error {
 
 func validateEmptyMigrationTarget(target string) error {
 	fi, err := os.Lstat(target)
-	if os.IsNotExist(err) { return nil }
-	if err != nil { return err }
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
 		return fmt.Errorf("迁移目标不是普通目录: %s", target)
 	}
 	entries, err := os.ReadDir(target)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if len(entries) != 0 {
 		return fmt.Errorf("迁移目标目录并非空目录，拒绝覆盖现有内容: %s", target)
 	}
@@ -192,7 +222,7 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 		if err := validateCacheMigrationTree(sourceDir); err != nil {
 			msg := fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err)
 			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusConflict, map[string]string{
+			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 				"ok": false, "code": "CACHE_MIGRATION_SOURCE_UNCONFIRMED", "error": msg,
 			})
 			return
@@ -228,7 +258,9 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 	}
 	stageCommitted := false
 	defer func() {
-		if !stageCommitted { _ = os.RemoveAll(stageDir) }
+		if !stageCommitted {
+			_ = os.RemoveAll(stageDir)
+		}
 	}()
 
 	if sourceInfo, statErr := os.Lstat(sourceDir); statErr == nil && sourceInfo.IsDir() {
