@@ -648,6 +648,31 @@ func isConfirmedCacheDir(slashRelDir string) bool {
 	return isValidCacheDirHierarchy(segs)
 }
 
+// isUnverifiedLegacyCacheCandidateInRoot identifies a structurally plausible legacy cache path
+// that has no sidecar ownership record. It is diagnostic-only: callers must never delete it.
+// Corrupt contents cannot satisfy Tier 2, and path shape plus a root marker is not enough
+// to prove that a file is owned by the cache.
+func isUnverifiedLegacyCacheCandidateInRoot(root *os.Root, rel string, fi os.FileInfo, hasRootMarker bool) bool {
+	if root == nil || !hasRootMarker || fi == nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	slashRel := filepath.ToSlash(rel)
+	baseName := filepath.Base(rel)
+	if slashRel == RootMarkerFileName || config.IsSystemJunk(baseName) ||
+		strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") ||
+		strings.Contains(slashRel, ".quarantine") {
+		return false
+	}
+	if _, _, ok := isConfirmedCachePathStructure(slashRel); !ok {
+		return false
+	}
+	_, err := root.Lstat(rel + ".ext")
+	return os.IsNotExist(err)
+}
+
 // IsConfirmedCacheFile determines whether a file on disk belongs to GBF-Accelerator/ACGPower cache.
 // It explicitly rejects non-regular files and symbolic links using os.Lstat.
 // It enforces a two-tier hierarchy:

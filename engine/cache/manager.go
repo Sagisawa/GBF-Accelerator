@@ -2710,6 +2710,8 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 	hasRootMarker := hasRootMarkerInRoot(root)
 
 	scanned, corrupted, healthy, skipped := 0, 0, 0, 0
+	unverifiedCorrupted := 0
+	tempFilesRemoved := 0
 	cancelled := false
 	emitProgress := func(done bool) {
 		if progressCb != nil {
@@ -2723,7 +2725,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			return filepath.SkipAll
 		default:
 		}
-		if walkErr != nil || d.IsDir() { return nil }
+		if walkErr != nil || d.IsDir() {
+			return nil
+		}
 		if d.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
 			skipped++
 			return nil
@@ -2756,7 +2760,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 				if statErr == nil && current.Mode().IsRegular() && os.SameFile(walkInfo, current) {
 					beforeRemove, againErr := root.Lstat(rel)
 					if againErr == nil && beforeRemove.Mode().IsRegular() && os.SameFile(current, beforeRemove) {
-						if root.Remove(rel) == nil { corrupted++ }
+						if root.Remove(rel) == nil {
+							tempFilesRemoved++
+						}
 					}
 				}
 			}
@@ -2766,8 +2772,17 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		}
 
 		rootInfo, statErr := root.Lstat(rel)
-		if statErr != nil || !rootInfo.Mode().IsRegular() || !os.SameFile(walkInfo, rootInfo) ||
-			!isConfirmedCacheFileInRoot(root, rel, rootInfo, hasRootMarker) {
+		if statErr != nil || !rootInfo.Mode().IsRegular() || !os.SameFile(walkInfo, rootInfo) {
+			skipped++
+			return nil
+		}
+		if !isConfirmedCacheFileInRoot(root, rel, rootInfo, hasRootMarker) {
+			// Damaged legacy files without a valid .ext cannot pass Tier 2 because their
+			// contents no longer validate. Report them, but preserve them as unowned data.
+			if isUnverifiedLegacyCacheCandidateInRoot(root, rel, rootInfo, hasRootMarker) &&
+				(walkInfo.Size() == 0 || !IsValidCacheFile(p, "", p)) {
+				unverifiedCorrupted++
+			}
 			skipped++
 			return nil
 		}
@@ -2841,6 +2856,8 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 	emitProgress(true)
 	return map[string]interface{}{
 		"scanned": scanned, "healthy": healthy, "corrupted": corrupted,
+		"unverified_corrupted": unverifiedCorrupted,
+		"temp_files_removed": tempFilesRemoved,
 		"skipped": skipped, "cancelled": cancelled, "ok": true,
 	}
 }
