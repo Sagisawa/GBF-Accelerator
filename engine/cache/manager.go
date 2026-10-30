@@ -2422,16 +2422,42 @@ func (m *Manager) ClearRAM() {
 var testBeforeClearAllRemoveHook func(relPath string)
 
 func (m *Manager) ClearAll() (int, int64, int) {
+	deleted, freed, skipped, _ := m.ClearAllWithError()
+	return deleted, freed, skipped
+}
+
+// ClearAllWithError reports a rejected root or filesystem failure so the control API
+// cannot confuse a safety refusal with a successful empty-cache clear.
+func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
 
-	// Reject unsafe roots before clearing RAM, disabling Boost, or changing generations.
+	// Validate and pin the root before changing RAM, Boost, or cache generations.
 	if err := m.ValidateDestructiveCacheDir(); err != nil {
-		return 0, 0, 0
+		return 0, 0, 0, err
 	}
+
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return 0, 0, 0, err
+		}
+		// A missing cache directory contains no disk entries. Preserve the legacy
+		// behavior of clearing in-memory state without creating a new directory.
+		m.generation++
+		m.ClearRAM()
+		m.DisableBoost()
+		m.clearMissing()
+		m.clearDiskMeta()
+		m.clearTokenShards()
+		m.clearTempTokens()
+		m.invalidateSnapshots("已执行全盘清空")
+		return 0, 0, 0, nil
+	}
+	defer root.Close()
 
 	m.generation++
 	m.ClearRAM()
@@ -2440,17 +2466,6 @@ func (m *Manager) ClearAll() (int, int64, int) {
 	var deletedFiles int
 	var freedBytes int64
 	var skippedFiles int
-
-	root, err := os.OpenRoot(base)
-	if err != nil {
-		m.clearMissing()
-		m.clearDiskMeta()
-		m.clearTokenShards()
-		m.clearTempTokens()
-		m.invalidateSnapshots("已执行全盘清空")
-		return 0, 0, 0
-	}
-	defer root.Close()
 
 	hasRootMarker := hasRootMarkerInRoot(root)
 	affectedDirs := make(map[string]struct{})
@@ -2650,7 +2665,7 @@ func (m *Manager) ClearAll() (int, int64, int) {
 	m.clearTempTokens()
 	m.invalidateSnapshots("已执行全盘清空")
 
-	return deletedFiles, freedBytes, skippedFiles
+	return deletedFiles, freedBytes, skippedFiles, nil
 }
 
 func (m *Manager) Stats() (items int, bytes int64) {

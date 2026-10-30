@@ -1471,11 +1471,24 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	var clearRes map[string]interface{}
+	clearStatus := "completed"
+	clearErr := ""
 	defer func() {
-		c.finishCacheTask(taskID, "clear_all", "completed", false, clearRes, "")
+		c.finishCacheTask(taskID, "clear_all", clearStatus, false, clearRes, clearErr)
 	}()
 
-	diskDeleted, diskFreed, diskSkipped := c.cacheMgr.ClearAll()
+	diskDeleted, diskFreed, diskSkipped, err := c.cacheMgr.ClearAllWithError()
+	if err != nil {
+		clearStatus = "failed"
+		clearErr = err.Error()
+		if c.rejectUnsafeCacheMaintenance(w) {
+			return
+		}
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok": false, "code": "CACHE_CLEAR_FAILED", "error": err.Error(),
+		})
+		return
+	}
 	c.cacheTaskMu.Lock()
 	c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
 	c.lastBoostResult = c.boostProgress
