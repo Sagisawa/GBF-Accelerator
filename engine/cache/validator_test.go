@@ -322,12 +322,13 @@ func TestGzipFullVsSampleValidationAndAuditNoFalseDelete(t *testing.T) {
 		t.Fatal("expected gzip stream with trailing non-gzip garbage to fail IsValidCacheContent")
 	}
 
-	// 5. AuditAndRepairWithProgress must NOT falsely delete valid Gzip images/fonts (even when the first
-	//    512 compressed bytes cannot produce magic bytes), while still deleting truncated/corrupt Gzip and HTML.
+	// 5. Audit must preserve valid large-header gzip assets and repair damaged Tier 1 pairs.
 	tempDir := t.TempDir()
 	mgr := NewManager(tempDir, 16)
 	defer mgr.Close()
-	if err := EnsureRootMarker(tempDir); err != nil { t.Fatal(err) }
+	if err := EnsureRootMarker(tempDir); err != nil {
+		t.Fatal(err)
+	}
 
 	mgr.Save("/assets/img/valid_large_hdr.png", map[string]string{
 		"content-type":     "image/png",
@@ -342,24 +343,57 @@ func TestGzipFullVsSampleValidationAndAuditNoFalseDelete(t *testing.T) {
 		"content-encoding": "gzip",
 	}, gzTtfLargeHdr)
 
-	// Write a truncated gzip JS and a gzipped HTML error page directly to disk to simulate disk corruption
+	// Create Tier 1 pairs first, then corrupt the data without changing size or mtime.
 	badTruncJSPath, ok := mgr.resolvePathWithNamespace("gbf", "assets/js/truncated_bad.js")
 	if !ok {
 		t.Fatal("failed to resolve badTruncJSPath")
 	}
-	badHtmlPngPath, ok := mgr.resolvePathWithNamespace("gbf", "assets/img/html_bad.png")
+	badCRCJSPath, ok := mgr.resolvePathWithNamespace("gbf", "assets/js/corrupt_crc.js")
 	if !ok {
-		t.Fatal("failed to resolve badHtmlPngPath")
+		t.Fatal("failed to resolve badCRCJSPath")
 	}
-	_ = writeBytesForTest(badTruncJSPath, gzJs[:len(gzJs)-6])
-	_ = writeBytesForTest(badHtmlPngPath, gzHtml)
+	badISizePNGPath, ok := mgr.resolvePathWithNamespace("gbf", "assets/img/corrupt_isize.png")
+	if !ok {
+		t.Fatal("failed to resolve badISizePNGPath")
+	}
+	jsHeaders := map[string]string{
+		"content-type":     "application/javascript",
+		"content-encoding": "gzip",
+	}
+	pngHeaders := map[string]string{
+		"content-type":     "image/png",
+		"content-encoding": "gzip",
+	}
+	if !mgr.Save("/assets/js/truncated_bad.js", jsHeaders, gzJs) ||
+		!mgr.Save("/assets/js/corrupt_crc.js", jsHeaders, gzJs) ||
+		!mgr.Save("/assets/img/corrupt_isize.png", pngHeaders, gzPng) {
+		t.Fatal("failed to save Tier 1 audit fixtures")
+	}
+	corruptWithSameIdentity := func(path string, data []byte) {
+		t.Helper()
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writeBytesForTest(path, data); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, fi.ModTime(), fi.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	truncatedSameSize := append([]byte(nil), gzJs[:len(gzJs)-6]...)
+	truncatedSameSize = append(truncatedSameSize, bytes.Repeat([]byte{0xff}, 6)...)
+	corruptWithSameIdentity(badTruncJSPath, truncatedSameSize)
+	corruptWithSameIdentity(badCRCJSPath, corruptCRC)
+	corruptWithSameIdentity(badISizePNGPath, corruptISize)
 
 	res := mgr.AuditAndRepair()
 	if got := res["healthy"].(int); got != 3 {
 		t.Fatalf("expected 3 healthy gzip assets (PNG, WOFF2, TTF with >512B headers) preserved by audit, got %d (res=%v)", got, res)
 	}
-	if got := res["corrupted"].(int); got != 2 {
-		t.Fatalf("expected 2 corrupted gzip assets (truncated JS + gzipped HTML) removed by audit, got %d (res=%v)", got, res)
+	if got := res["corrupted"].(int); got != 3 {
+		t.Fatalf("expected 3 Tier 1 corrupted gzip assets removed by audit, got %d (res=%v)", got, res)
 	}
 }
 
