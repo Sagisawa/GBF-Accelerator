@@ -1475,7 +1475,6 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 		c.finishCacheTask(taskID, "clear_all", "completed", false, clearRes, "")
 	}()
 
-	c.cacheMgr.ClearRAM()
 	diskDeleted, diskFreed, diskSkipped := c.cacheMgr.ClearAll()
 	c.cacheTaskMu.Lock()
 	c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}

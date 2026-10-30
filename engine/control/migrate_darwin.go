@@ -25,6 +25,8 @@ func getStandardCacheDir() string {
 	return filepath.Join(home, "Library", "Application Support", "GBF-Accelerator", "cache")
 }
 
+var standardCacheDirProvider = getStandardCacheDir
+
 func isStandardCacheDir(cacheDir string) bool {
 	if cacheDir == "" {
 		return false
@@ -129,10 +131,8 @@ func validateEmptyMigrationTarget(target string) error {
 	}
 	entries, err := os.ReadDir(target)
 	if err != nil { return err }
-	for _, entry := range entries {
-		if !config.IsSystemJunk(entry.Name()) {
-			return fmt.Errorf("迁移目标已包含现有数据，拒绝覆盖: %s", filepath.Join(target, entry.Name()))
-		}
+	if len(entries) != 0 {
+		return fmt.Errorf("迁移目标目录并非空目录，拒绝覆盖现有内容: %s", target)
 	}
 	return nil
 }
@@ -144,7 +144,7 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 		return
 	}
 
-	targetDir := getStandardCacheDir()
+	targetDir := standardCacheDirProvider()
 	if targetDir == "" {
 		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, "Unable to determine user home directory")
 		c.sendJSON(w, http.StatusInternalServerError, map[string]string{
