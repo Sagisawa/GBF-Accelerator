@@ -126,24 +126,42 @@ func TestBoostLifecycle_SaveNewAssetInvalidatesOldResident(t *testing.T) {
 
 func TestBoostLifecycle_AuditInvalidatesCorruptedResident(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "gbf_boost_audit_*")
-	if err != nil { t.Fatalf("failed to create temp dir: %v", err) }
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
 	defer os.RemoveAll(tempDir)
 	mgr := NewManager(tempDir, 16)
 	defer mgr.Close()
 	key := "assets/img/sp/ui/clean.png"
 	p, ok := mgr.resolvePathWithNamespace("gbf", key)
-	if !ok { t.Fatal("failed to resolve test cache key") }
+	if !ok {
+		t.Fatal("failed to resolve test cache key")
+	}
 	validPNG := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRgood")
-	if !mgr.Save(key, map[string]string{"content-type": "image/png"}, validPNG) { t.Fatal("save cache fixture failed") }
+	if !mgr.Save(key, map[string]string{"content-type": "image/png"}, validPNG) {
+		t.Fatal("save cache fixture failed")
+	}
 	mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
-	if _, ok := mgr.ResidentPool().Get(key); !ok { t.Fatal("expected clean item in boost") }
+	if _, ok := mgr.ResidentPool().Get(key); !ok {
+		t.Fatal("expected clean item in boost")
+	}
 	fi, err := os.Stat(p)
-	if err != nil { t.Fatal(err) }
-	if err := os.WriteFile(p, bytes.Repeat([]byte("x"), len(validPNG)), 0644); err != nil { t.Fatal(err) }
-	if err := os.Chtimes(p, fi.ModTime(), fi.ModTime()); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, bytes.Repeat([]byte("x"), len(validPNG)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
 	res := mgr.AuditAndRepair()
-	if res["ok"] != true || res["corrupted"] != 1 { t.Fatalf("expected one confirmed corrupt asset to be repaired, got %+v", res) }
-	if _, ok := mgr.ResidentPool().Get(key); ok { t.Fatal("corrupt item should be removed from resident pool") }
+	if res["ok"] != true || res["corrupted"] != 1 {
+		t.Fatalf("expected one confirmed corrupt asset to be repaired, got %+v", res)
+	}
+	if _, ok := mgr.ResidentPool().Get(key); ok {
+		t.Fatal("corrupt item should be removed from resident pool")
+	}
 }
 
 func TestBoostLifecycle_RepeatedEnableDisable(t *testing.T) {
