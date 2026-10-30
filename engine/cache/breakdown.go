@@ -1286,14 +1286,14 @@ type VersionRetentionPreview struct {
 
 // SnapshotEntry represents an indexed managed data file in a breakdown snapshot.
 type SnapshotEntry struct {
-	NS           string      `json:"ns"`
-	Key          string      `json:"key"`
-	Category     string      `json:"category"`
-	Size         int64       `json:"asset_bytes"`
-	MetaBytes    int64       `json:"metadata_bytes"`
-	HasMeta      bool        `json:"has_metadata"`
-	MTimeNano    int64       `json:"mtime_nano"`
-	MTimeMS      int64       `json:"mtime_ms"`
+	NS           string `json:"ns"`
+	Key          string `json:"key"`
+	Category     string `json:"category"`
+	Size         int64  `json:"asset_bytes"`
+	MetaBytes    int64  `json:"metadata_bytes"`
+	HasMeta      bool   `json:"has_metadata"`
+	MTimeNano    int64  `json:"mtime_nano"`
+	MTimeMS      int64  `json:"mtime_ms"`
 	fileInfo     os.FileInfo
 	extMTimeNano int64
 	extFileInfo  os.FileInfo
@@ -1311,39 +1311,39 @@ type orphanExtCandidate struct {
 
 // BreakdownSnapshot holds the full result of a background cache breakdown scan.
 type BreakdownSnapshot struct {
-	SnapshotID           string                             `json:"snapshot_id"`
-	Generation           uint64                             `json:"generation"`
-	CacheBase            string                             `json:"cache_base"`
-	Status               string                             `json:"status"`
-	Valid                bool                               `json:"valid"`
-	Stale                bool                               `json:"stale"`
-	StaleReason          string                             `json:"stale_reason,omitempty"`
-	StartedAtMS          int64                              `json:"started_at_ms"`
-	CompletedAtMS        int64                              `json:"completed_at_ms"`
-	DurationMS           int64                              `json:"duration_ms"`
-	AssetFiles           int                                `json:"asset_files"`
-	AssetBytes           int64                              `json:"asset_bytes"`
-	MetadataFiles        int                                `json:"metadata_files"`
-	MetadataBytes        int64                              `json:"metadata_bytes"`
-	OrphanMetadataFiles  int                                `json:"orphan_metadata_files"`
-	OrphanMetadataBytes  int64                              `json:"orphan_metadata_bytes"`
-	ExcludedFiles        int                                `json:"excluded_files"`
-	ExcludedBytes        int64                              `json:"excluded_bytes"`
-	SkippedCount         int                                `json:"skipped_count"`
-	ReadErrors           int                                `json:"read_errors"`
-	Categories           []CategoryStat                     `json:"categories"`
-	Namespaces           []NamespaceStat                    `json:"namespaces"`
-	VersionGroups        []VersionGroupStat                 `json:"version_groups"`
-	RetentionPreviews    map[string]VersionRetentionPreview `json:"retention_previews,omitempty"`
-	ErrorMessage         string                             `json:"error,omitempty"`
-	Entries              []SnapshotEntry                    `json:"-"`
-	entryByNSKey         map[string]int
-	orphanExts           map[string]orphanExtCandidate
-	dirInfos             map[string]os.FileInfo
-	absBase              string
-	realBase             string
-	rootInfo             os.FileInfo
-	baseExists           bool
+	SnapshotID          string                             `json:"snapshot_id"`
+	Generation          uint64                             `json:"generation"`
+	CacheBase           string                             `json:"cache_base"`
+	Status              string                             `json:"status"`
+	Valid               bool                               `json:"valid"`
+	Stale               bool                               `json:"stale"`
+	StaleReason         string                             `json:"stale_reason,omitempty"`
+	StartedAtMS         int64                              `json:"started_at_ms"`
+	CompletedAtMS       int64                              `json:"completed_at_ms"`
+	DurationMS          int64                              `json:"duration_ms"`
+	AssetFiles          int                                `json:"asset_files"`
+	AssetBytes          int64                              `json:"asset_bytes"`
+	MetadataFiles       int                                `json:"metadata_files"`
+	MetadataBytes       int64                              `json:"metadata_bytes"`
+	OrphanMetadataFiles int                                `json:"orphan_metadata_files"`
+	OrphanMetadataBytes int64                              `json:"orphan_metadata_bytes"`
+	ExcludedFiles       int                                `json:"excluded_files"`
+	ExcludedBytes       int64                              `json:"excluded_bytes"`
+	SkippedCount        int                                `json:"skipped_count"`
+	ReadErrors          int                                `json:"read_errors"`
+	Categories          []CategoryStat                     `json:"categories"`
+	Namespaces          []NamespaceStat                    `json:"namespaces"`
+	VersionGroups       []VersionGroupStat                 `json:"version_groups"`
+	RetentionPreviews   map[string]VersionRetentionPreview `json:"retention_previews,omitempty"`
+	ErrorMessage        string                             `json:"error,omitempty"`
+	Entries             []SnapshotEntry                    `json:"-"`
+	entryByNSKey        map[string]int
+	orphanExts          map[string]orphanExtCandidate
+	dirInfos            map[string]os.FileInfo
+	absBase             string
+	realBase            string
+	rootInfo            os.FileInfo
+	baseExists          bool
 }
 
 // ScanProgress reports background breakdown scan progress.
@@ -1857,7 +1857,6 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		verNum  int
 	}
 	versionDirMap := make(map[versionDirKey]*VersionDirStat)
-
 
 	entries := make([]SnapshotEntry, 0, len(rawFiles))
 	entryByNSKey := make(map[string]int, len(rawFiles))
@@ -2651,8 +2650,31 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	lfi, statErr := parentRoot.Lstat(leafName)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
-			// Preserve any now-orphaned .ext because its paired asset no longer exists.
-			res.AlreadyMissingCount++
+			shouldClearMem := true
+			// Clean up or verify paired .ext if it still lingers after data file disappeared
+			if extFi, extErr := parentRoot.Lstat(extLeaf); extErr == nil {
+				if extFi.IsDir() || extFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !extFi.Mode().IsRegular() {
+					shouldClearMem = false
+					res.FailedCount++
+					appendBoundedFailure(res, normNS, normKey+".ext", "残留元数据路径不是普通文件")
+				} else if isPairedExtChangedSinceSnapshot(cand, extFi) {
+					shouldClearMem = false
+					res.SkippedChangedCount++
+				} else {
+					// Step D safety policy: preserve orphan .ext file on disk
+					res.AlreadyMissingCount++
+				}
+			} else if !os.IsNotExist(extErr) {
+				shouldClearMem = false
+				res.FailedCount++
+				appendBoundedFailure(res, normNS, normKey+".ext", extErr.Error())
+			} else {
+				res.AlreadyMissingCount++
+			}
+			if shouldClearMem {
+				bumpInvalidateTokenLocked(shard, canonKey)
+				m.clearKeyMemoryState(normNS, normKey)
+			}
 		} else {
 			res.FailedCount++
 			appendBoundedFailure(res, normNS, normKey, statErr.Error())

@@ -19,6 +19,9 @@ import (
 
 func seedControlTestCache(t *testing.T, baseDir string) {
 	t.Helper()
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		t.Fatalf("mkdir baseDir: %v", err)
+	}
 	if err := cache.EnsureRootMarker(baseDir); err != nil {
 		t.Fatalf("create cache root marker: %v", err)
 	}
@@ -234,7 +237,7 @@ func TestCacheCategoryCleanupAndSlimPreviewAPIs(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cacheDir, "assets/img/sp/event/common/btn.png")); err != nil {
 		t.Errorf("core_ui event/common/btn.png should NOT be deleted: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cacheDir, "hosts/gbf_mbga_static/mbga/banner/top.png")); err != nil {
+	if _, err := os.Stat(filepath.Join(cacheDir, "hosts/gbf_mbga_static/assets/img/sp/banner/top.png")); err != nil {
 		t.Errorf("non-gbf namespace should NOT be deleted by default: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cacheDir, "assets/img/sp/event/teamraid075/top.png")); !os.IsNotExist(err) {
@@ -401,14 +404,13 @@ func TestControlAsyncFailureResultSynthesis(t *testing.T) {
 	stats := telemetry.NewStats()
 	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
 
-	// Point cacheMgr to a regular file so live /api/cache/slim fails inside the background goroutine
-	notADir := filepath.Join(tempDir, "not_a_dir.bin")
-	if err := os.WriteFile(notADir, []byte("file"), 0644); err != nil {
+	// Create a non-directory version prefix inside cacheDir so live /api/cache/slim fails inside the background goroutine
+	badPrefix := filepath.Join(cacheDir, "assets_en")
+	if err := os.WriteFile(badPrefix, []byte("not_a_dir"), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	cacheMgr.SetCacheBase(notADir)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/cache/slim?keep=2", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/slim?keep=3", nil)
 	req.Host = "127.0.0.1:8125"
 	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
@@ -426,4 +428,3 @@ func TestControlAsyncFailureResultSynthesis(t *testing.T) {
 		t.Fatalf("expected last_slim_result failed_count=1, got %+v", slimRes)
 	}
 }
-

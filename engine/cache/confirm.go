@@ -572,6 +572,54 @@ func isValidCacheDirHierarchy(segs []string) bool {
 	return false
 }
 
+// isTier1VersionFallbackPath checks whether slashRel matches the historical GBF version fallback
+// directory structure without the leading "assets/" prefix (e.g. "<ver>/<category>/...").
+// This is a strict Tier-1-only compatibility exception:
+// 1. It must have at least 3 segments (e.g. 300/js/app.js).
+// 2. The first segment must be a valid positive integer version (e.g. 300).
+// 3. The second segment must be a known GBF category (e.g. js, img, sound, etc.).
+// 4. Any intermediate segments must match valid category subdirectory rules.
+// 5. It must have a valid asset file extension (e.g. .js, .png, etc.).
+func isTier1VersionFallbackPath(slashRel string) bool {
+	if slashRel == "" || slashRel == "." || strings.HasPrefix(slashRel, "..") {
+		return false
+	}
+	if !isAssetExtension(strings.ToLower(slashRel)) {
+		return false
+	}
+	segs := splitCleanSegments(slashRel)
+	if len(segs) < 3 {
+		return false
+	}
+	if _, isVer := parsePositiveVersionSegment(segs[0]); !isVer {
+		return false
+	}
+	cat := segs[1]
+	if !isKnownGBFCategory(cat) {
+		return false
+	}
+	return isValidCategoryDirSegments(cat, segs[2:len(segs)-1])
+}
+
+// isVersionFallbackDirHierarchy checks whether directory segments match a historical version
+// fallback directory (e.g. "300" or "300/js").
+func isVersionFallbackDirHierarchy(segs []string) bool {
+	if len(segs) < 1 {
+		return false
+	}
+	if _, isVer := parsePositiveVersionSegment(segs[0]); !isVer {
+		return false
+	}
+	if len(segs) == 1 {
+		return true
+	}
+	cat := segs[1]
+	if !isKnownGBFCategory(cat) {
+		return false
+	}
+	return isValidCategoryDirSegments(cat, segs[2:])
+}
+
 // isConfirmedCachePathStructure checks whether slashRel matches the canonical cache namespace and directory
 // hierarchy of GBF-Accelerator (strictly following positive integer version + category, direct category fallback,
 // root category fallback, or multi-host paths). It also verifies that the target file has a valid asset extension.
@@ -645,7 +693,10 @@ func isConfirmedCacheDir(slashRelDir string) bool {
 		}
 		return isValidCacheDirHierarchy(segs[2:])
 	}
-	return isValidCacheDirHierarchy(segs)
+	if isValidCacheDirHierarchy(segs) {
+		return true
+	}
+	return isVersionFallbackDirHierarchy(segs)
 }
 
 // isUnverifiedLegacyCacheCandidateInRoot identifies a structurally plausible legacy cache path
@@ -716,8 +767,15 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 	// Strict canonical cache hierarchy check for both Tier 1 and Tier 2.
 	// GBF-Accelerator never places cache files in arbitrary user paths (e.g. assets/personal_data/...).
 	ns, cleanKey, ok := isConfirmedCachePathStructure(slashRel)
+	isTier1Fallback := false
 	if !ok {
-		return false
+		if isTier1VersionFallbackPath(slashRel) {
+			ns = "gbf"
+			cleanKey = slashRel
+			isTier1Fallback = true
+		} else {
+			return false
+		}
 	}
 
 	// --- Tier 1: Strong evidence via valid paired .ext metadata file ---
@@ -740,8 +798,17 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 		if meta.Size != fi.Size() || meta.MTimeNano != fi.ModTime().UnixNano() {
 			return false
 		}
+		isHostsPath := strings.HasPrefix(slashRel, "hosts/")
 		if meta.Namespace != "" && meta.Namespace != "gbf" {
 			if sanitizeNamespace(meta.Namespace) != ns {
+				return false
+			}
+		} else if isHostsPath {
+			if meta.Namespace != "gbf" {
+				return false
+			}
+		} else if isTier1Fallback {
+			if meta.Namespace != "gbf" {
 				return false
 			}
 		} else if ns != "gbf" {
@@ -751,6 +818,12 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 	} else if !os.IsNotExist(extErr) {
 		// Lstat failed with an error other than NotExist (e.g. permission error).
 		// Since we cannot verify whether .ext exists or not, preserve the file.
+		return false
+	}
+
+	// Version fallback paths (e.g. 300/js/app.js) are strictly Tier 1 only.
+	// Without a valid, matching .ext metadata file, they are never recognized under Tier 2.
+	if isTier1Fallback {
 		return false
 	}
 
@@ -789,8 +862,15 @@ func isConfirmedCacheFileInRoot(root *os.Root, rel string, fi os.FileInfo, hasRo
 	// Strict canonical cache hierarchy check for both Tier 1 and Tier 2.
 	// GBF-Accelerator never places cache files in arbitrary user paths (e.g. assets/personal_data/...).
 	ns, cleanKey, ok := isConfirmedCachePathStructure(slashRel)
+	isTier1Fallback := false
 	if !ok {
-		return false
+		if isTier1VersionFallbackPath(slashRel) {
+			ns = "gbf"
+			cleanKey = slashRel
+			isTier1Fallback = true
+		} else {
+			return false
+		}
 	}
 
 	// Tier 1: Check paired .ext metadata file via root
@@ -813,8 +893,17 @@ func isConfirmedCacheFileInRoot(root *os.Root, rel string, fi os.FileInfo, hasRo
 		if meta.Size != fi.Size() || meta.MTimeNano != fi.ModTime().UnixNano() {
 			return false
 		}
+		isHostsPath := strings.HasPrefix(slashRel, "hosts/")
 		if meta.Namespace != "" && meta.Namespace != "gbf" {
 			if sanitizeNamespace(meta.Namespace) != ns {
+				return false
+			}
+		} else if isHostsPath {
+			if meta.Namespace != "gbf" {
+				return false
+			}
+		} else if isTier1Fallback {
+			if meta.Namespace != "gbf" {
 				return false
 			}
 		} else if ns != "gbf" {
@@ -822,6 +911,12 @@ func isConfirmedCacheFileInRoot(root *os.Root, rel string, fi os.FileInfo, hasRo
 		}
 		return true
 	} else if !os.IsNotExist(extErr) {
+		return false
+	}
+
+	// Version fallback paths (e.g. 300/js/app.js) are strictly Tier 1 only.
+	// Without a valid, matching .ext metadata file, they are never recognized under Tier 2.
+	if isTier1Fallback {
 		return false
 	}
 

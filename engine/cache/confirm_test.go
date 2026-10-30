@@ -266,7 +266,7 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"personal_data/photo.png", false},
 		{"user_workspace/doc.png", false},
 		{"assets/12345/btn.png", false}, // inside version dir without category
-		{"12345/img/sp/btn.png", false},  // bare version number at root
+		{"12345/img/sp/btn.png", false}, // bare version number at root
 		{"12345/btn.png", false},
 		{"hosts/example.com/assets/personal_data/photo.png", false},
 		{"hosts/example.com/personal_data/photo.png", false},
@@ -488,5 +488,232 @@ func TestAutoWriteRootMarkerLifecycle(t *testing.T) {
 	can, _ = CanAutoWriteRootMarker(userDir, false, true)
 	if !can {
 		t.Errorf("expected allFilesConfirmed=true to allow auto root marker")
+	}
+}
+
+func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
+	root := t.TempDir()
+	if err := EnsureRootMarker(root); err != nil {
+		t.Fatalf("EnsureRootMarker failed: %v", err)
+	}
+
+	writeDiskFile := func(relPath string, data []byte) string {
+		full := filepath.Join(root, filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatalf("mkdir failed: %v", err)
+		}
+		if err := os.WriteFile(full, data, 0644); err != nil {
+			t.Fatalf("write failed: %v", err)
+		}
+		return full
+	}
+
+	writeExt := func(full string, meta diskMeta) {
+		if err := writeDiskExtFile(full, meta); err != nil {
+			t.Fatalf("writeDiskExtFile failed: %v", err)
+		}
+	}
+
+	pngMagic := []byte("\x89PNG\r\n\x1a\nphotos")
+	jsCode := []byte("console.log('test');")
+
+	// 1. Negative: 2026/photos/photo.png MUST NOT be recognized under any tier
+	p2026 := writeDiskFile("2026/photos/photo.png", pngMagic)
+	fi2026, _ := os.Stat(p2026)
+	if IsConfirmedCacheFile(root, p2026, true) {
+		t.Fatalf("2026/photos/photo.png must NOT be recognized without .ext")
+	}
+	writeExt(p2026, diskMeta{
+		ContentType: "image/png",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(pngMagic)),
+		MTimeNano:   fi2026.ModTime().UnixNano(),
+		Namespace:   "gbf",
+	})
+	if IsConfirmedCacheFile(root, p2026, true) {
+		t.Fatalf("2026/photos/photo.png must NOT be recognized even with valid .ext")
+	}
+	if isTier1VersionFallbackPath("2026/photos/photo.png") {
+		t.Fatalf("2026/photos/photo.png must return false for isTier1VersionFallbackPath")
+	}
+	if isConfirmedCacheDir("2026/photos") {
+		t.Fatalf("2026/photos must return false for isConfirmedCacheDir")
+	}
+
+	// 2. Negative: 300/js/app.js without .ext MUST NOT be recognized (Tier-2 rejected)
+	p300 := writeDiskFile("300/js/app.js", jsCode)
+	fi300, _ := os.Stat(p300)
+	if IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js without .ext must NOT be recognized through Tier-2")
+	}
+	cacheRoot, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cacheRoot.Close()
+	if isUnverifiedLegacyCacheCandidateInRoot(cacheRoot, "300/js/app.js", fi300, true) {
+		t.Fatalf("300/js/app.js without .ext must not be treated as unverified legacy candidate")
+	}
+
+	// 3. Negative: 300/js/app.js with mismatched .ext MUST NOT be recognized
+	// 3a. Namespace mismatch
+	writeExt(p300, diskMeta{
+		ContentType: "application/javascript",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(jsCode)),
+		MTimeNano:   fi300.ModTime().UnixNano(),
+		Namespace:   "unrelated.host.com",
+	})
+	if IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js with namespace mismatch must NOT be recognized")
+	}
+
+	// 3b. Size mismatch
+	writeExt(p300, diskMeta{
+		ContentType: "application/javascript",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(jsCode)) + 999,
+		MTimeNano:   fi300.ModTime().UnixNano(),
+		Namespace:   "gbf",
+	})
+	if IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js with size mismatch must NOT be recognized")
+	}
+
+	// 3c. MTime mismatch
+	writeExt(p300, diskMeta{
+		ContentType: "application/javascript",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(jsCode)),
+		MTimeNano:   fi300.ModTime().UnixNano() + 1000000,
+		Namespace:   "gbf",
+	})
+	if IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js with mtime mismatch must NOT be recognized")
+	}
+
+	// 3d. Empty Namespace: 300/js/app.js with empty namespace MUST NOT be recognized under Tier-1
+	writeExt(p300, diskMeta{
+		ContentType: "application/javascript",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(jsCode)),
+		MTimeNano:   fi300.ModTime().UnixNano(),
+		Namespace:   "",
+	})
+	if IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js with empty namespace must NOT be recognized")
+	}
+	if isConfirmedCacheFileInRoot(cacheRoot, "300/js/app.js", fi300, true) {
+		t.Fatalf("300/js/app.js with empty namespace must NOT be recognized by isConfirmedCacheFileInRoot")
+	}
+
+	// 4. Positive: 300/js/app.js with matching .ext MUST be recognized under Tier-1
+	writeExt(p300, diskMeta{
+		ContentType: "application/javascript",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(jsCode)),
+		MTimeNano:   fi300.ModTime().UnixNano(),
+		Namespace:   "gbf",
+	})
+	if !IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js with valid matching .ext MUST be recognized under Tier-1")
+	}
+	if !isConfirmedCacheFileInRoot(cacheRoot, "300/js/app.js", fi300, true) {
+		t.Fatalf("300/js/app.js with valid matching .ext MUST be recognized by isConfirmedCacheFileInRoot")
+	}
+
+	// 5. Positive: 300/img/sp/quest/scene/ch1.png with matching .ext MUST be recognized
+	pQuest := writeDiskFile("300/img/sp/quest/scene/ch1.png", pngMagic)
+	fiQuest, _ := os.Stat(pQuest)
+	writeExt(pQuest, diskMeta{
+		ContentType: "image/png",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(pngMagic)),
+		MTimeNano:   fiQuest.ModTime().UnixNano(),
+		Namespace:   "gbf",
+	})
+	if !IsConfirmedCacheFile(root, pQuest, true) {
+		t.Fatalf("300/img/sp/quest/scene/ch1.png with valid matching .ext MUST be recognized")
+	}
+}
+
+// TestTier1NamespaceConfirmationMatrix 明确覆盖 8 种 Namespace 场景的 Tier-1 认证判定：
+// 1. 普通 GBF 路径 + 有效 GBF Namespace -> 识别
+// 2. 普通 GBF 路径 + 空 Namespace -> 识别 (兼容旧版历史元数据)
+// 3. 版本回退路径 + 有效 GBF Namespace -> 识别
+// 4. 版本回退路径 + 空 Namespace -> 拒绝
+// 5. hosts 路径 + GBF Namespace -> 识别 (Form A 入口)
+// 6. hosts 路径 + hostname Namespace -> 识别 (Form B 入口)
+// 7. hosts 路径 + 空 Namespace -> 拒绝
+// 8. hosts 路径 + 不匹配的 hostname Namespace -> 拒绝
+func TestTier1NamespaceConfirmationMatrix(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := EnsureRootMarker(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	cacheRoot, err := os.OpenRoot(tmpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cacheRoot.Close()
+
+	payload := []byte("console.log('ns_matrix');")
+
+	tests := []struct {
+		name      string
+		relPath   string
+		metaNS    string
+		wantTier1 bool
+	}{
+		{"1_CanonicalGBF_ValidNS", "assets/300/js/canonical_valid.js", "gbf", true},
+		{"2_CanonicalGBF_EmptyNS", "assets/300/js/canonical_empty.js", "", true},
+		{"3_Fallback_ValidNS", "300/js/fallback_valid.js", "gbf", true},
+		{"4_Fallback_EmptyNS", "300/js/fallback_empty.js", "", false},
+		{"5_Hosts_GBF_NS", "hosts/sub.example.com/assets/js/host_gbf.js", "gbf", true},
+		{"6_Hosts_Hostname_NS", "hosts/sub.example.com/assets/js/host_direct.js", "sub.example.com", true},
+		{"7_Hosts_EmptyNS", "hosts/sub.example.com/assets/js/host_empty.js", "", false},
+		{"8_Hosts_MismatchNS", "hosts/sub.example.com/assets/js/host_mismatch.js", "other.example.com", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fullPath := filepath.Join(tmpDir, filepath.FromSlash(tc.relPath))
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, payload, 0644); err != nil {
+				t.Fatal(err)
+			}
+			fi, err := os.Stat(fullPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writeDiskExtFile(fullPath, diskMeta{
+				ContentType: "application/javascript",
+				Version:     1,
+				Verified:    true,
+				Size:        fi.Size(),
+				MTimeNano:   fi.ModTime().UnixNano(),
+				Namespace:   tc.metaNS,
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			gotWithInfo := IsConfirmedCacheFileWithInfo(tmpDir, fullPath, fi, true)
+			if gotWithInfo != tc.wantTier1 {
+				t.Errorf("IsConfirmedCacheFileWithInfo(%s) = %v, want %v", tc.relPath, gotWithInfo, tc.wantTier1)
+			}
+			gotInRoot := isConfirmedCacheFileInRoot(cacheRoot, tc.relPath, fi, true)
+			if gotInRoot != tc.wantTier1 {
+				t.Errorf("isConfirmedCacheFileInRoot(%s) = %v, want %v", tc.relPath, gotInRoot, tc.wantTier1)
+			}
+		})
 	}
 }

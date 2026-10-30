@@ -29,13 +29,13 @@ const MaxDiskDirectReadSize = 2 * 1024 * 1024
 // diskMeta represents the persisted metadata stored in .ext files.
 // It maintains backward compatibility with Version 1 metadata schemas.
 type diskMeta struct {
-	Namespace         string `json:"ns,omitempty"`
-	LastModified      string `json:"LastModified,omitempty"`
-	ETag              string `json:"ETag,omitempty"`
-	AccessTime        int64  `json:"at,omitempty"`
-	ContentEncoding   string `json:"ce,omitempty"`
-	ContentType       string `json:"ct,omitempty"`
-	Version           int    `json:"v"`
+	Namespace       string `json:"ns,omitempty"`
+	LastModified    string `json:"LastModified,omitempty"`
+	ETag            string `json:"ETag,omitempty"`
+	AccessTime      int64  `json:"at,omitempty"`
+	ContentEncoding string `json:"ce,omitempty"`
+	ContentType     string `json:"ct,omitempty"`
+	Version         int    `json:"v"`
 	// Verified indicates that the cache item has previously passed this project's
 	// cache content validation (IsValidCacheContent) and its physical file size and
 	// mtime have not changed since.
@@ -338,7 +338,6 @@ func (m *Manager) clearMissing() {
 		shard.mu.Unlock()
 	}
 }
-
 
 var tmpFileSeq atomic.Int64
 
@@ -2576,13 +2575,30 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 				if metaBytes, err := root.ReadFile(extRel); err == nil {
 					if meta, ok := parseExtFile(metaBytes); ok && meta.Version == 1 {
 						if meta.Size == entryFi.Size() && meta.MTimeNano == entryFi.ModTime().UnixNano() {
-							nsCandidate, _, _ := isConfirmedCachePathStructure(slashRel)
-							if meta.Namespace != "" && meta.Namespace != "gbf" {
-								if sanitizeNamespace(meta.Namespace) == nsCandidate {
+							nsCandidate, _, ok := isConfirmedCachePathStructure(slashRel)
+							isFallback := false
+							if !ok && isTier1VersionFallbackPath(slashRel) {
+								nsCandidate = "gbf"
+								ok = true
+								isFallback = true
+							}
+							if ok {
+								isHostsPath := strings.HasPrefix(slashRel, "hosts/")
+								if meta.Namespace != "" && meta.Namespace != "gbf" {
+									if sanitizeNamespace(meta.Namespace) == nsCandidate {
+										hasPairedExt = true
+									}
+								} else if isHostsPath {
+									if meta.Namespace == "gbf" {
+										hasPairedExt = true
+									}
+								} else if isFallback {
+									if meta.Namespace == "gbf" {
+										hasPairedExt = true
+									}
+								} else if nsCandidate == "gbf" {
 									hasPairedExt = true
 								}
-							} else if nsCandidate == "gbf" {
-								hasPairedExt = true
 							}
 						}
 					}
@@ -2869,8 +2885,8 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 	return map[string]interface{}{
 		"scanned": scanned, "healthy": healthy, "corrupted": corrupted,
 		"unverified_corrupted": unverifiedCorrupted,
-		"temp_files_removed": tempFilesRemoved,
-		"skipped": skipped, "cancelled": cancelled, "ok": true,
+		"temp_files_removed":   tempFilesRemoved,
+		"skipped":              skipped, "cancelled": cancelled, "ok": true,
 	}
 }
 

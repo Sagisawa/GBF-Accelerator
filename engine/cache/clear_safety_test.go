@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
@@ -1286,6 +1287,265 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 	for _, d := range userDirs {
 		if _, err := os.Stat(d); err != nil {
 			t.Errorf("BUG DETECTED: user directory %s was deleted by ClearAll: %v", d, err)
+		}
+	}
+}
+
+// TestClearAll_VersionFallbackSafety 专项验证 ClearAll 对数字版本回退路径的处理：
+// 1. 合法 Tier-1 fallback 文件及匹配 sidecar 被清理；
+// 2. 孤立 .ext 保留；
+// 3. 不匹配 sidecar 保留；
+// 4. 未确认数字目录用户文件保留。
+func TestClearAll_VersionFallbackSafety(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := EnsureRootMarker(tmpDir); err != nil {
+		t.Fatalf("EnsureRootMarker failed: %v", err)
+	}
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	// 1. 合法 Tier-1 fallback 文件及匹配 sidecar (300/js/app.js)
+	legitFallback := filepath.Join(tmpDir, "300", "js", "app.js")
+	if err := os.MkdirAll(filepath.Dir(legitFallback), 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	appCode := []byte("console.log('legit_fallback');")
+	if err := os.WriteFile(legitFallback, appCode, 0644); err != nil {
+		t.Fatalf("write file failed: %v", err)
+	}
+	fiLegit, err := os.Stat(legitFallback)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if err := writeDiskExtFile(legitFallback, diskMeta{
+		ContentType: "application/javascript",
+		Namespace:   "gbf",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(appCode)),
+		MTimeNano:   fiLegit.ModTime().UnixNano(),
+	}); err != nil {
+		t.Fatalf("write ext failed: %v", err)
+	}
+
+	// 2. 孤立 .ext 保留 (300/js/orphan.js.ext - 数据文件不存在)
+	orphanExt := filepath.Join(tmpDir, "300", "js", "orphan.js.ext")
+	if err := writeDiskExtFile(strings.TrimSuffix(orphanExt, ".ext"), diskMeta{
+		ContentType: "application/javascript",
+		Namespace:   "gbf",
+		Version:     1,
+		Verified:    true,
+		Size:        123,
+		MTimeNano:   time.Now().UnixNano(),
+	}); err != nil {
+		t.Fatalf("write orphan ext failed: %v", err)
+	}
+
+	// 3. 不匹配 sidecar 保留
+	// 3a. 版本回退路径 (300/img/sp/quest/scene/mismatch_ns.png) 配合不匹配命名空间的 .ext -> Tier-1 拒绝，必须保留
+	pngMagic := []byte("\x89PNG\r\n\x1a\nmismatch_ns")
+	mismatchNSFile := filepath.Join(tmpDir, "300", "img", "sp", "quest", "scene", "mismatch_ns.png")
+	if err := os.MkdirAll(filepath.Dir(mismatchNSFile), 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(mismatchNSFile, pngMagic, 0644); err != nil {
+		t.Fatalf("write mismatch_ns file failed: %v", err)
+	}
+	fiMismatch, err := os.Stat(mismatchNSFile)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if err := writeDiskExtFile(mismatchNSFile, diskMeta{
+		ContentType: "image/png",
+		Namespace:   "external.host.com",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(pngMagic)),
+		MTimeNano:   fiMismatch.ModTime().UnixNano(),
+	}); err != nil {
+		t.Fatalf("write mismatch ext failed: %v", err)
+	}
+
+	// 3b. 版本回退路径 (300/js/mismatch_size.js) 配合 size 不匹配的 .ext -> Tier-1 拒绝，数据文件与 sidecar 均必须保留
+	mismatchSizeFile := filepath.Join(tmpDir, "300", "js", "mismatch_size.js")
+	if err := os.WriteFile(mismatchSizeFile, appCode, 0644); err != nil {
+		t.Fatalf("write mismatch_size file failed: %v", err)
+	}
+	fiMismatchSize, err := os.Stat(mismatchSizeFile)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+	if err := writeDiskExtFile(mismatchSizeFile, diskMeta{
+		ContentType: "application/javascript",
+		Namespace:   "gbf",
+		Version:     1,
+		Verified:    true,
+		Size:        int64(len(appCode)) + 999,
+		MTimeNano:   fiMismatchSize.ModTime().UnixNano(),
+	}); err != nil {
+		t.Fatalf("write mismatch_size ext failed: %v", err)
+	}
+
+	// 4. 未确认数字目录用户文件保留
+	// 4a. 2026/photos/family.png (数字版本目录 + 未知用户子目录 photos，无有效缓存归属)
+	userPhoto := filepath.Join(tmpDir, "2026", "photos", "family.png")
+	if err := os.MkdirAll(filepath.Dir(userPhoto), 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(userPhoto, pngMagic, 0644); err != nil {
+		t.Fatalf("write user photo failed: %v", err)
+	}
+
+	// 4b. 300/personal/notes.txt (合法数字目录 + 未知分类 personal)
+	userNotes := filepath.Join(tmpDir, "300", "personal", "notes.txt")
+	if err := os.MkdirAll(filepath.Dir(userNotes), 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(userNotes, []byte("private notes"), 0644); err != nil {
+		t.Fatalf("write user notes failed: %v", err)
+	}
+
+	// 4c. 300/js/no_ext.js (版本回退路径但无 .ext 元数据，Tier-2 严禁放行)
+	noExtFile := filepath.Join(tmpDir, "300", "js", "no_ext.js")
+	if err := os.WriteFile(noExtFile, appCode, 0644); err != nil {
+		t.Fatalf("write no_ext file failed: %v", err)
+	}
+
+	// 执行 ClearAll
+	deleted, freed, skipped := mgr.ClearAll()
+	_ = freed
+
+	// 断言 1: 合法 Tier-1 fallback 文件及匹配 sidecar 必须被清理 (app.js + app.js.ext = 2 个文件)
+	if _, err := os.Stat(legitFallback); !os.IsNotExist(err) {
+		t.Fatalf("expected legit Tier-1 fallback %s to be deleted, got err: %v", legitFallback, err)
+	}
+	if _, err := os.Stat(legitFallback + ".ext"); !os.IsNotExist(err) {
+		t.Fatalf("expected legit Tier-1 fallback sidecar %s to be deleted, got err: %v", legitFallback+".ext", err)
+	}
+	if deleted < 2 {
+		t.Fatalf("expected at least 2 deleted files (asset + paired ext), got deleted=%d", deleted)
+	}
+
+	// 断言 2: 孤立 .ext 必须完整保留
+	if _, err := os.Stat(orphanExt); err != nil {
+		t.Fatalf("expected orphan .ext %s to be preserved, got err: %v", orphanExt, err)
+	}
+
+	// 断言 3: 不匹配 sidecar 必须完整保留
+	if _, err := os.Stat(mismatchNSFile); err != nil {
+		t.Fatalf("expected mismatch NS data file %s to be preserved, got err: %v", mismatchNSFile, err)
+	}
+	if _, err := os.Stat(mismatchNSFile + ".ext"); err != nil {
+		t.Fatalf("expected mismatch NS sidecar %s to be preserved, got err: %v", mismatchNSFile+".ext", err)
+	}
+	if _, err := os.Stat(mismatchSizeFile); err != nil {
+		t.Fatalf("expected mismatch size data file %s to be preserved, got err: %v", mismatchSizeFile, err)
+	}
+	if _, err := os.Stat(mismatchSizeFile + ".ext"); err != nil {
+		t.Fatalf("expected mismatch size sidecar %s to be preserved, got err: %v", mismatchSizeFile+".ext", err)
+	}
+
+	// 断言 4: 未确认数字目录用户文件必须完整保留
+	for _, keep := range []string{userPhoto, userNotes, noExtFile} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Fatalf("expected unconfirmed user file %s in numeric directory to be preserved, got err: %v", keep, err)
+		}
+	}
+
+	if skipped == 0 {
+		t.Fatalf("expected skipped > 0 for unconfirmed files and orphan/mismatched sidecars, got skipped=%d", skipped)
+	}
+}
+
+// TestClearAll_NamespaceSafetyMatrix 全量验证 ClearAll 对 8 种 Namespace 场景的删除/保留行为：
+// 1. 普通 GBF 路径 + 有效 GBF Namespace -> 物理文件与 sidecar 均删除
+// 2. 普通 GBF 路径 + 空 Namespace -> 物理文件与 sidecar 均删除 (兼容旧版历史元数据)
+// 3. 版本回退路径 + 有效 GBF Namespace -> 物理文件与 sidecar 均删除
+// 4. 版本回退路径 + 空 Namespace -> 物理文件与 sidecar 均保留
+// 5. hosts 路径 + GBF Namespace -> 物理文件与 sidecar 均删除 (Form A 入口)
+// 6. hosts 路径 + hostname Namespace -> 物理文件与 sidecar 均删除 (Form B 入口)
+// 7. hosts 路径 + 空 Namespace -> 物理文件与 sidecar 均保留
+// 8. hosts 路径 + 不匹配的 hostname Namespace -> 物理文件与 sidecar 均保留
+func TestClearAll_NamespaceSafetyMatrix(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := EnsureRootMarker(tmpDir); err != nil {
+		t.Fatalf("EnsureRootMarker failed: %v", err)
+	}
+	mgr := NewManager(tmpDir, 32)
+	defer mgr.Close()
+
+	payload := []byte("console.log('clear_all_ns_matrix');")
+
+	type testCase struct {
+		name        string
+		relPath     string
+		metaNS      string
+		shouldClean bool
+	}
+
+	cases := []testCase{
+		{"1_CanonicalGBF_ValidNS", "assets/300/js/canonical_valid.js", "gbf", true},
+		{"2_CanonicalGBF_EmptyNS", "assets/300/js/canonical_empty.js", "", true},
+		{"3_Fallback_ValidNS", "300/js/fallback_valid.js", "gbf", true},
+		{"4_Fallback_EmptyNS", "300/js/fallback_empty.js", "", false},
+		{"5_Hosts_GBF_NS", "hosts/sub.example.com/assets/js/host_gbf.js", "gbf", true},
+		{"6_Hosts_Hostname_NS", "hosts/sub.example.com/assets/js/host_direct.js", "sub.example.com", true},
+		{"7_Hosts_EmptyNS", "hosts/sub.example.com/assets/js/host_empty.js", "", false},
+		{"8_Hosts_MismatchNS", "hosts/sub.example.com/assets/js/host_mismatch.js", "other.example.com", false},
+	}
+
+	for _, tc := range cases {
+		fullPath := filepath.Join(tmpDir, filepath.FromSlash(tc.relPath))
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			t.Fatalf("mkdir %s failed: %v", tc.relPath, err)
+		}
+		if err := os.WriteFile(fullPath, payload, 0644); err != nil {
+			t.Fatalf("write %s failed: %v", tc.relPath, err)
+		}
+		fi, err := os.Stat(fullPath)
+		if err != nil {
+			t.Fatalf("stat %s failed: %v", tc.relPath, err)
+		}
+		if err := writeDiskExtFile(fullPath, diskMeta{
+			ContentType: "application/javascript",
+			Version:     1,
+			Verified:    true,
+			Size:        fi.Size(),
+			MTimeNano:   fi.ModTime().UnixNano(),
+			Namespace:   tc.metaNS,
+		}); err != nil {
+			t.Fatalf("write ext for %s failed: %v", tc.relPath, err)
+		}
+	}
+
+	deleted, _, skipped := mgr.ClearAll()
+
+	// 5 个合法文件及各自配对 .ext 被清理 -> 5 * 2 = 10 文件被删除
+	if deleted != 10 {
+		t.Fatalf("expected exactly 10 deleted files (5 pairs), got deleted=%d", deleted)
+	}
+	// 3 个应保留文件及其 .ext 未被删除
+	if skipped == 0 {
+		t.Fatalf("expected skipped > 0 for rejected/preserved files, got skipped=%d", skipped)
+	}
+
+	for _, tc := range cases {
+		fullPath := filepath.Join(tmpDir, filepath.FromSlash(tc.relPath))
+		extPath := fullPath + ".ext"
+		if tc.shouldClean {
+			if _, err := os.Stat(fullPath); !os.IsNotExist(err) {
+				t.Errorf("[%s] expected data file %s to be deleted, got err: %v", tc.name, fullPath, err)
+			}
+			if _, err := os.Stat(extPath); !os.IsNotExist(err) {
+				t.Errorf("[%s] expected sidecar %s to be deleted, got err: %v", tc.name, extPath, err)
+			}
+		} else {
+			if _, err := os.Stat(fullPath); err != nil {
+				t.Errorf("[%s] expected data file %s to be PRESERVED, got err: %v", tc.name, fullPath, err)
+			}
+			if _, err := os.Stat(extPath); err != nil {
+				t.Errorf("[%s] expected sidecar %s to be PRESERVED, got err: %v", tc.name, extPath, err)
+			}
 		}
 	}
 }
