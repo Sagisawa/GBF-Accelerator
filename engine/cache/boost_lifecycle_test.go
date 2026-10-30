@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"os"
@@ -125,36 +126,24 @@ func TestBoostLifecycle_SaveNewAssetInvalidatesOldResident(t *testing.T) {
 
 func TestBoostLifecycle_AuditInvalidatesCorruptedResident(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "gbf_boost_audit_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
+	if err != nil { t.Fatalf("failed to create temp dir: %v", err) }
 	defer os.RemoveAll(tempDir)
-
 	mgr := NewManager(tempDir, 16)
 	defer mgr.Close()
-
-	assetsDir := filepath.Join(tempDir, "assets", "audit")
-	_ = os.MkdirAll(assetsDir, 0755)
-	p := filepath.Join(assetsDir, "clean.png")
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRgood")
-	_ = os.WriteFile(p, validPng, 0644)
-	_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
-
+	key := "assets/img/sp/ui/clean.png"
+	p, ok := mgr.resolvePathWithNamespace("gbf", key)
+	if !ok { t.Fatal("failed to resolve test cache key") }
+	validPNG := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRgood")
+	if !mgr.Save(key, map[string]string{"content-type": "image/png"}, validPNG) { t.Fatal("save cache fixture failed") }
 	mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
-	if item, _ := mgr.GetWithNamespace("gbf", "assets/audit/clean.png"); item == nil {
-		t.Fatalf("expected clean item in boost")
-	}
-
-	// Corrupt file on disk
-	_ = os.WriteFile(p, []byte("corrupted HTML 500 error"), 0644)
-
-	// Run audit
-	mgr.AuditAndRepair()
-
-	// Resident entry must be deleted
-	if _, ok := mgr.ResidentPool().Get("assets/audit/clean.png"); ok {
-		t.Fatalf("expected corrupted file to be removed from resident pool after audit")
-	}
+	if _, ok := mgr.ResidentPool().Get(key); !ok { t.Fatal("expected clean item in boost") }
+	fi, err := os.Stat(p)
+	if err != nil { t.Fatal(err) }
+	if err := os.WriteFile(p, bytes.Repeat([]byte("x"), len(validPNG)), 0644); err != nil { t.Fatal(err) }
+	if err := os.Chtimes(p, fi.ModTime(), fi.ModTime()); err != nil { t.Fatal(err) }
+	res := mgr.AuditAndRepair()
+	if res["ok"] != true || res["corrupted"] != 1 { t.Fatalf("expected one confirmed corrupt asset to be repaired, got %+v", res) }
+	if _, ok := mgr.ResidentPool().Get(key); ok { t.Fatal("corrupt item should be removed from resident pool") }
 }
 
 func TestBoostLifecycle_RepeatedEnableDisable(t *testing.T) {

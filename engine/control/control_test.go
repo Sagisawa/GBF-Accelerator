@@ -3029,3 +3029,36 @@ func TestControlServer_ApplyConfig_ProxyRebindFail_RollsBackConfig(t *testing.T)
 	}
 }
 
+
+func TestCacheMaintenanceRejectsProtectedLegacyRoot(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" { t.Skip("home directory unavailable") }
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	cacheMgr.SetCacheBase(filepath.Join(home, "Downloads"))
+	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, telemetry.NewStats())
+	tests := []struct {
+		name string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{"disk-clear", ctrl.handleCacheClear},
+		{"audit", ctrl.handleCacheAudit},
+		{"slim", ctrl.handleCacheSlim},
+		{"category-clear", ctrl.handleCacheClearCategory},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/cache/"+tc.name, nil)
+			w := httptest.NewRecorder()
+			tc.handler(w, req)
+			if w.Code != http.StatusConflict { t.Fatalf("expected HTTP 409, got %d: %s", w.Code, w.Body.String()) }
+			var payload map[string]interface{}
+			if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil { t.Fatal(err) }
+			if payload["code"] != "CACHE_DIR_REQUIRES_RELOCATION" || payload["destructive_operations_blocked"] != true {
+				t.Fatalf("expected structured relocation response, got %+v", payload)
+			}
+		})
+	}
+}

@@ -327,6 +327,7 @@ func TestGzipFullVsSampleValidationAndAuditNoFalseDelete(t *testing.T) {
 	tempDir := t.TempDir()
 	mgr := NewManager(tempDir, 16)
 	defer mgr.Close()
+	if err := EnsureRootMarker(tempDir); err != nil { t.Fatal(err) }
 
 	mgr.Save("/assets/img/valid_large_hdr.png", map[string]string{
 		"content-type":     "image/png",

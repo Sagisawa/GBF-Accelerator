@@ -75,6 +75,7 @@ func TestMigrateStandardCache_Handler(t *testing.T) {
 	})
 
 	cacheMgr := cache.NewManager(sourceCacheDir, 16)
+	defer cacheMgr.Close()
 	stats := telemetry.GlobalStats
 
 	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
