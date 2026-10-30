@@ -61,7 +61,15 @@ func hasRootMarkerInRoot(root *os.Root) bool {
 }
 
 // EnsureRootMarker writes the root marker file to baseDir if not already present with valid content.
-// If the marker path exists as a directory or symlink, it returns an error to avoid symlink traversal.
+// To avoid data loss, it strictly refuses to overwrite existing user files, directories, symlinks,
+// or unrecognized files named .gbf_cache.
+//
+// Security & Concurrency Note:
+// An unavoidable TOCTOU (time-of-check to time-of-use) race window inherently exists between
+// Lstat and file creation. While os.OpenFile with O_CREATE|O_EXCL ensures atomic creation when the
+// path does not exist, standard userspace file operations cannot eliminate all filesystem symlink-swap
+// races without kernel-enforced O_NOFOLLOW / descriptor-based path resolution uniformly supported
+// across all operating systems.
 func EnsureRootMarker(baseDir string) error {
 	if baseDir == "" {
 		return os.ErrInvalid
@@ -70,18 +78,27 @@ func EnsureRootMarker(baseDir string) error {
 		return nil
 	}
 	markerPath := filepath.Join(baseDir, RootMarkerFileName)
-	if fi, err := os.Lstat(markerPath); err == nil {
+	fi, err := os.Lstat(markerPath)
+	if err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
 			return errors.New("root marker path is a symlink")
 		}
 		if fi.IsDir() {
 			return errors.New("root marker path is a directory")
 		}
-		if !fi.Mode().IsRegular() {
-			return errors.New("root marker path is not a regular file")
-		}
+		// Existing file has invalid or unrecognized content -> preserve user data and refuse to overwrite!
+		return errors.New("existing .gbf_cache file contains unrecognized content; refusing to overwrite")
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	return os.WriteFile(markerPath, []byte(RootMarkerExpectedContent), 0644)
+
+	f, err := os.OpenFile(markerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write([]byte(RootMarkerExpectedContent))
+	return err
 }
 
 // HasRootMarker checks whether the current cache root has the root marker.
@@ -119,8 +136,7 @@ func isRootFallbackCategory(cat string) bool {
 }
 
 // Whitelists of known GBF resource category subdirectories to prevent arbitrary user directories
-// (e.g. assets/img/personal_data/photo.png or sound/personal_data/audio.mp3) from being misidentified
-// as cache structures.
+// from being misidentified as cache structures.
 var (
 	knownAudioSubdirs = map[string]struct{}{
 		"voice": {},
@@ -139,6 +155,8 @@ var (
 		"archive": {},
 	}
 
+	// knownImgSpSubdirs lists verified GBF smartphone asset modules.
+	// Test-only synthetic names (e.g. clearall, replace_me) are strictly prohibited from this list.
 	knownImgSpSubdirs = map[string]struct{}{
 		"cjs": {}, "quest": {}, "sidestory": {}, "comic": {}, "event": {}, "ui": {},
 		"raid": {}, "top": {}, "css_img": {}, "shop": {}, "coopraid": {}, "party": {},
@@ -161,7 +179,7 @@ var (
 		"evolution": {}, "evolution_scene": {}, "gacha_anim": {}, "sub": {},
 		"stamp": {}, "trial": {}, "trial_battle": {}, "mypage_bg": {}, "mypage_sp": {},
 		"banner_s": {}, "banner_m": {}, "banner_l": {}, "lead": {}, "audit": {},
-		"cycle": {}, "clearall": {}, "replace_me": {},
+		"cycle": {},
 	}
 
 	knownJSSubdirs = map[string]struct{}{
@@ -181,118 +199,219 @@ var (
 	knownAppSubdirs = map[string]struct{}{
 		"js": {}, "css": {}, "html": {}, "sound": {}, "img": {},
 	}
+
+	knownUIIconTypes = map[string]struct{}{
+		"weapon": {}, "skill": {}, "summon": {}, "job": {}, "ability": {},
+		"article": {}, "item": {}, "quest": {}, "stamp": {},
+	}
 )
 
-// isValidCategorySubpath checks whether the path segments following a category segment
-// match the legitimate subfolder and file hierarchy of GBF static assets.
-func isValidCategorySubpath(cat string, remaining []string) bool {
-	if len(remaining) == 0 {
-		return false
+// isValidCategoryDirSegments recursively validates every directory segment following a category
+// against the strictly defined directory grammar of GBF static assets.
+// Unrecognized subdirectories at ANY depth return false to prevent user files from being misidentified.
+func isValidCategoryDirSegments(cat string, dirSegs []string) bool {
+	if len(dirSegs) == 0 {
+		return true // directly under category itself (e.g. sound/bgm.mp3, js/app.js)
 	}
-	// Direct asset file under category (e.g. sound/bgm.mp3, img/windows_character.png, js/app.js)
-	if len(remaining) == 1 {
-		return true
-	}
-	sub := remaining[0]
-	switch cat {
-	case "sound":
-		_, ok := knownAudioSubdirs[sub]
-		return ok
-	case "img":
-		if sub == "sp" {
-			if len(remaining) == 2 {
-				return true // direct file under img/sp, e.g. img/sp/btn.png
-			}
-			spSub := remaining[1]
-			_, ok := knownImgSpSubdirs[spSub]
-			return ok
-		}
-		_, ok := knownImgSubdirs[sub]
-		return ok
-	case "js":
-		_, ok := knownJSSubdirs[sub]
-		return ok
-	case "css":
-		_, ok := knownCSSSubdirs[sub]
-		return ok
-	case "font":
-		_, ok := knownFontSubdirs[sub]
-		return ok
-	case "app":
-		_, ok := knownAppSubdirs[sub]
-		return ok
-	case "manifest":
-		return sub == "json" || sub == "sp"
-	case "cjs":
-		switch sub {
-		case "npc", "weapon", "summon", "enemy", "raid":
-			return true
-		default:
-			return false
-		}
-	case "json":
-		return sub == "data" || sub == "master"
-	case "model":
-		return sub == "live2d" || sub == "3d"
-	case "misc":
-		return sub == "bin" || sub == "data"
-	case "html":
-		return false // no subdirectories allowed under html
-	default:
-		return false
-	}
-}
+	d0 := dirSegs[0]
 
-// isValidCategoryDirSubpath validates subdirectory hierarchy for directory pruning safety.
-func isValidCategoryDirSubpath(cat string, remaining []string) bool {
-	if len(remaining) == 0 {
-		return true // the category directory itself
-	}
-	sub := remaining[0]
 	switch cat {
 	case "sound":
-		_, ok := knownAudioSubdirs[sub]
-		return ok
-	case "img":
-		if sub == "sp" {
-			if len(remaining) == 1 {
-				return true // img/sp directory itself
-			}
-			spSub := remaining[1]
-			_, ok := knownImgSpSubdirs[spSub]
-			return ok
+		if _, ok := knownAudioSubdirs[d0]; !ok {
+			return false
 		}
-		_, ok := knownImgSubdirs[sub]
-		return ok
-	case "js":
-		_, ok := knownJSSubdirs[sub]
-		return ok
+		return len(dirSegs) == 1 // voice, bgm, se, music have no subdirectories in GBF
+
 	case "css":
-		_, ok := knownCSSSubdirs[sub]
-		return ok
+		if _, ok := knownCSSSubdirs[d0]; !ok {
+			return false
+		}
+		return len(dirSegs) == 1 // e.g. css/common/<file.css>
+
 	case "font":
-		_, ok := knownFontSubdirs[sub]
-		return ok
-	case "app":
-		_, ok := knownAppSubdirs[sub]
-		return ok
+		if _, ok := knownFontSubdirs[d0]; !ok {
+			return false
+		}
+		return len(dirSegs) == 1
+
 	case "manifest":
-		return sub == "json" || sub == "sp"
+		return (d0 == "json" || d0 == "sp") && len(dirSegs) == 1
+
+	case "app":
+		if _, ok := knownAppSubdirs[d0]; !ok {
+			return false
+		}
+		return len(dirSegs) == 1
+
 	case "cjs":
-		switch sub {
+		switch d0 {
 		case "npc", "weapon", "summon", "enemy", "raid":
-			return true
+			return len(dirSegs) == 1
 		default:
 			return false
 		}
+
 	case "json":
-		return sub == "data" || sub == "master"
+		return (d0 == "data" || d0 == "master") && len(dirSegs) == 1
+
 	case "model":
-		return sub == "live2d" || sub == "3d"
+		return (d0 == "live2d" || d0 == "3d") && len(dirSegs) == 1
+
 	case "misc":
-		return sub == "bin" || sub == "data"
+		return (d0 == "bin" || d0 == "data") && len(dirSegs) == 1
+
 	case "html":
+		return false // no subdirectories under html
+
+	case "js":
+		if _, isVer := parsePositiveVersionSegment(d0); isVer {
+			return len(dirSegs) == 1 // e.g. js/1000/<file.js>
+		}
+		if d0 == "cjs" {
+			return len(dirSegs) == 1 // js/cjs/<file.js>
+		}
+		if d0 == "model" {
+			if len(dirSegs) == 1 {
+				return true // js/model/<file.js>
+			}
+			if len(dirSegs) == 2 && dirSegs[1] == "manifest" {
+				return true // js/model/manifest/<file.js>
+			}
+			return false
+		}
+		if _, ok := knownJSSubdirs[d0]; ok {
+			return len(dirSegs) == 1
+		}
 		return false
+
+	case "img":
+		if d0 == "ui" {
+			if len(dirSegs) == 1 {
+				return true // img/ui
+			}
+			if len(dirSegs) == 2 && dirSegs[1] == "icon" {
+				return true // img/ui/icon
+			}
+			if len(dirSegs) == 3 && dirSegs[1] == "icon" {
+				_, ok := knownUIIconTypes[dirSegs[2]]
+				return ok
+			}
+			return false
+		}
+		if d0 == "sprite" || d0 == "common" || d0 == "pc" || d0 == "mobile" || d0 == "archive" {
+			return len(dirSegs) == 1
+		}
+		if d0 != "sp" {
+			return false
+		}
+		// d0 == "sp"
+		if len(dirSegs) == 1 {
+			return true // img/sp directory itself or direct file in img/sp
+		}
+		d1 := dirSegs[1]
+		if _, ok := knownImgSpSubdirs[d1]; !ok {
+			return false
+		}
+
+		// Deep validation for known sp modules
+		switch d1 {
+		case "cjs", "comic", "mypage", "profile", "replicard", "skycompass", "list",
+			"treasure", "gacha_cjs", "title", "tutorial", "setting", "present", "supplies",
+			"job", "zenith", "bahamut", "seraphic", "awakening", "artifact", "wonder",
+			"skin", "book", "trophy", "crew", "island", "resort", "alchemy", "cooking",
+			"gacha", "banner", "campaign", "loginbonus", "news", "character", "icon",
+			"weapon", "summon", "archive", "dialogue", "coop", "bg", "item", "movie",
+			"parts", "effect", "line", "room", "partner", "memory", "friend", "serial",
+			"recommend", "weapon_gallery", "summon_gallery", "npc_gallery", "maintenance",
+			"my_banner", "special", "campaign_bnr", "casino", "action", "evolution",
+			"evolution_scene", "gacha_anim", "sub", "stamp", "trial", "trial_battle",
+			"mypage_bg", "mypage_sp", "banner_s", "banner_m", "banner_l", "lead",
+			"audit", "cycle", "top", "css_img", "shop", "coopraid", "party",
+			"enhancement", "archaic", "frontier", "guild":
+			return len(dirSegs) == 2
+
+		case "sidestory":
+			if len(dirSegs) == 2 {
+				return true
+			}
+			return len(dirSegs) == 3 && dirSegs[2] == "banner"
+
+		case "raid":
+			if len(dirSegs) == 2 {
+				return true
+			}
+			return len(dirSegs) == 3 && dirSegs[2] == "bg"
+
+		case "arcarum", "arcarum2", "arcarum3":
+			if len(dirSegs) == 2 {
+				return true
+			}
+			return len(dirSegs) == 3 && (dirSegs[2] == "dungeon" || dirSegs[2] == "map")
+
+		case "ui":
+			if len(dirSegs) == 2 {
+				return true
+			}
+			if len(dirSegs) == 3 && dirSegs[2] == "icon" {
+				return true
+			}
+			if len(dirSegs) == 4 && dirSegs[2] == "icon" {
+				_, ok := knownUIIconTypes[dirSegs[3]]
+				return ok
+			}
+			return false
+
+		case "event":
+			if len(dirSegs) == 2 {
+				return true
+			}
+			d2 := dirSegs[2]
+			if d2 == "common" {
+				if len(dirSegs) == 3 {
+					return true
+				}
+				return len(dirSegs) == 4 && (dirSegs[3] == "parts" || dirSegs[3] == "banner")
+			}
+			// Event-specific subdirectories (e.g. teamraid075, ev01)
+			if len(dirSegs) == 3 {
+				return true
+			}
+			return len(dirSegs) == 4 && (dirSegs[3] == "parts" || dirSegs[3] == "banner" || dirSegs[3] == "top")
+
+		case "quest":
+			if len(dirSegs) == 2 {
+				return true // direct file under img/sp/quest
+			}
+			d2 := dirSegs[2]
+			if d2 == "scene" {
+				if len(dirSegs) == 3 {
+					return true // img/sp/quest/scene
+				}
+				d3 := dirSegs[3]
+				if d3 == "bg" || d3 == "voice" {
+					return len(dirSegs) == 4
+				}
+				if d3 == "character" {
+					if len(dirSegs) == 4 {
+						return true // img/sp/quest/scene/character
+					}
+					if len(dirSegs) == 5 && (dirSegs[4] == "body" || dirSegs[4] == "facial") {
+						return true // img/sp/quest/scene/character/body
+					}
+					return false
+				}
+				return false
+			}
+			// Known quest UI subdirectories
+			if _, ok := confirmedQuestUIDirs[d2]; ok {
+				return len(dirSegs) == 3
+			}
+			return false
+
+		default:
+			return false
+		}
+
 	default:
 		return false
 	}
@@ -318,19 +437,19 @@ func isValidCachePathHierarchy(segs []string) bool {
 			if !isKnownGBFCategory(cat) {
 				return false
 			}
-			return isValidCategorySubpath(cat, segs[3:])
+			return isValidCategoryDirSegments(cat, segs[3:len(segs)-1])
 		}
 		cat := segs[1]
 		if !isKnownGBFCategory(cat) {
 			return false
 		}
-		return isValidCategorySubpath(cat, segs[2:])
+		return isValidCategoryDirSegments(cat, segs[2:len(segs)-1])
 	}
 	if isRootFallbackCategory(first) {
 		if len(segs) < 2 {
 			return false
 		}
-		return isValidCategorySubpath(first, segs[1:])
+		return isValidCategoryDirSegments(first, segs[1:len(segs)-1])
 	}
 	return false
 }
@@ -352,16 +471,16 @@ func isValidCacheDirHierarchy(segs []string) bool {
 			if !isKnownGBFCategory(cat) {
 				return false
 			}
-			return isValidCategoryDirSubpath(cat, segs[3:])
+			return isValidCategoryDirSegments(cat, segs[3:])
 		}
 		cat := segs[1]
 		if !isKnownGBFCategory(cat) {
 			return false
 		}
-		return isValidCategoryDirSubpath(cat, segs[2:])
+		return isValidCategoryDirSegments(cat, segs[2:])
 	}
 	if isRootFallbackCategory(first) {
-		return isValidCategoryDirSubpath(first, segs[1:])
+		return isValidCategoryDirSegments(first, segs[1:])
 	}
 	return false
 }

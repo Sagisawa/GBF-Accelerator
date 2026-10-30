@@ -164,12 +164,16 @@ func TestRootMarkerLifecycle(t *testing.T) {
 		t.Errorf("expected HasRootMarker to be false for invalid content")
 	}
 
-	// EnsureRootMarker must fix invalid content
-	if err := EnsureRootMarker(tmpDir); err != nil {
-		t.Fatalf("EnsureRootMarker failed to fix invalid content: %v", err)
+	// EnsureRootMarker must refuse to overwrite invalid/existing content to protect user files
+	if err := EnsureRootMarker(tmpDir); err == nil {
+		t.Errorf("expected EnsureRootMarker to fail on existing unrecognized file, got nil")
 	}
-	if !HasRootMarker(tmpDir) {
-		t.Errorf("expected HasRootMarker to be true after fixing content")
+	content, _ := os.ReadFile(wrongMarkerPath)
+	if string(content) != "Random corrupt content" {
+		t.Errorf("EnsureRootMarker modified existing file content: %s", string(content))
+	}
+	if HasRootMarker(tmpDir) {
+		t.Errorf("expected HasRootMarker to remain false when marker is invalid")
 	}
 
 	// Subtest: Root marker as directory -> HasRootMarker returns false, EnsureRootMarker returns error
@@ -277,6 +281,21 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"assets/12345/sound/personal_data/audio.mp3", false},
 		{"sound/personal_data/audio.mp3", false},
 		{"assets/img/sp/personal_data/photo.png", false},
+
+		// Recursive deep subpath tightening (Round 4 user test paths):
+		{"assets/12345/img/sp/quest/personal_data/photo.png", false},
+		{"assets/img/ui/private/photo.png", false},
+		{"assets/12345/sound/voice/personal_data/audio.mp3", false},
+		{"assets/js/model/user_backup/custom.js", false},
+		{"assets/css/common/personal_data/theme.css", false},
+
+		// Valid deep legitimate GBF paths:
+		{"assets/12345/img/sp/quest/scene/character/body/3040001000.png", true},
+		{"assets/img/sp/quest/scene/character/body/3040001000.png", true},
+		{"assets/img/sp/event/common/parts/btn_ok.png", true},
+		{"assets/12345/js/model/manifest/npc_3040001000.js", true},
+		{"assets/img/ui/icon/weapon/w_1040001.png", true},
+		{"assets/css/common/index.css", true},
 	}
 
 	for _, tc := range cases {
@@ -306,6 +325,11 @@ func TestIsConfirmedCacheDir(t *testing.T) {
 		{"hosts", true},
 		{"hosts/example.com", true},
 		{"hosts/example.com/assets/12345/img/sp", true},
+		{"assets/12345/img/sp/quest/scene/character/body", true},
+		{"assets/img/sp/event/common/parts", true},
+		{"assets/12345/js/model/manifest", true},
+		{"assets/img/ui/icon/weapon", true},
+		{"assets/css/common", true},
 
 		// User directories - MUST return false
 		{"personal_data", false},
@@ -318,6 +342,11 @@ func TestIsConfirmedCacheDir(t *testing.T) {
 		{"hosts/example.com/personal_data", false},
 		{"hosts/example.com/assets/12345/img/personal_data", false},
 		{"sound/personal_data", false},
+		{"assets/12345/img/sp/quest/personal_data", false},
+		{"assets/img/ui/private", false},
+		{"assets/12345/sound/voice/personal_data", false},
+		{"assets/js/model/user_backup", false},
+		{"assets/css/common/personal_data", false},
 	}
 
 	for _, tc := range cases {

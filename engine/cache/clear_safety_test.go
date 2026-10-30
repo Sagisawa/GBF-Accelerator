@@ -1181,3 +1181,102 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 		}
 	}
 }
+
+// TestClearAll_PreservesUserFilesUnderDeepCategoryPaths 验证在多层类目深层子目录下，
+// ClearAll 递归验证每一级目录，杜绝因前缀匹配而误删深层用户文件。
+func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	if err := EnsureRootMarker(tmpDir); err != nil {
+		t.Fatalf("failed to ensure root marker: %v", err)
+	}
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	validMp3 := []byte("ID3\x04\x00\x00\x00\x00\x00#TIT2\x00\x00\x00\x05\x00\x00\x03test\x00")
+	validJs := []byte(`(function(){ console.log("custom backup script"); })();`)
+	validCss := []byte(`body { margin: 0; padding: 0; background-color: #ffffff; }`)
+
+	// 1. 用户深层文件（无 .ext，含真实魔数/有效文本，位于深层非白名单子目录下）
+	type userFileEntry struct {
+		rel  string
+		data []byte
+	}
+	userFiles := []userFileEntry{
+		{"assets/12345/img/sp/quest/personal_data/photo.png", validPng},
+		{"assets/img/ui/private/photo.png", validPng},
+		{"assets/12345/sound/voice/personal_data/audio.mp3", validMp3},
+		{"assets/js/model/user_backup/custom.js", validJs},
+		{"assets/css/common/personal_data/theme.css", validCss},
+	}
+	for _, uf := range userFiles {
+		p := filepath.Join(tmpDir, filepath.FromSlash(uf.rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatalf("failed to create dir for %s: %v", uf.rel, err)
+		}
+		if err := os.WriteFile(p, uf.data, 0644); err != nil {
+			t.Fatalf("failed to write user file %s: %v", uf.rel, err)
+		}
+	}
+
+	// 2. 合法深层 GBF 缓存素材（无 .ext，符合历史缓存规则与严格深层结构）
+	type legitEntry struct {
+		rel  string
+		data []byte
+	}
+	legitCacheFiles := []legitEntry{
+		{"assets/12345/img/sp/quest/scene/character/body/3040001000.png", validPng},
+		{"assets/img/sp/event/common/parts/btn_ok.png", validPng},
+		{"assets/12345/sound/voice/3040001_v.mp3", validMp3},
+		{"assets/12345/js/model/manifest/npc_3040001000.js", validJs},
+		{"assets/css/common/index.css", validCss},
+	}
+	for _, lf := range legitCacheFiles {
+		p := filepath.Join(tmpDir, filepath.FromSlash(lf.rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatalf("failed to create dir for %s: %v", lf.rel, err)
+		}
+		if err := os.WriteFile(p, lf.data, 0644); err != nil {
+			t.Fatalf("failed to write legit cache file %s: %v", lf.rel, err)
+		}
+	}
+
+	deleted, _, skipped := mgr.ClearAll()
+
+	// 验证合法深层缓存文件全部被成功清理
+	if deleted != len(legitCacheFiles) {
+		t.Errorf("expected %d deleted legit cache files, got deleted=%d", len(legitCacheFiles), deleted)
+	}
+	for _, lf := range legitCacheFiles {
+		p := filepath.Join(tmpDir, filepath.FromSlash(lf.rel))
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected legit cache file %s to be deleted, got err: %v", lf.rel, err)
+		}
+	}
+
+	// 验证所有用户文件全部安全保留
+	if skipped < len(userFiles) {
+		t.Errorf("expected at least %d skipped user files, got skipped=%d", len(userFiles), skipped)
+	}
+	for _, uf := range userFiles {
+		p := filepath.Join(tmpDir, filepath.FromSlash(uf.rel))
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("BUG DETECTED: user file %s was deleted by ClearAll: %v", uf.rel, err)
+		}
+	}
+
+	// 验证各层级包含用户文件的用户目录全部安全保留
+	userDirs := []string{
+		filepath.Join(tmpDir, "assets", "12345", "img", "sp", "quest", "personal_data"),
+		filepath.Join(tmpDir, "assets", "img", "ui", "private"),
+		filepath.Join(tmpDir, "assets", "12345", "sound", "voice", "personal_data"),
+		filepath.Join(tmpDir, "assets", "js", "model", "user_backup"),
+		filepath.Join(tmpDir, "assets", "css", "common", "personal_data"),
+	}
+	for _, d := range userDirs {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("BUG DETECTED: user directory %s was deleted by ClearAll: %v", d, err)
+		}
+	}
+}
