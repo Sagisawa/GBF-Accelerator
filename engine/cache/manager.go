@@ -2424,27 +2424,22 @@ var testBeforeClearAllRemoveHook func(relPath string)
 func (m *Manager) ClearAll() (int, int64, int) {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
-	m.generation++
-	m.ClearRAM()
-	m.DisableBoost()
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
 
+	// Reject unsafe roots before clearing RAM, disabling Boost, or changing generations.
+	if err := m.ValidateDestructiveCacheDir(); err != nil {
+		return 0, 0, 0
+	}
+
+	m.generation++
+	m.ClearRAM()
+	m.DisableBoost()
+
 	var deletedFiles int
 	var freedBytes int64
 	var skippedFiles int
-
-	// Guardrail: If base directory fails validation (e.g. drive root or user home),
-	// refuse to perform destructive disk operations.
-	if err := config.ValidateCacheDir(base); err != nil {
-		m.clearMissing()
-		m.clearDiskMeta()
-		m.clearTokenShards()
-		m.clearTempTokens()
-		m.invalidateSnapshots("已执行全盘清空")
-		return 0, 0, 0
-	}
 
 	root, err := os.OpenRoot(base)
 	if err != nil {
@@ -2679,43 +2674,102 @@ type SlimProgress struct {
 }
 
 func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), cancelCh <-chan struct{}) map[string]interface{} {
+	if err := m.ValidateDestructiveCacheDir(); err != nil {
+		return map[string]interface{}{
+			"ok": false, "code": "CACHE_DIR_REQUIRES_RELOCATION",
+			"error": err.Error(), "destructive_operations_blocked": true,
+		}
+	}
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
+	if _, err := os.Lstat(base); os.IsNotExist(err) {
+		if progressCb != nil { progressCb(AuditProgress{Done: true}) }
+		return map[string]interface{}{"scanned": 0, "healthy": 0, "corrupted": 0, "skipped": 0, "cancelled": false, "ok": true}
+	}
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return map[string]interface{}{"ok": false, "error": err.Error()}
+	}
+	defer root.Close()
+	hasRootMarker := hasRootMarkerInRoot(root)
 
-	scanned := 0
-	corrupted := 0
-	healthy := 0
-
-	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+	scanned, corrupted, healthy, skipped := 0, 0, 0, 0
+	cancelled := false
+	emitProgress := func(done bool) {
+		if progressCb != nil {
+			progressCb(AuditProgress{Scanned: scanned, Healthy: healthy, Corrupted: corrupted, Done: done})
+		}
+	}
+	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, walkErr error) error {
 		select {
 		case <-cancelCh:
+			cancelled = true
 			return filepath.SkipAll
 		default:
 		}
-		if err != nil || d.IsDir() {
+		if walkErr != nil || d.IsDir() { return nil }
+		if d.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			skipped++
 			return nil
 		}
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
-			if strings.Contains(p, ".tmp.") {
-				m.persistMu.Lock()
-				if !m.isActiveTempFileLocked(p) {
-					_ = os.Remove(p)
-				}
-				m.persistMu.Unlock()
+		rel, relErr := filepath.Rel(base, p)
+		if relErr != nil || rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			skipped++
+			return nil
+		}
+		slashRel := filepath.ToSlash(rel)
+		if slashRel == RootMarkerFileName || config.IsSystemJunk(filepath.Base(p)) ||
+			strings.Contains(slashRel, ".quarantine") || strings.HasSuffix(slashRel, ".ext") {
+			return nil
+		}
+		walkInfo, infoErr := d.Info()
+		if infoErr != nil || !walkInfo.Mode().IsRegular() {
+			skipped++
+			return nil
+		}
+		if strings.Contains(slashRel, ".tmp.") {
+			// A valid marker plus the exact temp-file writer grammar is required.
+			if !hasRootMarker || !isAcceleratorTempFile(slashRel) {
+				skipped++
+				return nil
 			}
+			scanned++
+			m.persistMu.Lock()
+			if !m.isActiveTempFileLocked(p) {
+				current, statErr := root.Lstat(rel)
+				if statErr == nil && current.Mode().IsRegular() && os.SameFile(walkInfo, current) {
+					beforeRemove, againErr := root.Lstat(rel)
+					if againErr == nil && beforeRemove.Mode().IsRegular() && os.SameFile(current, beforeRemove) {
+						if root.Remove(rel) == nil { corrupted++ }
+					}
+				}
+			}
+			m.persistMu.Unlock()
+			if scanned%500 == 0 { emitProgress(false) }
+			return nil
+		}
+
+		rootInfo, statErr := root.Lstat(rel)
+		if statErr != nil || !rootInfo.Mode().IsRegular() || !os.SameFile(walkInfo, rootInfo) ||
+			!isConfirmedCacheFileInRoot(root, rel, rootInfo, hasRootMarker) {
+			skipped++
+			return nil
+		}
+		ns, cleanKey, _, owned := resolveDiskFileOwner(base, p)
+		if !owned {
+			skipped++
 			return nil
 		}
 		scanned++
 
-		ns, cleanKey, _, ok := resolveDiskFileOwner(base, p)
-		if !ok {
-			return nil
-		}
-
-		if strings.HasSuffix(p, "set-error-handler.js") {
+		if strings.HasSuffix(slashRel, "set-error-handler.js") {
 			m.persistMu.Lock()
-			quarantined := m.CheckAndQuarantineTamperedJS(p)
+			current, currentErr := root.Lstat(rel)
+			quarantined := false
+			if currentErr == nil && current.Mode().IsRegular() && os.SameFile(rootInfo, current) {
+				quarantined = m.CheckAndQuarantineTamperedJS(p)
+			}
 			if quarantined {
 				corrupted++
 				shard, canonKey := m.tokenShardFor(ns, cleanKey)
@@ -2726,65 +2780,53 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			}
 			m.persistMu.Unlock()
 			if quarantined {
+				if scanned%500 == 0 { emitProgress(false) }
 				return nil
 			}
 		}
 
-		isBad := false
-		info, iErr := d.Info()
-		if iErr != nil || info.Size() == 0 {
-			isBad = true
-		} else if !IsValidCacheFile(p, "", p) {
-			isBad = true
-		}
-
+		isBad := walkInfo.Size() == 0 || !IsValidCacheFile(p, "", p)
 		if isBad {
-			corrupted++
 			m.persistMu.Lock()
 			shard, canonKey := m.tokenShardFor(ns, cleanKey)
 			shard.mu.Lock()
-			bumpInvalidateTokenLocked(shard, canonKey)
-			_ = os.Remove(p)
-			_ = os.Remove(p + ".ext")
-			m.clearKeyMemoryState(ns, cleanKey)
+			current, currentErr := root.Lstat(rel)
+			if currentErr == nil && current.Mode().IsRegular() && os.SameFile(rootInfo, current) {
+				extRel := rel + ".ext"
+				extInfo, extErr := root.Lstat(extRel)
+				if removeErr := root.Remove(rel); removeErr == nil {
+					bumpInvalidateTokenLocked(shard, canonKey)
+					m.clearKeyMemoryState(ns, cleanKey)
+					corrupted++
+					// Only this validated paired sidecar may be removed; unknown/orphan .ext files are preserved.
+					if extErr == nil && extInfo.Mode().IsRegular() {
+						currentExt, currentExtErr := root.Lstat(extRel)
+						if currentExtErr == nil && currentExt.Mode().IsRegular() && os.SameFile(extInfo, currentExt) {
+							_ = root.Remove(extRel)
+						}
+					}
+				}
+			} else {
+				skipped++
+			}
 			shard.mu.Unlock()
 			m.persistMu.Unlock()
 		} else {
 			healthy++
 		}
-
-		if progressCb != nil && scanned%500 == 0 {
-			progressCb(AuditProgress{
-				Scanned:   scanned,
-				Healthy:   healthy,
-				Corrupted: corrupted,
-				Done:      false,
-			})
-		}
+		if scanned%500 == 0 { emitProgress(false) }
 		return nil
 	})
-
 	if corrupted > 0 {
 		if m.ramBudget != nil && m.residentPool != nil && m.residentPool.Enabled() {
 			m.ramBudget.SyncSLRU(m.ramCache)
 		}
-		m.invalidateSnapshots("缓存体检清理了损坏文件")
+		m.invalidateSnapshots("缓存体检清理了已确认归属的损坏文件")
 	}
-
-	if progressCb != nil {
-		progressCb(AuditProgress{
-			Scanned:   scanned,
-			Healthy:   healthy,
-			Corrupted: corrupted,
-			Done:      true,
-		})
-	}
-
+	emitProgress(true)
 	return map[string]interface{}{
-		"scanned":   scanned,
-		"healthy":   healthy,
-		"corrupted": corrupted,
-		"ok":        true,
+		"scanned": scanned, "healthy": healthy, "corrupted": corrupted,
+		"skipped": skipped, "cancelled": cancelled, "ok": true,
 	}
 }
 

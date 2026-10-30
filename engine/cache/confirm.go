@@ -117,6 +117,38 @@ func (m *Manager) EnsureRootMarker() error {
 	return EnsureRootMarker(base)
 }
 
+// ValidateDestructiveCacheDir rejects roots that are not safe targets for disk maintenance.
+// Existing roots rejected by the current policy can still be used for normal cache I/O.
+func (m *Manager) ValidateDestructiveCacheDir() error {
+	if m == nil {
+		return errors.New("cache manager is unavailable")
+	}
+	m.mu.RLock()
+	base := m.cacheBase
+	m.mu.RUnlock()
+	if err := config.ValidateCacheDir(base); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(base)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return errors.New("cache root must be an ordinary directory, not a symlink or file")
+	}
+	return nil
+}
+
+// IsConfirmedCacheDirectory reports whether a relative directory follows the known
+// GBF cache hierarchy. Migration uses it to reject unrelated user directories.
+func IsConfirmedCacheDirectory(slashRelDir string) bool {
+	clean := filepath.ToSlash(filepath.Clean(slashRelDir))
+	return isConfirmedCacheDir(clean)
+}
+
 func isKnownGBFCategory(cat string) bool {
 	switch cat {
 	case "js", "css", "img", "sound", "font", "manifest", "html", "misc", "cjs", "json", "model", "app":

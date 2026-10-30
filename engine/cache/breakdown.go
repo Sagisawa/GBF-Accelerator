@@ -1620,6 +1620,27 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		return failed
 	}
 
+	var cacheRoot *os.Root
+	hasRootMarker := false
+	if baseExists {
+		cacheRoot, err = os.OpenRoot(absBase)
+		if err != nil {
+			now := time.Now()
+			failed := &BreakdownSnapshot{
+				SnapshotID: snapID, Generation: startGen, CacheBase: base,
+				Status: "failed", Valid: false, StartedAtMS: startTime.UnixMilli(),
+				CompletedAtMS: now.UnixMilli(), DurationMS: now.Sub(startTime).Milliseconds(),
+				ErrorMessage: fmt.Sprintf("无法安全打开缓存根目录: %v", err),
+			}
+			if progressCb != nil {
+				progressCb(ScanProgress{SnapshotID: snapID, Phase: "failed", Done: true, Status: "failed", Message: failed.ErrorMessage})
+			}
+			return failed
+		}
+		defer cacheRoot.Close()
+		hasRootMarker = hasRootMarkerInRoot(cacheRoot)
+	}
+
 	type rawDataFile struct {
 		ns        string
 		key       string
@@ -1741,6 +1762,10 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 					fileInfo:  info,
 				}
 			} else {
+				if cacheRoot == nil || !isConfirmedCacheFileInRoot(cacheRoot, rel, info, hasRootMarker) {
+					skippedCount++
+					return nil
+				}
 				rawFiles = append(rawFiles, rawDataFile{
 					ns:        ns,
 					key:       cleanKey,
@@ -1833,27 +1858,6 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 	}
 	versionDirMap := make(map[versionDirKey]*VersionDirStat)
 
-	// Seed versionDirMap from shared directory discovery so empty version dirs,
-	// dirs with only .tmp.* files, or dirs with only orphan .ext files are included
-	// consistently with live slimming discovery.
-	if baseExists {
-		discoveredDirs, dirFailures := discoverAllVersionDirsWithErrorsAndDirInfos(absBase, realBase, dirInfos)
-		readErrors += len(dirFailures)
-		for _, d := range discoveredDirs {
-			vk := versionDirKey{ns: d.ns, prefix: d.prefix, version: d.version, verNum: d.verNum}
-			if _, exists := versionDirMap[vk]; !exists {
-				relDir := d.prefix + "/" + d.version
-				if d.ns != "gbf" {
-					relDir = "hosts/" + d.ns + "/" + relDir
-				}
-				versionDirMap[vk] = &VersionDirStat{
-					Version:     d.version,
-					VersionNum:  d.verNum,
-					RelativeDir: relDir,
-				}
-			}
-		}
-	}
 
 	entries := make([]SnapshotEntry, 0, len(rawFiles))
 	entryByNSKey := make(map[string]int, len(rawFiles))
@@ -1979,34 +1983,7 @@ func (m *Manager) ScanBreakdownWithProgress(progressCb func(p ScanProgress), can
 		if !ext.paired {
 			orphanExtFiles++
 			orphanExtBytes += ext.size
-			orphanExts[ext.slashRel] = orphanExtCandidate{
-				ns:        ext.ns,
-				cleanKey:  ext.cleanKey,
-				slashRel:  ext.slashRel,
-				size:      ext.size,
-				mtimeNano: ext.mtimeNano,
-				fileInfo:  ext.fileInfo,
-			}
-			baseKey := strings.TrimSuffix(ext.cleanKey, ".ext")
-			if prefix, verStr, verNum, ok := ParseVersionedEntry(ext.ns, baseKey); ok {
-				vk := versionDirKey{ns: ext.ns, prefix: prefix, version: verStr, verNum: verNum}
-				vd, exists := versionDirMap[vk]
-				if !exists {
-					relDir := prefix + "/" + verStr
-					if ext.ns != "gbf" {
-						relDir = "hosts/" + ext.ns + "/" + relDir
-					}
-					vd = &VersionDirStat{
-						Version:     verStr,
-						VersionNum:  verNum,
-						RelativeDir: relDir,
-					}
-					versionDirMap[vk] = vd
-				}
-				vd.MetadataFiles++
-				vd.MetadataBytes += ext.size
-				vd.EstimatedDeleteBytes = vd.AssetBytes + vd.MetadataBytes
-			}
+
 		}
 	}
 
@@ -2206,6 +2183,9 @@ func (m *Manager) ClearCategoriesAndSlimWithProgress(
 	progressCb func(p CleanupProgress),
 	cancelCh <-chan struct{},
 ) (*DeleteResult, error) {
+	if err := m.ValidateDestructiveCacheDir(); err != nil {
+		return nil, err
+	}
 	if len(categories) == 0 {
 		return nil, ErrEmptyCleanupSelection
 	}
@@ -2622,6 +2602,29 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	}
 	extPath := filePath + ".ext"
 
+	rootRel, relErr := filepath.Rel(absBase, filePath)
+	if relErr != nil || rootRel == "." || rootRel == ".." || strings.HasPrefix(rootRel, ".."+string(filepath.Separator)) {
+		m.persistMu.RUnlock()
+		res.FailedCount++
+		appendBoundedFailure(res, normNS, normKey, "缓存文件相对路径越界")
+		return
+	}
+	cacheRoot, rootErr := os.OpenRoot(absBase)
+	if rootErr != nil {
+		m.persistMu.RUnlock()
+		res.FailedCount++
+		appendBoundedFailure(res, normNS, normKey, fmt.Sprintf("无法安全打开缓存根目录: %v", rootErr))
+		return
+	}
+	defer cacheRoot.Close()
+	if verifyStrictRootIdentity(absBase, realBase, expectedRootFi) != nil {
+		m.persistMu.RUnlock()
+		res.FailedCount++
+		appendBoundedFailure(res, normNS, normKey, "缓存根目录物理身份已变化")
+		return
+	}
+	rootHasMarker := hasRootMarkerInRoot(cacheRoot)
+
 	shard, canonKey := m.tokenShardFor(normNS, normKey)
 	shard.mu.Lock()
 
@@ -2648,41 +2651,8 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	lfi, statErr := parentRoot.Lstat(leafName)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
+			// Preserve any now-orphaned .ext because its paired asset no longer exists.
 			res.AlreadyMissingCount++
-			shouldClearMem := true
-			// Clean up paired .ext if it still lingers after data file disappeared and matches recorded metadata identity
-			if extFi, extErr := parentRoot.Lstat(extLeaf); extErr == nil {
-				if extFi.IsDir() || extFi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !extFi.Mode().IsRegular() {
-					shouldClearMem = false
-					res.FailedCount++
-					appendBoundedFailure(res, normNS, normKey+".ext", "残留元数据路径不是普通文件")
-				} else if isPairedExtChangedSinceSnapshot(cand, extFi) {
-					shouldClearMem = false
-					res.SkippedChangedCount++
-				} else {
-					extSize := extFi.Size()
-					if testBeforeUnlinkHook != nil {
-						testBeforeUnlinkHook(extPath)
-					}
-					if rmErr := parentRoot.Remove(extLeaf); rmErr == nil {
-						res.DeletedMetaFiles++
-						res.DeletedMetaBytes += extSize
-						touchedDirs[filepath.Dir(filePath)] = struct{}{}
-					} else if !os.IsNotExist(rmErr) {
-						shouldClearMem = false
-						res.FailedCount++
-						appendBoundedFailure(res, normNS, normKey+".ext", rmErr.Error())
-					}
-				}
-			} else if !os.IsNotExist(extErr) {
-				shouldClearMem = false
-				res.FailedCount++
-				appendBoundedFailure(res, normNS, normKey+".ext", extErr.Error())
-			}
-			if shouldClearMem {
-				bumpInvalidateTokenLocked(shard, canonKey)
-				m.clearKeyMemoryState(normNS, normKey)
-			}
 		} else {
 			res.FailedCount++
 			appendBoundedFailure(res, normNS, normKey, statErr.Error())
@@ -2700,6 +2670,15 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 		return
 	}
 
+	rootFi, rootStatErr := cacheRoot.Lstat(rootRel)
+	if rootStatErr != nil || !rootFi.Mode().IsRegular() || !os.SameFile(lfi, rootFi) ||
+		!isConfirmedCacheFileInRoot(cacheRoot, rootRel, rootFi, rootHasMarker) {
+		res.SkippedChangedCount++
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+		return
+	}
+
 	if lfi.Size() != cand.Size || lfi.ModTime().UnixNano() != cand.MTimeNano || (cand.fileInfo != nil && !os.SameFile(cand.fileInfo, lfi)) {
 		// File was modified or replaced after the snapshot was taken: skip deleting the disk file
 		// and preserve newer in-memory state and in-flight persistence tokens.
@@ -2712,9 +2691,17 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 	if testBeforeUnlinkHook != nil {
 		testBeforeUnlinkHook(filePath)
 	}
+	preRemoveFi, preRemoveErr := cacheRoot.Lstat(rootRel)
+	if preRemoveErr != nil || !preRemoveFi.Mode().IsRegular() || !os.SameFile(lfi, preRemoveFi) ||
+		!isConfirmedCacheFileInRoot(cacheRoot, rootRel, preRemoveFi, rootHasMarker) {
+		res.SkippedChangedCount++
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+		return
+	}
 
-	// 3. Delete verified data file via handle-relative unlinkat/Deleteat on parentRoot
-	if rmErr := parentRoot.Remove(leafName); rmErr != nil {
+	// 3. Delete only the still-attributed asset through the pinned cache-root handle.
+	if rmErr := cacheRoot.Remove(rootRel); rmErr != nil {
 		if os.IsNotExist(rmErr) {
 			bumpInvalidateTokenLocked(shard, canonKey)
 			m.clearKeyMemoryState(normNS, normKey)
@@ -2748,7 +2735,10 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 			if testBeforeUnlinkHook != nil {
 				testBeforeUnlinkHook(extPath)
 			}
-			if rmExtErr := parentRoot.Remove(extLeaf); rmExtErr == nil {
+			currentExt, currentExtErr := cacheRoot.Lstat(rootRel + ".ext")
+			if currentExtErr != nil || !currentExt.Mode().IsRegular() || !os.SameFile(extFi, currentExt) {
+				res.SkippedChangedCount++
+			} else if rmExtErr := cacheRoot.Remove(rootRel + ".ext"); rmExtErr == nil {
 				res.DeletedMetaFiles++
 				res.DeletedMetaBytes += extSize
 			} else if !os.IsNotExist(rmExtErr) {
@@ -3172,6 +3162,9 @@ func (m *Manager) PruneStaleVersionsDetailed(
 	progressCb func(p SlimProgress),
 	cancelCh <-chan struct{},
 ) (*DeleteResult, error) {
+	if err := m.ValidateDestructiveCacheDir(); err != nil {
+		return nil, err
+	}
 	if keepCount <= 0 {
 		return nil, ErrInvalidKeepCount
 	}
@@ -3242,6 +3235,13 @@ func (m *Manager) pruneStaleVersionsWithSnap(
 		}
 		return res, nil
 	}
+
+	cacheRoot, rootErr := os.OpenRoot(absBase)
+	if rootErr != nil {
+		return nil, fmt.Errorf("无法安全打开缓存根目录: %w", rootErr)
+	}
+	defer cacheRoot.Close()
+	hasRootMarker := hasRootMarkerInRoot(cacheRoot)
 
 	var stales []discoveredStaleVersionDir
 	var discoveryFailures []DeleteFailure
@@ -3463,6 +3463,10 @@ func (m *Manager) pruneStaleVersionsWithSnap(
 					foundExtsByPath[p] = extCand
 					return nil
 				}
+				rootRel, relErr := filepath.Rel(absBase, p)
+				if relErr != nil || !isConfirmedCacheFileInRoot(cacheRoot, rootRel, info, hasRootMarker) {
+					return nil
+				}
 				pairedExts[p+".ext"] = struct{}{}
 				candPaths = append(candPaths, p)
 				dirCandidates = append(dirCandidates, SnapshotEntry{
@@ -3483,13 +3487,14 @@ func (m *Manager) pruneStaleVersionsWithSnap(
 					dirCandidates[i].extFileInfo = extCand.fileInfo
 				}
 			}
-			for _, ext := range foundExts {
-				if _, paired := pairedExts[ext.fullPath]; !paired {
-					dirOrphanExts = append(dirOrphanExts, ext)
-				}
-			}
+			// Unpaired metadata has no reliable ownership proof and is deliberately preserved.
+			dirOrphanExts = nil
 		}
 
+		if len(dirCandidates) == 0 {
+			// Never prune version-like directories based only on the directory name or orphan sidecars.
+			continue
+		}
 		res.CandidateFiles += len(dirCandidates)
 		for _, cand := range dirCandidates {
 			select {
