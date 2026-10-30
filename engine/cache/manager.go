@@ -2699,8 +2699,14 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 	base := m.cacheBase
 	m.mu.RUnlock()
 	if _, err := os.Lstat(base); os.IsNotExist(err) {
-		if progressCb != nil { progressCb(AuditProgress{Done: true}) }
-		return map[string]interface{}{"scanned": 0, "healthy": 0, "corrupted": 0, "skipped": 0, "cancelled": false, "ok": true}
+		if progressCb != nil {
+			progressCb(AuditProgress{Done: true})
+		}
+		return map[string]interface{}{
+			"scanned": 0, "healthy": 0, "corrupted": 0, "skipped": 0,
+			"unverified_corrupted": 0, "temp_files_removed": 0,
+			"cancelled": false, "ok": true,
+		}
 	}
 	root, err := os.OpenRoot(base)
 	if err != nil {
@@ -2767,7 +2773,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 				}
 			}
 			m.persistMu.Unlock()
-			if scanned%500 == 0 { emitProgress(false) }
+			if scanned%500 == 0 {
+				emitProgress(false)
+			}
 			return nil
 		}
 
@@ -2810,7 +2818,9 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			}
 			m.persistMu.Unlock()
 			if quarantined {
-				if scanned%500 == 0 { emitProgress(false) }
+				if scanned%500 == 0 {
+			emitProgress(false)
+		}
 				return nil
 			}
 		}
