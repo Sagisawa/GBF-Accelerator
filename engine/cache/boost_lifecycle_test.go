@@ -28,7 +28,7 @@ func TestBoostLifecycle_ClearAll(t *testing.T) {
 	p := filepath.Join(assetsDir, "test.png")
 	data := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtest")
 	_ = os.WriteFile(p, data, 0644)
-	_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
+	// The root marker and valid PNG exercise Tier-2 ownership; no fake .ext is needed.
 
 	mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
 	if item, src := mgr.GetWithNamespace("gbf", "assets/12345/img/sp/test.png"); item == nil || src != "RAM-BOOST" {
