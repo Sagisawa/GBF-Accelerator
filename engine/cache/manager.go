@@ -2819,8 +2819,8 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			m.persistMu.Unlock()
 			if quarantined {
 				if scanned%500 == 0 {
-			emitProgress(false)
-		}
+					emitProgress(false)
+				}
 				return nil
 			}
 		}
