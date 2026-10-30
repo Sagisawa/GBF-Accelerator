@@ -2700,8 +2700,9 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 		return
 	}
 
-	// 3. Delete only the still-attributed asset through the pinned cache-root handle.
-	if rmErr := cacheRoot.Remove(rootRel); rmErr != nil {
+	// 3. Delete through the already-pinned parent directory handle. The root-relative
+	// identity/ownership checks above ensure this is still the same attributed asset.
+	if rmErr := parentRoot.Remove(leafName); rmErr != nil {
 		if os.IsNotExist(rmErr) {
 			bumpInvalidateTokenLocked(shard, canonKey)
 			m.clearKeyMemoryState(normNS, normKey)
@@ -2738,7 +2739,7 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 			currentExt, currentExtErr := cacheRoot.Lstat(rootRel + ".ext")
 			if currentExtErr != nil || !currentExt.Mode().IsRegular() || !os.SameFile(extFi, currentExt) {
 				res.SkippedChangedCount++
-			} else if rmExtErr := cacheRoot.Remove(rootRel + ".ext"); rmExtErr == nil {
+			} else if rmExtErr := parentRoot.Remove(extLeaf); rmExtErr == nil {
 				res.DeletedMetaFiles++
 				res.DeletedMetaBytes += extSize
 			} else if !os.IsNotExist(rmExtErr) {
