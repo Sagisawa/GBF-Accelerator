@@ -68,8 +68,8 @@ func seedControlTestCache(t *testing.T, baseDir string) {
 	writePair("assets/img/sp/event/common/btn.png", "PNG-EVENT-COMMON")
 	writePair("assets/img/sp/event/teamraid075/top.png", "PNG-EVENT-RAID")
 	writePair("assets/sound/voice/3040001000_v_001.mp3", "MP3-VOICE")
-	writePair("assets/misc/bin/misc.bin", "MISC-OTHER")
-	writePair("hosts/gbf_mbga_static/assets/img/sp/ui/banner/top.png", "MBGA-BANNER")
+	writePair("assets/misc/bin/misc.js", "MISC-OTHER")
+	writePair("hosts/gbf_mbga_static/assets/img/sp/banner/top.png", "MBGA-BANNER")
 }
 
 func waitForControlCacheTaskIdle(t *testing.T, ctrl *ControlServer) map[string]interface{} {
