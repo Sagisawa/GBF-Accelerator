@@ -1209,6 +1209,9 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 		{"assets/12345/sound/voice/personal_data/audio.mp3", validMp3},
 		{"assets/js/model/user_backup/custom.js", validJs},
 		{"assets/css/common/personal_data/theme.css", validCss},
+		{"assets/img/sp/event/personal_data/photo.png", validPng},
+		{"assets/img/sp/event/private/photo.png", validPng},
+		{"assets/img/sp/event/user_backup/photo.png", validPng},
 	}
 	for _, uf := range userFiles {
 		p := filepath.Join(tmpDir, filepath.FromSlash(uf.rel))
@@ -1231,6 +1234,9 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 		{"assets/12345/sound/voice/3040001_v.mp3", validMp3},
 		{"assets/12345/js/model/manifest/npc_3040001000.js", validJs},
 		{"assets/css/common/index.css", validCss},
+		{"assets/img/sp/event/raid01/top.png", validPng},
+		{"assets/img/sp/event/teamraid075/top.png", validPng},
+		{"assets/img/sp/event/ev01/banner.png", validPng},
 	}
 	for _, lf := range legitCacheFiles {
 		p := filepath.Join(tmpDir, filepath.FromSlash(lf.rel))
@@ -1273,6 +1279,9 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 		filepath.Join(tmpDir, "assets", "12345", "sound", "voice", "personal_data"),
 		filepath.Join(tmpDir, "assets", "js", "model", "user_backup"),
 		filepath.Join(tmpDir, "assets", "css", "common", "personal_data"),
+		filepath.Join(tmpDir, "assets", "img", "sp", "event", "personal_data"),
+		filepath.Join(tmpDir, "assets", "img", "sp", "event", "private"),
+		filepath.Join(tmpDir, "assets", "img", "sp", "event", "user_backup"),
 	}
 	for _, d := range userDirs {
 		if _, err := os.Stat(d); err != nil {

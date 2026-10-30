@@ -204,7 +204,59 @@ var (
 		"weapon": {}, "skill": {}, "summon": {}, "job": {}, "ability": {},
 		"article": {}, "item": {}, "quest": {}, "stamp": {},
 	}
+
+	// knownEventPrefixes defines verified GBF event directory prefixes grounded in real game assets
+	// and test fixtures (e.g. raid01, teamraid075, ev01, common_campaign_2026).
+	knownEventPrefixes = []string{
+		"common_campaign_",
+		"campaign_",
+		"campaign",
+		"teamraid",
+		"raid",
+		"event",
+		"ev",
+		"guild",
+		"dread",
+		"tower",
+		"advent",
+		"collaborate",
+		"collabo",
+		"anniversary",
+		"defend",
+		"archive",
+	}
 )
+
+// isValidGBFEventDirName validates whether an event-specific subdirectory name conforms to
+// verified GBF naming grammar (e.g. raid01, teamraid075, ev01, common_campaign_2026).
+// Arbitrary user directories (e.g. personal_data, private, user_backup) return false.
+func isValidGBFEventDirName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	lower := strings.ToLower(name)
+	for _, pfx := range knownEventPrefixes {
+		if strings.HasPrefix(lower, pfx) {
+			suffix := lower[len(pfx):]
+			if isAllDigits(suffix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 // isValidCategoryDirSegments recursively validates every directory segment following a category
 // against the strictly defined directory grammar of GBF static assets.
@@ -372,7 +424,10 @@ func isValidCategoryDirSegments(cat string, dirSegs []string) bool {
 				}
 				return len(dirSegs) == 4 && (dirSegs[3] == "parts" || dirSegs[3] == "banner")
 			}
-			// Event-specific subdirectories (e.g. teamraid075, ev01)
+			// Event-specific subdirectories (e.g. teamraid075, ev01, raid01, common_campaign_2026)
+			if !isValidGBFEventDirName(d2) {
+				return false
+			}
 			if len(dirSegs) == 3 {
 				return true
 			}

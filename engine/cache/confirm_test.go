@@ -289,6 +289,13 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"assets/js/model/user_backup/custom.js", false},
 		{"assets/css/common/personal_data/theme.css", false},
 
+		// Event user paths - MUST be rejected
+		{"assets/img/sp/event/personal_data/photo.png", false},
+		{"assets/img/sp/event/private/photo.png", false},
+		{"assets/img/sp/event/user_backup/photo.png", false},
+		{"assets/12345/img/sp/event/personal_data/photo.png", false},
+		{"img/sp/event/personal_data/photo.png", false},
+
 		// Valid deep legitimate GBF paths:
 		{"assets/12345/img/sp/quest/scene/character/body/3040001000.png", true},
 		{"assets/img/sp/quest/scene/character/body/3040001000.png", true},
@@ -296,6 +303,18 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"assets/12345/js/model/manifest/npc_3040001000.js", true},
 		{"assets/img/ui/icon/weapon/w_1040001.png", true},
 		{"assets/css/common/index.css", true},
+
+		// Legitimate GBF event paths:
+		{"assets/img/sp/event/raid01/top.png", true},
+		{"assets/img/sp/event/teamraid075/top.png", true},
+		{"assets/img/sp/event/ev01/banner.png", true},
+		{"assets/img/sp/event/common_campaign_2026/banner.png", true},
+		{"assets/12345/img/sp/event/raid01/top.png", true},
+		{"assets/12345/img/sp/event/teamraid075/top.png", true},
+		{"img/sp/event/raid01/top.png", true},
+		{"img/sp/event/teamraid075/top.png", true},
+		{"img/sp/event/ev01/banner.png", true},
+		{"img/sp/event/common/parts/btn_ok.png", true},
 	}
 
 	for _, tc := range cases {
@@ -330,6 +349,11 @@ func TestIsConfirmedCacheDir(t *testing.T) {
 		{"assets/12345/js/model/manifest", true},
 		{"assets/img/ui/icon/weapon", true},
 		{"assets/css/common", true},
+		{"assets/img/sp/event/raid01", true},
+		{"assets/img/sp/event/teamraid075", true},
+		{"assets/img/sp/event/ev01", true},
+		{"assets/img/sp/event/common_campaign_2026", true},
+		{"img/sp/event/raid01", true},
 
 		// User directories - MUST return false
 		{"personal_data", false},
@@ -347,6 +371,10 @@ func TestIsConfirmedCacheDir(t *testing.T) {
 		{"assets/12345/sound/voice/personal_data", false},
 		{"assets/js/model/user_backup", false},
 		{"assets/css/common/personal_data", false},
+		{"assets/img/sp/event/personal_data", false},
+		{"assets/img/sp/event/private", false},
+		{"assets/img/sp/event/user_backup", false},
+		{"img/sp/event/personal_data", false},
 	}
 
 	for _, tc := range cases {
