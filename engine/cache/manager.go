@@ -2457,7 +2457,7 @@ func (m *Manager) ClearAll() (int, int64, int) {
 	}
 	defer root.Close()
 
-	hasRootMarker := HasRootMarker(base)
+	hasRootMarker := hasRootMarkerInRoot(root)
 	affectedDirs := make(map[string]struct{})
 
 	recordAffectedDir := func(fileRel string) {
@@ -2547,38 +2547,11 @@ func (m *Manager) ClearAll() (int, int64, int) {
 
 		// Standalone or orphan .ext metadata file
 		if strings.HasSuffix(slashRel, ".ext") {
-			baseRel := rel[:len(rel)-len(".ext")]
-			if _, err := root.Lstat(baseRel); err == nil {
-				// The paired data file exists on disk.
-				// If it was not deleted when the data file was processed (e.g. skipped or identity changed),
-				// do NOT delete this companion .ext file as an orphan.
-				skippedFiles++
-				return nil
-			}
-			// Root marker is strictly required for un-paired orphan .ext files
-			if !hasRootMarker {
-				skippedFiles++
-				return nil
-			}
-			if metaBytes, err := root.ReadFile(rel); err == nil {
-				if isAcceleratorOrphanExtFile(slashRel, metaBytes) {
-					if testBeforeClearAllRemoveHook != nil {
-						testBeforeClearAllRemoveHook(rel)
-					}
-					// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile).
-					// Narrows the race window between identity verification and unlinking, but cannot eliminate
-					// all filesystem races without atomic descriptor-based unlink primitives.
-					preRemoveFi, err := root.Lstat(rel)
-					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
-						if root.Remove(rel) == nil {
-							deletedFiles++
-							freedBytes += preRemoveFi.Size()
-							recordAffectedDir(rel)
-							return nil
-						}
-					}
-				}
-			}
+			// A standalone .ext file without an accompanying verified asset file lacks reliable
+			// cross-referencing proof of ownership. Even if the JSON fields are syntactically complete,
+			// handcrafted or external files cannot be reliably distinguished from user files.
+			// In accordance with the conservative attribution principle, default to preserving
+			// all orphan .ext files without an existing paired asset file.
 			skippedFiles++
 			return nil
 		}

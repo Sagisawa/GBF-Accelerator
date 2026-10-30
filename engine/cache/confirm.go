@@ -2,6 +2,7 @@ package cache
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,28 +12,76 @@ import (
 )
 
 // RootMarkerFileName is the filename placed at the root of a validated cache directory.
-const RootMarkerFileName = ".gbf_cache"
+const (
+	RootMarkerFileName        = ".gbf_cache"
+	RootMarkerExpectedContent = "GBF-Accelerator Cache Root\n"
+	RootMarkerExpectedText    = "GBF-Accelerator Cache Root"
+)
 
-// HasRootMarker checks whether the root marker file exists in baseDir.
+// verifyRootMarkerContent validates that the root marker content matches expected text.
+// Note: Root marker content verification is a hygiene gate against accidental deletion,
+// not an unfalsifiable cryptographic proof of origin.
+func verifyRootMarkerContent(data []byte) bool {
+	return bytes.Equal(bytes.TrimSpace(data), []byte(RootMarkerExpectedText))
+}
+
+// HasRootMarker checks whether the root marker file exists in baseDir as a regular file
+// with the expected marker content. Symlinks, directories, empty files, or corrupted content return false.
 func HasRootMarker(baseDir string) bool {
 	if baseDir == "" {
 		return false
 	}
 	markerPath := filepath.Join(baseDir, RootMarkerFileName)
-	fi, err := os.Stat(markerPath)
-	return err == nil && !fi.IsDir()
+	fi, err := os.Lstat(markerPath)
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 || fi.Size() > 256 {
+		return false
+	}
+	content, err := os.ReadFile(markerPath)
+	if err != nil {
+		return false
+	}
+	return verifyRootMarkerContent(content)
 }
 
-// EnsureRootMarker writes the root marker file to baseDir if not already present.
+// hasRootMarkerInRoot checks whether the root marker file exists inside root as a regular file
+// with the expected marker content, using root-relative handles to prevent symlink traversal.
+func hasRootMarkerInRoot(root *os.Root) bool {
+	if root == nil {
+		return false
+	}
+	fi, err := root.Lstat(RootMarkerFileName)
+	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 || fi.Size() > 256 {
+		return false
+	}
+	content, err := root.ReadFile(RootMarkerFileName)
+	if err != nil {
+		return false
+	}
+	return verifyRootMarkerContent(content)
+}
+
+// EnsureRootMarker writes the root marker file to baseDir if not already present with valid content.
+// If the marker path exists as a directory or symlink, it returns an error to avoid symlink traversal.
 func EnsureRootMarker(baseDir string) error {
 	if baseDir == "" {
 		return os.ErrInvalid
 	}
-	markerPath := filepath.Join(baseDir, RootMarkerFileName)
-	if fi, err := os.Stat(markerPath); err == nil && !fi.IsDir() {
+	if HasRootMarker(baseDir) {
 		return nil
 	}
-	return os.WriteFile(markerPath, []byte("GBF-Accelerator Cache Root\n"), 0644)
+	markerPath := filepath.Join(baseDir, RootMarkerFileName)
+	if fi, err := os.Lstat(markerPath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return errors.New("root marker path is a symlink")
+		}
+		if fi.IsDir() {
+			return errors.New("root marker path is a directory")
+		}
+		if !fi.Mode().IsRegular() {
+			return errors.New("root marker path is not a regular file")
+		}
+	}
+	return os.WriteFile(markerPath, []byte(RootMarkerExpectedContent), 0644)
 }
 
 // HasRootMarker checks whether the current cache root has the root marker.
@@ -69,6 +118,186 @@ func isRootFallbackCategory(cat string) bool {
 	}
 }
 
+// Whitelists of known GBF resource category subdirectories to prevent arbitrary user directories
+// (e.g. assets/img/personal_data/photo.png or sound/personal_data/audio.mp3) from being misidentified
+// as cache structures.
+var (
+	knownAudioSubdirs = map[string]struct{}{
+		"voice": {},
+		"bgm":   {},
+		"se":    {},
+		"music": {},
+	}
+
+	knownImgSubdirs = map[string]struct{}{
+		"sp":      {},
+		"sprite":  {},
+		"ui":      {},
+		"common":  {},
+		"pc":      {},
+		"mobile":  {},
+		"archive": {},
+	}
+
+	knownImgSpSubdirs = map[string]struct{}{
+		"cjs": {}, "quest": {}, "sidestory": {}, "comic": {}, "event": {}, "ui": {},
+		"raid": {}, "top": {}, "css_img": {}, "shop": {}, "coopraid": {}, "party": {},
+		"enhancement": {}, "archaic": {}, "frontier": {}, "guild": {}, "mypage": {},
+		"profile": {}, "arcarum": {}, "arcarum2": {}, "arcarum3": {}, "replicard": {},
+		"skycompass": {}, "list": {}, "treasure": {}, "gacha_cjs": {}, "title": {},
+		"tutorial": {}, "setting": {}, "present": {}, "supplies": {}, "job": {},
+		"zenith": {}, "bahamut": {}, "seraphic": {}, "awakening": {}, "artifact": {},
+		"wonder": {}, "skin": {}, "book": {}, "trophy": {}, "crew": {}, "island": {},
+		"resort": {}, "alchemy": {}, "cooking": {}, "gacha": {}, "banner": {},
+		"campaign": {}, "loginbonus": {}, "assets": {}, "free": {}, "assist": {},
+		"stage": {}, "select": {}, "pro_quest": {}, "search": {}, "supporter": {},
+		"extra": {}, "hl": {}, "main": {}, "tower": {}, "v2": {}, "news": {},
+		"character": {}, "icon": {}, "weapon": {}, "summon": {}, "archive": {},
+		"dialogue": {}, "coop": {}, "bg": {}, "item": {}, "movie": {}, "common": {},
+		"parts": {}, "effect": {}, "line": {}, "room": {}, "partner": {}, "memory": {},
+		"friend": {}, "serial": {}, "recommend": {}, "weapon_gallery": {},
+		"summon_gallery": {}, "npc_gallery": {}, "sound": {}, "maintenance": {},
+		"my_banner": {}, "special": {}, "campaign_bnr": {}, "casino": {}, "action": {},
+		"evolution": {}, "evolution_scene": {}, "gacha_anim": {}, "sub": {},
+		"stamp": {}, "trial": {}, "trial_battle": {}, "mypage_bg": {}, "mypage_sp": {},
+		"banner_s": {}, "banner_m": {}, "banner_l": {}, "lead": {}, "audit": {},
+		"cycle": {}, "clearall": {}, "replace_me": {},
+	}
+
+	knownJSSubdirs = map[string]struct{}{
+		"model": {}, "view": {}, "collection": {}, "config": {}, "lib": {},
+		"util": {}, "common": {}, "app": {}, "core": {}, "router": {},
+		"controller": {}, "platform": {}, "vendor": {}, "component": {}, "scene": {},
+	}
+
+	knownCSSSubdirs = map[string]struct{}{
+		"common": {}, "sp": {}, "pc": {}, "sub": {}, "base": {}, "theme": {}, "font": {},
+	}
+
+	knownFontSubdirs = map[string]struct{}{
+		"woff": {}, "ttf": {}, "eot": {}, "svg": {}, "otf": {},
+	}
+
+	knownAppSubdirs = map[string]struct{}{
+		"js": {}, "css": {}, "html": {}, "sound": {}, "img": {},
+	}
+)
+
+// isValidCategorySubpath checks whether the path segments following a category segment
+// match the legitimate subfolder and file hierarchy of GBF static assets.
+func isValidCategorySubpath(cat string, remaining []string) bool {
+	if len(remaining) == 0 {
+		return false
+	}
+	// Direct asset file under category (e.g. sound/bgm.mp3, img/windows_character.png, js/app.js)
+	if len(remaining) == 1 {
+		return true
+	}
+	sub := remaining[0]
+	switch cat {
+	case "sound":
+		_, ok := knownAudioSubdirs[sub]
+		return ok
+	case "img":
+		if sub == "sp" {
+			if len(remaining) == 2 {
+				return true // direct file under img/sp, e.g. img/sp/btn.png
+			}
+			spSub := remaining[1]
+			_, ok := knownImgSpSubdirs[spSub]
+			return ok
+		}
+		_, ok := knownImgSubdirs[sub]
+		return ok
+	case "js":
+		_, ok := knownJSSubdirs[sub]
+		return ok
+	case "css":
+		_, ok := knownCSSSubdirs[sub]
+		return ok
+	case "font":
+		_, ok := knownFontSubdirs[sub]
+		return ok
+	case "app":
+		_, ok := knownAppSubdirs[sub]
+		return ok
+	case "manifest":
+		return sub == "json" || sub == "sp"
+	case "cjs":
+		switch sub {
+		case "npc", "weapon", "summon", "enemy", "raid":
+			return true
+		default:
+			return false
+		}
+	case "json":
+		return sub == "data" || sub == "master"
+	case "model":
+		return sub == "live2d" || sub == "3d"
+	case "misc":
+		return sub == "bin" || sub == "data"
+	case "html":
+		return false // no subdirectories allowed under html
+	default:
+		return false
+	}
+}
+
+// isValidCategoryDirSubpath validates subdirectory hierarchy for directory pruning safety.
+func isValidCategoryDirSubpath(cat string, remaining []string) bool {
+	if len(remaining) == 0 {
+		return true // the category directory itself
+	}
+	sub := remaining[0]
+	switch cat {
+	case "sound":
+		_, ok := knownAudioSubdirs[sub]
+		return ok
+	case "img":
+		if sub == "sp" {
+			if len(remaining) == 1 {
+				return true // img/sp directory itself
+			}
+			spSub := remaining[1]
+			_, ok := knownImgSpSubdirs[spSub]
+			return ok
+		}
+		_, ok := knownImgSubdirs[sub]
+		return ok
+	case "js":
+		_, ok := knownJSSubdirs[sub]
+		return ok
+	case "css":
+		_, ok := knownCSSSubdirs[sub]
+		return ok
+	case "font":
+		_, ok := knownFontSubdirs[sub]
+		return ok
+	case "app":
+		_, ok := knownAppSubdirs[sub]
+		return ok
+	case "manifest":
+		return sub == "json" || sub == "sp"
+	case "cjs":
+		switch sub {
+		case "npc", "weapon", "summon", "enemy", "raid":
+			return true
+		default:
+			return false
+		}
+	case "json":
+		return sub == "data" || sub == "master"
+	case "model":
+		return sub == "live2d" || sub == "3d"
+	case "misc":
+		return sub == "bin" || sub == "data"
+	case "html":
+		return false
+	default:
+		return false
+	}
+}
+
 func isValidCachePathHierarchy(segs []string) bool {
 	if len(segs) == 0 {
 		return false
@@ -85,12 +314,23 @@ func isValidCachePathHierarchy(segs []string) bool {
 			if len(segs) < 4 {
 				return false
 			}
-			return isKnownGBFCategory(segs[2])
+			cat := segs[2]
+			if !isKnownGBFCategory(cat) {
+				return false
+			}
+			return isValidCategorySubpath(cat, segs[3:])
 		}
-		return isKnownGBFCategory(segs[1])
+		cat := segs[1]
+		if !isKnownGBFCategory(cat) {
+			return false
+		}
+		return isValidCategorySubpath(cat, segs[2:])
 	}
 	if isRootFallbackCategory(first) {
-		return len(segs) >= 2
+		if len(segs) < 2 {
+			return false
+		}
+		return isValidCategorySubpath(first, segs[1:])
 	}
 	return false
 }
@@ -108,12 +348,20 @@ func isValidCacheDirHierarchy(segs []string) bool {
 			if len(segs) == 2 {
 				return true
 			}
-			return isKnownGBFCategory(segs[2])
+			cat := segs[2]
+			if !isKnownGBFCategory(cat) {
+				return false
+			}
+			return isValidCategoryDirSubpath(cat, segs[3:])
 		}
-		return isKnownGBFCategory(segs[1])
+		cat := segs[1]
+		if !isKnownGBFCategory(cat) {
+			return false
+		}
+		return isValidCategoryDirSubpath(cat, segs[2:])
 	}
 	if isRootFallbackCategory(first) {
-		return true
+		return isValidCategoryDirSubpath(first, segs[1:])
 	}
 	return false
 }
@@ -448,33 +696,4 @@ func isAcceleratorTempFile(slashRel string) bool {
 
 	_, _, ok := isConfirmedCachePathStructure(baseLower)
 	return ok
-}
-
-// isAcceleratorOrphanExtFile checks whether an .ext file belongs to the accelerator cache
-// by verifying that its base name is a valid cache asset path in a legitimate cache directory,
-// its metadata parses with version 1, and all authentic Accelerator metadata fields
-// (verified == true, size > 0, mtime > 0, at > 0, ct != "", and matching namespace) are valid.
-// Incomplete or forged JSON files lacking full metadata are rejected to prevent accidental deletion.
-func isAcceleratorOrphanExtFile(slashRel string, metaBytes []byte) bool {
-	if !strings.HasSuffix(slashRel, ".ext") {
-		return false
-	}
-	baseRel := strings.TrimSuffix(slashRel, ".ext")
-	baseLower := strings.ToLower(baseRel)
-	ns, _, ok := isConfirmedCachePathStructure(baseLower)
-	if !ok {
-		return false
-	}
-	meta, ok := parseExtFile(metaBytes)
-	if !ok || meta.Version != 1 || !meta.Verified || meta.Size <= 0 || meta.MTimeNano <= 0 || meta.AccessTime <= 0 || meta.ContentType == "" {
-		return false
-	}
-	if meta.Namespace != "" && meta.Namespace != "gbf" {
-		if sanitizeNamespace(meta.Namespace) != ns {
-			return false
-		}
-	} else if ns != "gbf" {
-		return false
-	}
-	return true
 }

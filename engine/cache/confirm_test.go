@@ -110,7 +110,7 @@ func TestIsConfirmedCacheFile_RejectsNonCacheFiles(t *testing.T) {
 	}
 
 	// 3. Empty files (size == 0)
-	emptyFile := filepath.Join(tmpDir, "assets", "img", "empty.png")
+	emptyFile := filepath.Join(tmpDir, "assets", "img", "sp", "empty.png")
 	_ = os.MkdirAll(filepath.Dir(emptyFile), 0755)
 	_ = os.WriteFile(emptyFile, []byte{}, 0644)
 	if IsConfirmedCacheFile(tmpDir, emptyFile, true) {
@@ -120,7 +120,7 @@ func TestIsConfirmedCacheFile_RejectsNonCacheFiles(t *testing.T) {
 	// 4. System junk files
 	junkFiles := []string{".DS_Store", "Thumbs.db", "desktop.ini", "._asset.png"}
 	for _, name := range junkFiles {
-		p := filepath.Join(tmpDir, "assets", "img", name)
+		p := filepath.Join(tmpDir, "assets", "img", "sp", name)
 		_ = os.WriteFile(p, []byte("junk"), 0644)
 		if IsConfirmedCacheFile(tmpDir, p, true) {
 			t.Errorf("system junk file %q must NOT be confirmed", name)
@@ -154,6 +154,50 @@ func TestRootMarkerLifecycle(t *testing.T) {
 	if err := EnsureRootMarker(tmpDir); err != nil {
 		t.Fatalf("second EnsureRootMarker failed: %v", err)
 	}
+
+	// Subtest: Root marker with invalid content -> HasRootMarker returns false
+	wrongMarkerPath := filepath.Join(tmpDir, RootMarkerFileName)
+	if err := os.WriteFile(wrongMarkerPath, []byte("Random corrupt content"), 0644); err != nil {
+		t.Fatalf("failed to overwrite marker: %v", err)
+	}
+	if HasRootMarker(tmpDir) {
+		t.Errorf("expected HasRootMarker to be false for invalid content")
+	}
+
+	// EnsureRootMarker must fix invalid content
+	if err := EnsureRootMarker(tmpDir); err != nil {
+		t.Fatalf("EnsureRootMarker failed to fix invalid content: %v", err)
+	}
+	if !HasRootMarker(tmpDir) {
+		t.Errorf("expected HasRootMarker to be true after fixing content")
+	}
+
+	// Subtest: Root marker as directory -> HasRootMarker returns false, EnsureRootMarker returns error
+	dirMarkerDir := t.TempDir()
+	dirMarkerPath := filepath.Join(dirMarkerDir, RootMarkerFileName)
+	if err := os.Mkdir(dirMarkerPath, 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if HasRootMarker(dirMarkerDir) {
+		t.Errorf("expected HasRootMarker to be false when marker is a directory")
+	}
+	if err := EnsureRootMarker(dirMarkerDir); err == nil {
+		t.Errorf("expected EnsureRootMarker to return error when marker is a directory")
+	}
+
+	// Subtest: Root marker as symlink
+	symlinkMarkerDir := t.TempDir()
+	externalTarget := filepath.Join(symlinkMarkerDir, "ext_target.txt")
+	_ = os.WriteFile(externalTarget, []byte(RootMarkerExpectedContent), 0644)
+	symlinkPath := filepath.Join(symlinkMarkerDir, RootMarkerFileName)
+	if err := os.Symlink(externalTarget, symlinkPath); err == nil {
+		if HasRootMarker(symlinkMarkerDir) {
+			t.Errorf("expected HasRootMarker to reject symlinks")
+		}
+		if err := EnsureRootMarker(symlinkMarkerDir); err == nil {
+			t.Errorf("expected EnsureRootMarker to return error when marker is a symlink")
+		}
+	}
 }
 
 func TestIsAcceleratorTempFile(t *testing.T) {
@@ -186,57 +230,6 @@ func TestIsAcceleratorTempFile(t *testing.T) {
 	}
 }
 
-func TestIsAcceleratorOrphanExtFile(t *testing.T) {
-	validMetaGBF := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
-	validMetaHosts := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"application/javascript","verified":true,"ns":"example.com"}`)
-	mismatchedMetaHosts := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"application/javascript","verified":true,"ns":"other.com"}`)
-	invalidMetaV2 := []byte(`{"v":2,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true}`)
-
-	// Incomplete / forged metadata variants
-	incompleteNoVerified := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","ns":"gbf"}`)
-	incompleteNoMtime := []byte(`{"v":1,"size":100,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
-	incompleteNoSize := []byte(`{"v":1,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
-	incompleteNoAt := []byte(`{"v":1,"size":100,"mtime":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
-	incompleteNoCt := []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"verified":true,"ns":"gbf"}`)
-	forgedZeroSize := []byte(`{"v":1,"size":0,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
-	forgedZeroMtime := []byte(`{"v":1,"size":100,"mtime":0,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`)
-
-	cases := []struct {
-		rel  string
-		meta []byte
-		want bool
-	}{
-		// Valid cache paths with authentic metadata
-		{"assets/12345/img/sp/btn.png.ext", validMetaGBF, true},
-		{"hosts/example.com/assets/app.js.ext", validMetaHosts, true},
-		// Mismatched namespace
-		{"hosts/example.com/assets/app.js.ext", mismatchedMetaHosts, false},
-		// Invalid version
-		{"assets/12345/img/sp/btn.png.ext", invalidMetaV2, false},
-		// User directories - MUST return false even with valid metadata
-		{"personal_data/photo.png.ext", validMetaGBF, false},
-		{"user_workspace/document.png.ext", validMetaGBF, false},
-		{"user_config.ext", validMetaGBF, false}, // root file
-		{"assets/personal_data/photo.png.ext", validMetaGBF, false},
-		{"assets/12345/personal_data/photo.png.ext", validMetaGBF, false},
-		// Incomplete / forged JSON without full accelerator fields - MUST be rejected (preserved)
-		{"assets/12345/img/sp/btn.png.ext", incompleteNoVerified, false},
-		{"assets/12345/img/sp/btn.png.ext", incompleteNoMtime, false},
-		{"assets/12345/img/sp/btn.png.ext", incompleteNoSize, false},
-		{"assets/12345/img/sp/btn.png.ext", incompleteNoAt, false},
-		{"assets/12345/img/sp/btn.png.ext", incompleteNoCt, false},
-		{"assets/12345/img/sp/btn.png.ext", forgedZeroSize, false},
-		{"assets/12345/img/sp/btn.png.ext", forgedZeroMtime, false},
-	}
-
-	for _, tc := range cases {
-		got := isAcceleratorOrphanExtFile(tc.rel, tc.meta)
-		if got != tc.want {
-			t.Errorf("isAcceleratorOrphanExtFile(%q) = %v; want %v", tc.rel, got, tc.want)
-		}
-	}
-}
-
 func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 	cases := []struct {
 		rel  string
@@ -254,6 +247,8 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"assets_jp/app.js", true},
 		{"img/sp/btn.png", true},
 		{"sound/bgm.mp3", true},
+		{"sound/voice/3040001_v.mp3", true},
+		{"sound/se/se_100.mp3", true},
 		{"manifest/app.js", true},
 		{"hosts/example.com/assets/app.js", true},
 		{"hosts/example.com/assets/12345/img/sp/btn.png", true},
@@ -272,12 +267,63 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"hosts/example.com/assets/personal_data/photo.png", false},
 		{"hosts/example.com/personal_data/photo.png", false},
 		{"hosts/example.com/12345/img/sp/btn.png", false},
+
+		// Category internal subpath tightening (Issue 3 specific test scenarios):
+		{"assets/img/personal_data/photo.png", false},
+		{"assets/12345/img/personal_data/photo.png", false},
+		{"img/personal_data/photo.png", false},
+		{"hosts/example.com/assets/12345/img/personal_data/photo.png", false},
+		{"assets/sound/personal_data/audio.mp3", false},
+		{"assets/12345/sound/personal_data/audio.mp3", false},
+		{"sound/personal_data/audio.mp3", false},
+		{"assets/img/sp/personal_data/photo.png", false},
 	}
 
 	for _, tc := range cases {
 		_, _, got := isConfirmedCachePathStructure(tc.rel)
 		if got != tc.want {
 			t.Errorf("isConfirmedCachePathStructure(%q) = %v; want %v", tc.rel, got, tc.want)
+		}
+	}
+}
+
+func TestIsConfirmedCacheDir(t *testing.T) {
+	cases := []struct {
+		dir  string
+		want bool
+	}{
+		{"assets", true},
+		{"assets/12345", true},
+		{"assets/12345/img", true},
+		{"assets/12345/img/sp", true},
+		{"assets/img", true},
+		{"assets/img/sp", true},
+		{"img", true},
+		{"img/sp", true},
+		{"sound", true},
+		{"sound/bgm", true},
+		{"sound/voice", true},
+		{"hosts", true},
+		{"hosts/example.com", true},
+		{"hosts/example.com/assets/12345/img/sp", true},
+
+		// User directories - MUST return false
+		{"personal_data", false},
+		{"user_workspace", false},
+		{"assets/personal_data", false},
+		{"assets/12345/personal_data", false},
+		{"assets/img/personal_data", false},
+		{"assets/12345/img/personal_data", false},
+		{"img/personal_data", false},
+		{"hosts/example.com/personal_data", false},
+		{"hosts/example.com/assets/12345/img/personal_data", false},
+		{"sound/personal_data", false},
+	}
+
+	for _, tc := range cases {
+		got := isConfirmedCacheDir(tc.dir)
+		if got != tc.want {
+			t.Errorf("isConfirmedCacheDir(%q) = %v; want %v", tc.dir, got, tc.want)
 		}
 	}
 }

@@ -870,8 +870,10 @@ func TestClearAll_PreservesFileWithMismatchedExtMetadata(t *testing.T) {
 	})
 }
 
-// 11. 对应资源不存在的孤立 .ext，若元数据残缺、伪造或位于非缓存路径，必须保留。
-func TestClearAll_PreservesOrphanExtWithIncompleteOrForgedJSON(t *testing.T) {
+// 11. 对应资源不存在的孤立 .ext 文件，即使 JSON 格式正确、字段完整（如包含 verified=true、正确版本与非零字段），
+// 亦不能证明由 Accelerator 生成（缺乏物理资产文件的大小、修改时间及魔数交叉比对凭据）。
+// 依照保守原则，孤立 .ext 默认全部保留。
+func TestClearAll_PreservesOrphanExtFilesEvenIfValidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := NewManager(tmpDir, 64)
 	defer mgr.Close()
@@ -892,7 +894,7 @@ func TestClearAll_PreservesOrphanExtWithIncompleteOrForgedJSON(t *testing.T) {
 	_ = os.WriteFile(forged3, []byte(`{"v":1,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`), 0644)
 
 	forged4 := filepath.Join(subDir, "forged_no_at.png.ext")
-	_ = os.WriteFile(forged4, []byte(`{"v":1,"size":100,"mtime":12345,"ct":"image/png","verified":true,"ns":"gbf"}`), 0644)
+	_ = os.WriteFile(forged4, []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`), 0644)
 
 	forged5 := filepath.Join(subDir, "forged_no_ct.png.ext")
 	_ = os.WriteFile(forged5, []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"verified":true,"ns":"gbf"}`), 0644)
@@ -906,28 +908,29 @@ func TestClearAll_PreservesOrphanExtWithIncompleteOrForgedJSON(t *testing.T) {
 	orphanUserPath := filepath.Join(userDir, "orphan_photo.png.ext")
 	_ = os.WriteFile(orphanUserPath, []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`), 0644)
 
-	// Authentic orphan .ext in legitimate cache path that HAS all required fields
-	authenticOrphan := filepath.Join(subDir, "authentic_orphan.png.ext")
-	_ = os.WriteFile(authenticOrphan, []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`), 0644)
+	// Handcrafted orphan .ext in canonical cache path with complete valid JSON (no paired image file exists) -> MUST BE PRESERVED!
+	handcraftedOrphanGBF := filepath.Join(subDir, "handcrafted_orphan.png.ext")
+	_ = os.WriteFile(handcraftedOrphanGBF, []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`), 0644)
+
+	// Handcrafted orphan .ext in external host path with complete valid JSON (no paired file exists) -> MUST BE PRESERVED!
+	hostsSubDir := filepath.Join(tmpDir, "hosts", "example.com", "assets", "12345", "img", "sp")
+	_ = os.MkdirAll(hostsSubDir, 0755)
+	handcraftedOrphanHosts := filepath.Join(hostsSubDir, "handcrafted_host.png.ext")
+	_ = os.WriteFile(handcraftedOrphanHosts, []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"example.com"}`), 0644)
 
 	deleted, _, skipped := mgr.ClearAll()
-	if deleted != 1 {
-		t.Errorf("expected exactly 1 deleted file (authentic_orphan), got %d", deleted)
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted orphan ext files (conservative retention), got %d", deleted)
 	}
-	if skipped < 7 {
-		t.Errorf("expected at least 7 skipped forged/user orphan ext files, got %d", skipped)
+	if skipped < 9 {
+		t.Errorf("expected at least 9 skipped orphan ext files, got %d", skipped)
 	}
 
-	// All forged/incomplete/user orphan .ext files must be preserved!
-	for _, p := range []string{forged1, forged2, forged3, forged4, forged5, forged6, orphanUserPath} {
+	// All orphan .ext files must be preserved!
+	for _, p := range []string{forged1, forged2, forged3, forged4, forged5, forged6, orphanUserPath, handcraftedOrphanGBF, handcraftedOrphanHosts} {
 		if _, err := os.Stat(p); err != nil {
-			t.Errorf("BUG: forged/user orphan .ext %s was deleted: %v", p, err)
+			t.Errorf("BUG: orphan .ext %s was deleted: %v", p, err)
 		}
-	}
-
-	// Authentic orphan should be deleted
-	if _, err := os.Stat(authenticOrphan); !os.IsNotExist(err) {
-		t.Errorf("expected authentic orphan .ext to be deleted, got err: %v", err)
 	}
 }
 
@@ -982,3 +985,199 @@ func TestClearAll_LegacyCacheNormalCleaning(t *testing.T) {
 	}
 }
 
+// 13. 根标记反向测试：非普通文件（如目录、符号链接）或内容不匹配的 .gbf_cache 拒绝授权 Tier 2 清理。
+func TestClearAll_RootMarkerValidationRejectsInvalid(t *testing.T) {
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+	// Case A: 标记内容不正确 -> 拒绝授权 Tier 2
+	t.Run("wrong marker content", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 64)
+		defer mgr.Close()
+
+		markerPath := filepath.Join(tmpDir, RootMarkerFileName)
+		_ = os.WriteFile(markerPath, []byte("Wrong root marker content\n"), 0644)
+
+		legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
+		_ = os.MkdirAll(filepath.Dir(legacyFile), 0755)
+		_ = os.WriteFile(legacyFile, validPng, 0644)
+
+		deleted, _, skipped := mgr.ClearAll()
+		if deleted != 0 {
+			t.Errorf("expected 0 deleted files with invalid marker content, got %d", deleted)
+		}
+		if skipped != 1 {
+			t.Errorf("expected 1 skipped legacy file, got %d", skipped)
+		}
+		if _, err := os.Stat(legacyFile); err != nil {
+			t.Errorf("expected legacy file to be preserved when marker content is invalid: %v", err)
+		}
+	})
+
+	// Case B: 标记为空文件 (0 字节) -> 拒绝授权 Tier 2
+	t.Run("empty marker file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 64)
+		defer mgr.Close()
+
+		markerPath := filepath.Join(tmpDir, RootMarkerFileName)
+		_ = os.WriteFile(markerPath, []byte{}, 0644)
+
+		legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
+		_ = os.MkdirAll(filepath.Dir(legacyFile), 0755)
+		_ = os.WriteFile(legacyFile, validPng, 0644)
+
+		deleted, _, skipped := mgr.ClearAll()
+		if deleted != 0 {
+			t.Errorf("expected 0 deleted files with 0-byte marker file, got %d", deleted)
+		}
+		if skipped != 1 {
+			t.Errorf("expected 1 skipped legacy file, got %d", skipped)
+		}
+		if _, err := os.Stat(legacyFile); err != nil {
+			t.Errorf("expected legacy file to be preserved when marker file is 0 bytes: %v", err)
+		}
+	})
+
+	// Case C: 标记为目录 -> 拒绝授权 Tier 2
+	t.Run("directory as marker", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 64)
+		defer mgr.Close()
+
+		markerPath := filepath.Join(tmpDir, RootMarkerFileName)
+		_ = os.Mkdir(markerPath, 0755)
+
+		legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
+		_ = os.MkdirAll(filepath.Dir(legacyFile), 0755)
+		_ = os.WriteFile(legacyFile, validPng, 0644)
+
+		deleted, _, skipped := mgr.ClearAll()
+		if deleted != 0 {
+			t.Errorf("expected 0 deleted files when marker is a directory, got %d", deleted)
+		}
+		if skipped != 1 {
+			t.Errorf("expected 1 skipped legacy file, got %d", skipped)
+		}
+		if _, err := os.Stat(legacyFile); err != nil {
+			t.Errorf("expected legacy file to be preserved when marker is a directory: %v", err)
+		}
+	})
+
+	// Case D: 标记为符号链接 -> 拒绝授权 Tier 2
+	t.Run("symlink as marker", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		mgr := NewManager(tmpDir, 64)
+		defer mgr.Close()
+
+		extDir := t.TempDir()
+		extTarget := filepath.Join(extDir, "valid_marker_target.txt")
+		_ = os.WriteFile(extTarget, []byte(RootMarkerExpectedContent), 0644)
+		markerPath := filepath.Join(tmpDir, RootMarkerFileName)
+		if err := os.Symlink(extTarget, markerPath); err != nil {
+			t.Skipf("skipping symlink test due to OS permission: %v", err)
+		}
+
+		legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
+		_ = os.MkdirAll(filepath.Dir(legacyFile), 0755)
+		_ = os.WriteFile(legacyFile, validPng, 0644)
+
+		deleted, _, skipped := mgr.ClearAll()
+		if deleted != 0 {
+			t.Errorf("expected 0 deleted files when marker is a symlink, got %d", deleted)
+		}
+		if skipped != 1 {
+			t.Errorf("expected 1 skipped legacy file, got %d", skipped)
+		}
+		if _, err := os.Stat(legacyFile); err != nil {
+			t.Errorf("expected legacy file to be preserved when marker is a symlink: %v", err)
+		}
+	})
+}
+
+// 14. 合法类目内部的用户文件反向测试：
+// 覆盖 assets/img/personal_data/photo.png、assets/12345/img/personal_data/photo.png、
+// img/personal_data/photo.png、hosts/example.com/assets/12345/img/personal_data/photo.png 等场景。
+// 即使文件具有合法 PNG 魔数并存在有效的 .gbf_cache 根标记，亦必须安全保留且不被删除；
+// 对应的用户目录（personal_data）亦不得被误回收。
+// 同时验证真实合法缓存路径下的文件仍能正常清理，未发生漏清回归。
+func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	_ = EnsureRootMarker(tmpDir)
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+	// 1. 用户文件场景（必须保留）
+	userFiles := []string{
+		filepath.Join(tmpDir, "assets", "img", "personal_data", "photo.png"),
+		filepath.Join(tmpDir, "assets", "12345", "img", "personal_data", "photo.png"),
+		filepath.Join(tmpDir, "img", "personal_data", "photo.png"),
+		filepath.Join(tmpDir, "hosts", "example.com", "assets", "12345", "img", "personal_data", "photo.png"),
+		filepath.Join(tmpDir, "assets", "sound", "personal_data", "audio.mp3"),
+		filepath.Join(tmpDir, "assets", "img", "sp", "personal_data", "photo.png"),
+	}
+
+	for _, p := range userFiles {
+		_ = os.MkdirAll(filepath.Dir(p), 0755)
+		if strings.HasSuffix(p, ".mp3") {
+			_ = os.WriteFile(p, []byte("ID3valid_audio_magic_bytes"), 0644)
+		} else {
+			_ = os.WriteFile(p, validPng, 0644)
+		}
+	}
+
+	// 2. 真实合法缓存素材（必须能被正常清理）
+	legitCacheFiles := []string{
+		filepath.Join(tmpDir, "assets", "12345", "img", "sp", "btn.png"),
+		filepath.Join(tmpDir, "assets", "img", "sp", "quest.png"),
+		filepath.Join(tmpDir, "sound", "voice", "attack.mp3"),
+	}
+	for _, p := range legitCacheFiles {
+		_ = os.MkdirAll(filepath.Dir(p), 0755)
+		if strings.HasSuffix(p, ".mp3") {
+			_ = os.WriteFile(p, []byte("ID3valid_audio_magic_bytes"), 0644)
+		} else {
+			_ = os.WriteFile(p, validPng, 0644)
+		}
+	}
+
+	deleted, _, skipped := mgr.ClearAll()
+
+	// 验证合法缓存全部被清理
+	if deleted != len(legitCacheFiles) {
+		t.Errorf("expected %d deleted legit cache files, got deleted=%d", len(legitCacheFiles), deleted)
+	}
+	for _, p := range legitCacheFiles {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected legit cache file %s to be deleted, got err: %v", p, err)
+		}
+	}
+
+	// 验证所有用户文件全部安全保留
+	if skipped < len(userFiles) {
+		t.Errorf("expected at least %d skipped user files, got skipped=%d", len(userFiles), skipped)
+	}
+	for _, p := range userFiles {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("BUG DETECTED: user file %s was deleted by ClearAll: %v", p, err)
+		}
+	}
+
+	// 验证 personal_data 用户目录未被误删除
+	userDirs := []string{
+		filepath.Join(tmpDir, "assets", "img", "personal_data"),
+		filepath.Join(tmpDir, "assets", "12345", "img", "personal_data"),
+		filepath.Join(tmpDir, "img", "personal_data"),
+		filepath.Join(tmpDir, "hosts", "example.com", "assets", "12345", "img", "personal_data"),
+		filepath.Join(tmpDir, "assets", "sound", "personal_data"),
+		filepath.Join(tmpDir, "assets", "img", "sp", "personal_data"),
+	}
+	for _, d := range userDirs {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("BUG DETECTED: user directory %s was deleted by ClearAll: %v", d, err)
+		}
+	}
+}
