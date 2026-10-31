@@ -1308,7 +1308,7 @@ func TestPinnedParentRootPreventsCheckToUnlinkSwap(t *testing.T) {
 	_ = os.Chtimes(replacementFile, origFi.ModTime(), origFi.ModTime())
 
 	swapped := false
-	testBeforeUnlinkHook = func(targetPath string) {
+	mgr.SetBeforeUnlinkHookForTest(func(targetPath string) {
 		if !swapped && strings.HasSuffix(targetPath, "target.js") {
 			// Attempt to rename cacheRoot -> swappedOutRoot and replacementRoot -> cacheRoot right before unlink!
 			// On POSIX this succeeds even while parentRoot fd is open; on Windows os.Rename may fail with sharing violation because parentRoot holds the directory handle open (which itself blocks the swap!).
@@ -1317,9 +1317,9 @@ func TestPinnedParentRootPreventsCheckToUnlinkSwap(t *testing.T) {
 				swapped = true
 			}
 		}
-	}
+	})
 	defer func() {
-		testBeforeUnlinkHook = nil
+		mgr.SetBeforeUnlinkHookForTest(nil)
 	}()
 
 	_, err = mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
@@ -2190,7 +2190,7 @@ func TestBreakdownAndCategoryCleanupExcludeUnconfirmedFiles(t *testing.T) {
 	}
 	validPath := filepath.Join(base, filepath.FromSlash(validRel))
 
-	userPath := filepath.Join(base, "assets", "personal_data", "avatar.png")
+	userPath := filepath.Join(base, "personal_data", "avatar.png")
 	if err := os.MkdirAll(filepath.Dir(userPath), 0755); err != nil {
 		t.Fatal(err)
 	}

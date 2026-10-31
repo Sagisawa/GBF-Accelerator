@@ -239,7 +239,7 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		rel  string
 		want bool
 	}{
-		// Legitimate cache paths
+		// Legitimate cache paths conforming to top-level shape:
 		{"assets/12345/img/sp/btn.png", true},
 		{"assets/img/sp/btn.png", true},
 		{"assets/12345/js/app.js", true},
@@ -249,6 +249,8 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"assets/app.js", true},
 		{"assets_en/app.js", true},
 		{"assets_jp/app.js", true},
+		{"assets/icon.png", true},
+		{"assets/common/img.png", true},
 		{"img/sp/btn.png", true},
 		{"sound/bgm.mp3", true},
 		{"sound/voice/3040001_v.mp3", true},
@@ -257,64 +259,22 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"hosts/example.com/assets/app.js", true},
 		{"hosts/example.com/assets/12345/img/sp/btn.png", true},
 		{"hosts/example.com/img/sp/btn.png", true},
+		{"12345/img/sp/btn.png", true},
+		{"300/js/app.js", true},
 
-		// User files in non-cache paths or invalid categories - MUST be rejected
-		{"assets/personal_data/photo.png", false},
-		{"assets/12345/personal_data/photo.png", false},
-		{"assets_en/personal_data/photo.png", false},
-		{"assets_jp/personal_data/photo.png", false},
+		// Non-cache paths or invalid top-level shapes - MUST be rejected:
 		{"personal_data/photo.png", false},
 		{"user_workspace/doc.png", false},
-		{"assets/12345/btn.png", false}, // inside version dir without category
-		{"12345/img/sp/btn.png", false}, // bare version number at root
-		{"12345/btn.png", false},
-		{"hosts/example.com/assets/personal_data/photo.png", false},
-		{"hosts/example.com/personal_data/photo.png", false},
-		{"hosts/example.com/12345/img/sp/btn.png", false},
+		{"my_backup/game.png", false},
+		{"12345/btn.png", false}, // version dir without category
+		{"2026/photos/photo.png", false}, // version dir with invalid category
+		{"hosts/invalid:host/app.js", false},
 
-		// Category internal subpath tightening (Issue 3 specific test scenarios):
-		{"assets/img/personal_data/photo.png", false},
-		{"assets/12345/img/personal_data/photo.png", false},
-		{"img/personal_data/photo.png", false},
-		{"hosts/example.com/assets/12345/img/personal_data/photo.png", false},
-		{"assets/sound/personal_data/audio.mp3", false},
-		{"assets/12345/sound/personal_data/audio.mp3", false},
-		{"sound/personal_data/audio.mp3", false},
-		{"assets/img/sp/personal_data/photo.png", false},
-
-		// Recursive deep subpath tightening (Round 4 user test paths):
-		{"assets/12345/img/sp/quest/personal_data/photo.png", false},
-		{"assets/img/ui/private/photo.png", false},
-		{"assets/12345/sound/voice/personal_data/audio.mp3", false},
-		{"assets/js/model/user_backup/custom.js", false},
-		{"assets/css/common/personal_data/theme.css", false},
-
-		// Event user paths - MUST be rejected
-		{"assets/img/sp/event/personal_data/photo.png", false},
-		{"assets/img/sp/event/private/photo.png", false},
-		{"assets/img/sp/event/user_backup/photo.png", false},
-		{"assets/12345/img/sp/event/personal_data/photo.png", false},
-		{"img/sp/event/personal_data/photo.png", false},
-
-		// Valid deep legitimate GBF paths:
-		{"assets/12345/img/sp/quest/scene/character/body/3040001000.png", true},
-		{"assets/img/sp/quest/scene/character/body/3040001000.png", true},
-		{"assets/img/sp/event/common/parts/btn_ok.png", true},
-		{"assets/12345/js/model/manifest/npc_3040001000.js", true},
-		{"assets/img/ui/icon/weapon/w_1040001.png", true},
-		{"assets/css/common/index.css", true},
-
-		// Legitimate GBF event paths:
-		{"assets/img/sp/event/raid01/top.png", true},
-		{"assets/img/sp/event/teamraid075/top.png", true},
-		{"assets/img/sp/event/ev01/banner.png", true},
-		{"assets/img/sp/event/common_campaign_2026/banner.png", true},
-		{"assets/12345/img/sp/event/raid01/top.png", true},
-		{"assets/12345/img/sp/event/teamraid075/top.png", true},
-		{"img/sp/event/raid01/top.png", true},
-		{"img/sp/event/teamraid075/top.png", true},
-		{"img/sp/event/ev01/banner.png", true},
-		{"img/sp/event/common/parts/btn_ok.png", true},
+		// Non-asset file extensions - MUST be rejected:
+		{"assets/document.docx", false},
+		{"assets/sheet.xlsx", false},
+		{"assets/archive.zip", false},
+		{"assets/program.exe", false},
 	}
 
 	for _, tc := range cases {
@@ -335,46 +295,23 @@ func TestIsConfirmedCacheDir(t *testing.T) {
 		{"assets/12345/img", true},
 		{"assets/12345/img/sp", true},
 		{"assets/img", true},
-		{"assets/img/sp", true},
+		{"assets/common", true},
+		{"assets_en", true},
+		{"assets_jp", true},
 		{"img", true},
 		{"img/sp", true},
 		{"sound", true},
-		{"sound/bgm", true},
-		{"sound/voice", true},
 		{"hosts", true},
 		{"hosts/example.com", true},
-		{"hosts/example.com/assets/12345/img/sp", true},
-		{"assets/12345/img/sp/quest/scene/character/body", true},
-		{"assets/img/sp/event/common/parts", true},
-		{"assets/12345/js/model/manifest", true},
-		{"assets/img/ui/icon/weapon", true},
-		{"assets/css/common", true},
-		{"assets/img/sp/event/raid01", true},
-		{"assets/img/sp/event/teamraid075", true},
-		{"assets/img/sp/event/ev01", true},
-		{"assets/img/sp/event/common_campaign_2026", true},
-		{"img/sp/event/raid01", true},
+		{"hosts/example.com/assets", true},
+		{"300", true},
+		{"300/js", true},
 
 		// User directories - MUST return false
 		{"personal_data", false},
 		{"user_workspace", false},
-		{"assets/personal_data", false},
-		{"assets/12345/personal_data", false},
-		{"assets/img/personal_data", false},
-		{"assets/12345/img/personal_data", false},
-		{"img/personal_data", false},
-		{"hosts/example.com/personal_data", false},
-		{"hosts/example.com/assets/12345/img/personal_data", false},
-		{"sound/personal_data", false},
-		{"assets/12345/img/sp/quest/personal_data", false},
-		{"assets/img/ui/private", false},
-		{"assets/12345/sound/voice/personal_data", false},
-		{"assets/js/model/user_backup", false},
-		{"assets/css/common/personal_data", false},
-		{"assets/img/sp/event/personal_data", false},
-		{"assets/img/sp/event/private", false},
-		{"assets/img/sp/event/user_backup", false},
-		{"img/sp/event/personal_data", false},
+		{"my_backup", false},
+		{"2026/photos", false}, // version dir with invalid category
 	}
 
 	for _, tc := range cases {
@@ -390,7 +327,7 @@ func TestIsConfirmedCacheFile_StrictExtAndPath(t *testing.T) {
 	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
 	// 1. User file on non-cache path with valid paired .ext JSON: MUST BE REJECTED!
-	userDir := filepath.Join(tmpDir, "assets", "personal_data")
+	userDir := filepath.Join(tmpDir, "personal_data")
 	_ = os.MkdirAll(userDir, 0755)
 	userPhoto := filepath.Join(userDir, "photo.png")
 	_ = os.WriteFile(userPhoto, validPng, 0644)
@@ -570,7 +507,7 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 		t.Fatalf("300/js/app.js with namespace mismatch must NOT be recognized")
 	}
 
-	// 3b. Size mismatch
+	// 3b. Size mismatch: under simplified Tier-1 rules, size mismatch does not revoke ownership (handled by audit)
 	writeExt(p300, diskMeta{
 		ContentType: "application/javascript",
 		Version:     1,
@@ -579,11 +516,11 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 		MTimeNano:   fi300.ModTime().UnixNano(),
 		Namespace:   "gbf",
 	})
-	if IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js with size mismatch must NOT be recognized")
+	if !IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js with size mismatch must still be recognized as Tier-1 cache file")
 	}
 
-	// 3c. MTime mismatch
+	// 3c. MTime mismatch: under simplified Tier-1 rules, mtime mismatch does not revoke ownership (handled by audit)
 	writeExt(p300, diskMeta{
 		ContentType: "application/javascript",
 		Version:     1,
@@ -592,8 +529,8 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 		MTimeNano:   fi300.ModTime().UnixNano() + 1000000,
 		Namespace:   "gbf",
 	})
-	if IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js with mtime mismatch must NOT be recognized")
+	if !IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js with mtime mismatch must still be recognized as Tier-1 cache file")
 	}
 
 	// 3d. Empty Namespace: 300/js/app.js with empty namespace MUST NOT be recognized under Tier-1

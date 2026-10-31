@@ -63,13 +63,6 @@ func hasRootMarkerInRoot(root *os.Root) bool {
 // EnsureRootMarker writes the root marker file to baseDir if not already present with valid content.
 // To avoid data loss, it strictly refuses to overwrite existing user files, directories, symlinks,
 // or unrecognized files named .gbf_cache.
-//
-// Security & Concurrency Note:
-// An unavoidable TOCTOU (time-of-check to time-of-use) race window inherently exists between
-// Lstat and file creation. While os.OpenFile with O_CREATE|O_EXCL ensures atomic creation when the
-// path does not exist, standard userspace file operations cannot eliminate all filesystem symlink-swap
-// races without kernel-enforced O_NOFOLLOW / descriptor-based path resolution uniformly supported
-// across all operating systems.
 func EnsureRootMarker(baseDir string) error {
 	if baseDir == "" {
 		return os.ErrInvalid
@@ -86,7 +79,6 @@ func EnsureRootMarker(baseDir string) error {
 		if fi.IsDir() {
 			return errors.New("root marker path is a directory")
 		}
-		// Existing file has invalid or unrecognized content -> preserve user data and refuse to overwrite!
 		return errors.New("existing .gbf_cache file contains unrecognized content; refusing to overwrite")
 	} else if !os.IsNotExist(err) {
 		return err
@@ -118,7 +110,6 @@ func (m *Manager) EnsureRootMarker() error {
 }
 
 // ValidateDestructiveCacheDir rejects roots that are not safe targets for disk maintenance.
-// Existing roots rejected by the current policy can still be used for normal cache I/O.
 func (m *Manager) ValidateDestructiveCacheDir() error {
 	if m == nil {
 		return errors.New("cache manager is unavailable")
@@ -142,13 +133,7 @@ func (m *Manager) ValidateDestructiveCacheDir() error {
 	return nil
 }
 
-// IsConfirmedCacheDirectory reports whether a relative directory follows the known
-// GBF cache hierarchy. Migration uses it to reject unrelated user directories.
-func IsConfirmedCacheDirectory(slashRelDir string) bool {
-	clean := filepath.ToSlash(filepath.Clean(slashRelDir))
-	return isConfirmedCacheDir(clean)
-}
-
+// isKnownGBFCategory checks whether cat matches any top-level GBF static asset category.
 func isKnownGBFCategory(cat string) bool {
 	switch cat {
 	case "js", "css", "img", "sound", "font", "manifest", "html", "misc", "cjs", "json", "model", "app":
@@ -156,126 +141,6 @@ func isKnownGBFCategory(cat string) bool {
 	default:
 		return false
 	}
-}
-
-func isRootFallbackCategory(cat string) bool {
-	switch cat {
-	case "img", "sound", "js", "css", "font", "manifest", "html", "misc":
-		return true
-	default:
-		return false
-	}
-}
-
-// Whitelists of known GBF resource category subdirectories to prevent arbitrary user directories
-// from being misidentified as cache structures.
-var (
-	knownAudioSubdirs = map[string]struct{}{
-		"voice": {},
-		"bgm":   {},
-		"se":    {},
-		"music": {},
-	}
-
-	knownImgSubdirs = map[string]struct{}{
-		"sp":      {},
-		"sprite":  {},
-		"ui":      {},
-		"common":  {},
-		"pc":      {},
-		"mobile":  {},
-		"archive": {},
-	}
-
-	// knownImgSpSubdirs lists verified GBF smartphone asset modules.
-	// Test-only synthetic names (e.g. clearall, replace_me) are strictly prohibited from this list.
-	knownImgSpSubdirs = map[string]struct{}{
-		"cjs": {}, "quest": {}, "sidestory": {}, "comic": {}, "event": {}, "ui": {},
-		"raid": {}, "top": {}, "css_img": {}, "shop": {}, "coopraid": {}, "party": {},
-		"enhancement": {}, "archaic": {}, "frontier": {}, "guild": {}, "mypage": {},
-		"profile": {}, "arcarum": {}, "arcarum2": {}, "arcarum3": {}, "replicard": {},
-		"skycompass": {}, "list": {}, "treasure": {}, "gacha_cjs": {}, "title": {},
-		"tutorial": {}, "setting": {}, "present": {}, "supplies": {}, "job": {},
-		"zenith": {}, "bahamut": {}, "seraphic": {}, "awakening": {}, "artifact": {},
-		"wonder": {}, "skin": {}, "book": {}, "trophy": {}, "crew": {}, "island": {},
-		"resort": {}, "alchemy": {}, "cooking": {}, "gacha": {}, "banner": {},
-		"campaign": {}, "loginbonus": {}, "assets": {}, "free": {}, "assist": {},
-		"stage": {}, "select": {}, "pro_quest": {}, "search": {}, "supporter": {},
-		"extra": {}, "hl": {}, "main": {}, "tower": {}, "v2": {}, "news": {},
-		"character": {}, "icon": {}, "weapon": {}, "summon": {}, "archive": {},
-		"dialogue": {}, "coop": {}, "bg": {}, "item": {}, "movie": {}, "common": {},
-		"parts": {}, "effect": {}, "line": {}, "room": {}, "partner": {}, "memory": {},
-		"friend": {}, "serial": {}, "recommend": {}, "weapon_gallery": {},
-		"summon_gallery": {}, "npc_gallery": {}, "sound": {}, "maintenance": {},
-		"my_banner": {}, "special": {}, "campaign_bnr": {}, "casino": {}, "action": {},
-		"evolution": {}, "evolution_scene": {}, "gacha_anim": {}, "sub": {},
-		"stamp": {}, "trial": {}, "trial_battle": {}, "mypage_bg": {}, "mypage_sp": {},
-		"banner_s": {}, "banner_m": {}, "banner_l": {}, "lead": {}, "audit": {},
-		"cycle": {},
-	}
-
-	knownJSSubdirs = map[string]struct{}{
-		"model": {}, "view": {}, "collection": {}, "config": {}, "lib": {},
-		"util": {}, "common": {}, "app": {}, "core": {}, "router": {},
-		"controller": {}, "platform": {}, "vendor": {}, "component": {}, "scene": {},
-	}
-
-	knownCSSSubdirs = map[string]struct{}{
-		"common": {}, "sp": {}, "pc": {}, "sub": {}, "base": {}, "theme": {}, "font": {},
-	}
-
-	knownFontSubdirs = map[string]struct{}{
-		"woff": {}, "ttf": {}, "eot": {}, "svg": {}, "otf": {},
-	}
-
-	knownAppSubdirs = map[string]struct{}{
-		"js": {}, "css": {}, "html": {}, "sound": {}, "img": {},
-	}
-
-	knownUIIconTypes = map[string]struct{}{
-		"weapon": {}, "skill": {}, "summon": {}, "job": {}, "ability": {},
-		"article": {}, "item": {}, "quest": {}, "stamp": {},
-	}
-
-	// knownEventPrefixes defines verified GBF event directory prefixes grounded in real game assets
-	// and test fixtures (e.g. raid01, teamraid075, ev01, common_campaign_2026).
-	knownEventPrefixes = []string{
-		"common_campaign_",
-		"campaign_",
-		"campaign",
-		"teamraid",
-		"raid",
-		"event",
-		"ev",
-		"guild",
-		"dread",
-		"tower",
-		"advent",
-		"collaborate",
-		"collabo",
-		"anniversary",
-		"defend",
-		"archive",
-	}
-)
-
-// isValidGBFEventDirName validates whether an event-specific subdirectory name conforms to
-// verified GBF naming grammar (e.g. raid01, teamraid075, ev01, common_campaign_2026).
-// Arbitrary user directories (e.g. personal_data, private, user_backup) return false.
-func isValidGBFEventDirName(name string) bool {
-	if name == "" || len(name) > 64 {
-		return false
-	}
-	lower := strings.ToLower(name)
-	for _, pfx := range knownEventPrefixes {
-		if strings.HasPrefix(lower, pfx) {
-			suffix := lower[len(pfx):]
-			if isAllDigits(suffix) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func isAllDigits(s string) bool {
@@ -290,395 +155,126 @@ func isAllDigits(s string) bool {
 	return true
 }
 
-// isValidCategoryDirSegments recursively validates every directory segment following a category
-// against the strictly defined directory grammar of GBF static assets.
-// Unrecognized subdirectories at ANY depth return false to prevent user files from being misidentified.
-func isValidCategoryDirSegments(cat string, dirSegs []string) bool {
-	if len(dirSegs) == 0 {
-		return true // directly under category itself (e.g. sound/bgm.mp3, js/app.js)
-	}
-	d0 := dirSegs[0]
-
-	switch cat {
-	case "sound":
-		if _, ok := knownAudioSubdirs[d0]; !ok {
-			return false
-		}
-		return len(dirSegs) == 1 // voice, bgm, se, music have no subdirectories in GBF
-
-	case "css":
-		if _, ok := knownCSSSubdirs[d0]; !ok {
-			return false
-		}
-		return len(dirSegs) == 1 // e.g. css/common/<file.css>
-
-	case "font":
-		if _, ok := knownFontSubdirs[d0]; !ok {
-			return false
-		}
-		return len(dirSegs) == 1
-
-	case "manifest":
-		return (d0 == "json" || d0 == "sp") && len(dirSegs) == 1
-
-	case "app":
-		if _, ok := knownAppSubdirs[d0]; !ok {
-			return false
-		}
-		return len(dirSegs) == 1
-
-	case "cjs":
-		switch d0 {
-		case "npc", "weapon", "summon", "enemy", "raid":
-			return len(dirSegs) == 1
-		default:
-			return false
-		}
-
-	case "json":
-		return (d0 == "data" || d0 == "master") && len(dirSegs) == 1
-
-	case "model":
-		return (d0 == "live2d" || d0 == "3d") && len(dirSegs) == 1
-
-	case "misc":
-		return (d0 == "bin" || d0 == "data") && len(dirSegs) == 1
-
-	case "html":
-		return false // no subdirectories under html
-
-	case "js":
-		if _, isVer := parsePositiveVersionSegment(d0); isVer {
-			return len(dirSegs) == 1 // e.g. js/1000/<file.js>
-		}
-		if d0 == "cjs" {
-			return len(dirSegs) == 1 // js/cjs/<file.js>
-		}
-		if d0 == "model" {
-			if len(dirSegs) == 1 {
-				return true // js/model/<file.js>
-			}
-			if len(dirSegs) == 2 && dirSegs[1] == "manifest" {
-				return true // js/model/manifest/<file.js>
-			}
-			return false
-		}
-		if _, ok := knownJSSubdirs[d0]; ok {
-			return len(dirSegs) == 1
-		}
-		return false
-
-	case "img":
-		if d0 == "ui" {
-			if len(dirSegs) == 1 {
-				return true // img/ui
-			}
-			if len(dirSegs) == 2 && dirSegs[1] == "icon" {
-				return true // img/ui/icon
-			}
-			if len(dirSegs) == 3 && dirSegs[1] == "icon" {
-				_, ok := knownUIIconTypes[dirSegs[2]]
-				return ok
-			}
-			return false
-		}
-		if d0 == "sprite" || d0 == "common" || d0 == "pc" || d0 == "mobile" || d0 == "archive" {
-			return len(dirSegs) == 1
-		}
-		if d0 != "sp" {
-			return false
-		}
-		// d0 == "sp"
-		if len(dirSegs) == 1 {
-			return true // img/sp directory itself or direct file in img/sp
-		}
-		d1 := dirSegs[1]
-		if _, ok := knownImgSpSubdirs[d1]; !ok {
-			return false
-		}
-
-		// Deep validation for known sp modules
-		switch d1 {
-		case "cjs", "comic", "mypage", "profile", "replicard", "skycompass", "list",
-			"treasure", "gacha_cjs", "title", "tutorial", "setting", "present", "supplies",
-			"job", "zenith", "bahamut", "seraphic", "awakening", "artifact", "wonder",
-			"skin", "book", "trophy", "crew", "island", "resort", "alchemy", "cooking",
-			"gacha", "banner", "campaign", "loginbonus", "news", "character", "icon",
-			"weapon", "summon", "archive", "dialogue", "coop", "bg", "item", "movie",
-			"parts", "effect", "line", "room", "partner", "memory", "friend", "serial",
-			"recommend", "weapon_gallery", "summon_gallery", "npc_gallery", "maintenance",
-			"my_banner", "special", "campaign_bnr", "casino", "action", "evolution",
-			"evolution_scene", "gacha_anim", "sub", "stamp", "trial", "trial_battle",
-			"mypage_bg", "mypage_sp", "banner_s", "banner_m", "banner_l", "lead",
-			"audit", "cycle", "top", "css_img", "shop", "coopraid", "party",
-			"enhancement", "archaic", "frontier", "guild":
-			return len(dirSegs) == 2
-
-		case "sidestory":
-			if len(dirSegs) == 2 {
-				return true
-			}
-			return len(dirSegs) == 3 && dirSegs[2] == "banner"
-
-		case "raid":
-			if len(dirSegs) == 2 {
-				return true
-			}
-			return len(dirSegs) == 3 && dirSegs[2] == "bg"
-
-		case "arcarum", "arcarum2", "arcarum3":
-			if len(dirSegs) == 2 {
-				return true
-			}
-			return len(dirSegs) == 3 && (dirSegs[2] == "dungeon" || dirSegs[2] == "map")
-
-		case "ui":
-			if len(dirSegs) == 2 {
-				return true
-			}
-			if len(dirSegs) == 3 && dirSegs[2] == "icon" {
-				return true
-			}
-			if len(dirSegs) == 4 && dirSegs[2] == "icon" {
-				_, ok := knownUIIconTypes[dirSegs[3]]
-				return ok
-			}
-			return false
-
-		case "event":
-			if len(dirSegs) == 2 {
-				return true
-			}
-			d2 := dirSegs[2]
-			if d2 == "common" {
-				if len(dirSegs) == 3 {
-					return true
-				}
-				return len(dirSegs) == 4 && (dirSegs[3] == "parts" || dirSegs[3] == "banner")
-			}
-			// Event-specific subdirectories (e.g. teamraid075, ev01, raid01, common_campaign_2026)
-			if !isValidGBFEventDirName(d2) {
-				return false
-			}
-			if len(dirSegs) == 3 {
-				return true
-			}
-			return len(dirSegs) == 4 && (dirSegs[3] == "parts" || dirSegs[3] == "banner" || dirSegs[3] == "top")
-
-		case "quest":
-			if len(dirSegs) == 2 {
-				return true // direct file under img/sp/quest
-			}
-			d2 := dirSegs[2]
-			if d2 == "scene" {
-				if len(dirSegs) == 3 {
-					return true // img/sp/quest/scene
-				}
-				d3 := dirSegs[3]
-				if d3 == "bg" || d3 == "voice" {
-					return len(dirSegs) == 4
-				}
-				if d3 == "character" {
-					if len(dirSegs) == 4 {
-						return true // img/sp/quest/scene/character
-					}
-					if len(dirSegs) == 5 && (dirSegs[4] == "body" || dirSegs[4] == "facial") {
-						return true // img/sp/quest/scene/character/body
-					}
-					return false
-				}
-				return false
-			}
-			// Known quest UI subdirectories
-			if _, ok := confirmedQuestUIDirs[d2]; ok {
-				return len(dirSegs) == 3
-			}
-			return false
-
-		default:
-			return false
-		}
-
-	default:
+func isPositiveVersionSegment(s string) bool {
+	if s == "" || len(s) > 19 {
 		return false
 	}
-}
-
-func isValidCachePathHierarchy(segs []string) bool {
-	if len(segs) == 0 {
+	if !isAllDigits(s) {
 		return false
 	}
-	first := segs[0]
-	if first == "assets" || first == "assets_en" || first == "assets_jp" {
-		if len(segs) < 2 {
-			return false
-		}
-		if len(segs) == 2 {
-			return strings.EqualFold(segs[1], "app.js")
-		}
-		if _, isVer := parsePositiveVersionSegment(segs[1]); isVer {
-			if len(segs) < 4 {
-				return false
-			}
-			cat := segs[2]
-			if !isKnownGBFCategory(cat) {
-				return false
-			}
-			return isValidCategoryDirSegments(cat, segs[3:len(segs)-1])
-		}
-		cat := segs[1]
-		if !isKnownGBFCategory(cat) {
-			return false
-		}
-		return isValidCategoryDirSegments(cat, segs[2:len(segs)-1])
-	}
-	if isRootFallbackCategory(first) {
-		if len(segs) < 2 {
-			return false
-		}
-		return isValidCategoryDirSegments(first, segs[1:len(segs)-1])
-	}
-	return false
-}
-
-func isValidCacheDirHierarchy(segs []string) bool {
-	if len(segs) == 0 {
+	if len(s) > 1 && s[0] == '0' {
 		return false
 	}
-	first := segs[0]
-	if first == "assets" || first == "assets_en" || first == "assets_jp" {
-		if len(segs) == 1 {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '0' {
 			return true
 		}
-		if _, isVer := parsePositiveVersionSegment(segs[1]); isVer {
-			if len(segs) == 2 {
-				return true
-			}
-			cat := segs[2]
-			if !isKnownGBFCategory(cat) {
-				return false
-			}
-			return isValidCategoryDirSegments(cat, segs[3:])
-		}
-		cat := segs[1]
-		if !isKnownGBFCategory(cat) {
-			return false
-		}
-		return isValidCategoryDirSegments(cat, segs[2:])
-	}
-	if isRootFallbackCategory(first) {
-		return isValidCategoryDirSegments(first, segs[1:])
 	}
 	return false
 }
 
 // isTier1VersionFallbackPath checks whether slashRel matches the historical GBF version fallback
 // directory structure without the leading "assets/" prefix (e.g. "<ver>/<category>/...").
-// This is a strict Tier-1-only compatibility exception:
-// 1. It must have at least 3 segments (e.g. 300/js/app.js).
-// 2. The first segment must be a valid positive integer version (e.g. 300).
-// 3. The second segment must be a known GBF category (e.g. js, img, sound, etc.).
-// 4. Any intermediate segments must match valid category subdirectory rules.
-// 5. It must have a valid asset file extension (e.g. .js, .png, etc.).
 func isTier1VersionFallbackPath(slashRel string) bool {
-	if slashRel == "" || slashRel == "." || strings.HasPrefix(slashRel, "..") {
-		return false
-	}
-	if !isAssetExtension(strings.ToLower(slashRel)) {
-		return false
-	}
-	segs := splitCleanSegments(slashRel)
+	segs := splitCleanSegments(filepath.ToSlash(slashRel))
 	if len(segs) < 3 {
 		return false
 	}
-	if _, isVer := parsePositiveVersionSegment(segs[0]); !isVer {
+	if !isPositiveVersionSegment(segs[0]) {
 		return false
 	}
-	cat := segs[1]
-	if !isKnownGBFCategory(cat) {
-		return false
-	}
-	return isValidCategoryDirSegments(cat, segs[2:len(segs)-1])
+	return isKnownGBFCategory(segs[1])
 }
 
-// isVersionFallbackDirHierarchy checks whether directory segments match a historical version
-// fallback directory (e.g. "300" or "300/js").
-func isVersionFallbackDirHierarchy(segs []string) bool {
-	if len(segs) < 1 {
-		return false
-	}
-	if _, isVer := parsePositiveVersionSegment(segs[0]); !isVer {
-		return false
-	}
-	if len(segs) == 1 {
-		return true
-	}
-	cat := segs[1]
-	if !isKnownGBFCategory(cat) {
-		return false
-	}
-	return isValidCategoryDirSegments(cat, segs[2:])
-}
-
-// isConfirmedCachePathStructure checks whether slashRel matches the canonical cache namespace and directory
-// hierarchy of GBF-Accelerator (strictly following positive integer version + category, direct category fallback,
-// root category fallback, or multi-host paths). It also verifies that the target file has a valid asset extension.
-func isConfirmedCachePathStructure(slashRel string) (ns string, cleanKey string, ok bool) {
+// parseCachePathTopLevelShape validates whether slashRel conforms to a recognized cache top-level shape:
+// - assets/, assets_en/, assets_jp/ (>= 2 segments)
+// - hosts/<ns>/... (>= 3 segments, with valid sanitized <ns>)
+// - positive integer version directory (e.g. 300/...) (>= 2 segments)
+// - top-level category directory (e.g. js/, img/, sound/, ...) (>= 2 segments)
+//
+// Deep directory syntax (subfolder whitelists) is deliberately not checked here because
+// write-side cache keys have no deep grammar restrictions and game CDN paths evolve over time.
+func parseCachePathTopLevelShape(slashRel string) (ns string, cleanKey string, isHosts bool, ok bool) {
 	if slashRel == "" || slashRel == "." || strings.HasPrefix(slashRel, "..") {
-		return "", "", false
+		return "", "", false, false
 	}
-	segs := splitCleanSegments(slashRel)
+	clean := filepath.ToSlash(filepath.Clean(slashRel))
+	clean = strings.TrimPrefix(clean, "/")
+	segs := splitCleanSegments(clean)
 	if len(segs) < 2 {
-		return "", "", false
+		return "", "", false, false
 	}
 
-	if segs[0] == "hosts" {
+	first := segs[0]
+	if first == "hosts" {
 		if len(segs) < 3 {
-			return "", "", false
+			return "", "", false, false
 		}
 		rawNS := segs[1]
 		if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) {
-			return "", "", false
+			return "", "", false, false
 		}
 		nsCandidate := sanitizeNamespace(rawNS)
 		if nsCandidate == "" || nsCandidate == "hosts" || nsCandidate == "gbf" || nsCandidate != strings.ToLower(rawNS) {
-			return "", "", false
+			return "", "", false, false
 		}
-		subSegs := segs[2:]
-		subKey := strings.Join(subSegs, "/")
-		if !isAssetExtension(strings.ToLower(subKey)) {
-			return "", "", false
-		}
-		if !isValidCachePathHierarchy(subSegs) {
-			return "", "", false
-		}
-		return nsCandidate, subKey, true
+		subKey := strings.Join(segs[2:], "/")
+		return nsCandidate, subKey, true, true
 	}
 
-	if !isAssetExtension(strings.ToLower(slashRel)) {
+	if first == "assets" || first == "assets_en" || first == "assets_jp" {
+		return "gbf", clean, false, true
+	}
+
+	if isPositiveVersionSegment(first) {
+		// Version fallback path: requires >= 3 segments and segs[1] must be a known category, e.g. 300/js/app.js
+		if len(segs) < 3 || !isKnownGBFCategory(segs[1]) {
+			return "", "", false, false
+		}
+		return "gbf", clean, false, true
+	}
+
+	if isKnownGBFCategory(first) {
+		return "gbf", clean, false, true
+	}
+
+	return "", "", false, false
+}
+
+// isConfirmedCachePathStructure checks whether slashRel matches the canonical cache namespace and top-level
+// shape and possesses a valid asset extension. Retained for backward-compatible call sites.
+func isConfirmedCachePathStructure(slashRel string) (ns string, cleanKey string, ok bool) {
+	nsCand, keyCand, _, shapeOK := parseCachePathTopLevelShape(slashRel)
+	if !shapeOK {
 		return "", "", false
 	}
-	if !isValidCachePathHierarchy(segs) {
+	if !isAssetExtension(strings.ToLower(keyCand)) {
 		return "", "", false
 	}
-	return "gbf", slashRel, true
+	return nsCand, keyCand, true
+}
+
+// IsConfirmedCacheDirectory reports whether a relative directory belongs to a valid cache top-level shape.
+func IsConfirmedCacheDirectory(slashRelDir string) bool {
+	return isConfirmedCacheDir(slashRelDir)
 }
 
 // isConfirmedCacheDir checks whether a relative directory path belongs to the valid cache namespace
-// hierarchy (e.g. hosts, hosts/<ns>, assets, assets_en, assets_jp, img, sound, or version dirs).
-// Non-cache user directories (e.g. personal_data, user_workspace) return false.
+// hierarchy (hosts, hosts/<ns>, assets, assets_en, assets_jp, version dirs, or top-level category dirs).
 func isConfirmedCacheDir(slashRelDir string) bool {
 	if slashRelDir == "" || slashRelDir == "." || strings.HasPrefix(slashRelDir, "..") {
 		return false
 	}
-	slashRelDir = strings.Trim(slashRelDir, "/")
-	segs := splitCleanSegments(slashRelDir)
+	clean := filepath.ToSlash(filepath.Clean(slashRelDir))
+	clean = strings.Trim(clean, "/")
+	segs := splitCleanSegments(clean)
 	if len(segs) == 0 {
 		return false
 	}
-	if segs[0] == "hosts" {
+	first := segs[0]
+	if first == "hosts" {
 		if len(segs) == 1 {
-			return true // the top-level "hosts" directory itself
+			return true // "hosts" itself
 		}
 		rawNS := segs[1]
 		if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) {
@@ -688,21 +284,114 @@ func isConfirmedCacheDir(slashRelDir string) bool {
 		if ns == "" || ns == "hosts" || ns == "gbf" || ns != strings.ToLower(rawNS) {
 			return false
 		}
-		if len(segs) == 2 {
-			return true // "hosts/<ns>"
-		}
-		return isValidCacheDirHierarchy(segs[2:])
-	}
-	if isValidCacheDirHierarchy(segs) {
+		// hosts/<ns> or any subdirectory under hosts/<ns>
 		return true
 	}
-	return isVersionFallbackDirHierarchy(segs)
+	if first == "assets" || first == "assets_en" || first == "assets_jp" {
+		return true
+	}
+	if isPositiveVersionSegment(first) {
+		if len(segs) == 1 {
+			return true // "300"
+		}
+		return isKnownGBFCategory(segs[1]) // "300/js", but "2026/photos" -> false
+	}
+	if isKnownGBFCategory(first) {
+		return true
+	}
+	return false
+}
+
+// VerifyTier1Meta is the canonical, unified single source of truth for Tier-1 ownership validation.
+// It verifies:
+// 1. Path top-level shape is valid (assets/assets_en/assets_jp, hosts/<ns>, version dir, or category dir).
+// 2. parseExtFile succeeds and version == 1.
+// 3. Namespace in metadata matches path namespace:
+//    - hosts/<ns> requires metadata namespace matching <ns> (strictly non-empty and non-gbf).
+//    - all other shapes require metadata namespace to be "gbf" or empty.
+//
+// In accordance with specification:
+// - No deep directory syntax check is performed.
+// - No asset extension whitelist check is performed (Tier-1 trusts the verified metadata record).
+// - mtimeNano and size equality is NOT required for attribution (mismatches require content re-verification
+//   by the audit engine, but do not revoke cache ownership).
+func VerifyTier1Meta(slashRel string, metaBytes []byte) (diskMeta, bool) {
+	if slashRel == "" || len(metaBytes) == 0 {
+		return diskMeta{}, false
+	}
+	expectedNS, _, isHosts, shapeOK := parseCachePathTopLevelShape(slashRel)
+	if !shapeOK {
+		return diskMeta{}, false
+	}
+	parsedMeta, parseOK := parseExtFile(metaBytes)
+	if !parseOK || parsedMeta.Version != 1 {
+		return diskMeta{}, false
+	}
+
+	clean := filepath.ToSlash(slashRel)
+	clean = strings.TrimPrefix(clean, "/")
+	segs := splitCleanSegments(clean)
+	isVerFallback := len(segs) >= 1 && isPositiveVersionSegment(segs[0])
+
+	if isHosts {
+		// For hosts paths (hosts/<host>/...):
+		// - Empty namespace is rejected.
+		// - Form A: meta.Namespace == "gbf" is accepted.
+		// - Form B: sanitizeNamespace(meta.Namespace) == expectedNS is accepted.
+		// - Otherwise rejected.
+		if parsedMeta.Namespace == "" {
+			return diskMeta{}, false
+		}
+		if parsedMeta.Namespace == "gbf" {
+			return parsedMeta, true
+		}
+		if sanitizeNamespace(parsedMeta.Namespace) == expectedNS {
+			return parsedMeta, true
+		}
+		return diskMeta{}, false
+	} else if isVerFallback {
+		// Bare version fallback paths (e.g. 300/js/app.js) strictly require "gbf" namespace.
+		if parsedMeta.Namespace != "gbf" {
+			return diskMeta{}, false
+		}
+	} else {
+		// Standard GBF paths (assets/..., assets_en/..., assets_jp/..., img/..., sound/..., etc.):
+		// Namespace must be "gbf" or empty (for legacy backward compatibility).
+		if parsedMeta.Namespace != "" && parsedMeta.Namespace != "gbf" && sanitizeNamespace(parsedMeta.Namespace) != "gbf" {
+			return diskMeta{}, false
+		}
+	}
+
+	return parsedMeta, true
+}
+
+// isTier2Candidate checks whether slashRel meets structural requirements for Tier-2 legacy cache:
+// root marker present + top-level shape valid + valid asset file extension.
+func isTier2Candidate(slashRel string, hasRootMarker bool) (cleanKey string, ok bool) {
+	if !hasRootMarker {
+		return "", false
+	}
+	_, keyCand, _, shapeOK := parseCachePathTopLevelShape(slashRel)
+	if !shapeOK {
+		return "", false
+	}
+	clean := filepath.ToSlash(slashRel)
+	clean = strings.TrimPrefix(clean, "/")
+	segs := splitCleanSegments(clean)
+	if len(segs) > 0 && isPositiveVersionSegment(segs[0]) {
+		// Bare version fallback directory (e.g. 300/js/app.js) is Tier-1 only.
+		// Without companion .ext, it is never recognized as Tier-2.
+		return "", false
+	}
+	cleanLower := strings.ToLower(keyCand)
+	if !isAssetExtension(cleanLower) {
+		return "", false
+	}
+	return cleanLower, true
 }
 
 // isUnverifiedLegacyCacheCandidateInRoot identifies a structurally plausible legacy cache path
 // that has no sidecar ownership record. It is diagnostic-only: callers must never delete it.
-// Corrupt contents cannot satisfy Tier 2, and path shape plus a root marker is not enough
-// to prove that a file is owned by the cache.
 func isUnverifiedLegacyCacheCandidateInRoot(root *os.Root, rel string, fi os.FileInfo, hasRootMarker bool) bool {
 	if root == nil || !hasRootMarker || fi == nil || !fi.Mode().IsRegular() {
 		return false
@@ -714,10 +403,10 @@ func isUnverifiedLegacyCacheCandidateInRoot(root *os.Root, rel string, fi os.Fil
 	baseName := filepath.Base(rel)
 	if slashRel == RootMarkerFileName || config.IsSystemJunk(baseName) ||
 		strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") ||
-		strings.Contains(slashRel, ".quarantine") {
+		isAcceleratorQuarantineFile(slashRel) {
 		return false
 	}
-	if _, _, ok := isConfirmedCachePathStructure(slashRel); !ok {
+	if _, ok := isTier2Candidate(slashRel, hasRootMarker); !ok {
 		return false
 	}
 	_, err := root.Lstat(rel + ".ext")
@@ -726,11 +415,9 @@ func isUnverifiedLegacyCacheCandidateInRoot(root *os.Root, rel string, fi os.Fil
 
 // IsConfirmedCacheFile determines whether a file on disk belongs to GBF-Accelerator/ACGPower cache.
 // It explicitly rejects non-regular files and symbolic links using os.Lstat.
-// It enforces a two-tier hierarchy:
-// Tier 1 (Strong proof): A valid paired .ext file exists whose metadata (version=1, size, mtimeNano, namespace) matches.
-// Tier 2 (Legacy ACGPower without .ext): The file matches canonical cache paths, asset extensions (excluding .csv),
-// and magic bytes, AND the root marker (.gbf_cache) exists in baseDir.
-// Unconfirmed files, user documents, system junk, and root files are rejected (returns false).
+// Two-tier hierarchy:
+// Tier 1 (Strong proof): A valid paired .ext file exists whose metadata (version=1, namespace) matches.
+// Tier 2 (Legacy ACGPower without .ext): Root marker exists + valid top-level shape + asset extension + magic bytes.
 func IsConfirmedCacheFile(baseDir, fullPath string, hasRootMarker bool) bool {
 	fi, err := os.Lstat(fullPath)
 	if err != nil || fi == nil || !fi.Mode().IsRegular() {
@@ -740,7 +427,6 @@ func IsConfirmedCacheFile(baseDir, fullPath string, hasRootMarker bool) bool {
 }
 
 // IsConfirmedCacheFileWithInfo performs confirmed cache file verification using existing FileInfo.
-// Only regular files with size > 0 can be confirmed; symlinks, directories, and non-regular files are rejected.
 func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasRootMarker bool) bool {
 	if fi == nil || !fi.Mode().IsRegular() || fi.Size() <= 0 {
 		return false
@@ -754,36 +440,18 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 	slashRel := filepath.ToSlash(rel)
 	baseName := filepath.Base(fullPath)
 
-	// Never confirm the root marker file itself or system junk files
 	if slashRel == RootMarkerFileName || config.IsSystemJunk(baseName) {
 		return false
 	}
 
-	// Metadata files (.ext), temp files, and quarantine files are not asset data files
-	if strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") || strings.Contains(slashRel, ".quarantine") {
+	if strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") || isAcceleratorQuarantineFile(slashRel) {
 		return false
-	}
-
-	// Strict canonical cache hierarchy check for both Tier 1 and Tier 2.
-	// GBF-Accelerator never places cache files in arbitrary user paths (e.g. assets/personal_data/...).
-	ns, cleanKey, ok := isConfirmedCachePathStructure(slashRel)
-	isTier1Fallback := false
-	if !ok {
-		if isTier1VersionFallbackPath(slashRel) {
-			ns = "gbf"
-			cleanKey = slashRel
-			isTier1Fallback = true
-		} else {
-			return false
-		}
 	}
 
 	// --- Tier 1: Strong evidence via valid paired .ext metadata file ---
 	extPath := fullPath + ".ext"
 	extFi, extErr := os.Lstat(extPath)
 	if extErr == nil {
-		// A companion .ext exists. If it exists, this file CANNOT be treated as Tier 2 legacy cache.
-		// It MUST strictly validate as an authentic Tier 1 asset; if not, return false immediately.
 		if !extFi.Mode().IsRegular() {
 			return false
 		}
@@ -791,147 +459,82 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 		if err != nil {
 			return false
 		}
-		meta, ok := parseExtFile(metaBytes)
-		if !ok || meta.Version != 1 {
-			return false
-		}
-		if meta.Size != fi.Size() || meta.MTimeNano != fi.ModTime().UnixNano() {
-			return false
-		}
-		isHostsPath := strings.HasPrefix(slashRel, "hosts/")
-		if meta.Namespace != "" && meta.Namespace != "gbf" {
-			if sanitizeNamespace(meta.Namespace) != ns {
-				return false
-			}
-		} else if isHostsPath {
-			if meta.Namespace != "gbf" {
-				return false
-			}
-		} else if isTier1Fallback {
-			if meta.Namespace != "gbf" {
-				return false
-			}
-		} else if ns != "gbf" {
-			return false
-		}
-		return true
+		_, ok := VerifyTier1Meta(slashRel, metaBytes)
+		return ok
 	} else if !os.IsNotExist(extErr) {
-		// Lstat failed with an error other than NotExist (e.g. permission error).
-		// Since we cannot verify whether .ext exists or not, preserve the file.
-		return false
-	}
-
-	// Version fallback paths (e.g. 300/js/app.js) are strictly Tier 1 only.
-	// Without a valid, matching .ext metadata file, they are never recognized under Tier 2.
-	if isTier1Fallback {
 		return false
 	}
 
 	// --- Tier 2: Legacy ACGPower asset without .ext metadata file ---
-	// Root marker is strictly required for un-paired legacy files
-	if !hasRootMarker {
+	cleanLower, ok := isTier2Candidate(slashRel, hasRootMarker)
+	if !ok {
 		return false
 	}
 
-	cleanLower := strings.ToLower(cleanKey)
-	// Magic bytes verification
 	return verifyCacheFileMagic(fullPath, cleanLower)
 }
 
 // isConfirmedCacheFileInRoot performs confirmed cache file verification inside an *os.Root.
-// It verifies that rel is a regular file within valid cache paths and performs metadata/magic validation
-// entirely via root-relative handles.
 func isConfirmedCacheFileInRoot(root *os.Root, rel string, fi os.FileInfo, hasRootMarker bool) bool {
+	confirmed, _ := isConfirmedCacheFileInRootDetailed(root, rel, fi, hasRootMarker)
+	return confirmed
+}
+
+// isConfirmedCacheFileInRootDetailed performs verified cache attribution inside an *os.Root,
+// returning whether the file is confirmed, and whether it was confirmed via Tier 1 paired metadata.
+func isConfirmedCacheFileInRootDetailed(root *os.Root, rel string, fi os.FileInfo, hasRootMarker bool) (confirmed bool, isTier1 bool) {
 	if fi == nil || !fi.Mode().IsRegular() || fi.Size() <= 0 {
-		return false
+		return false, false
 	}
 	if rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
-		return false
+		return false, false
 	}
 	slashRel := filepath.ToSlash(rel)
 	baseName := filepath.Base(rel)
 
 	if slashRel == RootMarkerFileName || config.IsSystemJunk(baseName) {
-		return false
+		return false, false
 	}
 
-	if strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") || strings.Contains(slashRel, ".quarantine") {
-		return false
-	}
-
-	// Strict canonical cache hierarchy check for both Tier 1 and Tier 2.
-	// GBF-Accelerator never places cache files in arbitrary user paths (e.g. assets/personal_data/...).
-	ns, cleanKey, ok := isConfirmedCachePathStructure(slashRel)
-	isTier1Fallback := false
-	if !ok {
-		if isTier1VersionFallbackPath(slashRel) {
-			ns = "gbf"
-			cleanKey = slashRel
-			isTier1Fallback = true
-		} else {
-			return false
-		}
+	if strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") || isAcceleratorQuarantineFile(slashRel) {
+		return false, false
 	}
 
 	// Tier 1: Check paired .ext metadata file via root
 	extRel := rel + ".ext"
 	extFi, extErr := root.Lstat(extRel)
 	if extErr == nil {
-		// A companion .ext exists. If it exists, this file CANNOT be treated as Tier 2 legacy cache.
-		// It MUST strictly validate as an authentic Tier 1 asset; if not, return false immediately.
 		if !extFi.Mode().IsRegular() {
-			return false
+			return false, false
 		}
 		metaBytes, err := root.ReadFile(extRel)
 		if err != nil {
-			return false
+			return false, false
 		}
-		meta, ok := parseExtFile(metaBytes)
-		if !ok || meta.Version != 1 {
-			return false
+		_, ok := VerifyTier1Meta(slashRel, metaBytes)
+		if ok {
+			return true, true
 		}
-		if meta.Size != fi.Size() || meta.MTimeNano != fi.ModTime().UnixNano() {
-			return false
-		}
-		isHostsPath := strings.HasPrefix(slashRel, "hosts/")
-		if meta.Namespace != "" && meta.Namespace != "gbf" {
-			if sanitizeNamespace(meta.Namespace) != ns {
-				return false
-			}
-		} else if isHostsPath {
-			if meta.Namespace != "gbf" {
-				return false
-			}
-		} else if isTier1Fallback {
-			if meta.Namespace != "gbf" {
-				return false
-			}
-		} else if ns != "gbf" {
-			return false
-		}
-		return true
+		return false, false
 	} else if !os.IsNotExist(extErr) {
-		return false
-	}
-
-	// Version fallback paths (e.g. 300/js/app.js) are strictly Tier 1 only.
-	// Without a valid, matching .ext metadata file, they are never recognized under Tier 2.
-	if isTier1Fallback {
-		return false
+		return false, false
 	}
 
 	// Tier 2: Legacy asset without .ext (requires root marker)
-	if !hasRootMarker {
-		return false
+	cleanLower, ok := isTier2Candidate(slashRel, hasRootMarker)
+	if !ok {
+		return false, false
 	}
 
-	cleanLower := strings.ToLower(cleanKey)
 	f, err := root.Open(rel)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer f.Close()
-	return verifyCacheFileMagicFromReader(f, cleanLower)
+	if verifyCacheFileMagicFromReader(f, cleanLower) {
+		return true, false
+	}
+	return false, false
 }
 
 // verifyCacheFileMagicFromReader validates magic bytes and non-HTML content from an io.Reader.
@@ -970,7 +573,6 @@ func verifyCacheFileMagic(filePath, cleanLower string) bool {
 // 1. Directory is the application's default cache directory (isDefaultDir == true); OR
 // 2. Directory is clean/empty (only system junk allowed); OR
 // 3. All files in directory are confirmed cache files (allFilesConfirmed == true).
-// In all other cases, automatic writing is prohibited and requires explicit user confirmation.
 func CanAutoWriteRootMarker(dirPath string, isDefaultDir bool, allFilesConfirmed bool) (bool, error) {
 	if isDefaultDir || allFilesConfirmed {
 		return true, nil
@@ -991,11 +593,88 @@ func TryAutoWriteRootMarker(baseDir string, isDefaultDir bool, allFilesConfirmed
 	return true, EnsureRootMarker(baseDir)
 }
 
+// AreAllFilesConfirmed walks baseDir and checks whether every regular file belongs to confirmed
+// cache assets, companion/orphan .ext metadata, temporary streaming files, quarantine files,
+// or system junk.
+// Crucially, it evaluates attribution assuming the root marker exists (hasRootMarker = true),
+// avoiding circular dependency when validating a legacy ACGPower cache directory before the marker is written.
+func AreAllFilesConfirmed(baseDir string) (bool, error) {
+	clean, err := config.IsDirClean(baseDir)
+	if err != nil {
+		return false, err
+	}
+	if clean {
+		return true, nil
+	}
+
+	allConfirmed := true
+	walkErr := filepath.WalkDir(baseDir, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == baseDir {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(baseDir, path)
+		if err != nil {
+			allConfirmed = false
+			return err
+		}
+		slashRel := filepath.ToSlash(rel)
+		baseName := entry.Name()
+
+		if slashRel == RootMarkerFileName || config.IsSystemJunk(baseName) {
+			return nil
+		}
+		if isAcceleratorTempFile(slashRel) || isAcceleratorQuarantineFile(slashRel) {
+			return nil
+		}
+		if strings.HasSuffix(slashRel, ".ext") {
+			// Companion or orphan metadata file with valid top-level shape
+			_, _, _, shapeOK := parseCachePathTopLevelShape(slashRel)
+			if !shapeOK {
+				allConfirmed = false
+				return filepath.SkipAll
+			}
+			return nil
+		}
+
+		fi, err := entry.Info()
+		if err != nil || !fi.Mode().IsRegular() {
+			allConfirmed = false
+			return filepath.SkipAll
+		}
+
+		// Evaluate with hasRootMarker = true to prevent circular dependency
+		if !IsConfirmedCacheFileWithInfo(baseDir, path, fi, true) {
+			allConfirmed = false
+			return filepath.SkipAll
+		}
+		return nil
+	})
+
+	if walkErr != nil && walkErr != filepath.SkipAll {
+		return false, walkErr
+	}
+	return allConfirmed, nil
+}
+
+// IsAcceleratorTempFile checks whether slashRel matches the naming pattern of temporary cache files.
+func IsAcceleratorTempFile(slashRel string) bool {
+	return isAcceleratorTempFile(slashRel)
+}
+
+// IsAcceleratorQuarantineFile checks whether slashRel matches the naming pattern of quarantined cache files.
+func IsAcceleratorQuarantineFile(slashRel string) bool {
+	return isAcceleratorQuarantineFile(slashRel)
+}
+
 // isAcceleratorTempFile checks whether slashRel matches the exact naming pattern of temporary files
 // written during cache streaming: <assetPath>.tmp.<pid>.<ts>.<seq> or <assetPath>.ext.tmp.<pid>.<ts>.<seq>.
-// The prefix must be a valid cache key structure with an asset extension in a legitimate cache directory,
-// and all 3 trailing numeric components (<pid>.<ts>.<seq>) must be strictly digits.
-// Arbitrary user files with ".tmp." (e.g. "draft.tmp.txt" or "personal_data/photo.png.tmp.123.456") return false.
+// The prefix must conform to a recognized cache top-level shape, and all 3 trailing components must be strictly digits.
 func isAcceleratorTempFile(slashRel string) bool {
 	parts := strings.Split(slashRel, ".tmp.")
 	if len(parts) != 2 {
@@ -1006,13 +685,8 @@ func isAcceleratorTempFile(slashRel string) bool {
 		return false
 	}
 	for _, np := range numParts {
-		if np == "" {
+		if !isAllDigits(np) {
 			return false
-		}
-		for i := 0; i < len(np); i++ {
-			if np[i] < '0' || np[i] > '9' {
-				return false
-			}
 		}
 	}
 
@@ -1020,6 +694,39 @@ func isAcceleratorTempFile(slashRel string) bool {
 	baseRel = strings.TrimSuffix(baseRel, ".ext")
 	baseLower := strings.ToLower(baseRel)
 
-	_, _, ok := isConfirmedCachePathStructure(baseLower)
-	return ok
+	_, cleanKey, _, ok := parseCachePathTopLevelShape(baseLower)
+	if !ok {
+		return false
+	}
+	return isAssetExtension(strings.ToLower(cleanKey))
+}
+
+// isAcceleratorQuarantineFile checks whether slashRel matches the exact naming pattern of quarantined
+// files: <assetPath>.quarantine.<ts> or <assetPath>.ext.quarantine.<ts>.
+// The base asset path must conform to the cache top-level shape with a valid asset extension, and <ts> must be all digits.
+// User files (such as x.quarantine.docx) return false and are preserved.
+func isAcceleratorQuarantineFile(slashRel string) bool {
+	slash := filepath.ToSlash(slashRel)
+	idx := strings.LastIndex(slash, ".quarantine.")
+	if idx < 0 {
+		return false
+	}
+	ts := slash[idx+len(".quarantine."):]
+	if !isAllDigits(ts) {
+		return false
+	}
+	basePath := slash[:idx]
+	basePath = strings.TrimSuffix(basePath, ".ext")
+	baseLower := strings.ToLower(basePath)
+
+	if !isAssetExtension(baseLower) {
+		return false
+	}
+
+	if !filepath.IsAbs(slash) && !strings.Contains(slash, ":") {
+		clean := strings.TrimPrefix(baseLower, "/")
+		_, _, _, ok := parseCachePathTopLevelShape(clean)
+		return ok
+	}
+	return true
 }

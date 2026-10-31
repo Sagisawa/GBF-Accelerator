@@ -796,9 +796,7 @@ func (m *Manager) clearTempTokens() {
 
 // --- Symlink / Junction Containment Verification (Section 5.4) ---
 
-// testBeforeUnlinkHook is an internal test-only hook invoked after all path and identity checks
-// have completed and immediately before the handle-relative parentRoot.Remove(leafName) call.
-var testBeforeUnlinkHook func(targetPath string)
+// (testBeforeUnlinkHook moved to Manager field beforeUnlinkHook)
 
 func resolveContainedRealBaseWithInfo(baseDir string) (absBase string, realBase string, rootInfo os.FileInfo, exists bool, err error) {
 	absBase, err = filepath.Abs(baseDir)
@@ -1075,12 +1073,23 @@ func openPinnedParentRoot(
 
 // removeVerifiedEmptyDir removes targetDir only if it is a regular empty directory whose entire ancestor
 // chain from absBase matches expectedRootFi and dirInfos, using parentRoot.Remove(dirLeaf) on the pinned parent handle.
+//
+// The dirInfos parameter (map[string]os.FileInfo) represents an optional pre-scanned directory identity
+// snapshot taken during an audit/breakdown pass. When dirInfos is provided, every ancestor directory and
+// targetDir itself are verified against the snapshot (via os.SameFile) to detect if any directory inode
+// was swapped since the scan.
+// When dirInfos is nil (e.g. during ClearAll or ad-hoc directory maintenance), directory verification does NOT
+// degrade to an unsafe path-based removal (such as os.Remove(targetDir)). Instead, openPinnedParentRoot
+// still strictly traverses and verifies every ancestor step starting from os.OpenRoot(absBase), rejecting symlinks,
+// reparse points, and irregular files at every level, and removes the leaf directory exclusively via
+// parentRoot.Remove(dirLeaf) on the descriptor-pinned parent handle.
 func removeVerifiedEmptyDir(
 	absBase string,
 	realBase string,
 	expectedRootFi os.FileInfo,
 	dirInfos map[string]os.FileInfo,
 	targetDir string,
+	unlinkHook func(string),
 ) (removed bool, nonEmpty bool, err error) {
 	parentRoot, dirLeaf, closeParent, chainErr := openPinnedParentRoot(absBase, realBase, expectedRootFi, dirInfos, targetDir)
 	if chainErr != nil {
@@ -1138,8 +1147,8 @@ func removeVerifiedEmptyDir(
 		return false, true, nil
 	}
 
-	if testBeforeUnlinkHook != nil {
-		testBeforeUnlinkHook(targetDir)
+	if unlinkHook != nil {
+		unlinkHook(targetDir)
 	}
 
 	if rmErr := parentRoot.Remove(dirLeaf); rmErr != nil {
@@ -2710,8 +2719,8 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 		return
 	}
 
-	if testBeforeUnlinkHook != nil {
-		testBeforeUnlinkHook(filePath)
+	if m.beforeUnlinkHook != nil {
+		m.beforeUnlinkHook(filePath)
 	}
 	preRemoveFi, preRemoveErr := cacheRoot.Lstat(rootRel)
 	if preRemoveErr != nil || !preRemoveFi.Mode().IsRegular() || !os.SameFile(lfi, preRemoveFi) ||
@@ -2755,8 +2764,8 @@ func (m *Manager) deleteSingleVerifiedEntryWithDirInfos(
 			res.SkippedChangedCount++
 		} else {
 			extSize := extFi.Size()
-			if testBeforeUnlinkHook != nil {
-				testBeforeUnlinkHook(extPath)
+			if m.beforeUnlinkHook != nil {
+				m.beforeUnlinkHook(extPath)
 			}
 			currentExt, currentExtErr := cacheRoot.Lstat(rootRel + ".ext")
 			if currentExtErr != nil || !currentExt.Mode().IsRegular() || !os.SameFile(extFi, currentExt) {
@@ -2825,13 +2834,13 @@ func (m *Manager) removeEmptyParentDirsControlledWithDirInfos(
 				m.persistMu.Unlock()
 				return removed, true
 			}
-			removedDir, _, _ := removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d)
+			removedDir, _, _ := removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d, m.beforeUnlinkHook)
 			m.persistMu.Unlock()
 			if removedDir {
 				removed++
 			}
 		} else {
-			if removedDir, _, _ := removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d); removedDir {
+			if removedDir, _, _ := removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d, m.beforeUnlinkHook); removedDir {
 				removed++
 			}
 		}
@@ -2934,10 +2943,10 @@ func (m *Manager) pruneEmptyDirTreeControlledWithDirInfos(
 				m.persistMu.Unlock()
 				return false, true, firstErr
 			}
-			removedDir, _, rmErr = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d)
+			removedDir, _, rmErr = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d, m.beforeUnlinkHook)
 			m.persistMu.Unlock()
 		} else {
-			removedDir, _, rmErr = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d)
+			removedDir, _, rmErr = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d, m.beforeUnlinkHook)
 		}
 		if rmErr != nil && !os.IsNotExist(rmErr) {
 			if firstErr == nil {
@@ -3620,8 +3629,8 @@ func (m *Manager) pruneStaleVersionsWithSnap(
 				continue
 			}
 
-			if testBeforeUnlinkHook != nil {
-				testBeforeUnlinkHook(oext.fullPath)
+			if m.beforeUnlinkHook != nil {
+				m.beforeUnlinkHook(oext.fullPath)
 			}
 
 			if rmErr := parentRoot.Remove(extLeaf); rmErr == nil {

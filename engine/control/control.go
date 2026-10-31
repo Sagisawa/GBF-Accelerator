@@ -99,8 +99,9 @@ type ControlServer struct {
 	dlCancelFn context.CancelFunc
 
 	// Broadcasters for SSE custom events
-	sseMu      sync.RWMutex
-	sseClients []chan []byte
+	sseMu                 sync.RWMutex
+	sseClients            []chan []byte
+	beforeApplyCommitHook func()
 
 	// Android Patch state
 	androidPatchMu       sync.Mutex
@@ -477,6 +478,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	case "/api/cache/clear":
 		if req.Method == http.MethodPost {
 			c.handleCacheClear(w, req)
+			return
+		}
+	case "/api/cache/confirm-root":
+		if req.Method == http.MethodPost {
+			c.handleConfirmCacheRoot(w, req)
 			return
 		}
 	case "/api/cache/open-folder":
@@ -1051,10 +1057,9 @@ func (c *ControlServer) handleGetConfig(w http.ResponseWriter, req *http.Request
 	})
 }
 
-// testBeforeApplyCommitHook, when set, runs inside the apply transaction after it has read its
-// candidate snapshot but before it commits anything. Tests use it to force a deterministic
-// interleaving with the other config writers instead of relying on timing luck.
-var testBeforeApplyCommitHook func()
+func (c *ControlServer) SetBeforeApplyCommitHookForTest(hook func()) {
+	c.beforeApplyCommitHook = hook
+}
 
 func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Request) {
 	body, err := io.ReadAll(req.Body)
@@ -1077,8 +1082,8 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	candidate := c.cfgMgr.Candidate()
 	oldCandidate := candidate
 
-	if testBeforeApplyCommitHook != nil {
-		testBeforeApplyCommitHook()
+	if c.beforeApplyCommitHook != nil {
+		c.beforeApplyCommitHook()
 	}
 
 	if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
@@ -1481,9 +1486,6 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 	if err != nil {
 		clearStatus = "failed"
 		clearErr = err.Error()
-		if c.rejectUnsafeCacheMaintenance(w) {
-			return
-		}
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"ok": false, "code": "CACHE_CLEAR_FAILED", "error": err.Error(),
 		})
@@ -2816,4 +2818,41 @@ func (c *ControlServer) handleStaticWeb(w http.ResponseWriter, req *http.Request
 	}
 
 	c.sendJSON(w, http.StatusNotFound, map[string]string{"error": "File not found", "path": req.URL.Path})
+}
+
+func (c *ControlServer) handleConfirmCacheRoot(w http.ResponseWriter, req *http.Request) {
+	if c.rejectUnsafeCacheMaintenance(w) {
+		return
+	}
+	if err := c.cacheMgr.ValidateDestructiveCacheDir(); err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"code":  "UNSAFE_CACHE_DIR",
+			"error": fmt.Sprintf("缓存目录校验失败: %v", err),
+		})
+		return
+	}
+
+	if c.cacheMgr.HasRootMarker() {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":              true,
+			"already_present": true,
+			"message":         "根标记已存在",
+		})
+		return
+	}
+
+	if err := c.cacheMgr.EnsureRootMarker(); err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"code":  "WRITE_ROOT_MARKER_FAILED",
+			"error": fmt.Sprintf("写入根标记失败: %v", err),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "缓存根标记写入成功",
+	})
 }

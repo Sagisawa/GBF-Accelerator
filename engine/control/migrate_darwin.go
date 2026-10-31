@@ -82,7 +82,8 @@ func ensureNoSymlinkPathComponents(path string) error {
 }
 
 // validateCacheMigrationTree fails closed if a source contains files whose cache ownership
-// cannot be established from the same Tier-1/Tier-2 proof used by cache maintenance.
+// cannot be established from the simplified Tier-1/Tier-2 proof used by cache maintenance.
+// Residual .tmp., .quarantine, and orphan .ext files do not block migration and are purged during staging.
 func validateCacheMigrationTree(root string) error {
 	fi, err := os.Lstat(root)
 	if os.IsNotExist(err) {
@@ -95,6 +96,9 @@ func validateCacheMigrationTree(root string) error {
 		return fmt.Errorf("迁移源必须是普通目录: %s", root)
 	}
 	hasMarker := cache.HasRootMarker(root)
+	sampledLegacyCount := 0
+	const maxLegacyMagicSamples = 50
+
 	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -132,15 +136,62 @@ func validateCacheMigrationTree(root string) error {
 		if config.IsSystemJunk(filepath.Base(path)) {
 			return nil
 		}
+
+		// Residual accelerator temp and quarantine files do NOT block migration (purged in staging)
+		if cache.IsAcceleratorTempFile(slashRel) || cache.IsAcceleratorQuarantineFile(slashRel) {
+			return nil
+		}
+
+		// Metadata file (.ext)
 		if strings.HasSuffix(slashRel, ".ext") {
 			assetPath := strings.TrimSuffix(path, ".ext")
-			if !cache.IsConfirmedCacheFile(root, assetPath, hasMarker) {
-				return fmt.Errorf("迁移目录包含无法配对验证的元数据: %s", rel)
+			if assetFi, aErr := os.Lstat(assetPath); aErr == nil && assetFi.Mode().IsRegular() {
+				if metaBytes, rErr := os.ReadFile(path); rErr == nil {
+					assetSlashRel := strings.TrimSuffix(slashRel, ".ext")
+					if _, ok := cache.VerifyTier1Meta(assetSlashRel, metaBytes); !ok {
+						return fmt.Errorf("迁移目录包含无法配对验证的元数据: %s", rel)
+					}
+				} else {
+					return fmt.Errorf("迁移目录包含无法读取的元数据: %s", rel)
+				}
+			} else {
+				// Orphan .ext file: verify top-level directory shape; orphan .ext does not block migration
+				if !cache.IsConfirmedCacheDirectory(filepath.ToSlash(filepath.Dir(slashRel))) {
+					return fmt.Errorf("迁移目录包含未知路径的孤儿元数据: %s", rel)
+				}
 			}
 			return nil
 		}
-		if !cache.IsConfirmedCacheFile(root, path, hasMarker) {
-			return fmt.Errorf("迁移目录包含无法确认归属的文件: %s", rel)
+
+		// Regular data file:
+		extPath := path + ".ext"
+		if extFi, extErr := os.Lstat(extPath); extErr == nil && extFi.Mode().IsRegular() {
+			metaBytes, rErr := os.ReadFile(extPath)
+			if rErr != nil {
+				return fmt.Errorf("迁移目录包含无法读取的元数据: %s.ext", rel)
+			}
+			if _, ok := cache.VerifyTier1Meta(slashRel, metaBytes); !ok {
+				return fmt.Errorf("迁移目录包含无法确认归属的文件: %s", rel)
+			}
+			return nil
+		}
+
+		// Legacy file without .ext: check directory shape, asset extension, and sampled magic bytes
+		if !hasMarker {
+			return fmt.Errorf("未标记缓存目录包含无法确认归属的文件: %s", rel)
+		}
+		if !cache.IsConfirmedCacheDirectory(filepath.ToSlash(filepath.Dir(slashRel))) {
+			return fmt.Errorf("迁移目录包含无法确认目录归属的文件: %s", rel)
+		}
+		if sampledLegacyCount < maxLegacyMagicSamples {
+			if !cache.IsConfirmedCacheFile(root, path, true) {
+				return fmt.Errorf("迁移目录包含无法确认归属的文件: %s", rel)
+			}
+			sampledLegacyCount++
+		} else {
+			if info.Size() <= 0 {
+				return fmt.Errorf("迁移目录包含无法确认归属的空文件: %s", rel)
+			}
 		}
 		return nil
 	})
@@ -278,6 +329,28 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 				return
 			}
 		}
+		// Purge residual streaming temp files, quarantine files, and orphan .ext from stageDir
+		_ = filepath.WalkDir(stageDir, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			rel, err := filepath.Rel(stageDir, p)
+			if err != nil {
+				return nil
+			}
+			slashRel := filepath.ToSlash(rel)
+			if cache.IsAcceleratorTempFile(slashRel) || cache.IsAcceleratorQuarantineFile(slashRel) {
+				_ = os.Remove(p)
+				return nil
+			}
+			if strings.HasSuffix(slashRel, ".ext") {
+				assetPath := strings.TrimSuffix(p, ".ext")
+				if _, err := os.Stat(assetPath); os.IsNotExist(err) {
+					_ = os.Remove(p)
+				}
+			}
+			return nil
+		})
 	}
 
 	if err := validateCacheMigrationTree(stageDir); err != nil {

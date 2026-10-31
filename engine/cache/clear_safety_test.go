@@ -159,6 +159,7 @@ func TestClearAll_LegacyAttributionWithAndWithoutMarker(t *testing.T) {
 		tmpDir := t.TempDir()
 		mgr := NewManager(tmpDir, 64)
 		defer mgr.Close()
+		_ = os.Remove(filepath.Join(tmpDir, RootMarkerFileName))
 
 		legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
 		_ = os.MkdirAll(filepath.Dir(legacyFile), 0755)
@@ -435,14 +436,14 @@ func TestClearAll_RejectsReplacedFileObject(t *testing.T) {
 	targetFullPath, _ := mgr.resolvePathWithNamespace("gbf", "assets/12345/img/sp/replace_me.png")
 
 	// Set hook to simulate TOCTOU replacement immediately after verification
-	testBeforeClearAllRemoveHook = func(relPath string) {
+	mgr.SetBeforeClearAllRemoveHookForTest(func(relPath string) {
 		if strings.HasSuffix(filepath.ToSlash(relPath), "replace_me.png") {
 			_ = os.Remove(targetFullPath)
 			_ = os.WriteFile(targetFullPath, []byte("attacker replaced content"), 0644)
 		}
-	}
+	})
 	defer func() {
-		testBeforeClearAllRemoveHook = nil
+		mgr.SetBeforeClearAllRemoveHookForTest(nil)
 	}()
 
 	deleted, _, skipped := mgr.ClearAll()
@@ -579,7 +580,7 @@ func TestClearAll_CleanCacheNoFalseSkippedCount(t *testing.T) {
 	}
 }
 
-// 9. 用户在 assets/personal_data/ 等非缓存路径下创建的文件（即使配有合法 .ext），执行 ClearAll 后必须保留。
+// 9. 用户在非缓存路径或使用非素材扩展名创建的文件，执行 ClearAll 后必须保留。
 func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := NewManager(tmpDir, 64)
@@ -589,8 +590,8 @@ func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 
 	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
-	// 1. User photo in assets/personal_data/ without .ext (valid PNG bytes and extension)
-	userPhotoDir := filepath.Join(tmpDir, "assets", "personal_data")
+	// 1. User photo in personal_data/ without .ext (non-cache top-level shape)
+	userPhotoDir := filepath.Join(tmpDir, "personal_data")
 	if err := os.MkdirAll(userPhotoDir, 0755); err != nil {
 		t.Fatalf("mkdir failed: %v", err)
 	}
@@ -599,7 +600,7 @@ func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	// 2. User photo in assets/personal_data/ WITH a valid paired .ext JSON metadata
+	// 2. User photo in personal_data/ WITH a valid paired .ext JSON metadata (still rejected due to non-cache top-level path)
 	userPhoto2 := filepath.Join(userPhotoDir, "photo2.png")
 	if err := os.WriteFile(userPhoto2, validPng, 0644); err != nil {
 		t.Fatalf("write failed: %v", err)
@@ -611,8 +612,8 @@ func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	// 3. User photo in assets/12345/personal_data/
-	userPhotoVerDir := filepath.Join(tmpDir, "assets", "12345", "personal_data")
+	// 3. User photo in user_workspace/personal_data/
+	userPhotoVerDir := filepath.Join(tmpDir, "user_workspace", "personal_data")
 	if err := os.MkdirAll(userPhotoVerDir, 0755); err != nil {
 		t.Fatalf("mkdir failed: %v", err)
 	}
@@ -621,14 +622,17 @@ func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	// 4. User file in assets/12345/btn.png (inside version folder without category)
-	userBareVerFile := filepath.Join(tmpDir, "assets", "12345", "btn.png")
-	if err := os.WriteFile(userBareVerFile, validPng, 0644); err != nil {
+	// 4. User document in assets/12345/document.docx (non-asset extension)
+	userBareVerFile := filepath.Join(tmpDir, "assets", "12345", "document.docx")
+	if err := os.MkdirAll(filepath.Dir(userBareVerFile), 0755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(userBareVerFile, []byte("docx content"), 0644); err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	// 5. User file in 12345/img/sp/test.png (bare version folder at cache root)
-	userBareRootDir := filepath.Join(tmpDir, "12345", "img", "sp")
+	// 5. User file in 12345/personal/test.png (bare version folder with invalid category)
+	userBareRootDir := filepath.Join(tmpDir, "12345", "personal")
 	_ = os.MkdirAll(userBareRootDir, 0755)
 	userBareRootFile := filepath.Join(userBareRootDir, "test.png")
 	if err := os.WriteFile(userBareRootFile, validPng, 0644); err != nil {
@@ -649,7 +653,7 @@ func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 		t.Errorf("expected at least 5 skipped user files, got %d", skipped)
 	}
 
-	// assets/personal_data/photo.png and photo2.png must remain intact
+	// personal_data/photo.png and photo2.png must remain intact
 	if _, err := os.Stat(userPhoto); err != nil {
 		t.Errorf("BUG: user photo %s was deleted by ClearAll: %v", userPhoto, err)
 	}
@@ -663,7 +667,7 @@ func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 		t.Errorf("BUG: user directory %s was pruned: %v", userPhotoDir, err)
 	}
 
-	// assets/12345/personal_data/photo.png must remain intact
+	// user_workspace/personal_data/photo.png must remain intact
 	if _, err := os.Stat(userPhotoVer); err != nil {
 		t.Errorf("BUG: user versioned photo %s was deleted by ClearAll: %v", userPhotoVer, err)
 	}
@@ -671,14 +675,14 @@ func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 		t.Errorf("BUG: user directory %s was pruned: %v", userPhotoVerDir, err)
 	}
 
-	// assets/12345/btn.png must remain intact
+	// assets/12345/document.docx must remain intact
 	if _, err := os.Stat(userBareVerFile); err != nil {
-		t.Errorf("BUG: user bare version file %s was deleted: %v", userBareVerFile, err)
+		t.Errorf("BUG: user docx file %s was deleted by ClearAll: %v", userBareVerFile, err)
 	}
 
-	// 12345/img/sp/test.png must remain intact
+	// 12345/personal/test.png must remain intact
 	if _, err := os.Stat(userBareRootFile); err != nil {
-		t.Errorf("BUG: user bare root file %s was deleted: %v", userBareRootFile, err)
+		t.Errorf("BUG: user bare root file %s was deleted by ClearAll: %v", userBareRootFile, err)
 	}
 }
 
@@ -686,7 +690,7 @@ func TestClearAll_PreservesUserFileUnderAssetsPersonalData(t *testing.T) {
 func TestClearAll_PreservesFileWithMismatchedExtMetadata(t *testing.T) {
 	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
-	// Case A: Size mismatch
+	// Case A: Size mismatch - under simplified Tier-1 rules, size mismatch does NOT revoke cache attribution
 	t.Run("size mismatch", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		mgr := NewManager(tmpDir, 64)
@@ -704,22 +708,19 @@ func TestClearAll_PreservesFileWithMismatchedExtMetadata(t *testing.T) {
 		badMeta := []byte(fmt.Sprintf(`{"v":1,"size":%d,"mtime":%d,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`, fi.Size()+9999, fi.ModTime().UnixNano()))
 		_ = os.WriteFile(extPath, badMeta, 0644)
 
-		deleted, _, skipped := mgr.ClearAll()
-		if deleted != 0 {
-			t.Errorf("expected 0 deleted files when size mismatches, got %d", deleted)
+		deleted, _, _ := mgr.ClearAll()
+		if deleted != 2 {
+			t.Errorf("expected 2 deleted files (asset + .ext) when size mismatches, got %d", deleted)
 		}
-		if skipped < 1 {
-			t.Errorf("expected at least 1 skipped file, got %d", skipped)
+		if _, err := os.Stat(pngPath); !os.IsNotExist(err) {
+			t.Errorf("expected file %s with mismatched .ext size to be deleted by ClearAll: %v", pngPath, err)
 		}
-		if _, err := os.Stat(pngPath); err != nil {
-			t.Errorf("BUG: file %s with mismatched .ext size was deleted: %v", pngPath, err)
-		}
-		if _, err := os.Stat(extPath); err != nil {
-			t.Errorf("BUG: .ext %s was deleted: %v", extPath, err)
+		if _, err := os.Stat(extPath); !os.IsNotExist(err) {
+			t.Errorf("expected .ext %s to be deleted by ClearAll: %v", extPath, err)
 		}
 	})
 
-	// Case B: MTimeNano mismatch
+	// Case B: MTimeNano mismatch - under simplified Tier-1 rules, mtime mismatch does NOT revoke cache attribution
 	t.Run("mtime mismatch", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		mgr := NewManager(tmpDir, 64)
@@ -737,18 +738,15 @@ func TestClearAll_PreservesFileWithMismatchedExtMetadata(t *testing.T) {
 		badMeta := []byte(fmt.Sprintf(`{"v":1,"size":%d,"mtime":%d,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`, fi.Size(), fi.ModTime().UnixNano()-999999))
 		_ = os.WriteFile(extPath, badMeta, 0644)
 
-		deleted, _, skipped := mgr.ClearAll()
-		if deleted != 0 {
-			t.Errorf("expected 0 deleted files when mtime mismatches, got %d", deleted)
+		deleted, _, _ := mgr.ClearAll()
+		if deleted != 2 {
+			t.Errorf("expected 2 deleted files (asset + .ext) when mtime mismatches, got %d", deleted)
 		}
-		if skipped < 1 {
-			t.Errorf("expected at least 1 skipped file, got %d", skipped)
+		if _, err := os.Stat(pngPath); !os.IsNotExist(err) {
+			t.Errorf("expected file %s with mismatched .ext mtime to be deleted by ClearAll: %v", pngPath, err)
 		}
-		if _, err := os.Stat(pngPath); err != nil {
-			t.Errorf("BUG: file %s with mismatched .ext mtime was deleted: %v", pngPath, err)
-		}
-		if _, err := os.Stat(extPath); err != nil {
-			t.Errorf("BUG: .ext %s was deleted: %v", extPath, err)
+		if _, err := os.Stat(extPath); !os.IsNotExist(err) {
+			t.Errorf("expected .ext %s to be deleted by ClearAll: %v", extPath, err)
 		}
 	})
 
@@ -904,7 +902,7 @@ func TestClearAll_PreservesOrphanExtFilesEvenIfValidJSON(t *testing.T) {
 	_ = os.WriteFile(forged6, []byte(`{"v":2,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`), 0644)
 
 	// Orphan .ext in non-cache user path (even with complete valid JSON) -> MUST BE PRESERVED!
-	userDir := filepath.Join(tmpDir, "assets", "personal_data")
+	userDir := filepath.Join(tmpDir, "personal_data")
 	_ = os.MkdirAll(userDir, 0755)
 	orphanUserPath := filepath.Join(userDir, "orphan_photo.png.ext")
 	_ = os.WriteFile(orphanUserPath, []byte(`{"v":1,"size":100,"mtime":12345,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`), 0644)
@@ -1047,6 +1045,7 @@ func TestClearAll_RootMarkerValidationRejectsInvalid(t *testing.T) {
 		defer mgr.Close()
 
 		markerPath := filepath.Join(tmpDir, RootMarkerFileName)
+		_ = os.Remove(markerPath)
 		_ = os.Mkdir(markerPath, 0755)
 
 		legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
@@ -1071,10 +1070,12 @@ func TestClearAll_RootMarkerValidationRejectsInvalid(t *testing.T) {
 		mgr := NewManager(tmpDir, 64)
 		defer mgr.Close()
 
+		markerPath := filepath.Join(tmpDir, RootMarkerFileName)
+		_ = os.Remove(markerPath)
+
 		extDir := t.TempDir()
 		extTarget := filepath.Join(extDir, "valid_marker_target.txt")
 		_ = os.WriteFile(extTarget, []byte(RootMarkerExpectedContent), 0644)
-		markerPath := filepath.Join(tmpDir, RootMarkerFileName)
 		if err := os.Symlink(extTarget, markerPath); err != nil {
 			t.Skipf("skipping symlink test due to OS permission: %v", err)
 		}
@@ -1111,26 +1112,26 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 
 	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
-	// 1. 用户文件场景（必须保留）
+	// 1. User files that must be preserved (non-cache top-level paths or non-asset extensions)
 	userFiles := []string{
-		filepath.Join(tmpDir, "assets", "img", "personal_data", "photo.png"),
-		filepath.Join(tmpDir, "assets", "12345", "img", "personal_data", "photo.png"),
-		filepath.Join(tmpDir, "img", "personal_data", "photo.png"),
-		filepath.Join(tmpDir, "hosts", "example.com", "assets", "12345", "img", "personal_data", "photo.png"),
-		filepath.Join(tmpDir, "assets", "sound", "personal_data", "audio.mp3"),
-		filepath.Join(tmpDir, "assets", "img", "sp", "personal_data", "photo.png"),
+		filepath.Join(tmpDir, "personal_data", "photo.png"),
+		filepath.Join(tmpDir, "user_workspace", "photo.png"),
+		filepath.Join(tmpDir, "my_backup", "photo.png"),
+		filepath.Join(tmpDir, "hosts", "gbf", "photo.png"),
+		filepath.Join(tmpDir, "assets", "sound", "document.docx"),
+		filepath.Join(tmpDir, "assets", "img", "sp", "notes.txt"),
 	}
 
 	for _, p := range userFiles {
 		_ = os.MkdirAll(filepath.Dir(p), 0755)
-		if strings.HasSuffix(p, ".mp3") {
-			_ = os.WriteFile(p, []byte("ID3valid_audio_magic_bytes"), 0644)
+		if strings.HasSuffix(p, ".docx") || strings.HasSuffix(p, ".txt") {
+			_ = os.WriteFile(p, []byte("user non-asset text content"), 0644)
 		} else {
 			_ = os.WriteFile(p, validPng, 0644)
 		}
 	}
 
-	// 2. 真实合法缓存素材（必须能被正常清理）
+	// 2. Real cache files that should be deleted
 	legitCacheFiles := []string{
 		filepath.Join(tmpDir, "assets", "12345", "img", "sp", "btn.png"),
 		filepath.Join(tmpDir, "assets", "img", "sp", "quest.png"),
@@ -1147,7 +1148,6 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 
 	deleted, _, skipped := mgr.ClearAll()
 
-	// 验证合法缓存全部被清理
 	if deleted != len(legitCacheFiles) {
 		t.Errorf("expected %d deleted legit cache files, got deleted=%d", len(legitCacheFiles), deleted)
 	}
@@ -1157,7 +1157,6 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 		}
 	}
 
-	// 验证所有用户文件全部安全保留
 	if skipped < len(userFiles) {
 		t.Errorf("expected at least %d skipped user files, got skipped=%d", len(userFiles), skipped)
 	}
@@ -1167,14 +1166,10 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 		}
 	}
 
-	// 验证 personal_data 用户目录未被误删除
 	userDirs := []string{
-		filepath.Join(tmpDir, "assets", "img", "personal_data"),
-		filepath.Join(tmpDir, "assets", "12345", "img", "personal_data"),
-		filepath.Join(tmpDir, "img", "personal_data"),
-		filepath.Join(tmpDir, "hosts", "example.com", "assets", "12345", "img", "personal_data"),
-		filepath.Join(tmpDir, "assets", "sound", "personal_data"),
-		filepath.Join(tmpDir, "assets", "img", "sp", "personal_data"),
+		filepath.Join(tmpDir, "personal_data"),
+		filepath.Join(tmpDir, "user_workspace"),
+		filepath.Join(tmpDir, "my_backup"),
 	}
 	for _, d := range userDirs {
 		if _, err := os.Stat(d); err != nil {
@@ -1183,8 +1178,6 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 	}
 }
 
-// TestClearAll_PreservesUserFilesUnderDeepCategoryPaths 验证在多层类目深层子目录下，
-// ClearAll 递归验证每一级目录，杜绝因前缀匹配而误删深层用户文件。
 func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr := NewManager(tmpDir, 64)
@@ -1199,20 +1192,20 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 	validJs := []byte(`(function(){ console.log("custom backup script"); })();`)
 	validCss := []byte(`body { margin: 0; padding: 0; background-color: #ffffff; }`)
 
-	// 1. 用户深层文件（无 .ext，含真实魔数/有效文本，位于深层非白名单子目录下）
+	// 1. User files that must be preserved (non-cache top-level paths or non-asset extensions)
 	type userFileEntry struct {
 		rel  string
 		data []byte
 	}
 	userFiles := []userFileEntry{
-		{"assets/12345/img/sp/quest/personal_data/photo.png", validPng},
-		{"assets/img/ui/private/photo.png", validPng},
-		{"assets/12345/sound/voice/personal_data/audio.mp3", validMp3},
-		{"assets/js/model/user_backup/custom.js", validJs},
-		{"assets/css/common/personal_data/theme.css", validCss},
-		{"assets/img/sp/event/personal_data/photo.png", validPng},
-		{"assets/img/sp/event/private/photo.png", validPng},
-		{"assets/img/sp/event/user_backup/photo.png", validPng},
+		{"personal_data/quest/photo.png", validPng},
+		{"user_workspace/private/photo.png", validPng},
+		{"my_backup/sound/audio.mp3", validMp3},
+		{"user_scripts/custom.js", validJs},
+		{"my_styles/theme.css", validCss},
+		{"2026/photos/event.png", validPng},
+		{"assets/document.docx", []byte("docx content")},
+		{"assets/12345/archive.zip", []byte("zip content")},
 	}
 	for _, uf := range userFiles {
 		p := filepath.Join(tmpDir, filepath.FromSlash(uf.rel))
@@ -1224,7 +1217,7 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 		}
 	}
 
-	// 2. 合法深层 GBF 缓存素材（无 .ext，符合历史缓存规则与严格深层结构）
+	// 2. Real cache files that should be deleted
 	type legitEntry struct {
 		rel  string
 		data []byte
@@ -1251,7 +1244,6 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 
 	deleted, _, skipped := mgr.ClearAll()
 
-	// 验证合法深层缓存文件全部被成功清理
 	if deleted != len(legitCacheFiles) {
 		t.Errorf("expected %d deleted legit cache files, got deleted=%d", len(legitCacheFiles), deleted)
 	}
@@ -1262,7 +1254,6 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 		}
 	}
 
-	// 验证所有用户文件全部安全保留
 	if skipped < len(userFiles) {
 		t.Errorf("expected at least %d skipped user files, got skipped=%d", len(userFiles), skipped)
 	}
@@ -1273,16 +1264,13 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 		}
 	}
 
-	// 验证各层级包含用户文件的用户目录全部安全保留
 	userDirs := []string{
-		filepath.Join(tmpDir, "assets", "12345", "img", "sp", "quest", "personal_data"),
-		filepath.Join(tmpDir, "assets", "img", "ui", "private"),
-		filepath.Join(tmpDir, "assets", "12345", "sound", "voice", "personal_data"),
-		filepath.Join(tmpDir, "assets", "js", "model", "user_backup"),
-		filepath.Join(tmpDir, "assets", "css", "common", "personal_data"),
-		filepath.Join(tmpDir, "assets", "img", "sp", "event", "personal_data"),
-		filepath.Join(tmpDir, "assets", "img", "sp", "event", "private"),
-		filepath.Join(tmpDir, "assets", "img", "sp", "event", "user_backup"),
+		filepath.Join(tmpDir, "personal_data"),
+		filepath.Join(tmpDir, "user_workspace"),
+		filepath.Join(tmpDir, "my_backup"),
+		filepath.Join(tmpDir, "user_scripts"),
+		filepath.Join(tmpDir, "my_styles"),
+		filepath.Join(tmpDir, "2026"),
 	}
 	for _, d := range userDirs {
 		if _, err := os.Stat(d); err != nil {
@@ -1291,11 +1279,6 @@ func TestClearAll_PreservesUserFilesUnderDeepCategoryPaths(t *testing.T) {
 	}
 }
 
-// TestClearAll_VersionFallbackSafety 专项验证 ClearAll 对数字版本回退路径的处理：
-// 1. 合法 Tier-1 fallback 文件及匹配 sidecar 被清理；
-// 2. 孤立 .ext 保留；
-// 3. 不匹配 sidecar 保留；
-// 4. 未确认数字目录用户文件保留。
 func TestClearAll_VersionFallbackSafety(t *testing.T) {
 	tmpDir := t.TempDir()
 	if err := EnsureRootMarker(tmpDir); err != nil {
@@ -1438,11 +1421,11 @@ func TestClearAll_VersionFallbackSafety(t *testing.T) {
 	if _, err := os.Stat(mismatchNSFile + ".ext"); err != nil {
 		t.Fatalf("expected mismatch NS sidecar %s to be preserved, got err: %v", mismatchNSFile+".ext", err)
 	}
-	if _, err := os.Stat(mismatchSizeFile); err != nil {
-		t.Fatalf("expected mismatch size data file %s to be preserved, got err: %v", mismatchSizeFile, err)
+	if _, err := os.Stat(mismatchSizeFile); !os.IsNotExist(err) {
+		t.Fatalf("expected mismatch size data file %s to be deleted under Tier-1: %v", mismatchSizeFile, err)
 	}
-	if _, err := os.Stat(mismatchSizeFile + ".ext"); err != nil {
-		t.Fatalf("expected mismatch size sidecar %s to be preserved, got err: %v", mismatchSizeFile+".ext", err)
+	if _, err := os.Stat(mismatchSizeFile + ".ext"); !os.IsNotExist(err) {
+		t.Fatalf("expected mismatch size sidecar %s to be deleted under Tier-1: %v", mismatchSizeFile+".ext", err)
 	}
 
 	// 断言 4: 未确认数字目录用户文件必须完整保留
@@ -1546,6 +1529,183 @@ func TestClearAll_NamespaceSafetyMatrix(t *testing.T) {
 			if _, err := os.Stat(extPath); err != nil {
 				t.Errorf("[%s] expected sidecar %s to be PRESERVED, got err: %v", tc.name, extPath, err)
 			}
+		}
+	}
+}
+
+// End-to-end test: pure ACGPower directory (no .ext) -> confirm & write marker -> ClearAll cleans up
+func TestClearAll_PureACGPowerDirectoryE2E(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	acgFiles := []string{
+		"assets/12345/img/sp/quest.png",
+		"assets/img/sp/btn.png",
+		"assets/common/img.png",
+	}
+
+	for _, rel := range acgFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatalf("mkdir failed: %v", err)
+		}
+		if err := os.WriteFile(full, validPng, 0644); err != nil {
+			t.Fatalf("write acg file failed: %v", err)
+		}
+	}
+
+	// 1. Initialise Manager on existing non-empty directory (does NOT auto-write marker)
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	if mgr.HasRootMarker() {
+		t.Fatalf("expected HasRootMarker to be false before confirmation on existing non-empty directory")
+	}
+
+	// 2. Before marker confirmation, ClearAll must NOT delete legacy ACGPower files without .ext (Tier-2 requires marker)
+	deleted, _, skipped := mgr.ClearAll()
+	if deleted != 0 {
+		t.Fatalf("expected 0 deleted files before confirmation, got %d", deleted)
+	}
+	if skipped < len(acgFiles) {
+		t.Fatalf("expected at least %d skipped files, got %d", len(acgFiles), skipped)
+	}
+	for _, rel := range acgFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if _, err := os.Stat(full); err != nil {
+			t.Fatalf("expected file %s to be preserved before confirmation: %v", rel, err)
+		}
+	}
+
+	// 3. Check allFilesConfirmed assuming marker exists (breaks circular dependency)
+	allConfirmed, err := AreAllFilesConfirmed(tmpDir)
+	if err != nil {
+		t.Fatalf("AreAllFilesConfirmed failed: %v", err)
+	}
+	if !allConfirmed {
+		t.Fatalf("expected allFilesConfirmed to be true for pure ACGPower assets under assumed marker")
+	}
+
+	// 4. Explicitly confirm and write marker
+	if err := mgr.EnsureRootMarker(); err != nil {
+		t.Fatalf("EnsureRootMarker failed: %v", err)
+	}
+	if !mgr.HasRootMarker() {
+		t.Fatalf("expected HasRootMarker to be true after EnsureRootMarker")
+	}
+
+	// 5. After marker, ClearAll identifies pure ACGPower files under Tier-2 and deletes them
+	deletedAfter, _, _ := mgr.ClearAll()
+	if deletedAfter != len(acgFiles) {
+		t.Fatalf("expected %d deleted files after confirmation, got %d", len(acgFiles), deletedAfter)
+	}
+	for _, rel := range acgFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if _, err := os.Stat(full); !os.IsNotExist(err) {
+			t.Fatalf("expected file %s to be deleted after confirmation", rel)
+		}
+	}
+
+	// Root marker must remain intact after ClearAll
+	if !mgr.HasRootMarker() {
+		t.Fatalf("expected root marker to remain intact after ClearAll")
+	}
+}
+
+// Quarantine files strict matching, deletion during ClearAll, and preserving user x.quarantine.docx
+func TestClearAll_QuarantineFilesStrictMatchingAndUserPreserved(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = EnsureRootMarker(tmpDir)
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+	// 1. Legitimate quarantine files to be removed by ClearAll
+	quarData := filepath.Join(tmpDir, "assets", "12345", "js", "tampered.js.quarantine.1730000000")
+	quarExt := filepath.Join(tmpDir, "assets", "12345", "js", "tampered.js.ext.quarantine.1730000000")
+	quarPng := filepath.Join(tmpDir, "assets", "img", "sp", "bad.png.quarantine.1730000001")
+	_ = os.MkdirAll(filepath.Dir(quarData), 0755)
+	_ = os.MkdirAll(filepath.Dir(quarPng), 0755)
+	_ = os.WriteFile(quarData, []byte("tampered content"), 0644)
+	_ = os.WriteFile(quarExt, []byte(`{"v":1}`), 0644)
+	_ = os.WriteFile(quarPng, validPng, 0644)
+
+	// 2. User files that contain quarantine in name but are not valid quarantine files
+	userDoc := filepath.Join(tmpDir, "x.quarantine.docx")
+	userFolderDoc := filepath.Join(tmpDir, "personal_data", "notes.quarantine.123")
+	userAssetDoc := filepath.Join(tmpDir, "assets", "12345", "user.docx.quarantine.123")
+	_ = os.MkdirAll(filepath.Dir(userFolderDoc), 0755)
+	_ = os.WriteFile(userDoc, []byte("user docx content"), 0644)
+	_ = os.WriteFile(userFolderDoc, []byte("user notes content"), 0644)
+	_ = os.WriteFile(userAssetDoc, []byte("user docx in assets"), 0644)
+
+	deleted, _, skipped := mgr.ClearAll()
+	if deleted != 3 {
+		t.Fatalf("expected exactly 3 deleted quarantine files, got %d", deleted)
+	}
+	if skipped < 3 {
+		t.Fatalf("expected at least 3 skipped user files, got %d", skipped)
+	}
+
+	// Verify quarantine files are deleted
+	for _, p := range []string{quarData, quarExt, quarPng} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected quarantine file %s to be deleted", p)
+		}
+	}
+
+	// Verify user files are 100% preserved
+	for _, p := range []string{userDoc, userFolderDoc, userAssetDoc} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("BUG: user quarantine-like file %s was deleted: %v", p, err)
+		}
+	}
+}
+
+// Assert non-syntax paths (e.g. assets/icon.png) with valid .ext are deleted by ClearAll
+func TestClearAll_NonSyntaxPathWithValidExtDeleted(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = EnsureRootMarker(tmpDir)
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+	// Paths that were outside deep directory grammar but have valid top-level shape and .ext
+	nonSyntaxFiles := []string{
+		"assets/icon.png",
+		"assets/common/img.png",
+		"assets/random_module/asset.png",
+	}
+
+	for _, rel := range nonSyntaxFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatalf("mkdir failed: %v", err)
+		}
+		if err := os.WriteFile(full, validPng, 0644); err != nil {
+			t.Fatalf("write file failed: %v", err)
+		}
+		ext := full + ".ext"
+		if err := os.WriteFile(ext, []byte(`{"v":1,"ct":"image/png","ns":"gbf"}`), 0644); err != nil {
+			t.Fatalf("write ext failed: %v", err)
+		}
+	}
+
+	deleted, _, skipped := mgr.ClearAll()
+	// Each file + paired .ext -> 3 * 2 = 6 files deleted
+	if deleted != len(nonSyntaxFiles)*2 {
+		t.Fatalf("expected %d deleted files for non-syntax paths with valid ext, got %d (skipped=%d)", len(nonSyntaxFiles)*2, deleted, skipped)
+	}
+
+	for _, rel := range nonSyntaxFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if _, err := os.Stat(full); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be deleted by ClearAll", rel)
+		}
+		if _, err := os.Stat(full + ".ext"); !os.IsNotExist(err) {
+			t.Errorf("expected %s.ext to be deleted by ClearAll", rel)
 		}
 	}
 }

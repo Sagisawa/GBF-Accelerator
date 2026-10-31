@@ -311,6 +311,14 @@ func ValidateCacheDirForPlatform(rawPath string, targetGOOS string, homeDir stri
 				systemDirs = append(systemDirs, []string{name})
 			}
 		}
+
+		// Exact user root directories on Windows that reject the root itself but allow subdirectories
+		// e.g. C:\Users (subdirectories like C:\Users\<user>\cache are allowed)
+		if len(segs) > 0 && len(segs[0]) == 2 && segs[0][1] == ':' {
+			systemRootsAllowSubdirs = append(systemRootsAllowSubdirs, []string{segs[0], "users"})
+		} else {
+			systemRootsAllowSubdirs = append(systemRootsAllowSubdirs, []string{"users"})
+		}
 	} else {
 		// Unix / macOS system directories
 		strictSys := []string{
@@ -321,9 +329,12 @@ func ValidateCacheDirForPlatform(rawPath string, targetGOOS string, homeDir stri
 			systemDirs = append(systemDirs, splitPathSegments(s, false))
 		}
 
-		// System directories that reject the dir itself, but ALLOW subdirectories
-		// e.g. /var, /tmp, /private/var, /private/tmp, /private
-		allowSubSys := []string{"/var", "/tmp", "/private/var", "/private/tmp", "/private"}
+		// System / mount directories that reject the dir itself, but ALLOW subdirectories
+		// e.g. /var, /tmp, /private/var, /private/tmp, /private, /Users, /home, /Volumes, /mnt, /media
+		allowSubSys := []string{
+			"/var", "/tmp", "/private/var", "/private/tmp", "/private",
+			"/Users", "/home", "/Volumes", "/mnt", "/media",
+		}
 		for _, s := range allowSubSys {
 			systemRootsAllowSubdirs = append(systemRootsAllowSubdirs, splitPathSegments(s, false))
 		}
@@ -335,17 +346,6 @@ func ValidateCacheDirForPlatform(rawPath string, targetGOOS string, homeDir stri
 			return &CacheDirValidationError{
 				Code:    ErrCodeSystemDir,
 				Message: fmt.Sprintf("system directory %q cannot be used as cache directory", resolved),
-				Path:    rawPath,
-			}
-		}
-	}
-
-	// Check system roots that only reject exact match (descendants allowed, like /tmp/mycache, /private/var/folders/...)
-	for _, sysRoot := range systemRootsAllowSubdirs {
-		if segmentsEqual(segs, sysRoot, caseInsensitive) {
-			return &CacheDirValidationError{
-				Code:    ErrCodeSystemDir,
-				Message: fmt.Sprintf("system root directory %q cannot be used as cache directory; please use a dedicated subdirectory", resolved),
 				Path:    rawPath,
 			}
 		}
@@ -368,6 +368,17 @@ func ValidateCacheDirForPlatform(rawPath string, targetGOOS string, homeDir stri
 					Message: fmt.Sprintf("ancestor directory %q of user home cannot be used as cache directory", resolved),
 					Path:    rawPath,
 				}
+			}
+		}
+	}
+
+	// Check system roots that only reject exact match (descendants allowed, like /tmp/mycache, /private/var/folders/...)
+	for _, sysRoot := range systemRootsAllowSubdirs {
+		if segmentsEqual(segs, sysRoot, caseInsensitive) {
+			return &CacheDirValidationError{
+				Code:    ErrCodeSystemDir,
+				Message: fmt.Sprintf("system root directory %q cannot be used as cache directory; please use a dedicated subdirectory", resolved),
+				Path:    rawPath,
 			}
 		}
 	}

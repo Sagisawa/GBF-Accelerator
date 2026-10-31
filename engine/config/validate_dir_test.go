@@ -69,6 +69,9 @@ func TestValidateCacheDir_WindowsPaths(t *testing.T) {
 		{"Downloads_temp prefix mismatch", `C:\Users\TestUser\Downloads_temp`, false, ""},
 		{"Desktop2 prefix mismatch", `C:\Users\TestUser\Desktop2`, false, ""},
 		{"Users_backup prefix mismatch", `C:\Users_backup`, false, ""},
+		{"C:\\Users exact", `C:\Users`, true, ""},
+		{"D:\\Users exact", `D:\Users`, true, ErrCodeSystemDir},
+		{"C:\\Users\\OtherUser\\cache", `C:\Users\OtherUser\cache`, false, ""},
 	}
 
 	for _, tt := range tests {
@@ -123,6 +126,15 @@ func TestValidateCacheDir_MacOSLinuxPaths(t *testing.T) {
 		{"/private/var exact", "/private/var", true, ErrCodeSystemDir},
 		{"/tmp exact", "/tmp", true, ErrCodeSystemDir},
 		{"/private/tmp exact", "/private/tmp", true, ErrCodeSystemDir},
+		{"/Users exact", "/Users", true, ""},
+		{"/home exact", "/home", true, ErrCodeSystemDir},
+		{"/Volumes exact", "/Volumes", true, ErrCodeSystemDir},
+		{"/mnt exact", "/mnt", true, ErrCodeSystemDir},
+		{"/media exact", "/media", true, ErrCodeSystemDir},
+		{"/Volumes/SSD/cache", "/Volumes/SSD/cache", false, ""},
+		{"/mnt/disk/cache", "/mnt/disk/cache", false, ""},
+		{"/media/usb/cache", "/media/usb/cache", false, ""},
+		{"/home/other/cache", "/home/other/cache", false, ""},
 
 		// Subdirectories of /tmp and /var/folders (t.TempDir on macOS) MUST be allowed!
 		{"/tmp/gbf_cache subdir", "/tmp/gbf_cache", false, ""},

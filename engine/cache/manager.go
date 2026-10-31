@@ -79,9 +79,19 @@ type Manager struct {
 	persistDone        chan struct{}
 	stopOnce           sync.Once
 	persistMu          sync.RWMutex
-	generation         uint64
-	ramEnabled         atomic.Bool
-	autoRepair         atomic.Bool
+	generation               uint64
+	ramEnabled               atomic.Bool
+	autoRepair               atomic.Bool
+	beforeClearAllRemoveHook func(relPath string)
+	beforeUnlinkHook         func(targetPath string)
+}
+
+func (m *Manager) SetBeforeClearAllRemoveHookForTest(hook func(relPath string)) {
+	m.beforeClearAllRemoveHook = hook
+}
+
+func (m *Manager) SetBeforeUnlinkHookForTest(hook func(targetPath string)) {
+	m.beforeUnlinkHook = hook
 }
 
 var mimeFallbacks = map[string]string{
@@ -374,6 +384,10 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 		wg.Wait()
 		close(m.persistDone)
 	}()
+	if clean, _ := config.IsDirClean(cacheBase); clean {
+		_ = os.MkdirAll(cacheBase, 0755)
+		_ = EnsureRootMarker(cacheBase)
+	}
 	return m
 }
 
@@ -422,6 +436,10 @@ func (m *Manager) SetCacheBase(base string) {
 	m.clearTokenShards()
 	m.clearTempTokens()
 	m.invalidateSnapshots("缓存目录已变更")
+	if clean, _ := config.IsDirClean(base); clean {
+		_ = os.MkdirAll(base, 0755)
+		_ = EnsureRootMarker(base)
+	}
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {
@@ -2416,9 +2434,7 @@ func (m *Manager) ClearRAM() {
 	m.ramCache.Clear()
 }
 
-// testBeforeClearAllRemoveHook is an internal test-only hook invoked immediately before the pre-removal
-// identity check and removal in ClearAll, allowing tests to simulate TOCTOU file replacement.
-var testBeforeClearAllRemoveHook func(relPath string)
+// (testBeforeClearAllRemoveHook moved to Manager field beforeClearAllRemoveHook)
 
 func (m *Manager) ClearAll() (int, int64, int) {
 	deleted, freed, skipped, _ := m.ClearAllWithError()
@@ -2532,12 +2548,9 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 		if strings.Contains(slashRel, ".tmp.") {
 			if isAcceleratorTempFile(slashRel) {
 				if !m.isActiveTempFileLocked(p) {
-					if testBeforeClearAllRemoveHook != nil {
-						testBeforeClearAllRemoveHook(rel)
+					if m.beforeClearAllRemoveHook != nil {
+						m.beforeClearAllRemoveHook(rel)
 					}
-					// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile).
-					// Narrows the race window between identity verification and unlinking, but cannot eliminate
-					// all filesystem races without atomic descriptor-based unlink primitives.
 					preRemoveFi, err := root.Lstat(rel)
 					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
 						if root.Remove(rel) == nil {
@@ -2551,70 +2564,44 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 				skippedFiles++
 				return nil
 			}
-			// Non-accelerator file with .tmp. in name falls through to regular attribution check!
+		}
+
+		// Quarantined files created by accelerator
+		if strings.Contains(slashRel, ".quarantine.") {
+			if isAcceleratorQuarantineFile(slashRel) {
+				if m.beforeClearAllRemoveHook != nil {
+					m.beforeClearAllRemoveHook(rel)
+					}
+				preRemoveFi, err := root.Lstat(rel)
+				if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
+					if root.Remove(rel) == nil {
+						deletedFiles++
+						freedBytes += preRemoveFi.Size()
+						recordAffectedDir(rel)
+						return nil
+					}
+				}
+				skippedFiles++
+				return nil
+			}
 		}
 
 		// Standalone or orphan .ext metadata file
 		if strings.HasSuffix(slashRel, ".ext") {
-			// A standalone .ext file without an accompanying verified asset file lacks reliable
-			// cross-referencing proof of ownership. Even if the JSON fields are syntactically complete,
-			// handcrafted or external files cannot be reliably distinguished from user files.
-			// In accordance with the conservative attribution principle, default to preserving
-			// all orphan .ext files without an existing paired asset file.
 			skippedFiles++
 			return nil
 		}
 
 		// Regular data file: verify cache attribution via root handle
-		if isConfirmedCacheFileInRoot(root, rel, entryFi, hasRootMarker) {
-			// Check if valid paired .ext exists before deleting data file
-			extRel := rel + ".ext"
-			extFi, extErr := root.Lstat(extRel)
-			var hasPairedExt bool
-			if extErr == nil && extFi.Mode().IsRegular() {
-				if metaBytes, err := root.ReadFile(extRel); err == nil {
-					if meta, ok := parseExtFile(metaBytes); ok && meta.Version == 1 {
-						if meta.Size == entryFi.Size() && meta.MTimeNano == entryFi.ModTime().UnixNano() {
-							nsCandidate, _, ok := isConfirmedCachePathStructure(slashRel)
-							isFallback := false
-							if !ok && isTier1VersionFallbackPath(slashRel) {
-								nsCandidate = "gbf"
-								ok = true
-								isFallback = true
-							}
-							if ok {
-								isHostsPath := strings.HasPrefix(slashRel, "hosts/")
-								if meta.Namespace != "" && meta.Namespace != "gbf" {
-									if sanitizeNamespace(meta.Namespace) == nsCandidate {
-										hasPairedExt = true
-									}
-								} else if isHostsPath {
-									if meta.Namespace == "gbf" {
-										hasPairedExt = true
-									}
-								} else if isFallback {
-									if meta.Namespace == "gbf" {
-										hasPairedExt = true
-									}
-								} else if nsCandidate == "gbf" {
-									hasPairedExt = true
-								}
-							}
-						}
-					}
-				}
-			}
-
-			if testBeforeClearAllRemoveHook != nil {
-				testBeforeClearAllRemoveHook(rel)
+		confirmed, isTier1 := isConfirmedCacheFileInRootDetailed(root, rel, entryFi, hasRootMarker)
+		if confirmed {
+			if m.beforeClearAllRemoveHook != nil {
+				m.beforeClearAllRemoveHook(rel)
 			}
 
 			// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile).
-			// Narrows the race window between identity verification and unlinking, but cannot eliminate
-			// all filesystem races without atomic descriptor-based unlink primitives.
 			preRemoveFi, err := root.Lstat(rel)
 			if err != nil || !preRemoveFi.Mode().IsRegular() || !os.SameFile(entryFi, preRemoveFi) {
-				// Object identity changed or replaced, abort deletion!
 				skippedFiles++
 				return nil
 			}
@@ -2624,15 +2611,16 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 				freedBytes += preRemoveFi.Size()
 				recordAffectedDir(rel)
 
-				if hasPairedExt {
-					if testBeforeClearAllRemoveHook != nil {
-						testBeforeClearAllRemoveHook(extRel)
+				if isTier1 {
+					extRel := rel + ".ext"
+					if m.beforeClearAllRemoveHook != nil {
+						m.beforeClearAllRemoveHook(extRel)
 					}
-					preExtFi, err := root.Lstat(extRel)
-					if err == nil && preExtFi.Mode().IsRegular() && os.SameFile(extFi, preExtFi) {
+					extFi, extErr := root.Lstat(extRel)
+					if extErr == nil && extFi.Mode().IsRegular() {
 						if root.Remove(extRel) == nil {
 							deletedFiles++
-							freedBytes += preExtFi.Size()
+							freedBytes += extFi.Size()
 							recordAffectedDir(extRel)
 						} else {
 							skippedFiles++
@@ -2672,7 +2660,7 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 	})
 	for _, relDir := range dirs {
 		targetDir := filepath.Join(base, relDir)
-		_, _, _ = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, nil, targetDir)
+		_, _, _ = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, nil, targetDir, m.beforeUnlinkHook)
 	}
 
 	m.clearMissing()
@@ -2928,7 +2916,11 @@ func (m *Manager) Warmup(maxItems int) int {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
+		baseName := d.Name()
+		if baseName == RootMarkerFileName || config.IsSystemJunk(baseName) {
+			return nil
+		}
+		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || isAcceleratorQuarantineFile(p) {
 			return nil
 		}
 		info, err := d.Info()
