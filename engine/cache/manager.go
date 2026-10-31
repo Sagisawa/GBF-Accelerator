@@ -2552,7 +2552,8 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 						m.beforeClearAllRemoveHook(rel)
 					}
 					preRemoveFi, err := root.Lstat(rel)
-					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
+					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) &&
+						preRemoveFi.Size() == entryFi.Size() && preRemoveFi.ModTime().UnixNano() == entryFi.ModTime().UnixNano() {
 						if root.Remove(rel) == nil {
 							deletedFiles++
 							freedBytes += preRemoveFi.Size()
@@ -2573,7 +2574,8 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 					m.beforeClearAllRemoveHook(rel)
 					}
 				preRemoveFi, err := root.Lstat(rel)
-				if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) {
+				if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) &&
+					preRemoveFi.Size() == entryFi.Size() && preRemoveFi.ModTime().UnixNano() == entryFi.ModTime().UnixNano() {
 					if root.Remove(rel) == nil {
 						deletedFiles++
 						freedBytes += preRemoveFi.Size()
@@ -2599,9 +2601,10 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 				m.beforeClearAllRemoveHook(rel)
 			}
 
-			// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile).
+			// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile, size, mtime).
 			preRemoveFi, err := root.Lstat(rel)
-			if err != nil || !preRemoveFi.Mode().IsRegular() || !os.SameFile(entryFi, preRemoveFi) {
+			if err != nil || !preRemoveFi.Mode().IsRegular() || !os.SameFile(entryFi, preRemoveFi) ||
+				preRemoveFi.Size() != entryFi.Size() || preRemoveFi.ModTime().UnixNano() != entryFi.ModTime().UnixNano() {
 				skippedFiles++
 				return nil
 			}

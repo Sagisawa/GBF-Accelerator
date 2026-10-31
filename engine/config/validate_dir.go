@@ -405,8 +405,8 @@ func ValidateCacheDirForPlatform(rawPath string, targetGOOS string, homeDir stri
 		}
 		for _, folder := range standardFolders {
 			folderSegs := append(append([]string{}, homeSegs...), folder)
-			// EXACT match: reject!
-			if segmentsEqual(segs, folderSegs, caseInsensitive) {
+			// EXACT match: reject! Standard folders like Downloads/downloads are rejected regardless of OS casing.
+			if len(segs) == len(folderSegs) && segmentsEqual(segs[:len(homeSegs)], homeSegs, caseInsensitive) && strings.EqualFold(segs[len(homeSegs)], folder) {
 				return &CacheDirValidationError{
 					Code:    ErrCodeUserProtectedDir,
 					Message: fmt.Sprintf("standard user folder %q cannot be used directly as cache directory; please choose a dedicated subdirectory", folder),
