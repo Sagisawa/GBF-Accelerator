@@ -1030,3 +1030,79 @@ func TestAreAllFilesConfirmed_RootFaviconAndMetadataSafety(t *testing.T) {
 		t.Fatalf("expected all historical compatible files + orphan .ext to pass AreAllFilesConfirmed, got %v, err=%v", confirmedCompat, err)
 	}
 }
+
+
+// TestAreAllFilesConfirmed_InvalidOrphanExtRejection verifies that AreAllFilesConfirmed
+// directly rejects invalid orphan .ext metadata files in its .ext branch, even when
+// no corresponding base asset exists on disk.
+func TestAreAllFilesConfirmed_InvalidOrphanExtRejection(t *testing.T) {
+	// 1. Dedicated directory with only notes.txt.ext and NO notes.txt
+	t.Run("notes.txt.ext standalone", func(t *testing.T) {
+		dir := t.TempDir()
+		extPath := filepath.Join(dir, "notes.txt.ext")
+		if err := os.WriteFile(extPath, []byte(`{"v":1,"ns":"gbf","ct":"text/plain"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		confirmed, err := AreAllFilesConfirmed(dir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if confirmed {
+			t.Fatalf("expected AreAllFilesConfirmed to reject directory containing only notes.txt.ext")
+		}
+	})
+
+	// 2. Separate directories for other forged root orphan sidecars (no base files)
+	invalidOrphans := []string{
+		"root_photo.png.ext",
+		"my_favicon.ico.ext",
+		"favicon.png.ext",
+		"favicon.ico.bak.ext",
+		"random_folder/data.bin.ext",
+	}
+	for _, orphanRel := range invalidOrphans {
+		t.Run(orphanRel, func(t *testing.T) {
+			dir := t.TempDir()
+			fullPath := filepath.Join(dir, filepath.FromSlash(orphanRel))
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte(`{"v":1,"ns":"gbf","ct":"application/octet-stream"}`), 0644); err != nil {
+				t.Fatal(err)
+			}
+			confirmed, err := AreAllFilesConfirmed(dir)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if confirmed {
+				t.Fatalf("expected AreAllFilesConfirmed to reject invalid orphan metadata %s", orphanRel)
+			}
+		})
+	}
+
+	// 3. Valid orphan .ext files in valid top-level categories pass AreAllFilesConfirmed
+	validOrphans := []string{
+		"assets/img/orphan.png.ext",
+		"jssdk/sdk.min.js.ext",
+		"hosts/granbluefantasy.com/bundle.js.ext",
+	}
+	for _, orphanRel := range validOrphans {
+		t.Run(orphanRel, func(t *testing.T) {
+			dir := t.TempDir()
+			fullPath := filepath.Join(dir, filepath.FromSlash(orphanRel))
+			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(fullPath, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
+				t.Fatal(err)
+			}
+			confirmed, err := AreAllFilesConfirmed(dir)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !confirmed {
+				t.Fatalf("expected AreAllFilesConfirmed to accept legitimate orphan metadata %s", orphanRel)
+			}
+		})
+	}
+}
