@@ -19,9 +19,9 @@ type prefixStats struct {
 
 // TestRealCacheCoverage scans a real GBF-Accelerator or ACGPower cache directory
 // specified via the GBF_REAL_CACHE_DIR environment variable.
-// It reports confirmation rates under both actual on-disk conditions and potential
-// post-confirmation conditions, properly tracks valid paired .ext vs orphan and invalid .ext,
-// and lists the top 20 unconfirmed prefixes.
+// It reports confirmation rates evaluated strictly on actual asset files, separates
+// metadata (.ext) and auxiliary files into their own accounting categories, and lists
+// the top 20 unconfirmed asset prefixes.
 // When GBF_REAL_CACHE_DIR is not set, the test is safely skipped.
 func TestRealCacheCoverage(t *testing.T) {
 	cacheDir := os.Getenv("GBF_REAL_CACHE_DIR")
@@ -44,27 +44,25 @@ func TestRealCacheCoverage(t *testing.T) {
 
 	hasMarkerOnDisk := HasRootMarker(absDir)
 
-	totalRegularFiles := 0
-	totalRegularBytes := int64(0)
+	// Asset files metrics (data items, excluding .ext sidecars and auxiliary files)
+	totalAssetFiles := 0
+	totalAssetBytes := int64(0)
+	actualConfirmedAssetFiles := 0
+	actualConfirmedAssetBytes := int64(0)
+	potentialConfirmedAssetFiles := 0
+	potentialConfirmedAssetBytes := int64(0)
+	unconfirmedAssetFiles := 0
+	unconfirmedAssetBytes := int64(0)
 
-	// Actual on-disk confirmation (hasRootMarker = hasMarkerOnDisk)
-	actualConfirmedFiles := 0
-	actualConfirmedBytes := int64(0)
-
-	// Potential post-confirmation (hasRootMarker = true)
-	potentialConfirmedFiles := 0
-	potentialConfirmedBytes := int64(0)
-	potentialUnconfirmedFiles := 0
-	potentialUnconfirmedBytes := int64(0)
-
-	// Metadata & auxiliary file tracking
-	pairedExtFiles := 0
-	pairedExtBytes := int64(0)
+	// Metadata (.ext) sidecar tracking
+	validPairedExtFiles := 0
+	validPairedExtBytes := int64(0)
 	orphanExtFiles := 0
 	orphanExtBytes := int64(0)
 	invalidExtFiles := 0
 	invalidExtBytes := int64(0)
 
+	// Auxiliary files tracking
 	tempFiles := 0
 	tempBytes := int64(0)
 	quarFiles := 0
@@ -102,25 +100,21 @@ func TestRealCacheCoverage(t *testing.T) {
 		}
 		fileSize := info.Size()
 
+		// Auxiliary streaming temporary files
 		if isAcceleratorTempFile(slashRel) {
 			tempFiles++
 			tempBytes += fileSize
-			totalRegularFiles++
-			totalRegularBytes += fileSize
 			return nil
 		}
+
+		// Auxiliary quarantined files
 		if isAcceleratorQuarantineFile(slashRel) {
 			quarFiles++
 			quarBytes += fileSize
-			totalRegularFiles++
-			totalRegularBytes += fileSize
 			return nil
 		}
 
-		totalRegularFiles++
-		totalRegularBytes += fileSize
-
-		// Handle .ext metadata files separately
+		// Metadata sidecar files (.ext)
 		if strings.HasSuffix(slashRel, ".ext") {
 			baseSlashRel := strings.TrimSuffix(slashRel, ".ext")
 			basePath := strings.TrimSuffix(path, ".ext")
@@ -129,21 +123,14 @@ func TestRealCacheCoverage(t *testing.T) {
 				metaBytes, readErr := os.ReadFile(path)
 				if readErr == nil {
 					if _, ok := VerifyTier1Meta(baseSlashRel, metaBytes); ok {
-						// Only valid paired .ext files count as confirmed metadata!
-						pairedExtFiles++
-						pairedExtBytes += fileSize
-						actualConfirmedFiles++
-						actualConfirmedBytes += fileSize
-						potentialConfirmedFiles++
-						potentialConfirmedBytes += fileSize
+						validPairedExtFiles++
+						validPairedExtBytes += fileSize
 						return nil
 					}
 				}
-				// Companion exists, but meta parsing or validation failed
 				invalidExtFiles++
 				invalidExtBytes += fileSize
 			} else if baseErr != nil && os.IsNotExist(baseErr) {
-				// No companion data file -> orphan .ext
 				orphanExtFiles++
 				orphanExtBytes += fileSize
 			} else {
@@ -153,22 +140,24 @@ func TestRealCacheCoverage(t *testing.T) {
 			return nil
 		}
 
-		// Regular data asset:
+		// Regular data asset file
+		totalAssetFiles++
+		totalAssetBytes += fileSize
+
 		actualOK := IsConfirmedCacheFileWithInfo(absDir, path, info, hasMarkerOnDisk)
 		if actualOK {
-			actualConfirmedFiles++
-			actualConfirmedBytes += fileSize
+			actualConfirmedAssetFiles++
+			actualConfirmedAssetBytes += fileSize
 		}
 
 		potentialOK := IsConfirmedCacheFileWithInfo(absDir, path, info, true)
 		if potentialOK {
-			potentialConfirmedFiles++
-			potentialConfirmedBytes += fileSize
+			potentialConfirmedAssetFiles++
+			potentialConfirmedAssetBytes += fileSize
 		} else {
-			potentialUnconfirmedFiles++
-			potentialUnconfirmedBytes += fileSize
+			unconfirmedAssetFiles++
+			unconfirmedAssetBytes += fileSize
 
-			// Compute prefix (first 2 or 3 directory segments)
 			cleanRel := strings.TrimPrefix(slashRel, "/")
 			segs := strings.Split(cleanRel, "/")
 			prefix := "root"
@@ -212,46 +201,52 @@ func TestRealCacheCoverage(t *testing.T) {
 	actualRate := 0.0
 	potentialRate := 0.0
 	unconfirmedRate := 0.0
-	if totalRegularFiles > 0 {
-		actualRate = float64(actualConfirmedFiles) / float64(totalRegularFiles) * 100.0
-		potentialRate = float64(potentialConfirmedFiles) / float64(totalRegularFiles) * 100.0
-		unconfirmedRate = float64(potentialUnconfirmedFiles) / float64(totalRegularFiles) * 100.0
+	if totalAssetFiles > 0 {
+		actualRate = float64(actualConfirmedAssetFiles) / float64(totalAssetFiles) * 100.0
+		potentialRate = float64(potentialConfirmedAssetFiles) / float64(totalAssetFiles) * 100.0
+		unconfirmedRate = float64(unconfirmedAssetFiles) / float64(totalAssetFiles) * 100.0
 	}
 
+	totalExtFiles := validPairedExtFiles + orphanExtFiles + invalidExtFiles
+	totalExtBytes := validPairedExtBytes + orphanExtBytes + invalidExtBytes
+
 	t.Logf("\n================ REAL CACHE COVERAGE AUDIT REPORT ================\n")
-	t.Logf("Cache Directory:             %s", absDir)
-	t.Logf("Root Marker Present On Disk: %v", hasMarkerOnDisk)
-	t.Logf("Total Regular Files Scanned: %d (%.2f MB)", totalRegularFiles, float64(totalRegularBytes)/(1024*1024))
+	t.Logf("Cache Directory:                 %s", absDir)
+	t.Logf("Root Marker Present On Disk:     %v", hasMarkerOnDisk)
 	t.Logf("")
-	t.Logf("--- CONFIRMATION METRICS ---")
-	t.Logf("Actual Confirmed (Disk Marker=%v):     %6d (%6.2f%%, %8.2f MB)",
-		hasMarkerOnDisk, actualConfirmedFiles, actualRate, float64(actualConfirmedBytes)/(1024*1024))
-	t.Logf("Potential Confirmed (Root Confirmed):   %6d (%6.2f%%, %8.2f MB)",
-		potentialConfirmedFiles, potentialRate, float64(potentialConfirmedBytes)/(1024*1024))
-	t.Logf("Unconfirmed Files (Root Confirmed):     %6d (%6.2f%%, %8.2f MB)",
-		potentialUnconfirmedFiles, unconfirmedRate, float64(potentialUnconfirmedBytes)/(1024*1024))
+	t.Logf("--- ASSET CONFIRMATION METRICS (EXCLUDING METADATA) ---")
+	t.Logf("Total Asset Files Scanned:       %6d (%8.2f MB)", totalAssetFiles, float64(totalAssetBytes)/(1024*1024))
+	t.Logf("Actual Confirmed (Disk Marker=%v): %6d (%6.2f%%, %8.2f MB)",
+		hasMarkerOnDisk, actualConfirmedAssetFiles, actualRate, float64(actualConfirmedAssetBytes)/(1024*1024))
+	t.Logf("Potential Confirmed (Root Marker): %6d (%6.2f%%, %8.2f MB)",
+		potentialConfirmedAssetFiles, potentialRate, float64(potentialConfirmedAssetBytes)/(1024*1024))
+	t.Logf("Unconfirmed Assets (Root Marker): %6d (%6.2f%%, %8.2f MB)",
+		unconfirmedAssetFiles, unconfirmedRate, float64(unconfirmedAssetBytes)/(1024*1024))
 	t.Logf("")
-	t.Logf("--- METADATA & AUXILIARY BREAKDOWN ---")
-	t.Logf("Valid Paired .ext (Confirmed Meta):     %6d files (%8.2f MB)", pairedExtFiles, float64(pairedExtBytes)/(1024*1024))
-	t.Logf("Orphan .ext (No companion asset):       %6d files (%8.2f MB)", orphanExtFiles, float64(orphanExtBytes)/(1024*1024))
-	t.Logf("Invalid .ext (Failed Tier-1 meta):      %6d files (%8.2f MB)", invalidExtFiles, float64(invalidExtBytes)/(1024*1024))
-	t.Logf("Temporary Streaming (.tmp.*):           %6d files (%8.2f MB)", tempFiles, float64(tempBytes)/(1024*1024))
-	t.Logf("Quarantine Files (.quarantine.*):       %6d files (%8.2f MB)", quarFiles, float64(quarBytes)/(1024*1024))
-	t.Logf("System Junk Files (Ignored):            %6d files", junkFiles)
+	t.Logf("--- METADATA (.EXT) BREAKDOWN ---")
+	t.Logf("Total .ext Metadata Files:       %6d (%8.2f MB)", totalExtFiles, float64(totalExtBytes)/(1024*1024))
+	t.Logf("  * Valid Paired .ext:           %6d files (%8.2f MB)", validPairedExtFiles, float64(validPairedExtBytes)/(1024*1024))
+	t.Logf("  * Orphan .ext (No data file):  %6d files (%8.2f MB)", orphanExtFiles, float64(orphanExtBytes)/(1024*1024))
+	t.Logf("  * Invalid .ext (Failed meta):  %6d files (%8.2f MB)", invalidExtFiles, float64(invalidExtBytes)/(1024*1024))
+	t.Logf("")
+	t.Logf("--- AUXILIARY & SYSTEM FILES ---")
+	t.Logf("Temporary Streaming (.tmp.*):   %6d files (%8.2f MB)", tempFiles, float64(tempBytes)/(1024*1024))
+	t.Logf("Quarantine Files (.quarantine.*):%6d files (%8.2f MB)", quarFiles, float64(quarBytes)/(1024*1024))
+	t.Logf("System Junk Files (Ignored):     %6d files", junkFiles)
 
 	limit := 20
 	if len(prefixList) < limit {
 		limit = len(prefixList)
 	}
 	if limit > 0 {
-		t.Logf("\n--- TOP %d UNCONFIRMED PATH PREFIXES (AFTER ROOT CONFIRMATION) ---", limit)
+		t.Logf("\n--- TOP %d UNCONFIRMED ASSET PATH PREFIXES (AFTER ROOT CONFIRMATION) ---", limit)
 		for i := 0; i < limit; i++ {
 			p := prefixList[i]
-			t.Logf("  [%2d] %-30s | count: %6d | size: %8.2f KB | sample: %s",
+			t.Logf("  [%2d] %-32s | count: %6d | size: %8.2f KB | sample: %s",
 				i+1, p.prefix, p.count, float64(p.bytes)/1024.0, p.sample)
 		}
 	} else {
-		t.Logf("\n--- 100%% COVERAGE: NO UNCONFIRMED FILES DETECTED ---")
+		t.Logf("\n--- 100%% COVERAGE: ALL ASSET FILES CONFIRMED ---")
 	}
 	t.Logf("==================================================================")
 }

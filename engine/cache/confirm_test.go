@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -722,5 +723,200 @@ func TestTier2_VersionFallbackSupportedWithoutExt(t *testing.T) {
 	p6 := writeAsset("300/js/error.js", invalidHTML)
 	if IsConfirmedCacheFile(root, p6, true) {
 		t.Fatalf("300/js/error.js containing HTML error must be rejected by magic check")
+	}
+}
+
+// TestHistoricalCompatibility_GBFHostsEmptyNS verifies that only the 5 strictly confirmed
+// GBF official domains are permitted to match Tier-1 with an empty namespace (meta.Namespace == "")
+// and ONLY when meta.Verified == true. Untrusted hosts and unverified entries remain strictly rejected.
+func TestHistoricalCompatibility_GBFHostsEmptyNS(t *testing.T) {
+	officialHosts := []string{
+		"granbluefantasy.com",
+		"game.granbluefantasy.jp",
+		"ava-a.sp.mbga.jp",
+		"connect.mobage.jp",
+		"steam.granbluefantasy.com",
+	}
+
+	for _, host := range officialHosts {
+		slashRel := fmt.Sprintf("hosts/%s/asset.png", host)
+		// 1. Positive: official host with empty ns and Verified=true -> Allowed
+		metaValid := diskMeta{
+			Version:  1,
+			Verified: true,
+		}
+		raw, _ := json.Marshal(metaValid)
+		if _, ok := VerifyTier1Meta(slashRel, raw); !ok {
+			t.Fatalf("expected official host %s with empty ns and Verified=true to be accepted, but got rejected", host)
+		}
+
+		// 2. Negative: official host with empty ns but Verified=false -> Rejected
+		metaUnverified := diskMeta{
+			Version:  1,
+			Verified: false,
+		}
+		rawUnverified, _ := json.Marshal(metaUnverified)
+		if _, ok := VerifyTier1Meta(slashRel, rawUnverified); ok {
+			t.Fatalf("expected official host %s with empty ns and Verified=false to be rejected, but got accepted", host)
+		}
+
+		// 3. Negative: official host with mismatched non-empty ns -> Rejected
+		metaMismatch := diskMeta{
+			Version:   1,
+			Namespace: "other_game",
+			Verified:  true,
+		}
+		rawMismatch, _ := json.Marshal(metaMismatch)
+		if _, ok := VerifyTier1Meta(slashRel, rawMismatch); ok {
+			t.Fatalf("expected official host %s with mismatched ns to be rejected, but got accepted", host)
+		}
+	}
+
+	// 4. Negative: Untrusted hosts with empty ns -> Strictly Rejected even if Verified=true
+	untrustedHosts := []string{
+		"untrusted-cdn.com",
+		"attacker.org",
+		"myphotos.net",
+		"localhost",
+	}
+	for _, host := range untrustedHosts {
+		slashRel := fmt.Sprintf("hosts/%s/asset.png", host)
+		meta := diskMeta{
+			Version:  1,
+			Verified: true,
+		}
+		raw, _ := json.Marshal(meta)
+		if _, ok := VerifyTier1Meta(slashRel, raw); ok {
+			t.Fatalf("untrusted host %s with empty ns must be rejected, but got accepted", host)
+		}
+	}
+}
+
+// TestJSSDKCategorySupport verifies positive and negative attribution for the jssdk category.
+func TestJSSDKCategorySupport(t *testing.T) {
+	root := t.TempDir()
+	if err := EnsureRootMarker(root); err != nil {
+		t.Fatal(err)
+	}
+
+	validJS := []byte("console.log('mobage-jssdk');")
+	jssdkDir := filepath.Join(root, "jssdk")
+	if err := os.MkdirAll(jssdkDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Positive Tier-1: jssdk/mobage-jssdk-client.3.10.1.min.js with paired .ext
+	clientPath := filepath.Join(jssdkDir, "mobage-jssdk-client.3.10.1.min.js")
+	if err := os.WriteFile(clientPath, validJS, 0644); err != nil {
+		t.Fatal(err)
+	}
+	extData := []byte(`{"v":1,"ns":"gbf","ct":"application/javascript"}`)
+	if err := os.WriteFile(clientPath+".ext", extData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsConfirmedCacheFile(root, clientPath, false) {
+		t.Fatalf("jssdk asset with paired .ext must be confirmed under Tier-1")
+	}
+
+	// 2. Positive Tier-2: jssdk file without .ext under root marker
+	xdframePath := filepath.Join(jssdkDir, "mobage-jssdk-xdframe.2.3.min.js")
+	if err := os.WriteFile(xdframePath, validJS, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsConfirmedCacheFile(root, xdframePath, true) {
+		t.Fatalf("jssdk asset without .ext under root marker must be confirmed under Tier-2")
+	}
+	if IsConfirmedCacheFile(root, xdframePath, false) {
+		t.Fatalf("jssdk asset without .ext without root marker must NOT be confirmed")
+	}
+
+	// 3. Negative: non-asset extension in jssdk
+	docPath := filepath.Join(jssdkDir, "notes.docx")
+	if err := os.WriteFile(docPath, []byte("word doc"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsConfirmedCacheFile(root, docPath, true) {
+		t.Fatalf("jssdk/notes.docx must be rejected due to non-asset extension")
+	}
+
+	// 4. Negative: lookalike directory (jssdk_backup)
+	fakeDir := filepath.Join(root, "jssdk_backup")
+	if err := os.MkdirAll(fakeDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fakeScript := filepath.Join(fakeDir, "app.js")
+	if err := os.WriteFile(fakeScript, validJS, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsConfirmedCacheFile(root, fakeScript, true) {
+		t.Fatalf("jssdk_backup/app.js must be rejected because jssdk_backup is not a GBF category")
+	}
+}
+
+// TestRootFaviconSupport verifies that only the exact root favicon.ico with valid paired .ext
+// is confirmed, while bare root favicon, other root files, and lookalikes are rejected.
+func TestRootFaviconSupport(t *testing.T) {
+	root := t.TempDir()
+	if err := EnsureRootMarker(root); err != nil {
+		t.Fatal(err)
+	}
+
+	icoData := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10}
+	faviconPath := filepath.Join(root, "favicon.ico")
+	if err := os.WriteFile(faviconPath, icoData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Without .ext: must NOT be confirmed (root favicon is Tier-1 only, no Tier-2)
+	if IsConfirmedCacheFile(root, faviconPath, true) {
+		t.Fatalf("root favicon.ico without .ext must NOT be confirmed through Tier-2")
+	}
+
+	// 2. With valid paired .ext (ns="gbf"): must be confirmed under Tier-1
+	extData := []byte(`{"v":1,"ns":"gbf","ct":"image/x-icon"}`)
+	if err := os.WriteFile(faviconPath+".ext", extData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsConfirmedCacheFile(root, faviconPath, false) {
+		t.Fatalf("root favicon.ico with paired .ext must be confirmed under Tier-1")
+	}
+
+	// 3. With valid paired .ext (empty ns for legacy backward compat): must be confirmed under Tier-1
+	extLegacy := []byte(`{"v":1,"ct":"image/x-icon"}`)
+	if err := os.WriteFile(faviconPath+".ext", extLegacy, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsConfirmedCacheFile(root, faviconPath, false) {
+		t.Fatalf("root favicon.ico with legacy empty ns .ext must be confirmed under Tier-1")
+	}
+
+	// 4. With mismatched namespace (ns="other"): must be rejected
+	extBadNS := []byte(`{"v":1,"ns":"other_game","ct":"image/x-icon"}`)
+	if err := os.WriteFile(faviconPath+".ext", extBadNS, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsConfirmedCacheFile(root, faviconPath, false) {
+		t.Fatalf("root favicon.ico with mismatched ns must be rejected")
+	}
+
+	// 5. Lookalikes and other root files must be strictly rejected
+	lookalikes := []string{
+		"my_favicon.ico",
+		"favicon.ico.bak",
+		"favicon.png",
+		"notes.txt",
+		"root_image.png",
+	}
+	for _, name := range lookalikes {
+		p := filepath.Join(root, name)
+		if err := os.WriteFile(p, icoData, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p+".ext", extData, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if IsConfirmedCacheFile(root, p, true) {
+			t.Fatalf("root file %s must be rejected even with fake .ext and marker", name)
+		}
 	}
 }

@@ -136,7 +136,22 @@ func (m *Manager) ValidateDestructiveCacheDir() error {
 // isKnownGBFCategory checks whether cat matches any top-level GBF static asset category.
 func isKnownGBFCategory(cat string) bool {
 	switch cat {
-	case "js", "css", "img", "sound", "font", "manifest", "html", "misc", "cjs", "json", "model", "app":
+	case "js", "css", "img", "sound", "font", "manifest", "html", "misc", "cjs", "json", "model", "app", "jssdk":
+		return true
+	default:
+		return false
+	}
+}
+
+// isHistoricalEmptyNSHost checks whether host belongs to the strictly confirmed GBF official domains
+// that historically generated cache sidecars without the "ns" field.
+func isHistoricalEmptyNSHost(host string) bool {
+	switch strings.ToLower(host) {
+	case "granbluefantasy.com",
+		"game.granbluefantasy.jp",
+		"ava-a.sp.mbga.jp",
+		"connect.mobage.jp",
+		"steam.granbluefantasy.com":
 		return true
 	default:
 		return false
@@ -202,6 +217,9 @@ func parseCachePathTopLevelShape(slashRel string) (ns string, cleanKey string, i
 	clean = strings.TrimPrefix(clean, "/")
 	segs := splitCleanSegments(clean)
 	if len(segs) < 2 {
+		if len(segs) == 1 && strings.EqualFold(segs[0], "favicon.ico") {
+			return "gbf", "favicon.ico", false, true
+		}
 		return "", "", false, false
 	}
 
@@ -335,17 +353,18 @@ func VerifyTier1Meta(slashRel string, metaBytes []byte) (diskMeta, bool) {
 
 	if isHosts {
 		// For hosts paths (hosts/<host>/...):
-		// - Empty namespace is rejected.
 		// - Form A: meta.Namespace == "gbf" is accepted.
 		// - Form B: sanitizeNamespace(meta.Namespace) == expectedNS is accepted.
-		// - Otherwise rejected.
-		if parsedMeta.Namespace == "" {
-			return diskMeta{}, false
-		}
+		// - Form C (Historical Compatibility): meta.Namespace == "" is accepted ONLY for strictly confirmed
+		//   official GBF hosts and requires parsedMeta.Verified == true.
+		// - All other hosts with empty or mismatched namespace are rejected.
 		if parsedMeta.Namespace == "gbf" {
 			return parsedMeta, true
 		}
 		if sanitizeNamespace(parsedMeta.Namespace) == expectedNS {
+			return parsedMeta, true
+		}
+		if parsedMeta.Namespace == "" && parsedMeta.Verified && isHistoricalEmptyNSHost(expectedNS) {
 			return parsedMeta, true
 		}
 		return diskMeta{}, false
@@ -369,6 +388,10 @@ func VerifyTier1Meta(slashRel string, metaBytes []byte) (diskMeta, bool) {
 // root marker present + top-level shape valid + valid asset file extension.
 func isTier2Candidate(slashRel string, hasRootMarker bool) (cleanKey string, ok bool) {
 	if !hasRootMarker {
+		return "", false
+	}
+	if strings.EqualFold(filepath.ToSlash(filepath.Clean(slashRel)), "favicon.ico") {
+		// Root-level favicon.ico is strictly Tier-1 only and requires a valid paired .ext
 		return "", false
 	}
 	_, keyCand, _, shapeOK := parseCachePathTopLevelShape(slashRel)

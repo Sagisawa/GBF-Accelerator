@@ -1714,3 +1714,124 @@ func TestClearAll_NonSyntaxPathWithValidExtDeleted(t *testing.T) {
 		}
 	}
 }
+
+// TestClearAll_HistoricalCompatibilitySafetyAndSeparation verifies that ClearAll:
+// 1. Correctly removes historical compatible GBF assets and their paired .ext sidecars:
+//    - Official GBF hosts with empty ns (meta.Verified == true)
+//    - jssdk assets with paired .ext
+//    - Root-level favicon.ico with paired .ext
+// 2. Strictly preserves untrusted hosts files with empty ns.
+// 3. Strictly preserves official hosts files with empty ns when meta.Verified == false.
+// 4. Strictly preserves other root files and pseudo lookalikes (my_favicon.ico, jssdk_notes.txt, etc.).
+func TestClearAll_HistoricalCompatibilitySafetyAndSeparation(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = EnsureRootMarker(tmpDir)
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+
+	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	validJS := []byte("console.log('client-code');")
+	validIco := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10}
+
+	// Group A: Historical compatible files that MUST be deleted (asset + .ext)
+	mustDeleteFiles := []struct {
+		rel     string
+		content []byte
+		meta    string
+	}{
+		{"hosts/granbluefantasy.com/_app/style.css", []byte("body{margin:0}"), `{"v":1,"ct":"text/css","verified":true}`},
+		{"hosts/game.granbluefantasy.jp/assets/font/basic.woff", []byte("woff-data"), `{"v":1,"ct":"application/font-woff","verified":true}`},
+		{"hosts/ava-a.sp.mbga.jp/avatar.gif", []byte("GIF89a"), `{"v":1,"ct":"image/gif","verified":true}`},
+		{"hosts/connect.mobage.jp/static/icon.png", validPng, `{"v":1,"ct":"image/png","verified":true}`},
+		{"hosts/steam.granbluefantasy.com/icon.ico", validIco, `{"v":1,"ct":"image/x-icon","verified":true}`},
+		{"jssdk/mobage-jssdk-client.3.10.1.min.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`},
+		{"favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`},
+	}
+
+	for _, item := range mustDeleteFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(item.rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, item.content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full+".ext", []byte(item.meta), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Group B: Files that MUST be strictly PRESERVED
+	mustPreserveFiles := []struct {
+		rel     string
+		content []byte
+		meta    string // optional .ext content, empty if none
+	}{
+		// Untrusted host with empty ns and verified:true -> must preserve
+		{"hosts/untrusted-domain.com/photo.png", validPng, `{"v":1,"ct":"image/png","verified":true}`},
+		// Untrusted host with empty ns -> must preserve
+		{"hosts/malicious.org/script.js", validJS, `{"v":1,"ct":"application/javascript","verified":true}`},
+		// Official host with empty ns but verified:false -> must preserve
+		{"hosts/granbluefantasy.com/unverified.js", validJS, `{"v":1,"ct":"application/javascript","verified":false}`},
+		// Root user notes -> must preserve
+		{"notes.txt", []byte("personal notes"), ""},
+		// Root photo -> must preserve
+		{"root_photo.png", validPng, ""},
+		// Lookalike: my_favicon.ico -> must preserve
+		{"my_favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`},
+		// Lookalike: favicon.png -> must preserve
+		{"favicon.png", validPng, `{"v":1,"ct":"image/png","ns":"gbf"}`},
+		// Lookalike: jssdk_notes.txt -> must preserve
+		{"jssdk_notes.txt", []byte("notes on jssdk"), ""},
+		// Lookalike: jssdk_backup/app.js -> must preserve
+		{"jssdk_backup/app.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`},
+		// Non-asset file in jssdk directory -> must preserve
+		{"jssdk/document.docx", []byte("secret document"), ""},
+	}
+
+	for _, item := range mustPreserveFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(item.rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, item.content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if item.meta != "" {
+			if err := os.WriteFile(full+".ext", []byte(item.meta), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	deleted, _, skipped := mgr.ClearAll()
+	// Each deleted item has 1 data file + 1 .ext sidecar -> len(mustDeleteFiles) * 2
+	expectedDeleted := len(mustDeleteFiles) * 2
+	if deleted != expectedDeleted {
+		t.Fatalf("expected exactly %d deleted files, got deleted=%d (skipped=%d)", expectedDeleted, deleted, skipped)
+	}
+
+	// Verify all items in Group A are deleted
+	for _, item := range mustDeleteFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(item.rel))
+		if _, err := os.Stat(full); !os.IsNotExist(err) {
+			t.Errorf("expected historical compatible asset %s to be deleted, got err=%v", item.rel, err)
+		}
+		if _, err := os.Stat(full + ".ext"); !os.IsNotExist(err) {
+			t.Errorf("expected sidecar %s.ext to be deleted, got err=%v", item.rel, err)
+		}
+	}
+
+	// Verify all items in Group B are strictly preserved
+	for _, item := range mustPreserveFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(item.rel))
+		if _, err := os.Stat(full); err != nil {
+			t.Errorf("expected preserved file %s to exist, got err=%v", item.rel, err)
+		}
+		if item.meta != "" {
+			if _, err := os.Stat(full + ".ext"); err != nil {
+				t.Errorf("expected preserved sidecar %s.ext to exist, got err=%v", item.rel, err)
+			}
+		}
+	}
+}
