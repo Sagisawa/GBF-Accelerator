@@ -920,3 +920,113 @@ func TestRootFaviconSupport(t *testing.T) {
 		}
 	}
 }
+
+// TestAreAllFilesConfirmed_RootFaviconAndMetadataSafety verifies:
+// 1. Root-level favicon.ico + paired .ext allows AreAllFilesConfirmed to pass.
+// 2. Root-level favicon.ico without companion .ext fails asset confirmation and blocks AreAllFilesConfirmed.
+// 3. Arbitrary root files and forged .ext files fail path shape attribution and block AreAllFilesConfirmed.
+// 4. Compatible historical hosts (empty ns + verified:true), jssdk, and valid orphan .ext pass AreAllFilesConfirmed.
+func TestAreAllFilesConfirmed_RootFaviconAndMetadataSafety(t *testing.T) {
+	validIco := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10}
+
+	// 1. Root favicon.ico + valid paired .ext -> Passes AreAllFilesConfirmed
+	root := t.TempDir()
+	faviconIco := filepath.Join(root, "favicon.ico")
+	if err := os.WriteFile(faviconIco, validIco, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(faviconIco+".ext", []byte(`{"v":1,"ns":"gbf","ct":"image/x-icon"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := AreAllFilesConfirmed(root)
+	if err != nil || !confirmed {
+		t.Fatalf("expected root favicon.ico + paired .ext to pass AreAllFilesConfirmed, got %v, err=%v", confirmed, err)
+	}
+
+	// 2. Root favicon.ico without .ext -> Fails asset confirmation and blocks AreAllFilesConfirmed
+	rootNoExt := t.TempDir()
+	favNoExt := filepath.Join(rootNoExt, "favicon.ico")
+	if err := os.WriteFile(favNoExt, validIco, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsConfirmedCacheFile(rootNoExt, favNoExt, true) {
+		t.Fatalf("root favicon.ico without .ext must NOT be confirmed as cache asset")
+	}
+	confirmedNoExt, err := AreAllFilesConfirmed(rootNoExt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmedNoExt {
+		t.Fatalf("root favicon.ico without .ext must NOT pass AreAllFilesConfirmed")
+	}
+
+	// 3. Forged root files and lookalikes with forged .ext -> Block AreAllFilesConfirmed
+	rootFake := t.TempDir()
+	fakeFiles := []string{
+		"notes.txt",
+		"root_photo.png",
+		"my_favicon.ico",
+		"favicon.png",
+		"favicon.ico.bak",
+	}
+	for _, name := range fakeFiles {
+		p := filepath.Join(rootFake, name)
+		if err := os.WriteFile(p, []byte("user data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p+".ext", []byte(`{"v":1,"ns":"gbf","ct":"image/png"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// Stripped asset path must fail shape validation
+		_, _, _, ok := parseCachePathTopLevelShape(name)
+		if ok {
+			t.Fatalf("forged root file %s must NOT have valid top level shape", name)
+		}
+		if IsConfirmedCacheFile(rootFake, p, true) {
+			t.Fatalf("forged root file %s must NOT be confirmed as cache asset", name)
+		}
+	}
+	confirmedFake, err := AreAllFilesConfirmed(rootFake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if confirmedFake {
+		t.Fatalf("directory with forged root files must NOT pass AreAllFilesConfirmed")
+	}
+
+	// 4. Compatible historical hosts (empty ns + verified:true), jssdk, root favicon, and valid orphan .ext pass
+	rootCompat := t.TempDir()
+	items := []struct {
+		rel  string
+		data []byte
+		meta string
+	}{
+		{"hosts/granbluefantasy.com/_app/style.css", []byte("css"), `{"v":1,"ct":"text/css","verified":true}`},
+		{"hosts/game.granbluefantasy.jp/font.woff", []byte("woff"), `{"v":1,"ct":"application/font-woff","verified":true}`},
+		{"jssdk/mobage-jssdk-client.3.10.1.min.js", []byte("console.log(1)"), `{"v":1,"ns":"gbf","ct":"application/javascript"}`},
+		{"favicon.ico", validIco, `{"v":1,"ns":"gbf","ct":"image/x-icon"}`},
+		{"assets/img/orphan.png.ext", nil, `{"v":1,"ns":"gbf"}`},
+	}
+	for _, item := range items {
+		full := filepath.Join(rootCompat, filepath.FromSlash(item.rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if item.data != nil {
+			if err := os.WriteFile(full, item.data, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full+".ext", []byte(item.meta), 0644); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := os.WriteFile(full, []byte(item.meta), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	confirmedCompat, err := AreAllFilesConfirmed(rootCompat)
+	if err != nil || !confirmedCompat {
+		t.Fatalf("expected all historical compatible files + orphan .ext to pass AreAllFilesConfirmed, got %v, err=%v", confirmedCompat, err)
+	}
+}

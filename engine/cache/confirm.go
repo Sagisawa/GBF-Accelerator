@@ -654,8 +654,9 @@ func AreAllFilesConfirmed(baseDir string) (bool, error) {
 			return nil
 		}
 		if strings.HasSuffix(slashRel, ".ext") {
-			// Companion or orphan metadata file with valid top-level shape
-			_, _, _, shapeOK := parseCachePathTopLevelShape(slashRel)
+			// Companion or orphan metadata file with valid asset top-level shape
+			assetSlashRel := strings.TrimSuffix(slashRel, ".ext")
+			_, _, _, shapeOK := parseCachePathTopLevelShape(assetSlashRel)
 			if !shapeOK {
 				allConfirmed = false
 				return filepath.SkipAll
