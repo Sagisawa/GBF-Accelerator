@@ -180,18 +180,18 @@ func validateCacheMigrationTree(root string) error {
 		if !hasMarker {
 			return fmt.Errorf("未标记缓存目录包含无法确认归属的文件: %s", rel)
 		}
-		if !cache.IsConfirmedCacheDirectory(filepath.ToSlash(filepath.Dir(slashRel))) {
-			return fmt.Errorf("迁移目录包含无法确认目录归属的文件: %s", rel)
+		// All files must check directory structure and asset extension
+		if _, ok := cache.IsTier2Candidate(slashRel, true); !ok {
+			return fmt.Errorf("迁移目录包含无法确认归属的文件 (目录结构或素材扩展名无效): %s", rel)
+		}
+		if info.Size() <= 0 {
+			return fmt.Errorf("迁移目录包含无法确认归属的空文件: %s", rel)
 		}
 		if sampledLegacyCount < maxLegacyMagicSamples {
 			if !cache.IsConfirmedCacheFile(root, path, true) {
 				return fmt.Errorf("迁移目录包含无法确认归属的文件: %s", rel)
 			}
 			sampledLegacyCount++
-		} else {
-			if info.Size() <= 0 {
-				return fmt.Errorf("迁移目录包含无法确认归属的空文件: %s", rel)
-			}
 		}
 		return nil
 	})

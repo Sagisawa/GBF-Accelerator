@@ -478,19 +478,24 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 		t.Fatalf("2026/photos must return false for isConfirmedCacheDir")
 	}
 
-	// 2. Negative: 300/js/app.js without .ext MUST NOT be recognized (Tier-2 rejected)
+	// 2. 300/js/app.js without .ext (Tier-2 version directory support):
+	// - With root marker present: MUST be recognized through Tier-2!
+	// - Without root marker: MUST NOT be recognized!
 	p300 := writeDiskFile("300/js/app.js", jsCode)
 	fi300, _ := os.Stat(p300)
-	if IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js without .ext must NOT be recognized through Tier-2")
+	if !IsConfirmedCacheFile(root, p300, true) {
+		t.Fatalf("300/js/app.js without .ext must be recognized through Tier-2 when root marker is present")
+	}
+	if IsConfirmedCacheFile(root, p300, false) {
+		t.Fatalf("300/js/app.js without .ext must NOT be recognized through Tier-2 when root marker is absent")
 	}
 	cacheRoot, err := os.OpenRoot(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cacheRoot.Close()
-	if isUnverifiedLegacyCacheCandidateInRoot(cacheRoot, "300/js/app.js", fi300, true) {
-		t.Fatalf("300/js/app.js without .ext must not be treated as unverified legacy candidate")
+	if !isUnverifiedLegacyCacheCandidateInRoot(cacheRoot, "300/js/app.js", fi300, true) {
+		t.Fatalf("300/js/app.js without .ext must be treated as unverified legacy candidate when root marker is present")
 	}
 
 	// 3. Negative: 300/js/app.js with mismatched .ext MUST NOT be recognized
@@ -652,5 +657,70 @@ func TestTier1NamespaceConfirmationMatrix(t *testing.T) {
 				t.Errorf("isConfirmedCacheFileInRoot(%s) = %v, want %v", tc.relPath, gotInRoot, tc.wantTier1)
 			}
 		})
+	}
+}
+
+// TestTier2_VersionFallbackSupportedWithoutExt verifies that Tier-2 legacy cache identification
+// properly supports bare version fallback directories (e.g. 300/js/app.js) without companion .ext
+// when a root marker is present, while strictly rejecting invalid categories, extensions, or HTML content.
+func TestTier2_VersionFallbackSupportedWithoutExt(t *testing.T) {
+	root := t.TempDir()
+	if err := EnsureRootMarker(root); err != nil {
+		t.Fatal(err)
+	}
+
+	validJS := []byte("console.log('gbf version asset');")
+	validPNG := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
+	invalidHTML := []byte("<!DOCTYPE html><html><body>Error</body></html>")
+
+	writeAsset := func(rel string, data []byte) string {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	// 1. Valid bare version directory asset (300/js/app.js) with root marker -> Confirmed Tier-2
+	p1 := writeAsset("300/js/app.js", validJS)
+	if !IsConfirmedCacheFile(root, p1, true) {
+		t.Fatalf("300/js/app.js without .ext must be confirmed under Tier-2 when root marker is present")
+	}
+	// Without root marker -> Unconfirmed
+	if IsConfirmedCacheFile(root, p1, false) {
+		t.Fatalf("300/js/app.js without .ext must NOT be confirmed when root marker is absent")
+	}
+
+	// 2. Valid image asset in version fallback (300/img/sp/quest/scene/ch1.png) -> Confirmed Tier-2
+	p2 := writeAsset("300/img/sp/quest/scene/ch1.png", validPNG)
+	if !IsConfirmedCacheFile(root, p2, true) {
+		t.Fatalf("300/img/sp/quest/scene/ch1.png without .ext must be confirmed under Tier-2")
+	}
+
+	// 3. Invalid category (300/personal/app.js) -> Unconfirmed (shape rejected)
+	p3 := writeAsset("300/personal/app.js", validJS)
+	if IsConfirmedCacheFile(root, p3, true) {
+		t.Fatalf("300/personal/app.js must be rejected due to invalid category")
+	}
+
+	// 4. Invalid extension (300/js/app.docx) -> Unconfirmed (extension rejected)
+	p4 := writeAsset("300/js/app.docx", validJS)
+	if IsConfirmedCacheFile(root, p4, true) {
+		t.Fatalf("300/js/app.docx must be rejected due to non-asset extension")
+	}
+
+	// 5. Arbitrary numeric folder (2026/photos/pic.png) -> Unconfirmed (photos is not a GBF category)
+	p5 := writeAsset("2026/photos/pic.png", validPNG)
+	if IsConfirmedCacheFile(root, p5, true) {
+		t.Fatalf("2026/photos/pic.png must be rejected because photos is not a valid GBF category")
+	}
+
+	// 6. Upstream HTML error (300/js/error.js containing HTML) -> Unconfirmed (magic check rejected)
+	p6 := writeAsset("300/js/error.js", invalidHTML)
+	if IsConfirmedCacheFile(root, p6, true) {
+		t.Fatalf("300/js/error.js containing HTML error must be rejected by magic check")
 	}
 }

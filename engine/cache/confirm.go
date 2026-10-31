@@ -375,19 +375,17 @@ func isTier2Candidate(slashRel string, hasRootMarker bool) (cleanKey string, ok 
 	if !shapeOK {
 		return "", false
 	}
-	clean := filepath.ToSlash(slashRel)
-	clean = strings.TrimPrefix(clean, "/")
-	segs := splitCleanSegments(clean)
-	if len(segs) > 0 && isPositiveVersionSegment(segs[0]) {
-		// Bare version fallback directory (e.g. 300/js/app.js) is Tier-1 only.
-		// Without companion .ext, it is never recognized as Tier-2.
-		return "", false
-	}
 	cleanLower := strings.ToLower(keyCand)
 	if !isAssetExtension(cleanLower) {
 		return "", false
 	}
 	return cleanLower, true
+}
+
+// IsTier2Candidate checks whether slashRel meets structural requirements for Tier-2 legacy cache:
+// root marker present + top-level shape valid + valid asset file extension.
+func IsTier2Candidate(slashRel string, hasRootMarker bool) (cleanKey string, ok bool) {
+	return isTier2Candidate(slashRel, hasRootMarker)
 }
 
 // isUnverifiedLegacyCacheCandidateInRoot identifies a structurally plausible legacy cache path

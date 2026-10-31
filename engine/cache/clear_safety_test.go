@@ -1388,7 +1388,7 @@ func TestClearAll_VersionFallbackSafety(t *testing.T) {
 		t.Fatalf("write user notes failed: %v", err)
 	}
 
-	// 4c. 300/js/no_ext.js (版本回退路径但无 .ext 元数据，Tier-2 严禁放行)
+	// 4c. 300/js/no_ext.js (版本回退路径但无 .ext 元数据，属于合法 Tier-2 历史素材)
 	noExtFile := filepath.Join(tmpDir, "300", "js", "no_ext.js")
 	if err := os.WriteFile(noExtFile, appCode, 0644); err != nil {
 		t.Fatalf("write no_ext file failed: %v", err)
@@ -1429,10 +1429,15 @@ func TestClearAll_VersionFallbackSafety(t *testing.T) {
 	}
 
 	// 断言 4: 未确认数字目录用户文件必须完整保留
-	for _, keep := range []string{userPhoto, userNotes, noExtFile} {
+	for _, keep := range []string{userPhoto, userNotes} {
 		if _, err := os.Stat(keep); err != nil {
 			t.Fatalf("expected unconfirmed user file %s in numeric directory to be preserved, got err: %v", keep, err)
 		}
+	}
+
+	// 断言 5: 300/js/no_ext.js 属于合法的 Tier-2 版本回退素材，在根标记存在时被 ClearAll 清理
+	if _, err := os.Stat(noExtFile); !os.IsNotExist(err) {
+		t.Fatalf("expected Tier-2 legacy version file %s to be deleted under root marker, got: %v", noExtFile, err)
 	}
 
 	if skipped == 0 {
