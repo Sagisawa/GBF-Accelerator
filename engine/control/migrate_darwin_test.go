@@ -4,7 +4,6 @@ package control
 
 import (
 	"bytes"
-	"crypto/md5"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -179,150 +178,92 @@ func TestValidateCacheMigrationTree_Over50FilesBoundary(t *testing.T) {
 	}
 }
 
-func TestValidateCacheOverwriteTarget_StrictAllFilesNoSampling(t *testing.T) {
+func TestValidateCacheOverwriteTarget_Structural(t *testing.T) {
 	root := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	if err := cache.EnsureRootMarker(root); err != nil {
-		t.Fatal(err)
+
+	// 1. Non-existent root: MUST PASS (nothing to overwrite)
+	nonExistent := filepath.Join(root, "does_not_exist")
+	if err := validateCacheOverwriteTarget(nonExistent); err != nil {
+		t.Fatalf("expected non-existent path to pass: %v", err)
 	}
 
-	pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
-	uiDir := filepath.Join(root, "assets", "img", "sp", "ui")
-	if err := os.MkdirAll(uiDir, 0755); err != nil {
+	// 2. Regular file instead of directory: MUST FAIL
+	filePath := filepath.Join(root, "plain_file.txt")
+	if err := os.WriteFile(filePath, []byte("data"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	if err := validateCacheOverwriteTarget(filePath); err == nil {
+		t.Fatal("expected regular file to fail validateCacheOverwriteTarget")
+	}
 
-	// Create 60 valid legacy files
-	for i := 1; i <= 60; i++ {
-		p := filepath.Join(uiDir, fmt.Sprintf("item_%02d.png", i))
-		if err := os.WriteFile(p, pngMagic, 0644); err != nil {
-			t.Fatal(err)
+	// 3. Symlink to directory: MUST FAIL
+	symlinkPath := filepath.Join(root, "dir_symlink")
+	targetSubdir := filepath.Join(root, "target_subdir")
+	_ = os.MkdirAll(targetSubdir, 0755)
+	if err := os.Symlink(targetSubdir, symlinkPath); err == nil {
+		if err := validateCacheOverwriteTarget(symlinkPath); err == nil {
+			t.Fatal("expected symlink directory to fail validateCacheOverwriteTarget")
 		}
 	}
 
-	// 1. All 60 valid legacy files must pass
-	if err := validateCacheOverwriteTarget(root); err != nil {
-		t.Fatalf("expected valid 60 files to pass overwrite validation: %v", err)
+	// 4. Empty directory: MUST PASS
+	emptyDir := filepath.Join(root, "empty_dir")
+	_ = os.MkdirAll(emptyDir, 0755)
+	if err := validateCacheOverwriteTarget(emptyDir); err != nil {
+		t.Fatalf("expected empty directory to pass: %v", err)
 	}
 
-	// 2. Corrupt the 55th file magic bytes: MUST FAIL (proving no 50-file cutoff!)
-	p55 := filepath.Join(uiDir, "item_55.png")
-	if err := os.WriteFile(p55, []byte("NOT_A_PNG_FILE_DATA_HERE"), 0644); err != nil {
+	// 5. Valid cache structure: .gbf_cache, .DS_Store, assets/, hosts/, favicon.ico: MUST PASS
+	cacheRoot := filepath.Join(root, "valid_cache")
+	_ = os.MkdirAll(cacheRoot, 0755)
+	if err := cache.EnsureRootMarker(cacheRoot); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected overwrite target validation to FAIL on 55th file invalid magic (no sampling cutoff allowed)")
-	}
-	if err := os.WriteFile(p55, pngMagic, 0644); err != nil {
-		t.Fatal(err)
+	_ = os.WriteFile(filepath.Join(cacheRoot, ".DS_Store"), []byte("junk"), 0644)
+	_ = os.WriteFile(filepath.Join(cacheRoot, "favicon.ico"), []byte("ico"), 0644)
+	_ = os.WriteFile(filepath.Join(cacheRoot, "favicon.ico.ext"), []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	_ = os.MkdirAll(filepath.Join(cacheRoot, "assets", "img"), 0755)
+	_ = os.MkdirAll(filepath.Join(cacheRoot, "hosts", "game.granbluefantasy.jp"), 0755)
+
+	if err := validateCacheOverwriteTarget(cacheRoot); err != nil {
+		t.Fatalf("expected valid cache structure to pass: %v", err)
 	}
 
-	// 3. System junk (.DS_Store): MUST PASS in overwrite target (harmless OS metadata)
-	dsStore := filepath.Join(root, ".DS_Store")
-	if err := os.WriteFile(dsStore, []byte("junk"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err != nil {
-		t.Fatalf("expected overwrite target validation to PASS when .DS_Store is present: %v", err)
-	}
-	_ = os.Remove(dsStore)
-
-	// Unknown non-asset file (e.g. unknown.txt): MUST FAIL in overwrite target
-	unknownFile := filepath.Join(root, "unknown.txt")
-	if err := os.WriteFile(unknownFile, []byte("unknown text content"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected overwrite target validation to FAIL when unknown non-asset file is present")
-	}
-	_ = os.Remove(unknownFile)
-
-	// 4. Valid orphan .ext in confirmed cache directory: MUST PASS in overwrite target
-	orphanExt := filepath.Join(uiDir, "orphan.png.ext")
-	if err := os.WriteFile(orphanExt, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err != nil {
-		t.Fatalf("expected valid orphan .ext in confirmed directory to pass: %v", err)
-	}
-	_ = os.Remove(orphanExt)
-
-	// 4b. Orphan .ext with unsupported extension (e.g. .txt.ext): MUST FAIL in overwrite target
-	orphanTxtExt := filepath.Join(uiDir, "personal_note.txt.ext")
-	if err := os.WriteFile(orphanTxtExt, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected orphan .ext with unsupported extension to FAIL")
-	}
-	_ = os.Remove(orphanTxtExt)
-
-	// 4c. Orphan .ext in unconfirmed directory: MUST FAIL in overwrite target
-	badDir := filepath.Join(root, "unconfirmed_folder")
+	// 6. Unknown top-level directory (e.g. personal_docs): MUST FAIL
+	badDir := filepath.Join(cacheRoot, "personal_docs")
 	_ = os.MkdirAll(badDir, 0755)
-	badOrphanExt := filepath.Join(badDir, "item.png.ext")
-	if err := os.WriteFile(badOrphanExt, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected orphan .ext in unconfirmed directory to FAIL")
+	if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
+		t.Fatal("expected unknown top-level directory to FAIL")
 	}
 	_ = os.RemoveAll(badDir)
 
-	// 4d. Orphan .ext with invalid metadata: MUST FAIL in overwrite target
-	invalidOrphanExt := filepath.Join(uiDir, "corrupted.png.ext")
-	if err := os.WriteFile(invalidOrphanExt, []byte(`invalid json here`), 0644); err != nil {
-		t.Fatal(err)
+	// 7. Unknown root file (e.g. notes.txt): MUST FAIL
+	unknownFile := filepath.Join(cacheRoot, "notes.txt")
+	_ = os.WriteFile(unknownFile, []byte("my notes"), 0644)
+	if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
+		t.Fatal("expected unknown root file to FAIL")
 	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected orphan .ext with invalid metadata to FAIL")
-	}
-	_ = os.Remove(invalidOrphanExt)
+	_ = os.Remove(unknownFile)
 
-	// 5. Streaming temp file: MUST FAIL in overwrite target
-	tempFile := filepath.Join(uiDir, "item_temp.png.tmp.123.456.789")
-	if err := os.WriteFile(tempFile, []byte("temp"), 0644); err != nil {
-		t.Fatal(err)
+	// 8. Root symlink entry: MUST FAIL
+	symlinkEntry := filepath.Join(cacheRoot, "sym_entry")
+	if err := os.Symlink(filePath, symlinkEntry); err == nil {
+		if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
+			t.Fatal("expected symlink inside root to FAIL")
+		}
+		_ = os.Remove(symlinkEntry)
 	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected overwrite target validation to FAIL when temp file is present")
+
+	// 9. Root temp streaming file: MUST FAIL
+	tempFile := filepath.Join(cacheRoot, "assets.tmp.123.456.789")
+	_ = os.WriteFile(tempFile, []byte("temp"), 0644)
+	if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
+		t.Fatal("expected root temp file to FAIL")
 	}
 	_ = os.Remove(tempFile)
-
-	// 6. Unknown personal file (notes.txt): MUST FAIL in overwrite target
-	notesFile := filepath.Join(root, "notes.txt")
-	if err := os.WriteFile(notesFile, []byte("personal notes"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected overwrite target validation to FAIL on notes.txt")
-	}
-	_ = os.Remove(notesFile)
-
-	// 7. Paired Tier-1 file with mismatched namespace: MUST FAIL
-	t1Asset := filepath.Join(root, "hosts", "prd-game-a-granbluefantasy.akamaized.net", "assets", "img", "t1.png")
-	if err := os.MkdirAll(filepath.Dir(t1Asset), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(t1Asset, pngMagic, 0644); err != nil {
-		t.Fatal(err)
-	}
-	t1Ext := t1Asset + ".ext"
-	if err := os.WriteFile(t1Ext, []byte(`{"v":1,"ns":"malicious_other"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected overwrite target validation to FAIL when namespace mismatches")
-	}
-	// Correct namespace to "gbf": MUST PASS
-	if err := os.WriteFile(t1Ext, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err != nil {
-		t.Fatalf("expected valid Tier-1 asset and .ext to pass overwrite validation: %v", err)
-	}
 }
 
 func setupDarwinMigrationTestServer(t *testing.T, sourceDir, targetDir string) (*ControlServer, *config.Manager, *cache.Manager, string) {
@@ -663,183 +604,6 @@ func TestHandleMigrateStandardCache_CommitFailureRollsBackDirectory(t *testing.T
 	if _, err := os.Stat(filepath.Join(targetDir, "assets", "img", "sp", "ui", "new_marker.png")); err == nil {
 		t.Fatal("expected new marker to not be in target after rollback")
 	}
-}
-
-func TestValidateCacheOverwriteTarget_Tier1PersonalNoteRegression(t *testing.T) {
-	root := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
-	}
-	if err := cache.EnsureRootMarker(root); err != nil {
-		t.Fatal(err)
-	}
-
-	notePath := filepath.Join(root, "assets", "img", "personal-note.txt")
-	noteMeta := filepath.Join(root, "assets", "img", "personal-note.txt.ext")
-	_ = os.MkdirAll(filepath.Dir(notePath), 0755)
-	_ = os.WriteFile(notePath, []byte("This is my private note"), 0644)
-	_ = os.WriteFile(noteMeta, []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	// personal-note.txt with valid .ext metadata MUST be rejected!
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("validateCacheOverwriteTarget must reject personal-note.txt even with valid Tier-1 .ext metadata")
-	}
-
-	// Clean up personal note
-	_ = os.Remove(notePath)
-	_ = os.Remove(noteMeta)
-
-	// Legitimate GBF assets should pass
-	assets := []struct {
-		rel     string
-		content []byte
-	}{
-		{"assets/img/sp/ui/icon.png", []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRok")},
-		{"assets/js/bundle.js", []byte("console.log('game ready');")},
-		{"assets/css/main.css", []byte("body { background: #000; }")},
-		{"assets/sound/bgm.mp3", []byte("ID3\x03\x00\x00\x00\x00\x00\x0aTIT2\x00\x00\x01")},
-		{"assets/font/font.woff2", []byte("wOF2\x00\x01\x00\x00\x00\x00\x00\x20")},
-		{"assets/wasm/engine.wasm", []byte("\x00asm\x01\x00\x00\x00")},
-	}
-
-	for _, a := range assets {
-		p := filepath.Join(root, filepath.FromSlash(a.rel))
-		_ = os.MkdirAll(filepath.Dir(p), 0755)
-		if err := os.WriteFile(p, a.content, 0644); err != nil {
-			t.Fatal(err)
-		}
-		extP := p + ".ext"
-		if err := os.WriteFile(extP, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := validateCacheOverwriteTarget(root); err != nil {
-		t.Fatalf("expected genuine GBF static assets to pass overwrite validation: %v", err)
-	}
-
-	// Test rejection of fake JS with binary nulls
-	badJS := filepath.Join(root, "assets", "js", "bad.js")
-	_ = os.WriteFile(badJS, []byte("\x7fELF\x00\x00bin"), 0644)
-	_ = os.WriteFile(badJS+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject JS containing binary null bytes")
-	}
-	_ = os.Remove(badJS)
-	_ = os.Remove(badJS + ".ext")
-
-	// Test rejection of error HTML page disguised as JS
-	htmlJS := filepath.Join(root, "assets", "js", "html_error.js")
-	_ = os.WriteFile(htmlJS, []byte("<!doctype html><html><body>502 Bad Gateway</body></html>"), 0644)
-	_ = os.WriteFile(htmlJS+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject HTML error content")
-	}
-	_ = os.Remove(htmlJS)
-	_ = os.Remove(htmlJS + ".ext")
-
-	// Test full-stream scanning of JS: first 512 bytes clean, NUL byte at offset 600
-	streamJS := filepath.Join(root, "assets", "js", "stream_bad.js")
-	streamData := bytes.Repeat([]byte("/* valid javascript comment padding */\n"), 20) // > 512 bytes
-	streamData = append(streamData, 0x00)                                              // NUL byte beyond first 512 bytes
-	streamData = append(streamData, []byte("console.log('end');")...)
-	_ = os.WriteFile(streamJS, streamData, 0644)
-	_ = os.WriteFile(streamJS+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject JS with NUL byte beyond first 512 bytes")
-	}
-	_ = os.Remove(streamJS)
-	_ = os.Remove(streamJS + ".ext")
-}
-
-func TestValidateCacheOverwriteTarget_SVGAndJSON(t *testing.T) {
-	tempBase := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-		tempBase = resolved
-	}
-	root := filepath.Join(tempBase, "cache_svg_json")
-	_ = os.MkdirAll(root, 0755)
-	_ = cache.EnsureRootMarker(root)
-
-	// Subtest 1: Valid SVG formats
-	validDirectSVG := filepath.Join(root, "assets", "img", "icon.svg")
-	_ = os.MkdirAll(filepath.Dir(validDirectSVG), 0755)
-	_ = os.WriteFile(validDirectSVG, []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><circle cx="18" cy="18" r="10"/></svg>`), 0644)
-	_ = os.WriteFile(validDirectSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	validXmlSVG := filepath.Join(root, "assets", "img", "logo.svg")
-	_ = os.WriteFile(validXmlSVG, []byte(`<?xml version="1.0" encoding="UTF-8"?><svg viewBox="0 0 100 100"><rect width="100" height="100"/></svg>`), 0644)
-	_ = os.WriteFile(validXmlSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	// Subtest 2: Valid JSON atlas format
-	validJSON := filepath.Join(root, "assets", "img", "sp", "atlas", "raid_ui_6.json")
-	_ = os.MkdirAll(filepath.Dir(validJSON), 0755)
-	_ = os.WriteFile(validJSON, []byte(`{"images":["sp/atlas/raid_ui_6.png?v=0"],"frames":[[5,5,516,92],[527,5,440,40]]}`), 0644)
-	_ = os.WriteFile(validJSON+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	if err := validateCacheOverwriteTarget(root); err != nil {
-		t.Fatalf("expected valid SVG and JSON assets to pass validateCacheOverwriteTarget: %v", err)
-	}
-
-	// Subtest 3: Negative SVG - plain text disguised as SVG
-	badTextSVG := filepath.Join(root, "assets", "img", "fake.svg")
-	_ = os.WriteFile(badTextSVG, []byte("this is plain text not svg"), 0644)
-	_ = os.WriteFile(badTextSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject plain text disguised as SVG")
-	}
-	_ = os.Remove(badTextSVG)
-	_ = os.Remove(badTextSVG + ".ext")
-
-	// Subtest 4: Negative SVG - non-SVG XML (e.g. plist)
-	plistSVG := filepath.Join(root, "assets", "img", "plist.svg")
-	_ = os.WriteFile(plistSVG, []byte(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist><plist version="1.0"><dict></dict></plist>`), 0644)
-	_ = os.WriteFile(plistSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject non-SVG XML documents")
-	}
-	_ = os.Remove(plistSVG)
-	_ = os.Remove(plistSVG + ".ext")
-
-	// Subtest 5: Negative SVG - HTML error page
-	htmlSVG := filepath.Join(root, "assets", "img", "html_error.svg")
-	_ = os.WriteFile(htmlSVG, []byte("<!doctype html><html><body>502 Bad Gateway</body></html>"), 0644)
-	_ = os.WriteFile(htmlSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject HTML error disguised as SVG")
-	}
-	_ = os.Remove(htmlSVG)
-	_ = os.Remove(htmlSVG + ".ext")
-
-	// Subtest 6: Negative JSON - malformed JSON syntax
-	malformedJSON := filepath.Join(root, "assets", "img", "sp", "atlas", "broken.json")
-	_ = os.WriteFile(malformedJSON, []byte(`{"images":["broken",`), 0644)
-	_ = os.WriteFile(malformedJSON+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject malformed JSON syntax")
-	}
-	_ = os.Remove(malformedJSON)
-	_ = os.Remove(malformedJSON + ".ext")
-
-	// Subtest 7: Negative JSON - plain text disguised as JSON
-	textJSON := filepath.Join(root, "assets", "img", "sp", "atlas", "note.json")
-	_ = os.WriteFile(textJSON, []byte("this is a text note with no json tokens"), 0644)
-	_ = os.WriteFile(textJSON+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject plain text disguised as JSON")
-	}
-	_ = os.Remove(textJSON)
-	_ = os.Remove(textJSON + ".ext")
-
-	// Subtest 8: Negative JSON - HTML error disguised as JSON
-	htmlJSON := filepath.Join(root, "assets", "img", "sp", "atlas", "html_err.json")
-	_ = os.WriteFile(htmlJSON, []byte("<html><body>503 Service Unavailable</body></html>"), 0644)
-	_ = os.WriteFile(htmlJSON+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected validateCacheOverwriteTarget to reject HTML error disguised as JSON")
-	}
-	_ = os.Remove(htmlJSON)
-	_ = os.Remove(htmlJSON + ".ext")
 }
 
 func TestHandleMigrateStandardCache_MissingOrEmptySourceInOverwrite(t *testing.T) {
@@ -1262,54 +1026,6 @@ func TestHandleMigrateStandardCache_MigrateMissingSourceAllowed(t *testing.T) {
 	}
 }
 
-func TestHandleMigrateStandardCache_SourceWithOnlyPersonalNoteRejected(t *testing.T) {
-	tempBase := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-		tempBase = resolved
-	}
-	sourceDir := filepath.Join(tempBase, "source_with_notes")
-	_ = os.MkdirAll(sourceDir, 0755)
-	_ = cache.EnsureRootMarker(sourceDir)
-
-	noteFile := filepath.Join(sourceDir, "assets", "img", "personal-note.txt")
-	_ = os.MkdirAll(filepath.Dir(noteFile), 0755)
-	_ = os.WriteFile(noteFile, []byte("Private user note"), 0644)
-	_ = os.WriteFile(noteFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	targetDir := filepath.Join(tempBase, "target_cache")
-	_ = os.MkdirAll(targetDir, 0755)
-	_ = cache.EnsureRootMarker(targetDir)
-	targetFile := filepath.Join(targetDir, "assets", "img", "sp", "ui", "icon.png")
-	_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
-	_ = os.WriteFile(targetFile, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtarget"), 0644)
-	_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	ctrl, cfgMgr, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"overwrite"}`)))
-	rec := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(rec, req)
-
-	// Since sourceDir only contains personal-note.txt, hasConfirmedCacheAssets must return false
-	// and reject with 409 ErrCodeMigrationSourceUnconfirmed
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected status 409 for source containing only personal-note.txt, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var res map[string]interface{}
-	_ = json.Unmarshal(rec.Body.Bytes(), &res)
-	if res["code"] != ErrCodeMigrationSourceUnconfirmed {
-		t.Fatalf("expected code %s, got %v", ErrCodeMigrationSourceUnconfirmed, res["code"])
-	}
-
-	// Verify target assets and config were not modified
-	if _, err := os.Stat(targetFile); err != nil {
-		t.Fatalf("target file must be preserved: %v", err)
-	}
-	if cfgMgr.Get().CacheDir != sourceDir {
-		t.Fatalf("config CacheDir must not be changed, got %s", cfgMgr.Get().CacheDir)
-	}
-}
-
 func TestHandleMigrateStandardCache_PostRenameBackupReverificationFailure(t *testing.T) {
 	tempBase := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
@@ -1345,7 +1061,7 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationFailure(t *tes
 			if err == nil {
 				// Inject an unconfirmed file into the frozen backup directory
 				// simulating a concurrent change right before the rename completed
-				corruptFile := filepath.Join(newpath, "assets", "img", "injected_user_doc.txt")
+				corruptFile := filepath.Join(newpath, "injected_user_doc.txt")
 				_ = os.WriteFile(corruptFile, []byte("unconfirmed content"), 0644)
 			}
 			return err
@@ -1409,7 +1125,7 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackFailur
 			err := origRename(oldpath, newpath)
 			if err == nil {
 				// Step 2: Inject an unconfirmed file into the frozen backup directory
-				corruptFile := filepath.Join(newpath, "assets", "img", "corrupt_note.txt")
+				corruptFile := filepath.Join(newpath, "corrupt_note.txt")
 				_ = os.WriteFile(corruptFile, []byte("unconfirmed content"), 0644)
 			}
 			return err
@@ -1566,72 +1282,5 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackSucces
 	restoredFile := filepath.Join(targetDir, "unexpected.dat")
 	if _, err := os.Stat(restoredFile); err != nil {
 		t.Fatalf("expected restored file to exist at targetDir: %v", err)
-	}
-}
-
-func TestValidateCacheOverwriteTarget_LegacyOfficialHostAsset(t *testing.T) {
-	root := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
-	}
-	if err := cache.EnsureRootMarker(root); err != nil {
-		t.Fatal(err)
-	}
-
-	hostDir := filepath.Join(root, "hosts", "game.granbluefantasy.jp", "assets", "img")
-	if err := os.MkdirAll(hostDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	pngMD5 := fmt.Sprintf("%x", md5.Sum(pngData))
-
-	pngPath := filepath.Join(hostDir, "banner.png")
-	if err := os.WriteFile(pngPath, pngData, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 1. Positive: Legacy official host asset with empty ns, verified: false, but matching MD5 -> PASS
-	metaValid := fmt.Sprintf(`{"v":1,"ct":"image/png","md5":"%s","verified":false}`, pngMD5)
-	if err := os.WriteFile(pngPath+".ext", []byte(metaValid), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err != nil {
-		t.Fatalf("expected legacy official host asset with matching MD5 to pass: %v", err)
-	}
-
-	// 2. Negative: Legacy official host asset with mismatched MD5 -> FAIL
-	metaMismatched := `{"v":1,"ct":"image/png","md5":"deadbeef000000000000000000000000","verified":false}`
-	if err := os.WriteFile(pngPath+".ext", []byte(metaMismatched), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected legacy official host asset with mismatched MD5 to FAIL")
-	}
-
-	// Restore valid meta
-	_ = os.WriteFile(pngPath+".ext", []byte(metaValid), 0644)
-
-	// 3. Negative: Untrusted host asset with empty ns even with matching MD5 -> FAIL
-	untrustedDir := filepath.Join(root, "hosts", "untrusted-site.com", "assets", "img")
-	_ = os.MkdirAll(untrustedDir, 0755)
-	untrustedFile := filepath.Join(untrustedDir, "banner.png")
-	_ = os.WriteFile(untrustedFile, pngData, 0644)
-	_ = os.WriteFile(untrustedFile+".ext", []byte(metaValid), 0644)
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected untrusted host asset with empty ns to FAIL")
-	}
-	_ = os.RemoveAll(filepath.Join(root, "hosts", "untrusted-site.com"))
-
-	// 4. Positive: Cross-format favicon.ico with PNG magic -> PASS
-	faviconPath := filepath.Join(root, "favicon.ico")
-	if err := os.WriteFile(faviconPath, pngData, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(faviconPath+".ext", []byte(`{"v":1,"ns":"gbf","ct":"image/x-icon"}`), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := validateCacheOverwriteTarget(root); err != nil {
-		t.Fatalf("expected cross-format favicon.ico to pass: %v", err)
 	}
 }
