@@ -218,15 +218,25 @@ func TestValidateCacheOverwriteTarget_StrictAllFilesNoSampling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 3. System junk (.DS_Store): MUST FAIL in overwrite target
+	// 3. System junk (.DS_Store): MUST PASS in overwrite target (harmless OS metadata)
 	dsStore := filepath.Join(root, ".DS_Store")
 	if err := os.WriteFile(dsStore, []byte("junk"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected overwrite target validation to FAIL when .DS_Store is present")
+	if err := validateCacheOverwriteTarget(root); err != nil {
+		t.Fatalf("expected overwrite target validation to PASS when .DS_Store is present: %v", err)
 	}
 	_ = os.Remove(dsStore)
+
+	// Unknown non-asset file (e.g. unknown.txt): MUST FAIL in overwrite target
+	unknownFile := filepath.Join(root, "unknown.txt")
+	if err := os.WriteFile(unknownFile, []byte("unknown text content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected overwrite target validation to FAIL when unknown non-asset file is present")
+	}
+	_ = os.Remove(unknownFile)
 
 	// 4. Orphan .ext: MUST FAIL in overwrite target
 	orphanExt := filepath.Join(uiDir, "orphan.png.ext")

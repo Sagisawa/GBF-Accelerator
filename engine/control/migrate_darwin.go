@@ -605,8 +605,14 @@ func validateCacheOverwriteTarget(root string) error {
 			return nil
 		}
 
-		// Strictly reject system junk, temp streaming files, and quarantine files in overwrite target
-		if config.IsSystemJunk(entry.Name()) || cache.IsAcceleratorTempFile(slashRel) || cache.IsAcceleratorQuarantineFile(slashRel) {
+		// System junk (e.g. .DS_Store, Thumbs.db, desktop.ini) is harmless OS metadata.
+		// Allow it in overwrite target, matching normal cache scanning and validateCacheMigrationTree.
+		if config.IsSystemJunk(entry.Name()) {
+			return nil
+		}
+
+		// Strictly reject temp streaming files and quarantine files in overwrite target
+		if cache.IsAcceleratorTempFile(slashRel) || cache.IsAcceleratorQuarantineFile(slashRel) {
 			return fmt.Errorf("目标目录包含未纳入严格确权的杂项或残留文件: %s", rel)
 		}
 
@@ -614,6 +620,9 @@ func validateCacheOverwriteTarget(root string) error {
 		if strings.HasSuffix(slashRel, ".ext") {
 			assetPath := strings.TrimSuffix(path, ".ext")
 			assetSlashRel := strings.TrimSuffix(slashRel, ".ext")
+			if config.IsSystemJunk(filepath.Base(assetPath)) {
+				return nil
+			}
 			if !isSupportedOverwriteAssetExtension(assetSlashRel) {
 				return fmt.Errorf("目标目录元数据指向不受支持的素材扩展名: %s", rel)
 			}
@@ -645,12 +654,16 @@ func validateCacheOverwriteTarget(root string) error {
 			if rErr != nil {
 				return fmt.Errorf("目标目录包含无法读取的元数据: %s.ext", rel)
 			}
-			if _, ok := cache.VerifyTier1Meta(slashRel, metaBytes); !ok {
+			meta, ok := cache.VerifyTier1Meta(slashRel, metaBytes)
+			if !ok {
 				return fmt.Errorf("目标目录包含无法确认归属的文件: %s", rel)
 			}
-			// Validate content format / magic bytes consistency
-			if err := verifyOverwriteAssetContent(path, slashRel); err != nil {
-				return fmt.Errorf("目标目录素材内容与格式校验不一致: %v", err)
+			// If asset has Content-Encoding: br (Brotli), it is a compressed binary stream
+			// recorded by the proxy and verified by Tier-1 metadata.
+			if meta.ContentEncoding != "br" {
+				if err := verifyOverwriteAssetContent(path, slashRel); err != nil {
+					return fmt.Errorf("目标目录素材内容与格式校验不一致: %v", err)
+				}
 			}
 			return nil
 		}
