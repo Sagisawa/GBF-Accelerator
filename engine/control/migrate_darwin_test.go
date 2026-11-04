@@ -692,6 +692,21 @@ func TestValidateCacheOverwriteTarget_Tier1PersonalNoteRegression(t *testing.T) 
 	if err := validateCacheOverwriteTarget(root); err == nil {
 		t.Fatal("expected validateCacheOverwriteTarget to reject HTML error content")
 	}
+	_ = os.Remove(htmlJS)
+	_ = os.Remove(htmlJS + ".ext")
+
+	// Test full-stream scanning of JS: first 512 bytes clean, NUL byte at offset 600
+	streamJS := filepath.Join(root, "assets", "js", "stream_bad.js")
+	streamData := bytes.Repeat([]byte("/* valid javascript comment padding */\n"), 20) // > 512 bytes
+	streamData = append(streamData, 0x00)                                              // NUL byte beyond first 512 bytes
+	streamData = append(streamData, []byte("console.log('end');")...)
+	_ = os.WriteFile(streamJS, streamData, 0644)
+	_ = os.WriteFile(streamJS+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject JS with NUL byte beyond first 512 bytes")
+	}
+	_ = os.Remove(streamJS)
+	_ = os.Remove(streamJS + ".ext")
 }
 
 func TestHandleMigrateStandardCache_MissingOrEmptySourceInOverwrite(t *testing.T) {
@@ -1085,5 +1100,142 @@ func TestResidualMigrationBackups_FindAndRecover(t *testing.T) {
 	// Verify backup2 is moved (no longer exists)
 	if _, err := os.Stat(backup2); !os.IsNotExist(err) {
 		t.Fatalf("expected backup2 to be moved, but still exists")
+	}
+}
+
+func TestHandleMigrateStandardCache_MigrateMissingSourceAllowed(t *testing.T) {
+	tempBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+		tempBase = resolved
+	}
+	sourceDir := filepath.Join(tempBase, "non_existent_source")
+	targetDir := filepath.Join(tempBase, "target_cache")
+
+	ctrl, cfgMgr, cacheMgr, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+	_ = os.RemoveAll(sourceDir) // Ensure source directory does not exist
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"migrate"}`)))
+	rec := httptest.NewRecorder()
+	ctrl.handleMigrateStandardCache(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for migrate with missing source, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if cfgMgr.Get().CacheDir != targetDir {
+		t.Fatalf("expected config CacheDir to be %s, got %s", targetDir, cfgMgr.Get().CacheDir)
+	}
+	if cacheMgr.GetCacheBase() != targetDir {
+		t.Fatalf("expected runtime cacheBase to be %s, got %s", targetDir, cacheMgr.GetCacheBase())
+	}
+}
+
+func TestHandleMigrateStandardCache_SourceWithOnlyPersonalNoteRejected(t *testing.T) {
+	tempBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+		tempBase = resolved
+	}
+	sourceDir := filepath.Join(tempBase, "source_with_notes")
+	_ = os.MkdirAll(sourceDir, 0755)
+	_ = cache.EnsureRootMarker(sourceDir)
+
+	noteFile := filepath.Join(sourceDir, "assets", "img", "personal-note.txt")
+	_ = os.MkdirAll(filepath.Dir(noteFile), 0755)
+	_ = os.WriteFile(noteFile, []byte("Private user note"), 0644)
+	_ = os.WriteFile(noteFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	targetDir := filepath.Join(tempBase, "target_cache")
+	_ = os.MkdirAll(targetDir, 0755)
+	_ = cache.EnsureRootMarker(targetDir)
+	targetFile := filepath.Join(targetDir, "assets", "img", "sp", "ui", "icon.png")
+	_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
+	_ = os.WriteFile(targetFile, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtarget"), 0644)
+	_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	ctrl, cfgMgr, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"overwrite"}`)))
+	rec := httptest.NewRecorder()
+	ctrl.handleMigrateStandardCache(rec, req)
+
+	// Since sourceDir only contains personal-note.txt, hasConfirmedCacheAssets must return false
+	// and reject with 409 ErrCodeMigrationSourceUnconfirmed
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409 for source containing only personal-note.txt, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]interface{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res["code"] != ErrCodeMigrationSourceUnconfirmed {
+		t.Fatalf("expected code %s, got %v", ErrCodeMigrationSourceUnconfirmed, res["code"])
+	}
+
+	// Verify target assets and config were not modified
+	if _, err := os.Stat(targetFile); err != nil {
+		t.Fatalf("target file must be preserved: %v", err)
+	}
+	if cfgMgr.Get().CacheDir != sourceDir {
+		t.Fatalf("config CacheDir must not be changed, got %s", cfgMgr.Get().CacheDir)
+	}
+}
+
+func TestHandleMigrateStandardCache_PostRenameBackupReverificationFailure(t *testing.T) {
+	tempBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+		tempBase = resolved
+	}
+	pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
+
+	sourceDir := filepath.Join(tempBase, "source_cache")
+	_ = os.MkdirAll(sourceDir, 0755)
+	_ = cache.EnsureRootMarker(sourceDir)
+	srcFile := filepath.Join(sourceDir, "assets", "img", "sp", "ui", "icon.png")
+	_ = os.MkdirAll(filepath.Dir(srcFile), 0755)
+	_ = os.WriteFile(srcFile, pngMagic, 0644)
+	_ = os.WriteFile(srcFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	targetDir := filepath.Join(tempBase, "target_cache")
+	_ = os.MkdirAll(targetDir, 0755)
+	_ = cache.EnsureRootMarker(targetDir)
+	targetFile := filepath.Join(targetDir, "assets", "img", "sp", "ui", "old.png")
+	_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
+	_ = os.WriteFile(targetFile, pngMagic, 0644)
+	_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+	origRename := renameFunc
+	renameCalls := 0
+	renameFunc = func(oldpath, newpath string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			// First rename: targetDir -> oldBackupDir
+			err := origRename(oldpath, newpath)
+			if err == nil {
+				// Inject an unconfirmed file into the frozen backup directory
+				// simulating a concurrent change right before the rename completed
+				corruptFile := filepath.Join(newpath, "assets", "img", "injected_user_doc.txt")
+				_ = os.WriteFile(corruptFile, []byte("unconfirmed content"), 0644)
+			}
+			return err
+		}
+		return origRename(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameFunc = origRename })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"overwrite"}`)))
+	rec := httptest.NewRecorder()
+	ctrl.handleMigrateStandardCache(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409 when backup re-verification fails, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]interface{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	if res["code"] != ErrCodeMigrationTargetUnconfirmed {
+		t.Fatalf("expected code %s, got %v", ErrCodeMigrationTargetUnconfirmed, res["code"])
+	}
+
+	// Target directory must have been rolled back to targetDir
+	if _, err := os.Stat(targetFile); err != nil {
+		t.Fatalf("expected targetFile %s to exist after rollback: %v", targetFile, err)
 	}
 }

@@ -384,15 +384,33 @@ func verifyOverwriteAssetContent(filePath, slashRel string) error {
 		if bytes.IndexByte(sample, 0x00) != -1 {
 			return fmt.Errorf("JS/CSS 脚本或样式文件包含二进制空字符: %s", slashRel)
 		}
+		// Full stream scan for any remaining NUL bytes
+		var restBuf [32 * 1024]byte
+		for {
+			rn, rErr := f.Read(restBuf[:])
+			if rn > 0 && bytes.IndexByte(restBuf[:rn], 0x00) != -1 {
+				return fmt.Errorf("JS/CSS 脚本或样式文件包含二进制空字符: %s", slashRel)
+			}
+			if rErr != nil {
+				if rErr == io.EOF {
+					break
+				}
+				return fmt.Errorf("读取 JS/CSS 内容失败: %w", rErr)
+			}
+		}
 	default:
 		return fmt.Errorf("不支持进行覆盖验证的素材类型: %s", slashRel)
 	}
 	return nil
 }
 
-// hasConfirmedCacheAssets checks whether dir contains at least one confirmed non-empty cache asset file.
+// hasConfirmedCacheAssets checks whether dir contains at least one confirmed valid GBF cache asset.
+// It verifies both the asset extension whitelist and content consistency, ensuring non-GBF files
+// (e.g. personal-note.txt with companion .ext) are not falsely recognized as valid assets.
 func hasConfirmedCacheAssets(dir string) (bool, error) {
+	hasMarker := cache.HasRootMarker(dir)
 	hasAssets := false
+
 	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -409,6 +427,7 @@ func hasConfirmedCacheAssets(dir string) (bool, error) {
 		}
 		slashRel := filepath.ToSlash(rel)
 		baseName := entry.Name()
+
 		if slashRel == cache.RootMarkerFileName || config.IsSystemJunk(baseName) {
 			return nil
 		}
@@ -418,13 +437,43 @@ func hasConfirmedCacheAssets(dir string) (bool, error) {
 		if strings.HasSuffix(slashRel, ".ext") {
 			return nil
 		}
+
 		info, err := entry.Info()
-		if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
-			hasAssets = true
-			return filepath.SkipAll
+		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+			return nil
 		}
+
+		// Must have a supported GBF asset extension
+		if !isSupportedOverwriteAssetExtension(slashRel) {
+			return nil
+		}
+
+		// Tier-1: Paired metadata check
+		extPath := path + ".ext"
+		if extFi, extErr := os.Lstat(extPath); extErr == nil && extFi.Mode().IsRegular() {
+			metaBytes, rErr := os.ReadFile(extPath)
+			if rErr == nil {
+				if _, ok := cache.VerifyTier1Meta(slashRel, metaBytes); ok {
+					if verifyOverwriteAssetContent(path, slashRel) == nil {
+						hasAssets = true
+						return filepath.SkipAll
+					}
+				}
+			}
+			return nil
+		}
+
+		// Tier-2: Legacy file without .ext (root marker + top level shape + magic bytes)
+		if cleanLower, ok := cache.IsTier2Candidate(slashRel, hasMarker); ok {
+			if verifyOverwriteAssetContent(path, cleanLower) == nil {
+				hasAssets = true
+				return filepath.SkipAll
+			}
+		}
+
 		return nil
 	})
+
 	return hasAssets, err
 }
 
@@ -832,32 +881,31 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 	}
 
 	sourceInfo, statErr := os.Lstat(sourceDir)
-	if statErr != nil {
-		msg := fmt.Sprintf("源缓存目录不存在或无法访问: %v", statErr)
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-		})
-		return
-	}
-	if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
-		msg := "迁移源必须是普通目录，拒绝处理符号链接或文件"
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-		})
-		return
-	}
-	if err := validateCacheMigrationTree(sourceDir); err != nil {
-		msg := fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err)
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-			"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-		})
-		return
-	}
-
 	if reqMode == "overwrite" {
+		if statErr != nil {
+			msg := fmt.Sprintf("源缓存目录不存在或无法访问: %v", statErr)
+			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
+			})
+			return
+		}
+		if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
+			msg := "迁移源必须是普通目录，拒绝处理符号链接或文件"
+			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
+			})
+			return
+		}
+		if err := validateCacheMigrationTree(sourceDir); err != nil {
+			msg := fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err)
+			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
+			})
+			return
+		}
 		hasAssets, err := hasConfirmedCacheAssets(sourceDir)
 		if err != nil {
 			msg := fmt.Sprintf("检查源缓存内容失败: %v", err)
@@ -872,6 +920,32 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
 			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
+			})
+			return
+		}
+	} else {
+		// In "migrate" mode, allow non-existent source directory for backward compatibility
+		if statErr == nil {
+			if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
+				msg := "迁移源必须是普通目录，拒绝处理符号链接或文件"
+				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"ok": false, "error": msg,
+				})
+				return
+			}
+			if err := validateCacheMigrationTree(sourceDir); err != nil {
+				msg := fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err)
+				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+				c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+					"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
+				})
+				return
+			}
+		} else if !os.IsNotExist(statErr) {
+			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, statErr.Error())
+			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"ok": false, "error": statErr.Error(),
 			})
 			return
 		}
@@ -1066,6 +1140,34 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 				"ok": false, "code": ErrCodeMigrationReplacementFailed, "error": msg,
 			})
 			return
+		}
+
+		// Re-verify the frozen backup directory to eliminate the filesystem race window
+		if reqMode == "overwrite" {
+			if err := validateCacheOverwriteTarget(oldBackupDir); err != nil {
+				_ = renameFunc(oldBackupDir, targetDir)
+				msg := fmt.Sprintf("现有目标目录备份确权复核失败，已恢复原目录，拒绝覆盖: %v", err)
+				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+				c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+					"ok":         false,
+					"code":       ErrCodeMigrationTargetUnconfirmed,
+					"target_dir": targetDir,
+					"error":      msg,
+				})
+				return
+			}
+		} else {
+			if err := validateEmptyMigrationTarget(oldBackupDir); err != nil {
+				_ = renameFunc(oldBackupDir, targetDir)
+				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
+				c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+					"ok":         false,
+					"code":       ErrCodeMigrationTargetNotEmpty,
+					"target_dir": targetDir,
+					"error":      err.Error(),
+				})
+				return
+			}
 		}
 	}
 
