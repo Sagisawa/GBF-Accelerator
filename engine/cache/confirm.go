@@ -146,14 +146,20 @@ func isKnownGBFCategory(cat string) bool {
 // isHistoricalEmptyNSHost checks whether host belongs to the strictly confirmed GBF official domains
 // that historically generated cache sidecars without the "ns" field.
 func isHistoricalEmptyNSHost(host string) bool {
-	switch strings.ToLower(host) {
+	lower := strings.ToLower(host)
+	switch lower {
 	case "granbluefantasy.com",
 		"game.granbluefantasy.jp",
 		"ava-a.sp.mbga.jp",
 		"connect.mobage.jp",
-		"steam.granbluefantasy.com":
+		"steam.granbluefantasy.com",
+		"extrafes.granbluefantasy.jp",
+		"rising.granbluefantasy.jp":
 		return true
 	default:
+		if strings.HasSuffix(lower, ".granbluefantasy.jp") || strings.HasSuffix(lower, ".granbluefantasy.com") {
+			return true
+		}
 		return false
 	}
 }

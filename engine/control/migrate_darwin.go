@@ -6,6 +6,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -242,6 +243,69 @@ func validateCacheMigrationTree(root string) error {
 	})
 }
 
+func isOfficialGBFHost(host string) bool {
+	lower := strings.ToLower(host)
+	switch lower {
+	case "granbluefantasy.com",
+		"game.granbluefantasy.jp",
+		"ava-a.sp.mbga.jp",
+		"connect.mobage.jp",
+		"steam.granbluefantasy.com",
+		"extrafes.granbluefantasy.jp",
+		"rising.granbluefantasy.jp":
+		return true
+	default:
+		return strings.HasSuffix(lower, ".granbluefantasy.jp") || strings.HasSuffix(lower, ".granbluefantasy.com")
+	}
+}
+
+type legacyOfficialMeta struct {
+	ContentEncoding string
+}
+
+func verifyLegacyOfficialHostAsset(slashRel, assetPath string, metaBytes []byte) (legacyOfficialMeta, bool) {
+	clean := filepath.ToSlash(slashRel)
+	clean = strings.TrimPrefix(clean, "/")
+	segs := strings.Split(clean, "/")
+	if len(segs) < 3 || segs[0] != "hosts" {
+		return legacyOfficialMeta{}, false
+	}
+	host := segs[1]
+	if !isOfficialGBFHost(host) {
+		return legacyOfficialMeta{}, false
+	}
+
+	var meta struct {
+		Version         int    `json:"v"`
+		Namespace       string `json:"ns"`
+		MD5             string `json:"md5"`
+		ContentEncoding string `json:"ce"`
+	}
+	if err := json.Unmarshal(metaBytes, &meta); err != nil || meta.Version != 1 || meta.MD5 == "" {
+		return legacyOfficialMeta{}, false
+	}
+	if meta.Namespace != "" {
+		return legacyOfficialMeta{}, false
+	}
+
+	f, err := os.Open(assetPath)
+	if err != nil {
+		return legacyOfficialMeta{}, false
+	}
+	defer f.Close()
+
+	h := md5.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return legacyOfficialMeta{}, false
+	}
+	actualMD5 := fmt.Sprintf("%x", h.Sum(nil))
+	if !strings.EqualFold(actualMD5, meta.MD5) {
+		return legacyOfficialMeta{}, false
+	}
+
+	return legacyOfficialMeta{ContentEncoding: meta.ContentEncoding}, true
+}
+
 // isSupportedOverwriteAssetExtension strictly whitelists recognized GBF static asset extensions
 // for destructive overwrite validation. Arbitrary text files (e.g. .txt, .docx), binaries, or scripts
 // are strictly rejected.
@@ -340,7 +404,7 @@ func verifyOverwriteAssetContent(filePath, slashRel string) error {
 			return fmt.Errorf("GIF 素材文件魔数不匹配: %s", slashRel)
 		}
 	case ".ico":
-		if !bytes.HasPrefix(sample, []byte("\x00\x00\x01\x00")) {
+		if !bytes.HasPrefix(sample, []byte("\x00\x00\x01\x00")) && !isAnyImageMagic(sample) {
 			return fmt.Errorf("ICO 素材文件魔数不匹配: %s", slashRel)
 		}
 	case ".wav":
@@ -626,16 +690,30 @@ func validateCacheOverwriteTarget(root string) error {
 			if !isSupportedOverwriteAssetExtension(assetSlashRel) {
 				return fmt.Errorf("目标目录元数据指向不受支持的素材扩展名: %s", rel)
 			}
-			assetFi, aErr := os.Lstat(assetPath)
-			if aErr != nil || !assetFi.Mode().IsRegular() {
-				return fmt.Errorf("目标目录包含未配对的孤儿元数据: %s", rel)
-			}
 			metaBytes, rErr := os.ReadFile(path)
 			if rErr != nil {
 				return fmt.Errorf("目标目录包含无法读取的元数据: %s", rel)
 			}
 			if _, ok := cache.VerifyTier1Meta(assetSlashRel, metaBytes); !ok {
-				return fmt.Errorf("目标目录包含无法配对验证的元数据: %s", rel)
+				if _, verified := verifyLegacyOfficialHostAsset(assetSlashRel, assetPath, metaBytes); !verified {
+					return fmt.Errorf("目标目录包含无法配对验证的元数据: %s", rel)
+				}
+			}
+
+			assetFi, aErr := os.Lstat(assetPath)
+			if aErr != nil {
+				if os.IsNotExist(aErr) {
+					// Orphan .ext file: verify directory shape matches confirmed cache directory;
+					// valid orphan .ext (e.g. from cache prunes or historical tests) does not block overwrite.
+					if !cache.IsConfirmedCacheDirectory(filepath.ToSlash(filepath.Dir(slashRel))) {
+						return fmt.Errorf("目标目录包含未知路径的孤儿元数据: %s", rel)
+					}
+					return nil
+				}
+				return fmt.Errorf("目标目录元数据指向的素材文件无法访问: %s", rel)
+			}
+			if !assetFi.Mode().IsRegular() {
+				return fmt.Errorf("目标目录元数据指向非普通文件: %s", rel)
 			}
 			return nil
 		}
@@ -655,12 +733,19 @@ func validateCacheOverwriteTarget(root string) error {
 				return fmt.Errorf("目标目录包含无法读取的元数据: %s.ext", rel)
 			}
 			meta, ok := cache.VerifyTier1Meta(slashRel, metaBytes)
+			contentEncoding := meta.ContentEncoding
+			if !ok {
+				if legacyMeta, verified := verifyLegacyOfficialHostAsset(slashRel, path, metaBytes); verified {
+					contentEncoding = legacyMeta.ContentEncoding
+					ok = true
+				}
+			}
 			if !ok {
 				return fmt.Errorf("目标目录包含无法确认归属的文件: %s", rel)
 			}
 			// If asset has Content-Encoding: br (Brotli), it is a compressed binary stream
 			// recorded by the proxy and verified by Tier-1 metadata.
-			if meta.ContentEncoding != "br" {
+			if contentEncoding != "br" {
 				if err := verifyOverwriteAssetContent(path, slashRel); err != nil {
 					return fmt.Errorf("目标目录素材内容与格式校验不一致: %v", err)
 				}

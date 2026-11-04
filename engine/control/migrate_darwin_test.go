@@ -4,6 +4,7 @@ package control
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -238,15 +239,47 @@ func TestValidateCacheOverwriteTarget_StrictAllFilesNoSampling(t *testing.T) {
 	}
 	_ = os.Remove(unknownFile)
 
-	// 4. Orphan .ext: MUST FAIL in overwrite target
+	// 4. Valid orphan .ext in confirmed cache directory: MUST PASS in overwrite target
 	orphanExt := filepath.Join(uiDir, "orphan.png.ext")
 	if err := os.WriteFile(orphanExt, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateCacheOverwriteTarget(root); err == nil {
-		t.Fatal("expected overwrite target validation to FAIL when orphan .ext is present")
+	if err := validateCacheOverwriteTarget(root); err != nil {
+		t.Fatalf("expected valid orphan .ext in confirmed directory to pass: %v", err)
 	}
 	_ = os.Remove(orphanExt)
+
+	// 4b. Orphan .ext with unsupported extension (e.g. .txt.ext): MUST FAIL in overwrite target
+	orphanTxtExt := filepath.Join(uiDir, "personal_note.txt.ext")
+	if err := os.WriteFile(orphanTxtExt, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected orphan .ext with unsupported extension to FAIL")
+	}
+	_ = os.Remove(orphanTxtExt)
+
+	// 4c. Orphan .ext in unconfirmed directory: MUST FAIL in overwrite target
+	badDir := filepath.Join(root, "unconfirmed_folder")
+	_ = os.MkdirAll(badDir, 0755)
+	badOrphanExt := filepath.Join(badDir, "item.png.ext")
+	if err := os.WriteFile(badOrphanExt, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected orphan .ext in unconfirmed directory to FAIL")
+	}
+	_ = os.RemoveAll(badDir)
+
+	// 4d. Orphan .ext with invalid metadata: MUST FAIL in overwrite target
+	invalidOrphanExt := filepath.Join(uiDir, "corrupted.png.ext")
+	if err := os.WriteFile(invalidOrphanExt, []byte(`invalid json here`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected orphan .ext with invalid metadata to FAIL")
+	}
+	_ = os.Remove(invalidOrphanExt)
 
 	// 5. Streaming temp file: MUST FAIL in overwrite target
 	tempFile := filepath.Join(uiDir, "item_temp.png.tmp.123.456.789")
@@ -1533,5 +1566,72 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackSucces
 	restoredFile := filepath.Join(targetDir, "unexpected.dat")
 	if _, err := os.Stat(restoredFile); err != nil {
 		t.Fatalf("expected restored file to exist at targetDir: %v", err)
+	}
+}
+
+func TestValidateCacheOverwriteTarget_LegacyOfficialHostAsset(t *testing.T) {
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	if err := cache.EnsureRootMarker(root); err != nil {
+		t.Fatal(err)
+	}
+
+	hostDir := filepath.Join(root, "hosts", "game.granbluefantasy.jp", "assets", "img")
+	if err := os.MkdirAll(hostDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	pngMD5 := fmt.Sprintf("%x", md5.Sum(pngData))
+
+	pngPath := filepath.Join(hostDir, "banner.png")
+	if err := os.WriteFile(pngPath, pngData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Positive: Legacy official host asset with empty ns, verified: false, but matching MD5 -> PASS
+	metaValid := fmt.Sprintf(`{"v":1,"ct":"image/png","md5":"%s","verified":false}`, pngMD5)
+	if err := os.WriteFile(pngPath+".ext", []byte(metaValid), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCacheOverwriteTarget(root); err != nil {
+		t.Fatalf("expected legacy official host asset with matching MD5 to pass: %v", err)
+	}
+
+	// 2. Negative: Legacy official host asset with mismatched MD5 -> FAIL
+	metaMismatched := `{"v":1,"ct":"image/png","md5":"deadbeef000000000000000000000000","verified":false}`
+	if err := os.WriteFile(pngPath+".ext", []byte(metaMismatched), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected legacy official host asset with mismatched MD5 to FAIL")
+	}
+
+	// Restore valid meta
+	_ = os.WriteFile(pngPath+".ext", []byte(metaValid), 0644)
+
+	// 3. Negative: Untrusted host asset with empty ns even with matching MD5 -> FAIL
+	untrustedDir := filepath.Join(root, "hosts", "untrusted-site.com", "assets", "img")
+	_ = os.MkdirAll(untrustedDir, 0755)
+	untrustedFile := filepath.Join(untrustedDir, "banner.png")
+	_ = os.WriteFile(untrustedFile, pngData, 0644)
+	_ = os.WriteFile(untrustedFile+".ext", []byte(metaValid), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected untrusted host asset with empty ns to FAIL")
+	}
+	_ = os.RemoveAll(filepath.Join(root, "hosts", "untrusted-site.com"))
+
+	// 4. Positive: Cross-format favicon.ico with PNG magic -> PASS
+	faviconPath := filepath.Join(root, "favicon.ico")
+	if err := os.WriteFile(faviconPath, pngData, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(faviconPath+".ext", []byte(`{"v":1,"ns":"gbf","ct":"image/x-icon"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCacheOverwriteTarget(root); err != nil {
+		t.Fatalf("expected cross-format favicon.ico to pass: %v", err)
 	}
 }
