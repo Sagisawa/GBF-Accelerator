@@ -182,6 +182,9 @@ func TestValidateCacheDir_MacOSLinuxPaths(t *testing.T) {
 
 func TestValidateCacheDir_SymlinkAncestorFallback(t *testing.T) {
 	tmpDir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tmpDir); err == nil {
+		tmpDir = resolved
+	}
 	existingParent := filepath.Join(tmpDir, "existing_parent")
 	if err := os.MkdirAll(existingParent, 0755); err != nil {
 		t.Fatalf("failed to create existing parent: %v", err)

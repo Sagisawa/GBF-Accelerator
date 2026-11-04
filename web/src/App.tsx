@@ -22,6 +22,7 @@ import {
   checkForUpdate,
   quitApp,
   migrateToStandardCache,
+  CacheMigrationMode,
 } from './api'
 
 import { Modal } from './components/common/Modal'
@@ -711,10 +712,12 @@ export const App: React.FC = () => {
   }
 
   // Migrate Cache to macOS Standard Application Support Directory
-  const handleMigrateStandardCache = async () => {
+  const handleMigrateStandardCache = async (mode: CacheMigrationMode = 'migrate') => {
+    let result: any
     await runConfigAction('migrate-standard', async () => {
       try {
-        const res = await migrateToStandardCache()
+        const res = await migrateToStandardCache({ mode })
+        result = res
         if (res && res.new_dir) {
           setCacheDirInput(res.new_dir)
           setConfig((prev) => ({ ...prev, cache_dir: res.new_dir }))
@@ -722,9 +725,15 @@ export const App: React.FC = () => {
         }
         await loadState()
       } catch (e: any) {
+        if (e.code === 'CACHE_MIGRATION_TARGET_NOT_EMPTY') {
+          // Re-throw so MigrateStandardModal can catch and display the conflict resolution view
+          throw e
+        }
         showToast(t('cards.cache.migrateFailed', { error: e.message }), 'error')
+        throw e
       }
     })
+    return result
   }
   // Check and prompt if upstream is Shimakaze GO (port 8099) or ACGPower (port 8123)
   const checkShimakazeSuggest = (url: string) => {

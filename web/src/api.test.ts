@@ -11,6 +11,7 @@ import {
   slimCache,
   cancelCacheTask,
   migrateToStandardCache,
+  CacheMigrationError,
 } from './api'
 import { HealthResponse, RepairResponse } from './types'
 
@@ -347,7 +348,7 @@ describe('cache breakdown & targeted management APIs', () => {
     })
   })
 
-  it('calls POST /api/cache/migrate-standard in migrateToStandardCache', async () => {
+  it('calls POST /api/cache/migrate-standard in migrateToStandardCache with default migrate mode', async () => {
     globalThis.fetch = vi.fn().mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -363,7 +364,56 @@ describe('cache breakdown & targeted management APIs', () => {
     expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/migrate-standard', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'migrate' }),
     })
+  })
+
+  it('calls POST /api/cache/migrate-standard with switch_only and overwrite modes', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        new_dir: '/Users/test/Library/Application Support/GBF-Accelerator/cache',
+        message: 'Switched cache',
+      }),
+    }) as any
+
+    await migrateToStandardCache({ mode: 'switch_only' })
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/migrate-standard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'switch_only' }),
+    })
+
+    await migrateToStandardCache({ mode: 'overwrite' })
+    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/migrate-standard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'overwrite' }),
+    })
+  })
+
+  it('throws CacheMigrationError with structured code and targetDir on conflict', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({
+        ok: false,
+        code: 'CACHE_MIGRATION_TARGET_NOT_EMPTY',
+        target_dir: '/Users/test/Library/Application Support/GBF-Accelerator/cache',
+        error: 'Target directory not empty',
+      }),
+    }) as any
+
+    try {
+      await migrateToStandardCache()
+      expect.fail('should have thrown')
+    } catch (err: any) {
+      expect(err).toBeInstanceOf(CacheMigrationError)
+      expect(err.code).toBe('CACHE_MIGRATION_TARGET_NOT_EMPTY')
+      expect(err.targetDir).toBe('/Users/test/Library/Application Support/GBF-Accelerator/cache')
+      expect(err.message).toBe('Target directory not empty')
+    }
   })
 })
 

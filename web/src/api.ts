@@ -777,14 +777,49 @@ export async function installHostAppToDevice(
   return data
 }
 
-export async function migrateToStandardCache(): Promise<{ ok: boolean; new_dir: string; message: string }> {
+export type CacheMigrationMode = 'migrate' | 'switch_only' | 'overwrite'
+
+export interface MigrateStandardOptions {
+  mode?: CacheMigrationMode
+}
+
+export interface MigrateStandardResponse {
+  ok: boolean
+  mode?: string
+  new_dir?: string
+  message?: string
+  code?: string
+  target_dir?: string
+  backup_dir?: string
+  warning?: string
+  error?: string
+}
+
+export class CacheMigrationError extends Error {
+  code?: string
+  targetDir?: string
+  backupDir?: string
+
+  constructor(message: string, code?: string, targetDir?: string, backupDir?: string) {
+    super(message)
+    this.name = 'CacheMigrationError'
+    this.code = code
+    this.targetDir = targetDir
+    this.backupDir = backupDir
+  }
+}
+
+export async function migrateToStandardCache(options?: MigrateStandardOptions): Promise<MigrateStandardResponse> {
+  const mode = options?.mode || 'migrate'
   const res = await fetch(`${BASE}/api/cache/migrate-standard`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    throw new Error(data.error || data.message || `HTTP ${res.status}`)
+  if (!res.ok || data.ok === false) {
+    const errMsg = data.error || data.message || `HTTP ${res.status}`
+    throw new CacheMigrationError(errMsg, data.code, data.target_dir, data.backup_dir)
   }
   return data
 }

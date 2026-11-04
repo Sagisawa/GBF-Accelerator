@@ -58,6 +58,40 @@ jobs:
       - name: Build
         run: go build ./...
 
+  go-darwin:
+    name: Go macOS checks
+    runs-on: macos-latest
+
+    defaults:
+      run:
+        working-directory: engine
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: engine/go.mod
+          cache: true
+          cache-dependency-path: engine/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Race test
+        run: go test -race -count=1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
   cross-build:
     name: Cross build
     runs-on: ubuntu-latest

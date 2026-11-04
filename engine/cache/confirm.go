@@ -589,6 +589,11 @@ func verifyCacheFileMagic(filePath, cleanLower string) bool {
 	return verifyCacheFileMagicFromReader(f, cleanLower)
 }
 
+// VerifyCacheFileMagic reads the file header (up to 512 bytes) and validates magic bytes and non-HTML content.
+func VerifyCacheFileMagic(filePath, cleanLower string) bool {
+	return verifyCacheFileMagic(filePath, cleanLower)
+}
+
 // CanAutoWriteRootMarker returns whether the root marker (.gbf_cache) can be automatically written
 // according to Rule 3:
 // 1. Directory is the application's default cache directory (isDefaultDir == true); OR
