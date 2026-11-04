@@ -5,11 +5,13 @@ package control
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gbf-proxy/cache"
@@ -617,5 +619,471 @@ func TestHandleMigrateStandardCache_CommitFailureRollsBackDirectory(t *testing.T
 	// Verify new_marker was NOT kept in targetDir
 	if _, err := os.Stat(filepath.Join(targetDir, "assets", "img", "sp", "ui", "new_marker.png")); err == nil {
 		t.Fatal("expected new marker to not be in target after rollback")
+	}
+}
+
+func TestValidateCacheOverwriteTarget_Tier1PersonalNoteRegression(t *testing.T) {
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	if err := cache.EnsureRootMarker(root); err != nil {
+		t.Fatal(err)
+	}
+
+	notePath := filepath.Join(root, "assets", "img", "personal-note.txt")
+	noteMeta := filepath.Join(root, "assets", "img", "personal-note.txt.ext")
+	_ = os.MkdirAll(filepath.Dir(notePath), 0755)
+	_ = os.WriteFile(notePath, []byte("This is my private note"), 0644)
+	_ = os.WriteFile(noteMeta, []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	// personal-note.txt with valid .ext metadata MUST be rejected!
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("validateCacheOverwriteTarget must reject personal-note.txt even with valid Tier-1 .ext metadata")
+	}
+
+	// Clean up personal note
+	_ = os.Remove(notePath)
+	_ = os.Remove(noteMeta)
+
+	// Legitimate GBF assets should pass
+	assets := []struct {
+		rel     string
+		content []byte
+	}{
+		{"assets/img/sp/ui/icon.png", []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRok")},
+		{"assets/js/bundle.js", []byte("console.log('game ready');")},
+		{"assets/css/main.css", []byte("body { background: #000; }")},
+		{"assets/sound/bgm.mp3", []byte("ID3\x03\x00\x00\x00\x00\x00\x0aTIT2\x00\x00\x01")},
+		{"assets/font/font.woff2", []byte("wOF2\x00\x01\x00\x00\x00\x00\x00\x20")},
+		{"assets/wasm/engine.wasm", []byte("\x00asm\x01\x00\x00\x00")},
+	}
+
+	for _, a := range assets {
+		p := filepath.Join(root, filepath.FromSlash(a.rel))
+		_ = os.MkdirAll(filepath.Dir(p), 0755)
+		if err := os.WriteFile(p, a.content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		extP := p + ".ext"
+		if err := os.WriteFile(extP, []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := validateCacheOverwriteTarget(root); err != nil {
+		t.Fatalf("expected genuine GBF static assets to pass overwrite validation: %v", err)
+	}
+
+	// Test rejection of fake JS with binary nulls
+	badJS := filepath.Join(root, "assets", "js", "bad.js")
+	_ = os.WriteFile(badJS, []byte("\x7fELF\x00\x00bin"), 0644)
+	_ = os.WriteFile(badJS+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject JS containing binary null bytes")
+	}
+	_ = os.Remove(badJS)
+	_ = os.Remove(badJS + ".ext")
+
+	// Test rejection of error HTML page disguised as JS
+	htmlJS := filepath.Join(root, "assets", "js", "html_error.js")
+	_ = os.WriteFile(htmlJS, []byte("<!doctype html><html><body>502 Bad Gateway</body></html>"), 0644)
+	_ = os.WriteFile(htmlJS+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject HTML error content")
+	}
+}
+
+func TestHandleMigrateStandardCache_MissingOrEmptySourceInOverwrite(t *testing.T) {
+	// Subtest 1: Missing source directory
+	t.Run("MissingSourceDirectory", func(t *testing.T) {
+		tempBase := t.TempDir()
+		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+			tempBase = resolved
+		}
+		sourceDir := filepath.Join(tempBase, "non_existent_source")
+		targetDir := filepath.Join(tempBase, "target_cache")
+		_ = os.MkdirAll(targetDir, 0755)
+		_ = cache.EnsureRootMarker(targetDir)
+		targetFile := filepath.Join(targetDir, "assets", "img", "icon.png")
+		_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
+		_ = os.WriteFile(targetFile, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtarget"), 0644)
+
+		ctrl, cfgMgr, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+		_ = os.RemoveAll(sourceDir)
+
+		body := []byte(`{"mode":"overwrite"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for missing source, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["code"] != ErrCodeMigrationSourceUnconfirmed {
+			t.Fatalf("expected code %s, got %v", ErrCodeMigrationSourceUnconfirmed, res["code"])
+		}
+
+		// Ensure target file is completely preserved
+		if _, err := os.Stat(targetFile); err != nil {
+			t.Fatalf("target file must not be modified or deleted: %v", err)
+		}
+		if cfgMgr.Get().CacheDir != sourceDir {
+			t.Fatalf("config CacheDir must remain untouched, got %s", cfgMgr.Get().CacheDir)
+		}
+	})
+
+	// Subtest 2: Empty source directory (contains only .gbf_cache and system junk)
+	t.Run("EmptySourceDirectory", func(t *testing.T) {
+		tempBase := t.TempDir()
+		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+			tempBase = resolved
+		}
+		sourceDir := filepath.Join(tempBase, "empty_source")
+		_ = os.MkdirAll(sourceDir, 0755)
+		_ = cache.EnsureRootMarker(sourceDir)
+		_ = os.WriteFile(filepath.Join(sourceDir, ".DS_Store"), []byte("junk"), 0644)
+
+		targetDir := filepath.Join(tempBase, "target_cache")
+		_ = os.MkdirAll(targetDir, 0755)
+		_ = cache.EnsureRootMarker(targetDir)
+		targetFile := filepath.Join(targetDir, "assets", "img", "icon.png")
+		_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
+		_ = os.WriteFile(targetFile, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtarget"), 0644)
+
+		ctrl, cfgMgr, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+		body := []byte(`{"mode":"overwrite"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("expected status 409 for empty source in overwrite, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["code"] != ErrCodeMigrationSourceUnconfirmed {
+			t.Fatalf("expected code %s, got %v", ErrCodeMigrationSourceUnconfirmed, res["code"])
+		}
+
+		// Ensure target file is completely preserved
+		if _, err := os.Stat(targetFile); err != nil {
+			t.Fatalf("target file must not be modified or deleted: %v", err)
+		}
+		if cfgMgr.Get().CacheDir != sourceDir {
+			t.Fatalf("config CacheDir must remain untouched, got %s", cfgMgr.Get().CacheDir)
+		}
+	})
+}
+
+func TestHandleMigrateStandardCache_RequestBodyBoundaries(t *testing.T) {
+	sourceDir := t.TempDir()
+	targetDir := t.TempDir()
+	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+	// Subtest 1: Body > 4096 bytes
+	t.Run("OversizedBody", func(t *testing.T) {
+		oversized := bytes.Repeat([]byte("a"), 4097)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(oversized))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for oversized body, got %d", rec.Code)
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["code"] != ErrCodeMigrationInvalidMode {
+			t.Fatalf("expected code %s, got %v", ErrCodeMigrationInvalidMode, res["code"])
+		}
+		if !strings.Contains(fmt.Sprint(res["error"]), "超过限制") {
+			t.Fatalf("expected error message to mention size limit, got %v", res["error"])
+		}
+	})
+
+	// Subtest 2: Body with extra trailing JSON token
+	t.Run("TrailingJSONTokens", func(t *testing.T) {
+		body := []byte(`{"mode":"migrate"} {"extra":1}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for trailing JSON, got %d", rec.Code)
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["code"] != ErrCodeMigrationInvalidMode {
+			t.Fatalf("expected code %s, got %v", ErrCodeMigrationInvalidMode, res["code"])
+		}
+		if !strings.Contains(fmt.Sprint(res["error"]), "多余") {
+			t.Fatalf("expected error message to mention extra data, got %v", res["error"])
+		}
+	})
+
+	// Subtest 3: Body with trailing non-JSON garbage
+	t.Run("TrailingNonJSONGarbage", func(t *testing.T) {
+		body := []byte(`{"mode":"migrate"} trailing_garbage`)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400 for trailing garbage, got %d", rec.Code)
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["code"] != ErrCodeMigrationInvalidMode {
+			t.Fatalf("expected code %s, got %v", ErrCodeMigrationInvalidMode, res["code"])
+		}
+	})
+}
+
+func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
+	pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
+
+	setupAssets := func(sourceDir, targetDir string) (string, string) {
+		_ = os.MkdirAll(sourceDir, 0755)
+		_ = cache.EnsureRootMarker(sourceDir)
+		srcFile := filepath.Join(sourceDir, "assets", "img", "sp", "ui", "icon.png")
+		_ = os.MkdirAll(filepath.Dir(srcFile), 0755)
+		_ = os.WriteFile(srcFile, pngMagic, 0644)
+		_ = os.WriteFile(srcFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+		_ = os.MkdirAll(targetDir, 0755)
+		_ = cache.EnsureRootMarker(targetDir)
+		targetFile := filepath.Join(targetDir, "assets", "img", "sp", "ui", "old.png")
+		_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
+		_ = os.WriteFile(targetFile, pngMagic, 0644)
+		_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+		return srcFile, targetFile
+	}
+
+	// Subtest 1: Second rename fails, rollback succeeds
+	t.Run("SecondRenameFailsRollbackSucceeds", func(t *testing.T) {
+		tempBase := t.TempDir()
+		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+			tempBase = resolved
+		}
+		sourceDir := filepath.Join(tempBase, "src")
+		targetDir := filepath.Join(tempBase, "dst")
+		_, targetFile := setupAssets(sourceDir, targetDir)
+
+		ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+		origRename := renameFunc
+		renameCalls := 0
+		renameFunc = func(oldpath, newpath string) error {
+			renameCalls++
+			if renameCalls == 2 {
+				// Second rename (stageDir -> targetDir) fails
+				return errors.New("simulated rename failure")
+			}
+			return origRename(oldpath, newpath)
+		}
+		t.Cleanup(func() { renameFunc = origRename })
+
+		body := []byte(`{"mode":"overwrite"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected status 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["code"] != ErrCodeMigrationReplacementFailed {
+			t.Fatalf("expected code %s, got %v", ErrCodeMigrationReplacementFailed, res["code"])
+		}
+
+		// Verify target was restored by rollback
+		if _, err := os.Stat(targetFile); err != nil {
+			t.Fatalf("expected targetFile %s to be restored: %v", targetFile, err)
+		}
+	})
+
+	// Subtest 2: Second rename fails, rollback ALSO fails
+	t.Run("SecondRenameFailsRollbackFails", func(t *testing.T) {
+		tempBase := t.TempDir()
+		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+			tempBase = resolved
+		}
+		sourceDir := filepath.Join(tempBase, "src")
+		targetDir := filepath.Join(tempBase, "dst")
+		setupAssets(sourceDir, targetDir)
+
+		ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+		origRename := renameFunc
+		renameCalls := 0
+		renameFunc = func(oldpath, newpath string) error {
+			renameCalls++
+			if renameCalls == 2 {
+				// Second rename fails
+				return errors.New("simulated second rename failure")
+			}
+			if renameCalls == 3 {
+				// Rollback rename also fails!
+				return errors.New("simulated rollback rename failure")
+			}
+			return origRename(oldpath, newpath)
+		}
+		t.Cleanup(func() { renameFunc = origRename })
+
+		body := []byte(`{"mode":"overwrite"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected status 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["code"] != ErrCodeMigrationRollbackFailed {
+			t.Fatalf("expected code %s, got %v", ErrCodeMigrationRollbackFailed, res["code"])
+		}
+		if res["backup_dir"] == nil || res["backup_dir"] == "" {
+			t.Fatalf("expected backup_dir to be present in response when rollback fails")
+		}
+	})
+
+	// Subtest 3: Commit fails, new directory cleanup fails, rollback succeeds
+	t.Run("CommitFailsCleanupFailsRollbackSucceeds", func(t *testing.T) {
+		tempBase := t.TempDir()
+		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+			tempBase = resolved
+		}
+		sourceDir := filepath.Join(tempBase, "src")
+		targetDir := filepath.Join(tempBase, "dst")
+		setupAssets(sourceDir, targetDir)
+
+		ctrl, _, _, cfgPath := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+		origRemoveAll := removeAllFunc
+		removeAllFunc = func(path string) error {
+			if path == targetDir {
+				return errors.New("simulated new dir cleanup failure")
+			}
+			return origRemoveAll(path)
+		}
+		t.Cleanup(func() { removeAllFunc = origRemoveAll })
+
+		// Break commit by making cfgPath a directory
+		beforeMigrationApplyHook = func() {
+			_ = os.Remove(cfgPath)
+			_ = os.Mkdir(cfgPath, 0755)
+		}
+		t.Cleanup(func() { beforeMigrationApplyHook = nil })
+
+		body := []byte(`{"mode":"overwrite"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("expected status 500, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["backup_dir"] == nil || res["backup_dir"] == "" {
+			t.Fatalf("expected backup_dir to be present in error response")
+		}
+	})
+
+	// Subtest 4: Backup cleanup fails, returns 200 with warning
+	t.Run("BackupCleanupFailsWarningReported", func(t *testing.T) {
+		tempBase := t.TempDir()
+		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+			tempBase = resolved
+		}
+		sourceDir := filepath.Join(tempBase, "src")
+		targetDir := filepath.Join(tempBase, "dst")
+		setupAssets(sourceDir, targetDir)
+
+		ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+		origRemoveAll := removeAllFunc
+		removeAllFunc = func(path string) error {
+			if strings.Contains(path, ".gbf-cache-old-") {
+				return errors.New("simulated backup cleanup failure")
+			}
+			return origRemoveAll(path)
+		}
+		t.Cleanup(func() { removeAllFunc = origRemoveAll })
+
+		body := []byte(`{"mode":"overwrite"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		ctrl.handleMigrateStandardCache(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected status 200 with warning, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var res map[string]interface{}
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+		if res["warning"] == nil || res["warning"] == "" {
+			t.Fatalf("expected warning to be returned in response")
+		}
+		if res["backup_dir"] == nil || res["backup_dir"] == "" {
+			t.Fatalf("expected backup_dir to be returned in response")
+		}
+	})
+}
+
+func TestResidualMigrationBackups_FindAndRecover(t *testing.T) {
+	parentDir := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(parentDir); err == nil {
+		parentDir = resolved
+	}
+
+	backup1 := filepath.Join(parentDir, ".gbf-cache-old-1000")
+	backup2 := filepath.Join(parentDir, ".gbf-cache-old-2000")
+	otherDir := filepath.Join(parentDir, "other_folder")
+	_ = os.MkdirAll(backup1, 0755)
+	_ = os.MkdirAll(backup2, 0755)
+	_ = os.MkdirAll(otherDir, 0755)
+
+	cacheFile := filepath.Join(backup2, "saved.png")
+	_ = os.WriteFile(cacheFile, []byte("pngdata"), 0644)
+
+	// Test FindResidualMigrationBackups
+	backups, err := FindResidualMigrationBackups(parentDir)
+	if err != nil {
+		t.Fatalf("FindResidualMigrationBackups failed: %v", err)
+	}
+	if len(backups) != 2 {
+		t.Fatalf("expected 2 residual backups, got %d: %v", len(backups), backups)
+	}
+	if backups[0] != backup1 || backups[1] != backup2 {
+		t.Fatalf("unexpected backup list: %v", backups)
+	}
+
+	// Test RecoverResidualMigrationBackup with non-empty target directory (must reject)
+	targetDir := filepath.Join(parentDir, "target")
+	_ = os.MkdirAll(targetDir, 0755)
+	_ = os.WriteFile(filepath.Join(targetDir, "existing.dat"), []byte("data"), 0644)
+
+	if err := RecoverResidualMigrationBackup(backup2, targetDir); err == nil {
+		t.Fatal("expected RecoverResidualMigrationBackup to fail when target is non-empty")
+	}
+
+	// Clean target directory and recover
+	_ = os.Remove(filepath.Join(targetDir, "existing.dat"))
+	if err := RecoverResidualMigrationBackup(backup2, targetDir); err != nil {
+		t.Fatalf("RecoverResidualMigrationBackup failed on empty target: %v", err)
+	}
+
+	// Verify recovered file exists in targetDir
+	if _, err := os.Stat(filepath.Join(targetDir, "saved.png")); err != nil {
+		t.Fatalf("expected recovered file to exist in targetDir: %v", err)
+	}
+	// Verify backup2 is moved (no longer exists)
+	if _, err := os.Stat(backup2); !os.IsNotExist(err) {
+		t.Fatalf("expected backup2 to be moved, but still exists")
 	}
 }

@@ -13,11 +13,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"gbf-proxy/cache"
 	"gbf-proxy/config"
+)
+
+var (
+	renameFunc    = os.Rename
+	removeAllFunc = os.RemoveAll
+	removeFunc    = os.Remove
 )
 
 const (
@@ -235,6 +242,244 @@ func validateCacheMigrationTree(root string) error {
 	})
 }
 
+// isSupportedOverwriteAssetExtension strictly whitelists recognized GBF static asset extensions
+// for destructive overwrite validation. Arbitrary text files (e.g. .txt, .docx), binaries, or scripts
+// are strictly rejected.
+func isSupportedOverwriteAssetExtension(slashRel string) bool {
+	lower := strings.ToLower(slashRel)
+	ext := filepath.Ext(lower)
+	switch ext {
+	// Images
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico":
+		return true
+	// Audio / Video
+	case ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm":
+		return true
+	// Web fonts & wasm
+	case ".woff", ".woff2", ".ttf", ".otf", ".wasm":
+		return true
+	// Web scripts & stylesheets
+	case ".js", ".css":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAnyImageMagic(sample []byte) bool {
+	if bytes.HasPrefix(sample, []byte("\x89PNG\r\n\x1a\n")) {
+		return true
+	}
+	if bytes.HasPrefix(sample, []byte("\xff\xd8\xff")) {
+		return true
+	}
+	if len(sample) >= 12 && bytes.HasPrefix(sample, []byte("RIFF")) && bytes.Equal(sample[8:12], []byte("WEBP")) {
+		return true
+	}
+	if bytes.HasPrefix(sample, []byte("GIF87a")) || bytes.HasPrefix(sample, []byte("GIF89a")) {
+		return true
+	}
+	return false
+}
+
+func verifyOverwriteAssetContent(filePath, slashRel string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("无法读取素材文件: %w", err)
+	}
+	defer f.Close()
+
+	var buf [512]byte
+	n, readErr := io.ReadFull(f, buf[:])
+	if (readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF) || n == 0 {
+		return fmt.Errorf("素材文件为空或读取失败: %w", readErr)
+	}
+	sample := buf[:n]
+
+	// Gzip compressed stream check
+	if n >= 2 && sample[0] == 0x1f && sample[1] == 0x8b {
+		cleanLower := strings.ToLower(slashRel)
+		if !cache.VerifyCacheFileMagic(filePath, cleanLower) {
+			return fmt.Errorf("压缩素材流解压或校验失败: %s", slashRel)
+		}
+		return nil
+	}
+
+	// Reject HTML content for all static assets
+	sampleLower := bytes.TrimSpace(bytes.ToLower(sample))
+	if bytes.HasPrefix(sampleLower, []byte("<!doctype")) ||
+		bytes.HasPrefix(sampleLower, []byte("<html")) ||
+		bytes.HasPrefix(sampleLower, []byte("<head")) ||
+		bytes.HasPrefix(sampleLower, []byte("<body")) ||
+		bytes.HasPrefix(sampleLower, []byte("<h1")) ||
+		bytes.HasPrefix(sampleLower, []byte("<title")) {
+		return fmt.Errorf("素材包含 HTML 内容: %s", slashRel)
+	}
+
+	cleanLower := strings.ToLower(slashRel)
+	ext := filepath.Ext(cleanLower)
+
+	switch ext {
+	case ".png":
+		if !bytes.HasPrefix(sample, []byte("\x89PNG\r\n\x1a\n")) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("PNG 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".jpg", ".jpeg":
+		if !bytes.HasPrefix(sample, []byte("\xff\xd8\xff")) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("JPEG 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".webp":
+		if (len(sample) < 12 || !bytes.HasPrefix(sample, []byte("RIFF")) || !bytes.Equal(sample[8:12], []byte("WEBP"))) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("WebP 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".gif":
+		if !bytes.HasPrefix(sample, []byte("GIF87a")) && !bytes.HasPrefix(sample, []byte("GIF89a")) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("GIF 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".ico":
+		if !bytes.HasPrefix(sample, []byte("\x00\x00\x01\x00")) {
+			return fmt.Errorf("ICO 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".wav":
+		if len(sample) < 12 || !bytes.HasPrefix(sample, []byte("RIFF")) || !bytes.Equal(sample[8:12], []byte("WAVE")) {
+			return fmt.Errorf("WAV 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".ogg":
+		if !bytes.HasPrefix(sample, []byte("OggS")) {
+			return fmt.Errorf("OGG 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".mp3":
+		isID3 := bytes.HasPrefix(sample, []byte("ID3"))
+		isMPEG := len(sample) >= 2 && sample[0] == 0xFF && (sample[1]&0xE0) == 0xE0
+		if !isID3 && !isMPEG {
+			return fmt.Errorf("MP3 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".mp4", ".m4a":
+		if len(sample) < 8 || !bytes.Equal(sample[4:8], []byte("ftyp")) {
+			return fmt.Errorf("MP4/M4A 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".webm":
+		if !bytes.HasPrefix(sample, []byte("\x1a\x45\xdf\xa3")) {
+			return fmt.Errorf("WebM 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".woff2":
+		if !bytes.HasPrefix(sample, []byte("wOF2")) {
+			return fmt.Errorf("WOFF2 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".woff":
+		if !bytes.HasPrefix(sample, []byte("wOFF")) {
+			return fmt.Errorf("WOFF 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".wasm":
+		if !bytes.HasPrefix(sample, []byte("\x00asm")) {
+			return fmt.Errorf("WASM 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".ttf", ".otf":
+		if !bytes.HasPrefix(sample, []byte("\x00\x01\x00\x00")) &&
+			!bytes.HasPrefix(sample, []byte("OTTO")) &&
+			!bytes.HasPrefix(sample, []byte("true")) {
+			return fmt.Errorf("TTF/OTF 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".js", ".css":
+		if bytes.IndexByte(sample, 0x00) != -1 {
+			return fmt.Errorf("JS/CSS 脚本或样式文件包含二进制空字符: %s", slashRel)
+		}
+	default:
+		return fmt.Errorf("不支持进行覆盖验证的素材类型: %s", slashRel)
+	}
+	return nil
+}
+
+// hasConfirmedCacheAssets checks whether dir contains at least one confirmed non-empty cache asset file.
+func hasConfirmedCacheAssets(dir string) (bool, error) {
+	hasAssets := false
+	err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == dir {
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		slashRel := filepath.ToSlash(rel)
+		baseName := entry.Name()
+		if slashRel == cache.RootMarkerFileName || config.IsSystemJunk(baseName) {
+			return nil
+		}
+		if cache.IsAcceleratorTempFile(slashRel) || cache.IsAcceleratorQuarantineFile(slashRel) {
+			return nil
+		}
+		if strings.HasSuffix(slashRel, ".ext") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err == nil && info.Mode().IsRegular() && info.Size() > 0 {
+			hasAssets = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return hasAssets, err
+}
+
+// FindResidualMigrationBackups returns all uncleaned .gbf-cache-old-* backup directories in parentDir.
+func FindResidualMigrationBackups(parentDir string) ([]string, error) {
+	entries, err := os.ReadDir(parentDir)
+	if err != nil {
+		return nil, err
+	}
+	var backups []string
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".gbf-cache-old-") {
+			backups = append(backups, filepath.Join(parentDir, entry.Name()))
+		}
+	}
+	sort.Strings(backups)
+	return backups, nil
+}
+
+// RecoverResidualMigrationBackup restores an uncleaned backup directory to targetDir if targetDir is missing or empty.
+func RecoverResidualMigrationBackup(backupDir, targetDir string) error {
+	bFi, err := os.Lstat(backupDir)
+	if err != nil {
+		return fmt.Errorf("备份目录不存在或无法访问: %w", err)
+	}
+	if bFi.Mode()&os.ModeSymlink != 0 || !bFi.IsDir() {
+		return fmt.Errorf("备份目录必须是普通目录: %s", backupDir)
+	}
+	baseName := filepath.Base(backupDir)
+	if !strings.HasPrefix(baseName, ".gbf-cache-old-") {
+		return fmt.Errorf("非法备份目录名称: %s", baseName)
+	}
+
+	tFi, tErr := os.Lstat(targetDir)
+	if tErr == nil {
+		if tFi.Mode()&os.ModeSymlink != 0 || !tFi.IsDir() {
+			return fmt.Errorf("目标路径不是普通目录: %s", targetDir)
+		}
+		entries, rErr := os.ReadDir(targetDir)
+		if rErr != nil {
+			return rErr
+		}
+		if len(entries) > 0 {
+			return fmt.Errorf("目标目录并非空目录，拒绝恢复覆盖: %s", targetDir)
+		}
+		if err := removeFunc(targetDir); err != nil {
+			return fmt.Errorf("移除空目标目录以便恢复失败: %w", err)
+		}
+	} else if !os.IsNotExist(tErr) {
+		return tErr
+	}
+
+	return renameFunc(backupDir, targetDir)
+}
+
 // validateCacheOverwriteTarget performs 100% full attribution check on every single file in the target directory
 // without any sampling cutoffs. It strictly rejects unknown files, orphan .ext metadata, system junk, and temp files.
 func validateCacheOverwriteTarget(root string) error {
@@ -297,6 +542,10 @@ func validateCacheOverwriteTarget(root string) error {
 		// Metadata file (.ext)
 		if strings.HasSuffix(slashRel, ".ext") {
 			assetPath := strings.TrimSuffix(path, ".ext")
+			assetSlashRel := strings.TrimSuffix(slashRel, ".ext")
+			if !isSupportedOverwriteAssetExtension(assetSlashRel) {
+				return fmt.Errorf("目标目录元数据指向不受支持的素材扩展名: %s", rel)
+			}
 			assetFi, aErr := os.Lstat(assetPath)
 			if aErr != nil || !assetFi.Mode().IsRegular() {
 				return fmt.Errorf("目标目录包含未配对的孤儿元数据: %s", rel)
@@ -305,7 +554,6 @@ func validateCacheOverwriteTarget(root string) error {
 			if rErr != nil {
 				return fmt.Errorf("目标目录包含无法读取的元数据: %s", rel)
 			}
-			assetSlashRel := strings.TrimSuffix(slashRel, ".ext")
 			if _, ok := cache.VerifyTier1Meta(assetSlashRel, metaBytes); !ok {
 				return fmt.Errorf("目标目录包含无法配对验证的元数据: %s", rel)
 			}
@@ -315,6 +563,9 @@ func validateCacheOverwriteTarget(root string) error {
 		// Asset file (without .ext)
 		if info.Size() <= 0 {
 			return fmt.Errorf("目标目录包含空文件: %s", rel)
+		}
+		if !isSupportedOverwriteAssetExtension(slashRel) {
+			return fmt.Errorf("目标目录包含不受支持的素材扩展名: %s", rel)
 		}
 
 		extPath := path + ".ext"
@@ -327,8 +578,8 @@ func validateCacheOverwriteTarget(root string) error {
 				return fmt.Errorf("目标目录包含无法确认归属的文件: %s", rel)
 			}
 			// Validate content format / magic bytes consistency
-			if !cache.VerifyCacheFileMagic(path, strings.ToLower(slashRel)) {
-				return fmt.Errorf("目标目录素材内容与格式校验不一致: %s", rel)
+			if err := verifyOverwriteAssetContent(path, slashRel); err != nil {
+				return fmt.Errorf("目标目录素材内容与格式校验不一致: %v", err)
 			}
 			return nil
 		}
@@ -339,8 +590,8 @@ func validateCacheOverwriteTarget(root string) error {
 		if !ok {
 			return fmt.Errorf("目标目录包含无法确认归属的文件 (目录结构或素材扩展名无效): %s", rel)
 		}
-		if !cache.VerifyCacheFileMagic(path, cleanLower) {
-			return fmt.Errorf("目标目录素材魔数或内容校验失败: %s", rel)
+		if err := verifyOverwriteAssetContent(path, cleanLower); err != nil {
+			return fmt.Errorf("目标目录素材魔数或内容校验失败: %v", err)
 		}
 		return nil
 	})
@@ -386,12 +637,20 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 	// Request mode parsing
 	reqMode := "migrate"
 	if req.Body != nil {
-		limitedReader := io.LimitReader(req.Body, maxMigrateBodySize)
+		limitedReader := io.LimitReader(req.Body, maxMigrateBodySize+1)
 		bodyBytes, err := io.ReadAll(limitedReader)
 		if err != nil {
 			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, "读取请求体失败")
 			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
 				"ok": false, "code": ErrCodeMigrationInvalidMode, "error": "读取请求体失败",
+			})
+			return
+		}
+		if len(bodyBytes) > maxMigrateBodySize {
+			msg := fmt.Sprintf("请求体大小超过限制 (%d 字节)", maxMigrateBodySize)
+			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"ok": false, "code": ErrCodeMigrationInvalidMode, "error": msg,
 			})
 			return
 		}
@@ -404,6 +663,15 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, "请求体 JSON 格式无效")
 				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
 					"ok": false, "code": ErrCodeMigrationInvalidMode, "error": fmt.Sprintf("请求体 JSON 格式无效: %v", err),
+				})
+				return
+			}
+			var extra json.RawMessage
+			if err := dec.Decode(&extra); err != io.EOF {
+				msg := "请求体包含多余的 JSON 内容或非法数据"
+				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"ok": false, "code": ErrCodeMigrationInvalidMode, "error": msg,
 				})
 				return
 			}
@@ -516,7 +784,7 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 
 		if err := c.cfgMgr.Commit(candidate); err != nil {
 			if targetCreatedByUs {
-				_ = os.Remove(targetDir) // Safe cleanup of empty directory created by us
+				_ = removeFunc(targetDir) // Safe cleanup of empty directory created by us
 			}
 			msg := fmt.Sprintf("配置提交失败: %v", err)
 			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
@@ -563,29 +831,50 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 		return
 	}
 
-	if sourceInfo, statErr := os.Lstat(sourceDir); statErr == nil {
-		if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
-			msg := "迁移源必须是普通目录，拒绝处理符号链接或文件"
+	sourceInfo, statErr := os.Lstat(sourceDir)
+	if statErr != nil {
+		msg := fmt.Sprintf("源缓存目录不存在或无法访问: %v", statErr)
+		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
+		})
+		return
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
+		msg := "迁移源必须是普通目录，拒绝处理符号链接或文件"
+		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
+		})
+		return
+	}
+	if err := validateCacheMigrationTree(sourceDir); err != nil {
+		msg := fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err)
+		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
+		})
+		return
+	}
+
+	if reqMode == "overwrite" {
+		hasAssets, err := hasConfirmedCacheAssets(sourceDir)
+		if err != nil {
+			msg := fmt.Sprintf("检查源缓存内容失败: %v", err)
 			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok": false, "error": msg,
+			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
 			})
 			return
 		}
-		if err := validateCacheMigrationTree(sourceDir); err != nil {
-			msg := fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err)
+		if !hasAssets {
+			msg := "源缓存目录为空或未包含任何有效缓存素材，拒绝覆盖已有目标缓存"
 			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
 			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
 			})
 			return
 		}
-	} else if !os.IsNotExist(statErr) {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, statErr.Error())
-		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-			"ok": false, "error": statErr.Error(),
-		})
-		return
 	}
 
 	parentDir := filepath.Dir(targetDir)
@@ -770,7 +1059,7 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 
 	if targetExists {
 		oldBackupDir = filepath.Join(parentDir, fmt.Sprintf(".gbf-cache-old-%d", time.Now().UnixNano()))
-		if err := os.Rename(targetDir, oldBackupDir); err != nil {
+		if err := renameFunc(targetDir, oldBackupDir); err != nil {
 			msg := fmt.Sprintf("重命名现有目标目录至备份失败: %v", err)
 			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
 			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -780,9 +1069,9 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 		}
 	}
 
-	if err := os.Rename(stageDir, targetDir); err != nil {
+	if err := renameFunc(stageDir, targetDir); err != nil {
 		if targetExists {
-			if rbErr := os.Rename(oldBackupDir, targetDir); rbErr != nil {
+			if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
 				msg := fmt.Sprintf("重命名暂存目录失败且回滚备份失败: %v (回滚错误: %v, 备份位于: %s)", err, rbErr, oldBackupDir)
 				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
 				c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
@@ -804,10 +1093,13 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 	candidate.CacheDir = targetDir
 
 	if err := c.cfgMgr.Commit(candidate); err != nil {
-		_ = os.RemoveAll(targetDir)
+		cleanupErr := removeAllFunc(targetDir)
 		if targetExists {
-			if rbErr := os.Rename(oldBackupDir, targetDir); rbErr != nil {
+			if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
 				msg := fmt.Sprintf("配置持久化失败且恢复旧目录失败: %v (恢复错误: %v, 备份位于: %s)", err, rbErr, oldBackupDir)
+				if cleanupErr != nil {
+					msg += fmt.Sprintf(" (新目录清理失败: %v)", cleanupErr)
+				}
 				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
 				c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
 					"ok": false, "code": ErrCodeMigrationRollbackFailed, "backup_dir": oldBackupDir, "error": msg,
@@ -816,6 +1108,9 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 			}
 		}
 		msg := fmt.Sprintf("配置持久化失败: %v", err)
+		if cleanupErr != nil {
+			msg += fmt.Sprintf(" (新目录清理失败: %v)", cleanupErr)
+		}
 		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
 		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
 			"ok": false, "code": ErrCodeMigrationConfigCommitFailed, "error": msg,
@@ -828,7 +1123,7 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 
 	var warningMsg string
 	if targetExists && oldBackupDir != "" {
-		if rmErr := os.RemoveAll(oldBackupDir); rmErr != nil {
+		if rmErr := removeAllFunc(oldBackupDir); rmErr != nil {
 			warningMsg = fmt.Sprintf("旧目标目录清理失败，请手动清理: %s (%v)", oldBackupDir, rmErr)
 			if c.stats != nil {
 				c.stats.Log("WARN", fmt.Sprintf("[CACHE] %s", warningMsg))
