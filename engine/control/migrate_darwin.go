@@ -1145,7 +1145,17 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 		// Re-verify the frozen backup directory to eliminate the filesystem race window
 		if reqMode == "overwrite" {
 			if err := validateCacheOverwriteTarget(oldBackupDir); err != nil {
-				_ = renameFunc(oldBackupDir, targetDir)
+				if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
+					msg := fmt.Sprintf("现有目标目录确权复核失败且原目录恢复失败: %v (恢复错误: %v, 原缓存备份保留于: %s)", err, rbErr, oldBackupDir)
+					c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+					c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+						"ok":         false,
+						"code":       ErrCodeMigrationRollbackFailed,
+						"backup_dir": oldBackupDir,
+						"error":      msg,
+					})
+					return
+				}
 				msg := fmt.Sprintf("现有目标目录备份确权复核失败，已恢复原目录，拒绝覆盖: %v", err)
 				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
 				c.sendJSON(w, http.StatusConflict, map[string]interface{}{
@@ -1158,7 +1168,17 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 			}
 		} else {
 			if err := validateEmptyMigrationTarget(oldBackupDir); err != nil {
-				_ = renameFunc(oldBackupDir, targetDir)
+				if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
+					msg := fmt.Sprintf("迁移目标目录非空复核失败且原目录恢复失败: %v (恢复错误: %v, 原缓存备份保留于: %s)", err, rbErr, oldBackupDir)
+					c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+					c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+						"ok":         false,
+						"code":       ErrCodeMigrationRollbackFailed,
+						"backup_dir": oldBackupDir,
+						"error":      msg,
+					})
+					return
+				}
 				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
 				c.sendJSON(w, http.StatusConflict, map[string]interface{}{
 					"ok":         false,

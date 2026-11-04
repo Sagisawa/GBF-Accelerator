@@ -1239,3 +1239,199 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationFailure(t *tes
 		t.Fatalf("expected targetFile %s to exist after rollback: %v", targetFile, err)
 	}
 }
+
+func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackFailure_Overwrite(t *testing.T) {
+	tempBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+		tempBase = resolved
+	}
+	pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
+
+	sourceDir := filepath.Join(tempBase, "source_cache")
+	_ = os.MkdirAll(sourceDir, 0755)
+	_ = cache.EnsureRootMarker(sourceDir)
+	srcFile := filepath.Join(sourceDir, "assets", "img", "sp", "ui", "icon.png")
+	_ = os.MkdirAll(filepath.Dir(srcFile), 0755)
+	_ = os.WriteFile(srcFile, pngMagic, 0644)
+	_ = os.WriteFile(srcFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	targetDir := filepath.Join(tempBase, "target_cache")
+	_ = os.MkdirAll(targetDir, 0755)
+	_ = cache.EnsureRootMarker(targetDir)
+	targetFile := filepath.Join(targetDir, "assets", "img", "sp", "ui", "old.png")
+	_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
+	_ = os.WriteFile(targetFile, pngMagic, 0644)
+	_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+	origRename := renameFunc
+	renameCalls := 0
+	var capturedBackupDir string
+	renameFunc = func(oldpath, newpath string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			// Step 1: First rename moves targetDir -> oldBackupDir
+			capturedBackupDir = newpath
+			err := origRename(oldpath, newpath)
+			if err == nil {
+				// Step 2: Inject an unconfirmed file into the frozen backup directory
+				corruptFile := filepath.Join(newpath, "assets", "img", "corrupt_note.txt")
+				_ = os.WriteFile(corruptFile, []byte("unconfirmed content"), 0644)
+			}
+			return err
+		}
+		if renameCalls == 2 {
+			// Step 3: Second rename deliberately fails to simulate rollback failure
+			return fmt.Errorf("injected disk failure during rollback rename")
+		}
+		return origRename(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameFunc = origRename })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"overwrite"}`)))
+	rec := httptest.NewRecorder()
+	ctrl.handleMigrateStandardCache(rec, req)
+
+	// Step 4: Verify API returns HTTP 500 and ErrCodeMigrationRollbackFailed
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 on rollback failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to parse response JSON: %v", err)
+	}
+	if res["code"] != ErrCodeMigrationRollbackFailed {
+		t.Fatalf("expected code %s, got %v", ErrCodeMigrationRollbackFailed, res["code"])
+	}
+
+	// Step 5: Verify response contains the correct backup_dir
+	if res["backup_dir"] != capturedBackupDir {
+		t.Fatalf("expected backup_dir %s, got %v", capturedBackupDir, res["backup_dir"])
+	}
+
+	// Step 6: Verify original cache remains preserved in the backup directory, not deleted
+	backedUpFile := filepath.Join(capturedBackupDir, "assets", "img", "sp", "ui", "old.png")
+	if _, err := os.Stat(backedUpFile); err != nil {
+		t.Fatalf("expected original cache file to be preserved in backup directory %s: %v", backedUpFile, err)
+	}
+
+	// Target directory should not have been restored
+	if _, err := os.Stat(targetFile); !os.IsNotExist(err) {
+		t.Fatalf("expected targetFile to not exist at original path after failed rollback, but got: %v", err)
+	}
+}
+
+func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackFailure_Migrate(t *testing.T) {
+	tempBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+		tempBase = resolved
+	}
+
+	sourceDir := filepath.Join(tempBase, "source_cache")
+	_ = os.MkdirAll(sourceDir, 0755)
+
+	targetDir := filepath.Join(tempBase, "target_cache")
+	_ = os.MkdirAll(targetDir, 0755) // initially empty, passes validateEmptyMigrationTarget
+
+	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+	origRename := renameFunc
+	renameCalls := 0
+	var capturedBackupDir string
+	renameFunc = func(oldpath, newpath string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			capturedBackupDir = newpath
+			err := origRename(oldpath, newpath)
+			if err == nil {
+				// Inject an unexpected non-empty file into the backup directory
+				injectedFile := filepath.Join(newpath, "unexpected.dat")
+				_ = os.WriteFile(injectedFile, []byte("data"), 0644)
+			}
+			return err
+		}
+		if renameCalls == 2 {
+			// Second rename simulates rollback failure
+			return fmt.Errorf("injected disk failure during migrate rollback rename")
+		}
+		return origRename(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameFunc = origRename })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"migrate"}`)))
+	rec := httptest.NewRecorder()
+	ctrl.handleMigrateStandardCache(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 on migrate rollback failure, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to parse response JSON: %v", err)
+	}
+	if res["code"] != ErrCodeMigrationRollbackFailed {
+		t.Fatalf("expected code %s, got %v", ErrCodeMigrationRollbackFailed, res["code"])
+	}
+	if res["backup_dir"] != capturedBackupDir {
+		t.Fatalf("expected backup_dir %s, got %v", capturedBackupDir, res["backup_dir"])
+	}
+
+	// Verify backup dir remains preserved
+	injectedFile := filepath.Join(capturedBackupDir, "unexpected.dat")
+	if _, err := os.Stat(injectedFile); err != nil {
+		t.Fatalf("expected injected file to be preserved in backup directory %s: %v", injectedFile, err)
+	}
+}
+
+func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackSuccess_Migrate(t *testing.T) {
+	tempBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+		tempBase = resolved
+	}
+
+	sourceDir := filepath.Join(tempBase, "source_cache")
+	_ = os.MkdirAll(sourceDir, 0755)
+
+	targetDir := filepath.Join(tempBase, "target_cache")
+	_ = os.MkdirAll(targetDir, 0755) // initially empty, passes validateEmptyMigrationTarget
+
+	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+
+	origRename := renameFunc
+	renameCalls := 0
+	renameFunc = func(oldpath, newpath string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			err := origRename(oldpath, newpath)
+			if err == nil {
+				injectedFile := filepath.Join(newpath, "unexpected.dat")
+				_ = os.WriteFile(injectedFile, []byte("data"), 0644)
+			}
+			return err
+		}
+		return origRename(oldpath, newpath)
+	}
+	t.Cleanup(func() { renameFunc = origRename })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"migrate"}`)))
+	rec := httptest.NewRecorder()
+	ctrl.handleMigrateStandardCache(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected status 409 on successful rollback, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to parse response JSON: %v", err)
+	}
+	if res["code"] != ErrCodeMigrationTargetNotEmpty {
+		t.Fatalf("expected code %s, got %v", ErrCodeMigrationTargetNotEmpty, res["code"])
+	}
+
+	// Original directory must have been restored
+	restoredFile := filepath.Join(targetDir, "unexpected.dat")
+	if _, err := os.Stat(restoredFile); err != nil {
+		t.Fatalf("expected restored file to exist at targetDir: %v", err)
+	}
+}
