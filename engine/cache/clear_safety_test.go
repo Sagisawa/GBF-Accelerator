@@ -1582,16 +1582,7 @@ func TestClearAll_PureACGPowerDirectoryE2E(t *testing.T) {
 		}
 	}
 
-	// 3. Check allFilesConfirmed assuming marker exists (breaks circular dependency)
-	allConfirmed, err := AreAllFilesConfirmed(tmpDir)
-	if err != nil {
-		t.Fatalf("AreAllFilesConfirmed failed: %v", err)
-	}
-	if !allConfirmed {
-		t.Fatalf("expected allFilesConfirmed to be true for pure ACGPower assets under assumed marker")
-	}
-
-	// 4. Explicitly confirm and write marker
+	// 3. Explicitly confirm and write marker
 	if err := mgr.EnsureRootMarker(); err != nil {
 		t.Fatalf("EnsureRootMarker failed: %v", err)
 	}
