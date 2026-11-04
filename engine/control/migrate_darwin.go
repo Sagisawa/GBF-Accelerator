@@ -6,6 +6,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -242,7 +243,256 @@ func validateCacheMigrationTree(root string) error {
 	})
 }
 
+func isOfficialGBFHost(host string) bool {
+	lower := strings.ToLower(host)
+	switch lower {
+	case "granbluefantasy.com",
+		"game.granbluefantasy.jp",
+		"ava-a.sp.mbga.jp",
+		"connect.mobage.jp",
+		"steam.granbluefantasy.com",
+		"extrafes.granbluefantasy.jp",
+		"rising.granbluefantasy.jp":
+		return true
+	default:
+		return strings.HasSuffix(lower, ".granbluefantasy.jp") || strings.HasSuffix(lower, ".granbluefantasy.com")
+	}
+}
+
+type legacyOfficialMeta struct {
+	ContentEncoding string
+}
+
+func verifyLegacyOfficialHostAsset(slashRel, assetPath string, metaBytes []byte) (legacyOfficialMeta, bool) {
+	clean := filepath.ToSlash(slashRel)
+	clean = strings.TrimPrefix(clean, "/")
+	segs := strings.Split(clean, "/")
+	if len(segs) < 3 || segs[0] != "hosts" {
+		return legacyOfficialMeta{}, false
+	}
+	host := segs[1]
+	if !isOfficialGBFHost(host) {
+		return legacyOfficialMeta{}, false
+	}
+
+	var meta struct {
+		Version         int    `json:"v"`
+		Namespace       string `json:"ns"`
+		MD5             string `json:"md5"`
+		ContentEncoding string `json:"ce"`
+	}
+	if err := json.Unmarshal(metaBytes, &meta); err != nil || meta.Version != 1 || meta.MD5 == "" {
+		return legacyOfficialMeta{}, false
+	}
+	if meta.Namespace != "" {
+		return legacyOfficialMeta{}, false
+	}
+
+	f, err := os.Open(assetPath)
+	if err != nil {
+		return legacyOfficialMeta{}, false
+	}
+	defer f.Close()
+
+	h := md5.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return legacyOfficialMeta{}, false
+	}
+	actualMD5 := fmt.Sprintf("%x", h.Sum(nil))
+	if !strings.EqualFold(actualMD5, meta.MD5) {
+		return legacyOfficialMeta{}, false
+	}
+
+	return legacyOfficialMeta{ContentEncoding: meta.ContentEncoding}, true
+}
+
+// isSupportedOverwriteAssetExtension strictly whitelists recognized GBF static asset extensions
+// for destructive overwrite validation. Arbitrary text files (e.g. .txt, .docx), binaries, or scripts
+// are strictly rejected.
+func isSupportedOverwriteAssetExtension(slashRel string) bool {
+	lower := strings.ToLower(slashRel)
+	ext := filepath.Ext(lower)
+	switch ext {
+	// Images
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg":
+		return true
+	// Audio / Video
+	case ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm":
+		return true
+	// Web fonts & wasm
+	case ".woff", ".woff2", ".ttf", ".otf", ".wasm":
+		return true
+	// Web scripts & stylesheets
+	case ".js", ".css":
+		return true
+	// Structured data / texture atlas
+	case ".json":
+		return true
+	default:
+		return false
+	}
+}
+
+func isAnyImageMagic(sample []byte) bool {
+	if bytes.HasPrefix(sample, []byte("\x89PNG\r\n\x1a\n")) {
+		return true
+	}
+	if bytes.HasPrefix(sample, []byte("\xff\xd8\xff")) {
+		return true
+	}
+	if len(sample) >= 12 && bytes.HasPrefix(sample, []byte("RIFF")) && bytes.Equal(sample[8:12], []byte("WEBP")) {
+		return true
+	}
+	if bytes.HasPrefix(sample, []byte("GIF87a")) || bytes.HasPrefix(sample, []byte("GIF89a")) {
+		return true
+	}
+	return false
+}
+
+func verifyOverwriteAssetContent(filePath, slashRel string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("无法读取素材文件: %w", err)
+	}
+	defer f.Close()
+
+	var buf [512]byte
+	n, readErr := io.ReadFull(f, buf[:])
+	if (readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF) || n == 0 {
+		return fmt.Errorf("素材文件为空或读取失败: %w", readErr)
+	}
+	sample := buf[:n]
+
+	// Gzip compressed stream check
+	if n >= 2 && sample[0] == 0x1f && sample[1] == 0x8b {
+		cleanLower := strings.ToLower(slashRel)
+		if !cache.VerifyCacheFileMagic(filePath, cleanLower) {
+			return fmt.Errorf("压缩素材流解压或校验失败: %s", slashRel)
+		}
+		return nil
+	}
+
+	// Reject HTML content for all static assets
+	sampleLower := bytes.TrimSpace(bytes.ToLower(sample))
+	if bytes.HasPrefix(sampleLower, []byte("<!doctype")) ||
+		bytes.HasPrefix(sampleLower, []byte("<html")) ||
+		bytes.HasPrefix(sampleLower, []byte("<head")) ||
+		bytes.HasPrefix(sampleLower, []byte("<body")) ||
+		bytes.HasPrefix(sampleLower, []byte("<h1")) ||
+		bytes.HasPrefix(sampleLower, []byte("<title")) {
+		return fmt.Errorf("素材包含 HTML 内容: %s", slashRel)
+	}
+
+	cleanLower := strings.ToLower(slashRel)
+	ext := filepath.Ext(cleanLower)
+
+	switch ext {
+	case ".png":
+		if !bytes.HasPrefix(sample, []byte("\x89PNG\r\n\x1a\n")) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("PNG 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".jpg", ".jpeg":
+		if !bytes.HasPrefix(sample, []byte("\xff\xd8\xff")) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("JPEG 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".webp":
+		if (len(sample) < 12 || !bytes.HasPrefix(sample, []byte("RIFF")) || !bytes.Equal(sample[8:12], []byte("WEBP"))) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("WebP 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".gif":
+		if !bytes.HasPrefix(sample, []byte("GIF87a")) && !bytes.HasPrefix(sample, []byte("GIF89a")) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("GIF 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".ico":
+		if !bytes.HasPrefix(sample, []byte("\x00\x00\x01\x00")) && !isAnyImageMagic(sample) {
+			return fmt.Errorf("ICO 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".wav":
+		if len(sample) < 12 || !bytes.HasPrefix(sample, []byte("RIFF")) || !bytes.Equal(sample[8:12], []byte("WAVE")) {
+			return fmt.Errorf("WAV 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".ogg":
+		if !bytes.HasPrefix(sample, []byte("OggS")) {
+			return fmt.Errorf("OGG 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".mp3":
+		isID3 := bytes.HasPrefix(sample, []byte("ID3"))
+		isMPEG := len(sample) >= 2 && sample[0] == 0xFF && (sample[1]&0xE0) == 0xE0
+		if !isID3 && !isMPEG {
+			return fmt.Errorf("MP3 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".mp4", ".m4a":
+		if len(sample) < 8 || !bytes.Equal(sample[4:8], []byte("ftyp")) {
+			return fmt.Errorf("MP4/M4A 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".webm":
+		if !bytes.HasPrefix(sample, []byte("\x1a\x45\xdf\xa3")) {
+			return fmt.Errorf("WebM 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".woff2":
+		if !bytes.HasPrefix(sample, []byte("wOF2")) {
+			return fmt.Errorf("WOFF2 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".woff":
+		if !bytes.HasPrefix(sample, []byte("wOFF")) {
+			return fmt.Errorf("WOFF 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".wasm":
+		if !bytes.HasPrefix(sample, []byte("\x00asm")) {
+			return fmt.Errorf("WASM 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".ttf", ".otf":
+		if !bytes.HasPrefix(sample, []byte("\x00\x01\x00\x00")) &&
+			!bytes.HasPrefix(sample, []byte("OTTO")) &&
+			!bytes.HasPrefix(sample, []byte("true")) {
+			return fmt.Errorf("TTF/OTF 素材文件魔数不匹配: %s", slashRel)
+		}
+	case ".js", ".css":
+		if bytes.IndexByte(sample, 0x00) != -1 {
+			return fmt.Errorf("JS/CSS 脚本或样式文件包含二进制空字符: %s", slashRel)
+		}
+		// Full stream scan for any remaining NUL bytes
+		var restBuf [32 * 1024]byte
+		for {
+			rn, rErr := f.Read(restBuf[:])
+			if rn > 0 && bytes.IndexByte(restBuf[:rn], 0x00) != -1 {
+				return fmt.Errorf("JS/CSS 脚本或样式文件包含二进制空字符: %s", slashRel)
+			}
+			if rErr != nil {
+				if rErr == io.EOF {
+					break
+				}
+				return fmt.Errorf("读取 JS/CSS 内容失败: %w", rErr)
+			}
+		}
+	case ".svg":
+		trimmed := bytes.TrimSpace(sample)
+		isDirectSVG := bytes.HasPrefix(trimmed, []byte("<svg"))
+		isXMLWithSVG := bytes.HasPrefix(trimmed, []byte("<?xml")) && bytes.Contains(bytes.ToLower(sample), []byte("<svg"))
+		if !isDirectSVG && !isXMLWithSVG {
+			return fmt.Errorf("SVG 素材文件缺少有效 XML 或 SVG 标签声明: %s", slashRel)
+		}
+	case ".json":
+		trimmed := bytes.TrimSpace(sample)
+		if !bytes.HasPrefix(trimmed, []byte("{")) && !bytes.HasPrefix(trimmed, []byte("[")) {
+			return fmt.Errorf("JSON 素材文件未以有效 JSON 结构起始: %s", slashRel)
+		}
+		fullBytes, rErr := os.ReadFile(filePath)
+		if rErr != nil {
+			return fmt.Errorf("读取 JSON 素材内容失败: %w", rErr)
+		}
+		if !json.Valid(fullBytes) {
+			return fmt.Errorf("JSON 素材文件内容语法无效: %s", slashRel)
+		}
+	default:
+		return fmt.Errorf("不支持进行覆盖验证的素材类型: %s", slashRel)
+	}
+	return nil
+}
+
 // hasConfirmedCacheAssets checks whether dir contains at least one confirmed valid GBF cache asset.
+// It verifies both the asset extension whitelist and content consistency, ensuring non-GBF files
+// (e.g. personal-note.txt with companion .ext) are not falsely recognized as valid assets.
 func hasConfirmedCacheAssets(dir string) (bool, error) {
 	hasMarker := cache.HasRootMarker(dir)
 	hasAssets := false
@@ -251,17 +501,62 @@ func hasConfirmedCacheAssets(dir string) (bool, error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if path == dir || entry.IsDir() {
+		if path == dir {
 			return nil
 		}
+		if entry.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		slashRel := filepath.ToSlash(rel)
+		baseName := entry.Name()
+
+		if slashRel == cache.RootMarkerFileName || config.IsSystemJunk(baseName) {
+			return nil
+		}
+		if cache.IsAcceleratorTempFile(slashRel) || cache.IsAcceleratorQuarantineFile(slashRel) {
+			return nil
+		}
+		if strings.HasSuffix(slashRel, ".ext") {
+			return nil
+		}
+
 		info, err := entry.Info()
 		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
 			return nil
 		}
-		if cache.IsConfirmedCacheFileWithInfo(dir, path, info, hasMarker) {
-			hasAssets = true
-			return filepath.SkipAll
+
+		// Must have a supported GBF asset extension
+		if !isSupportedOverwriteAssetExtension(slashRel) {
+			return nil
 		}
+
+		// Tier-1: Paired metadata check
+		extPath := path + ".ext"
+		if extFi, extErr := os.Lstat(extPath); extErr == nil && extFi.Mode().IsRegular() {
+			metaBytes, rErr := os.ReadFile(extPath)
+			if rErr == nil {
+				if _, ok := cache.VerifyTier1Meta(slashRel, metaBytes); ok {
+					if verifyOverwriteAssetContent(path, slashRel) == nil {
+						hasAssets = true
+						return filepath.SkipAll
+					}
+				}
+			}
+			return nil
+		}
+
+		// Tier-2: Legacy file without .ext (root marker + top level shape + magic bytes)
+		if cleanLower, ok := cache.IsTier2Candidate(slashRel, hasMarker); ok {
+			if verifyOverwriteAssetContent(path, cleanLower) == nil {
+				hasAssets = true
+				return filepath.SkipAll
+			}
+		}
+
 		return nil
 	})
 
@@ -320,9 +615,8 @@ func RecoverResidualMigrationBackup(backupDir, targetDir string) error {
 	return renameFunc(backupDir, targetDir)
 }
 
-// validateCacheOverwriteTarget performs structural sandbox validation on the target directory.
-// It ensures target directory is a regular directory containing only recognized cache subdirectories
-// (e.g. assets, hosts), standard metadata (.gbf_cache), or OS junk (.DS_Store), rejecting unknown files or directories.
+// validateCacheOverwriteTarget performs 100% full attribution check on every single file in the target directory
+// without any sampling cutoffs. It strictly rejects unknown files, orphan .ext metadata, system junk, and temp files.
 func validateCacheOverwriteTarget(root string) error {
 	fi, err := os.Lstat(root)
 	if os.IsNotExist(err) {
@@ -334,38 +628,142 @@ func validateCacheOverwriteTarget(root string) error {
 	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
 		return fmt.Errorf("覆盖目标不是普通目录: %s", root)
 	}
+	hasMarker := cache.HasRootMarker(root)
 
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		name := entry.Name()
+	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
 		if entry.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-			return fmt.Errorf("目标目录包含符号链接或特殊文件: %s", filepath.Join(root, name))
+			return fmt.Errorf("目标目录包含符号链接或特殊文件: %s", path)
 		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		slashRel := filepath.ToSlash(rel)
+
 		if entry.IsDir() {
-			if !cache.IsConfirmedCacheDirectory(name) {
-				return fmt.Errorf("目标目录包含未通过确权的目录: %s", name)
+			if !cache.IsConfirmedCacheDirectory(slashRel) {
+				return fmt.Errorf("目标目录包含未通过确权的目录: %s", rel)
 			}
-			continue
+			return nil
 		}
 
-		// Files at root level:
-		if name == cache.RootMarkerFileName || config.IsSystemJunk(name) {
-			continue
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
 		}
-		if name == "favicon.ico" || name == "favicon.ico.ext" {
-			continue
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("目标目录包含非普通文件: %s", path)
 		}
-		if cache.IsAcceleratorTempFile(name) || cache.IsAcceleratorQuarantineFile(name) {
-			return fmt.Errorf("目标目录包含未纳入严格确权的杂项或残留文件: %s", name)
-		}
-		return fmt.Errorf("目标目录包含未通过确权的文件: %s", name)
-	}
 
-	return nil
+		// Root marker check
+		if slashRel == cache.RootMarkerFileName {
+			if !hasMarker {
+				return fmt.Errorf("目标目录根标记无效: %s", path)
+			}
+			return nil
+		}
+
+		// System junk (e.g. .DS_Store, Thumbs.db, desktop.ini) is harmless OS metadata.
+		// Allow it in overwrite target, matching normal cache scanning and validateCacheMigrationTree.
+		if config.IsSystemJunk(entry.Name()) {
+			return nil
+		}
+
+		// Strictly reject temp streaming files and quarantine files in overwrite target
+		if cache.IsAcceleratorTempFile(slashRel) || cache.IsAcceleratorQuarantineFile(slashRel) {
+			return fmt.Errorf("目标目录包含未纳入严格确权的杂项或残留文件: %s", rel)
+		}
+
+		// Metadata file (.ext)
+		if strings.HasSuffix(slashRel, ".ext") {
+			assetPath := strings.TrimSuffix(path, ".ext")
+			assetSlashRel := strings.TrimSuffix(slashRel, ".ext")
+			if config.IsSystemJunk(filepath.Base(assetPath)) {
+				return nil
+			}
+			if !isSupportedOverwriteAssetExtension(assetSlashRel) {
+				return fmt.Errorf("目标目录元数据指向不受支持的素材扩展名: %s", rel)
+			}
+			metaBytes, rErr := os.ReadFile(path)
+			if rErr != nil {
+				return fmt.Errorf("目标目录包含无法读取的元数据: %s", rel)
+			}
+			if _, ok := cache.VerifyTier1Meta(assetSlashRel, metaBytes); !ok {
+				if _, verified := verifyLegacyOfficialHostAsset(assetSlashRel, assetPath, metaBytes); !verified {
+					return fmt.Errorf("目标目录包含无法配对验证的元数据: %s", rel)
+				}
+			}
+
+			assetFi, aErr := os.Lstat(assetPath)
+			if aErr != nil {
+				if os.IsNotExist(aErr) {
+					// Orphan .ext file: verify directory shape matches confirmed cache directory;
+					// valid orphan .ext (e.g. from cache prunes or historical tests) does not block overwrite.
+					if !cache.IsConfirmedCacheDirectory(filepath.ToSlash(filepath.Dir(slashRel))) {
+						return fmt.Errorf("目标目录包含未知路径的孤儿元数据: %s", rel)
+					}
+					return nil
+				}
+				return fmt.Errorf("目标目录元数据指向的素材文件无法访问: %s", rel)
+			}
+			if !assetFi.Mode().IsRegular() {
+				return fmt.Errorf("目标目录元数据指向非普通文件: %s", rel)
+			}
+			return nil
+		}
+
+		// Asset file (without .ext)
+		if info.Size() <= 0 {
+			return fmt.Errorf("目标目录包含空文件: %s", rel)
+		}
+		if !isSupportedOverwriteAssetExtension(slashRel) {
+			return fmt.Errorf("目标目录包含不受支持的素材扩展名: %s", rel)
+		}
+
+		extPath := path + ".ext"
+		if extFi, extErr := os.Lstat(extPath); extErr == nil && extFi.Mode().IsRegular() {
+			metaBytes, rErr := os.ReadFile(extPath)
+			if rErr != nil {
+				return fmt.Errorf("目标目录包含无法读取的元数据: %s.ext", rel)
+			}
+			meta, ok := cache.VerifyTier1Meta(slashRel, metaBytes)
+			contentEncoding := meta.ContentEncoding
+			if !ok {
+				if legacyMeta, verified := verifyLegacyOfficialHostAsset(slashRel, path, metaBytes); verified {
+					contentEncoding = legacyMeta.ContentEncoding
+					ok = true
+				}
+			}
+			if !ok {
+				return fmt.Errorf("目标目录包含无法确认归属的文件: %s", rel)
+			}
+			// If asset has Content-Encoding: br (Brotli), it is a compressed binary stream
+			// recorded by the proxy and verified by Tier-1 metadata.
+			if contentEncoding != "br" {
+				if err := verifyOverwriteAssetContent(path, slashRel); err != nil {
+					return fmt.Errorf("目标目录素材内容与格式校验不一致: %v", err)
+				}
+			}
+			return nil
+		}
+
+		// Legacy file without .ext:
+		// Check directory structure, asset extension, and verify magic bytes for EVERY single file (no 50-file limit)
+		cleanLower, ok := cache.IsTier2Candidate(slashRel, true)
+		if !ok {
+			return fmt.Errorf("目标目录包含无法确认归属的文件 (目录结构或素材扩展名无效): %s", rel)
+		}
+		if err := verifyOverwriteAssetContent(path, cleanLower); err != nil {
+			return fmt.Errorf("目标目录素材魔数或内容校验失败: %v", err)
+		}
+		return nil
+	})
 }
 
 func validateEmptyMigrationTarget(target string) error {
