@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"fmt"
 	"math/rand"
 	"os"
@@ -17,19 +18,20 @@ func TestBoostLifecycle_ClearAll(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
+	_ = EnsureRootMarker(tempDir)
 	mgr := NewManager(tempDir, 16)
 	defer mgr.Close()
 
 	// 1. Prewarm with an asset
-	assetsDir := filepath.Join(tempDir, "assets", "clearall")
+	assetsDir := filepath.Join(tempDir, "assets", "12345", "img", "sp")
 	_ = os.MkdirAll(assetsDir, 0755)
 	p := filepath.Join(assetsDir, "test.png")
 	data := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtest")
 	_ = os.WriteFile(p, data, 0644)
-	_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
+	// The root marker and valid PNG exercise Tier-2 ownership; no fake .ext is needed.
 
 	mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
-	if item, src := mgr.GetWithNamespace("gbf", "assets/clearall/test.png"); item == nil || src != "RAM-BOOST" {
+	if item, src := mgr.GetWithNamespace("gbf", "assets/12345/img/sp/test.png"); item == nil || src != "RAM-BOOST" {
 		t.Fatalf("expected RAM-BOOST hit before ClearAll, got src=%s", src)
 	}
 
@@ -43,7 +45,7 @@ func TestBoostLifecycle_ClearAll(t *testing.T) {
 	}
 
 	// 4. Verify request cannot hit Resident Pool
-	if item, _ := mgr.GetWithNamespace("gbf", "assets/clearall/test.png"); item != nil {
+	if item, _ := mgr.GetWithNamespace("gbf", "assets/12345/img/sp/test.png"); item != nil {
 		t.Fatalf("expected nil item after ClearAll, got %v", item)
 	}
 }
@@ -128,31 +130,37 @@ func TestBoostLifecycle_AuditInvalidatesCorruptedResident(t *testing.T) {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tempDir)
-
 	mgr := NewManager(tempDir, 16)
 	defer mgr.Close()
-
-	assetsDir := filepath.Join(tempDir, "assets", "audit")
-	_ = os.MkdirAll(assetsDir, 0755)
-	p := filepath.Join(assetsDir, "clean.png")
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRgood")
-	_ = os.WriteFile(p, validPng, 0644)
-	_ = os.WriteFile(p+".ext", []byte(`{"ContentType":"image/png","v":1}`), 0644)
-
-	mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
-	if item, _ := mgr.GetWithNamespace("gbf", "assets/audit/clean.png"); item == nil {
-		t.Fatalf("expected clean item in boost")
+	key := "assets/img/sp/ui/clean.png"
+	p, ok := mgr.resolvePathWithNamespace("gbf", key)
+	if !ok {
+		t.Fatal("failed to resolve test cache key")
 	}
-
-	// Corrupt file on disk
-	_ = os.WriteFile(p, []byte("corrupted HTML 500 error"), 0644)
-
-	// Run audit
-	mgr.AuditAndRepair()
-
-	// Resident entry must be deleted
-	if _, ok := mgr.ResidentPool().Get("assets/audit/clean.png"); ok {
-		t.Fatalf("expected corrupted file to be removed from resident pool after audit")
+	validPNG := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRgood")
+	if !mgr.Save(key, map[string]string{"content-type": "image/png"}, validPNG) {
+		t.Fatal("save cache fixture failed")
+	}
+	mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
+	if _, ok := mgr.ResidentPool().Get(key); !ok {
+		t.Fatal("expected clean item in boost")
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, bytes.Repeat([]byte("x"), len(validPNG)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(p, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	res := mgr.AuditAndRepair()
+	if res["ok"] != true || res["corrupted"] != 1 {
+		t.Fatalf("expected one confirmed corrupt asset to be repaired, got %+v", res)
+	}
+	if _, ok := mgr.ResidentPool().Get(key); ok {
+		t.Fatal("corrupt item should be removed from resident pool")
 	}
 }
 

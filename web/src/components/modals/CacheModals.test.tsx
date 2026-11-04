@@ -188,6 +188,7 @@ import { ClearCacheModal, resolveDefaultNamespaces } from './ClearCacheModal'
 import { AuditModal } from './AuditModal'
 import { BoostModal } from './BoostModal'
 import { LatencyTestModal, summarizeWarmLatency } from './LatencyTestModal'
+import { MigrateStandardModal } from './MigrateStandardModal'
 
 const sampleSnapshot = (id: string) => ({
   snapshot_id: id,
@@ -1059,5 +1060,70 @@ describe('ClearCacheModal concurrency and state regressions', () => {
     await cancelBoostBtn.props.onClick()
     await flushMicrotasks()
     expect(cancelBodies).toEqual([{ task_id: 'audit-42' }, { task_id: 'boost-77' }])
+  })
+
+  it('handles MigrateStandardModal conflict view and mode transitions', async () => {
+    let modeCalled: string | undefined
+    const onMigrateMock = vi.fn().mockImplementation(async (mode?: string) => {
+      modeCalled = mode
+      if (!mode || mode === 'migrate') {
+        const err: any = new Error('Target not empty')
+        err.code = 'CACHE_MIGRATION_TARGET_NOT_EMPTY'
+        throw err
+      }
+      return { ok: true }
+    })
+    const onCloseMock = vi.fn()
+
+    mountComponent(() =>
+      MigrateStandardModal({
+        isOpen: true,
+        onClose: onCloseMock,
+        currentDir: '/Users/test/Downloads/cache',
+        targetDir: '/Users/test/Library/Application Support/GBF-Accelerator/cache',
+        onMigrate: onMigrateMock,
+      })
+    )
+    await flushMicrotasks()
+
+    // 1. Initial view: Click Start Migration
+    const startBtn = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('开始迁移'))[0]
+    expect(startBtn).toBeDefined()
+    await startBtn.props.onClick()
+    await flushMicrotasks()
+
+    expect(onMigrateMock).toHaveBeenCalledWith('migrate')
+
+    // 2. Switched to conflict view: Find "仅切换目录" button and "覆盖并迁移..." button
+    const switchBtn = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('仅切换目录'))[0]
+    expect(switchBtn).toBeDefined()
+
+    const overwriteBtn = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('覆盖并迁移...'))[0]
+    expect(overwriteBtn).toBeDefined()
+
+    // 3. Click "覆盖并迁移..." -> enter secondary confirmation
+    await overwriteBtn.props.onClick()
+    await flushMicrotasks()
+
+    const confirmOverwriteBtn = findElements(
+      lastTree,
+      (el) => el.type === 'button' && el.text.includes('确认覆盖并迁移')
+    )[0]
+    expect(confirmOverwriteBtn).toBeDefined()
+
+    // 4. Click back button in confirmation -> back to conflict choices
+    const backBtn = findElements(lastTree, (el) => el.type === 'button' && el.text === '返回')[0]
+    expect(backBtn).toBeDefined()
+    await backBtn.props.onClick()
+    await flushMicrotasks()
+
+    // 5. Click "仅切换目录" -> executes switch_only and closes
+    const switchBtnAgain = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('仅切换目录'))[0]
+    await switchBtnAgain.props.onClick()
+    await flushMicrotasks()
+
+    expect(modeCalled).toBe('switch_only')
+    expect(onCloseMock).toHaveBeenCalled()
+    unmountComponent()
   })
 })

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"gbf-proxy/config"
 	"gbf-proxy/process"
 )
 
@@ -129,8 +130,12 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 		if err != nil || d.IsDir() {
 			return nil
 		}
+		baseName := d.Name()
+		if baseName == RootMarkerFileName || config.IsSystemJunk(baseName) {
+			return nil
+		}
 		// Rule VII: Strictly exclude .ext, .tmp.*, .quarantine
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || strings.Contains(p, ".quarantine") {
+		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || isAcceleratorQuarantineFile(p) {
 			return nil
 		}
 

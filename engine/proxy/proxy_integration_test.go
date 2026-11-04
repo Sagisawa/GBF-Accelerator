@@ -1426,7 +1426,7 @@ func TestProxy_SingleFlight_PrefetchAndCommitFailureFollowerResilience(t *testin
 
 		time.Sleep(20 * time.Millisecond)
 		// Trigger ClearAll while leader's disk temp file is open so CommitDiskTempFile fails due to clearGen mismatch!
-		_, _ = cacheMgr.ClearAll()
+		_, _, _ = cacheMgr.ClearAll()
 		close(allowFinishStream)
 
 		wg.Wait()
@@ -1649,7 +1649,7 @@ func TestProxy_SingleFlight_PrefetchAndCommitFailureFollowerResilience(t *testin
 
 		time.Sleep(25 * time.Millisecond)
 		// ClearAll changes generation while leader is streaming -> CommitDiskTempFile fails
-		_, _ = cacheMgr.ClearAll()
+		_, _, _ = cacheMgr.ClearAll()
 		close(allowFinishStream)
 
 		wg.Wait()
@@ -1688,7 +1688,7 @@ func TestProxy_SingleFlight_PrefetchAndCommitFailureFollowerResilience(t *testin
 		}
 
 		// Conditional GET on cache miss with non-matching ETag for large file (>MaxRAMItemSize) must stream & spill to disk
-		_, _ = cacheMgr.ClearAll()
+		_, _, _ = cacheMgr.ClearAll()
 		var cond200Buf bytes.Buffer
 		req200, _ := http.NewRequest(http.MethodGet, "https://"+targetHost+assetPath, nil)
 		req200.Header.Set("If-None-Match", `"stale-etag"`)

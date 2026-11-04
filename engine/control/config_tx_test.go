@@ -81,20 +81,20 @@ func installConfigTxRecorder(ctrl *testControlServer) *configTxRecorder {
 // pauseApply installs the interleaving hook: the next apply transaction signals the returned
 // channel after reading its candidate snapshot and then blocks until release runs. This makes
 // the "stale candidate snapshot" interleaving deterministic instead of timing-dependent.
-func pauseApply(t *testing.T) (entered <-chan struct{}, release func()) {
+func pauseApply(t *testing.T, ctrl *testControlServer) (entered <-chan struct{}, release func()) {
 	t.Helper()
 	enteredCh := make(chan struct{})
 	releaseCh := make(chan struct{})
 	var enteredOnce sync.Once
 	var releaseOnce sync.Once
-	testBeforeApplyCommitHook = func() {
+	ctrl.SetBeforeApplyCommitHookForTest(func() {
 		enteredOnce.Do(func() { close(enteredCh) })
 		<-releaseCh
-	}
+	})
 	release = func() { releaseOnce.Do(func() { close(releaseCh) }) }
 	t.Cleanup(func() {
 		release()
-		testBeforeApplyCommitHook = nil
+		ctrl.SetBeforeApplyCommitHookForTest(nil)
 	})
 	return enteredCh, release
 }
@@ -144,7 +144,7 @@ func TestApplyConfigConcurrentWithSysProxyToggleDoesNotLoseUpdate(t *testing.T) 
 				}
 			}
 
-			entered, release := pauseApply(t)
+			entered, release := pauseApply(t, ctrl)
 
 			// Records whether the concurrent write managed to land inside apply's window.
 			writerCommitted := make(chan struct{})
@@ -207,7 +207,7 @@ func TestApplyConfigConcurrentWithStartupSetDoesNotLoseUpdate(t *testing.T) {
 	defer cleanup()
 	rec := installConfigTxRecorder(ctrl)
 
-	entered, release := pauseApply(t)
+	entered, release := pauseApply(t, ctrl)
 
 	writerCommitted := make(chan struct{})
 	var commitOnce sync.Once
@@ -270,7 +270,7 @@ func TestApplyConfigConcurrentWithHealthRepairRebindsToCommittedPort(t *testing.
 	ctrl.SetRepairer(health.NewRepairer(ctrl.cfgMgr, nil, ctrl.cacheMgr, nil, ctrl.stats, checker, rec.reloadControlPort))
 
 	const newControlPort = 8126
-	entered, release := pauseApply(t)
+	entered, release := pauseApply(t, ctrl)
 
 	var wg sync.WaitGroup
 	wg.Add(2)

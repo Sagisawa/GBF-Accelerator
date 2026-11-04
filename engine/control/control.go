@@ -99,8 +99,9 @@ type ControlServer struct {
 	dlCancelFn context.CancelFunc
 
 	// Broadcasters for SSE custom events
-	sseMu      sync.RWMutex
-	sseClients []chan []byte
+	sseMu                 sync.RWMutex
+	sseClients            []chan []byte
+	beforeApplyCommitHook func()
 
 	// Android Patch state
 	androidPatchMu       sync.Mutex
@@ -477,6 +478,11 @@ func (c *ControlServer) handleRoute(w http.ResponseWriter, req *http.Request) {
 	case "/api/cache/clear":
 		if req.Method == http.MethodPost {
 			c.handleCacheClear(w, req)
+			return
+		}
+	case "/api/cache/confirm-root":
+		if req.Method == http.MethodPost {
+			c.handleConfirmCacheRoot(w, req)
 			return
 		}
 	case "/api/cache/open-folder":
@@ -1051,10 +1057,9 @@ func (c *ControlServer) handleGetConfig(w http.ResponseWriter, req *http.Request
 	})
 }
 
-// testBeforeApplyCommitHook, when set, runs inside the apply transaction after it has read its
-// candidate snapshot but before it commits anything. Tests use it to force a deterministic
-// interleaving with the other config writers instead of relying on timing luck.
-var testBeforeApplyCommitHook func()
+func (c *ControlServer) SetBeforeApplyCommitHookForTest(hook func()) {
+	c.beforeApplyCommitHook = hook
+}
 
 func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Request) {
 	body, err := io.ReadAll(req.Body)
@@ -1077,8 +1082,8 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	candidate := c.cfgMgr.Candidate()
 	oldCandidate := candidate
 
-	if testBeforeApplyCommitHook != nil {
-		testBeforeApplyCommitHook()
+	if c.beforeApplyCommitHook != nil {
+		c.beforeApplyCommitHook()
 	}
 
 	if val, ok := patch["listen_port"].(float64); ok && val > 0 && val < 65536 {
@@ -1210,6 +1215,21 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	}
 	if val, ok := patch["language"].(string); ok {
 		candidate.Language = config.NormalizeLanguage(val)
+	}
+
+	if candidate.CacheDir != oldCandidate.CacheDir {
+		if err := config.ValidateCacheDir(candidate.CacheDir); err != nil {
+			validationCode := ""
+			if validationErr, ok := err.(*config.CacheDirValidationError); ok {
+				validationCode = validationErr.Code
+			}
+			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+				"ok": false, "code": "CACHE_DIR_INVALID",
+				"validation_code": validationCode,
+				"error": err.Error(), "message": err.Error(),
+			})
+			return
+		}
 	}
 
 	proxyNeedsReload := c.proxySrv != nil &&
@@ -1407,6 +1427,31 @@ func (c *ControlServer) handleCacheStats(w http.ResponseWriter, req *http.Reques
 	})
 }
 
+func (c *ControlServer) rejectUnsafeCacheMaintenance(w http.ResponseWriter) bool {
+	if c.cacheMgr == nil {
+		c.sendJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"ok": false, "code": "CACHE_MANAGER_UNAVAILABLE", "error": "缓存管理器不可用",
+		})
+		return true
+	}
+	if err := c.cacheMgr.ValidateDestructiveCacheDir(); err != nil {
+		validationCode := ""
+		if validationErr, ok := err.(*config.CacheDirValidationError); ok {
+			validationCode = validationErr.Code
+		}
+		message := "当前缓存目录不符合清理安全规则。旧目录仍可继续读写，但为避免误删用户数据，已禁用磁盘清理、瘦身和审计修复；请在设置中更换为专用缓存目录后再执行。"
+		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
+			"ok": false, "code": "CACHE_DIR_REQUIRES_RELOCATION",
+			"validation_code": validationCode,
+			"cache_dir": c.cacheMgr.GetCacheBase(),
+			"destructive_operations_blocked": true,
+			"error": message, "message": message,
+		})
+		return true
+	}
+	return false
+}
+
 func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Request) {
 	ramOnly := req.URL.Query().Get("ram_only") == "true"
 	if ramOnly {
@@ -1421,18 +1466,31 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 		return
 	}
 
+	if c.rejectUnsafeCacheMaintenance(w) {
+		return
+	}
+
 	taskID, _, ok := c.tryBeginCacheTask("clear_all")
 	if !ok {
 		c.sendTaskConflict(w)
 		return
 	}
 	var clearRes map[string]interface{}
+	clearStatus := "completed"
+	clearErr := ""
 	defer func() {
-		c.finishCacheTask(taskID, "clear_all", "completed", false, clearRes, "")
+		c.finishCacheTask(taskID, "clear_all", clearStatus, false, clearRes, clearErr)
 	}()
 
-	c.cacheMgr.ClearRAM()
-	diskDeleted, diskFreed := c.cacheMgr.ClearAll()
+	diskDeleted, diskFreed, diskSkipped, err := c.cacheMgr.ClearAllWithError()
+	if err != nil {
+		clearStatus = "failed"
+		clearErr = err.Error()
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok": false, "code": "CACHE_CLEAR_FAILED", "error": err.Error(),
+		})
+		return
+	}
 	c.cacheTaskMu.Lock()
 	c.boostProgress = cache.BoostProgress{State: cache.BoostStateDisabled, Done: true}
 	c.lastBoostResult = c.boostProgress
@@ -1449,6 +1507,7 @@ func (c *ControlServer) handleCacheClear(w http.ResponseWriter, req *http.Reques
 		"disk_cleared":       true,
 		"disk_files_deleted": diskDeleted,
 		"disk_bytes_freed":   diskFreed,
+		"disk_files_skipped": diskSkipped,
 	}
 	c.sendJSON(w, http.StatusOK, clearRes)
 }
@@ -1485,6 +1544,9 @@ func (c *ControlServer) broadcastEvent(event string, data interface{}) {
 }
 
 func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Request) {
+	if c.rejectUnsafeCacheMaintenance(w) {
+		return
+	}
 	taskID, cancelCh, ok := c.tryBeginCacheTask("audit")
 	if !ok {
 		c.sendTaskConflict(w)
@@ -1501,9 +1563,10 @@ func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Reques
 		var finalStatus = "completed"
 		var finalCancelled = false
 		var finalRes map[string]interface{}
+		var finalErr string
 
 		defer func() {
-			c.finishCacheTask(taskID, "audit", finalStatus, finalCancelled, finalRes, "")
+			c.finishCacheTask(taskID, "audit", finalStatus, finalCancelled, finalRes, finalErr)
 		}()
 
 		res := c.cacheMgr.AuditAndRepairWithProgress(func(p cache.AuditProgress) {
@@ -1522,6 +1585,12 @@ func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Reques
 		default:
 		}
 		finalRes = res
+		if okValue, ok := res["ok"].(bool); ok && !okValue {
+			finalStatus = "failed"
+			if errValue, ok := res["error"].(string); ok {
+				finalErr = errValue
+			}
+		}
 
 		c.cacheTaskMu.Lock()
 		c.lastAuditResult = res
@@ -1541,6 +1610,9 @@ func (c *ControlServer) handleCacheAudit(w http.ResponseWriter, req *http.Reques
 }
 
 func (c *ControlServer) handleCacheSlim(w http.ResponseWriter, req *http.Request) {
+	if c.rejectUnsafeCacheMaintenance(w) {
+		return
+	}
 	keep, snapshotID, err := parseSlimKeepAndSnapshot(req)
 	if err != nil {
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
@@ -2746,4 +2818,41 @@ func (c *ControlServer) handleStaticWeb(w http.ResponseWriter, req *http.Request
 	}
 
 	c.sendJSON(w, http.StatusNotFound, map[string]string{"error": "File not found", "path": req.URL.Path})
+}
+
+func (c *ControlServer) handleConfirmCacheRoot(w http.ResponseWriter, req *http.Request) {
+	if c.rejectUnsafeCacheMaintenance(w) {
+		return
+	}
+	if err := c.cacheMgr.ValidateDestructiveCacheDir(); err != nil {
+		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"ok":    false,
+			"code":  "UNSAFE_CACHE_DIR",
+			"error": fmt.Sprintf("缓存目录校验失败: %v", err),
+		})
+		return
+	}
+
+	if c.cacheMgr.HasRootMarker() {
+		c.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":              true,
+			"already_present": true,
+			"message":         "根标记已存在",
+		})
+		return
+	}
+
+	if err := c.cacheMgr.EnsureRootMarker(); err != nil {
+		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
+			"ok":    false,
+			"code":  "WRITE_ROOT_MARKER_FAILED",
+			"error": fmt.Sprintf("写入根标记失败: %v", err),
+		})
+		return
+	}
+
+	c.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "缓存根标记写入成功",
+	})
 }

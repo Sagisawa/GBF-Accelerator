@@ -248,6 +248,9 @@ type clearCategoryRequestPayload struct {
 // handleCacheClearCategory handles POST /api/cache/clear-category.
 // Validates category whitelist (rejecting versioned) and snapshot identity, then runs in background (202 Accepted).
 func (c *ControlServer) handleCacheClearCategory(w http.ResponseWriter, req *http.Request) {
+	if c.rejectUnsafeCacheMaintenance(w) {
+		return
+	}
 	var payload clearCategoryRequestPayload
 	if err := decodeStrictJSONBody(req, 64*1024, &payload); err != nil {
 		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{

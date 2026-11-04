@@ -19,6 +19,12 @@ import (
 
 func seedControlTestCache(t *testing.T, baseDir string) {
 	t.Helper()
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		t.Fatalf("mkdir baseDir: %v", err)
+	}
+	if err := cache.EnsureRootMarker(baseDir); err != nil {
+		t.Fatalf("create cache root marker: %v", err)
+	}
 	writePair := func(relPath, content string) {
 		full := filepath.Join(baseDir, filepath.FromSlash(relPath))
 		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
@@ -27,8 +33,31 @@ func seedControlTestCache(t *testing.T, baseDir string) {
 		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
 			t.Fatalf("write %s: %v", full, err)
 		}
-		ext := fmt.Sprintf(`{"ct":"image/png","lm":"Mon, 01 Jan 2026 00:00:00 GMT","cl":%d}`, len(content))
-		if err := os.WriteFile(full+".ext", []byte(ext), 0644); err != nil {
+		fi, err := os.Stat(full)
+		if err != nil {
+			t.Fatalf("stat %s: %v", full, err)
+		}
+		ns := "gbf"
+		if strings.HasPrefix(relPath, "hosts/") {
+			parts := strings.SplitN(relPath, "/", 3)
+			if len(parts) != 3 {
+				t.Fatalf("invalid host fixture path: %s", relPath)
+			}
+			ns = parts[1]
+		}
+		meta := map[string]interface{}{
+			"ct":       "application/octet-stream",
+			"ns":       ns,
+			"v":        1,
+			"verified": true,
+			"size":     fi.Size(),
+			"mtime":    fi.ModTime().UnixNano(),
+		}
+		metaBytes, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatalf("marshal ext metadata: %v", err)
+		}
+		if err := os.WriteFile(full+".ext", metaBytes, 0644); err != nil {
 			t.Fatalf("write ext %s: %v", full, err)
 		}
 	}
@@ -375,14 +404,13 @@ func TestControlAsyncFailureResultSynthesis(t *testing.T) {
 	stats := telemetry.NewStats()
 	ctrl := NewControlServer(cfgMgr, nil, cacheMgr, nil, stats)
 
-	// Point cacheMgr to a regular file so live /api/cache/slim fails inside the background goroutine
-	notADir := filepath.Join(tempDir, "not_a_dir.bin")
-	if err := os.WriteFile(notADir, []byte("file"), 0644); err != nil {
+	// Create a non-directory version prefix inside cacheDir so live /api/cache/slim fails inside the background goroutine
+	badPrefix := filepath.Join(cacheDir, "assets_en")
+	if err := os.WriteFile(badPrefix, []byte("not_a_dir"), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
-	cacheMgr.SetCacheBase(notADir)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/cache/slim?keep=2", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/slim?keep=3", nil)
 	req.Host = "127.0.0.1:8125"
 	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
@@ -400,4 +428,3 @@ func TestControlAsyncFailureResultSynthesis(t *testing.T) {
 		t.Fatalf("expected last_slim_result failed_count=1, got %+v", slimRes)
 	}
 }
-
