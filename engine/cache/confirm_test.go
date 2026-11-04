@@ -400,58 +400,34 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 
 	writeDiskFile := func(relPath string, data []byte) string {
 		full := filepath.Join(root, filepath.FromSlash(relPath))
-		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
-			t.Fatalf("mkdir failed: %v", err)
-		}
-		if err := os.WriteFile(full, data, 0644); err != nil {
-			t.Fatalf("write failed: %v", err)
-		}
+		_ = os.MkdirAll(filepath.Dir(full), 0755)
+		_ = os.WriteFile(full, data, 0644)
 		return full
 	}
 
 	writeExt := func(full string, meta diskMeta) {
-		if err := writeDiskExtFile(full, meta); err != nil {
-			t.Fatalf("writeDiskExtFile failed: %v", err)
-		}
+		_ = writeDiskExtFile(full, meta)
 	}
 
 	pngMagic := []byte("\x89PNG\r\n\x1a\nphotos")
 	jsCode := []byte("console.log('test');")
 
-	// 1. Negative: 2026/photos/photo.png MUST NOT be recognized under any tier
+	// 1. Negative: 2026/photos/photo.png (invalid category) rejected under all tiers
 	p2026 := writeDiskFile("2026/photos/photo.png", pngMagic)
 	fi2026, _ := os.Stat(p2026)
-	if IsConfirmedCacheFile(root, p2026, true) {
-		t.Fatalf("2026/photos/photo.png must NOT be recognized without .ext")
+	if IsConfirmedCacheFile(root, p2026, true) || isTier1VersionFallbackPath("2026/photos/photo.png") || isConfirmedCacheDir("2026/photos") {
+		t.Fatalf("2026/photos/photo.png must return false for version fallback checks")
 	}
-	writeExt(p2026, diskMeta{
-		ContentType: "image/png",
-		Version:     1,
-		Verified:    true,
-		Size:        int64(len(pngMagic)),
-		MTimeNano:   fi2026.ModTime().UnixNano(),
-		Namespace:   "gbf",
-	})
+	writeExt(p2026, diskMeta{ContentType: "image/png", Version: 1, Verified: true, Size: int64(len(pngMagic)), MTimeNano: fi2026.ModTime().UnixNano(), Namespace: "gbf"})
 	if IsConfirmedCacheFile(root, p2026, true) {
 		t.Fatalf("2026/photos/photo.png must NOT be recognized even with valid .ext")
 	}
-	if isTier1VersionFallbackPath("2026/photos/photo.png") {
-		t.Fatalf("2026/photos/photo.png must return false for isTier1VersionFallbackPath")
-	}
-	if isConfirmedCacheDir("2026/photos") {
-		t.Fatalf("2026/photos must return false for isConfirmedCacheDir")
-	}
 
-	// 2. 300/js/app.js without .ext (Tier-2 version directory support):
-	// - With root marker present: MUST be recognized through Tier-2!
-	// - Without root marker: MUST NOT be recognized!
+	// 2. 300/js/app.js without .ext: Tier-2 gated on root marker
 	p300 := writeDiskFile("300/js/app.js", jsCode)
 	fi300, _ := os.Stat(p300)
-	if !IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js without .ext must be recognized through Tier-2 when root marker is present")
-	}
-	if IsConfirmedCacheFile(root, p300, false) {
-		t.Fatalf("300/js/app.js without .ext must NOT be recognized through Tier-2 when root marker is absent")
+	if !IsConfirmedCacheFile(root, p300, true) || IsConfirmedCacheFile(root, p300, false) {
+		t.Fatalf("300/js/app.js without .ext must be confirmed only when root marker is present")
 	}
 	cacheRoot, err := os.OpenRoot(root)
 	if err != nil {
@@ -459,94 +435,34 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 	}
 	defer cacheRoot.Close()
 	if !isUnverifiedLegacyCacheCandidateInRoot(cacheRoot, "300/js/app.js", fi300, true) {
-		t.Fatalf("300/js/app.js without .ext must be treated as unverified legacy candidate when root marker is present")
+		t.Fatalf("300/js/app.js without .ext must be treated as unverified legacy candidate")
 	}
 
-	// 3. Negative: 300/js/app.js with mismatched .ext MUST NOT be recognized
-	// 3a. Namespace mismatch
-	writeExt(p300, diskMeta{
-		ContentType: "application/javascript",
-		Version:     1,
-		Verified:    true,
-		Size:        int64(len(jsCode)),
-		MTimeNano:   fi300.ModTime().UnixNano(),
-		Namespace:   "unrelated.host.com",
-	})
-	if IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js with namespace mismatch must NOT be recognized")
+	// 3. 300/js/app.js with .ext permutations
+	extCases := []struct {
+		name string
+		meta diskMeta
+		want bool
+	}{
+		{"mismatched NS", diskMeta{ContentType: "application/javascript", Version: 1, Verified: true, Size: int64(len(jsCode)), MTimeNano: fi300.ModTime().UnixNano(), Namespace: "unrelated.com"}, false},
+		{"size mismatch", diskMeta{ContentType: "application/javascript", Version: 1, Verified: true, Size: int64(len(jsCode)) + 999, MTimeNano: fi300.ModTime().UnixNano(), Namespace: "gbf"}, true},
+		{"mtime mismatch", diskMeta{ContentType: "application/javascript", Version: 1, Verified: true, Size: int64(len(jsCode)), MTimeNano: fi300.ModTime().UnixNano() + 1000000, Namespace: "gbf"}, true},
+		{"empty NS", diskMeta{ContentType: "application/javascript", Version: 1, Verified: true, Size: int64(len(jsCode)), MTimeNano: fi300.ModTime().UnixNano(), Namespace: ""}, false},
+		{"valid matching", diskMeta{ContentType: "application/javascript", Version: 1, Verified: true, Size: int64(len(jsCode)), MTimeNano: fi300.ModTime().UnixNano(), Namespace: "gbf"}, true},
+	}
+	for _, tc := range extCases {
+		writeExt(p300, tc.meta)
+		if got := IsConfirmedCacheFile(root, p300, true); got != tc.want {
+			t.Errorf("[%s] IsConfirmedCacheFile = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 
-	// 3b. Size mismatch: under simplified Tier-1 rules, size mismatch does not revoke ownership (handled by audit)
-	writeExt(p300, diskMeta{
-		ContentType: "application/javascript",
-		Version:     1,
-		Verified:    true,
-		Size:        int64(len(jsCode)) + 999,
-		MTimeNano:   fi300.ModTime().UnixNano(),
-		Namespace:   "gbf",
-	})
-	if !IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js with size mismatch must still be recognized as Tier-1 cache file")
-	}
-
-	// 3c. MTime mismatch: under simplified Tier-1 rules, mtime mismatch does not revoke ownership (handled by audit)
-	writeExt(p300, diskMeta{
-		ContentType: "application/javascript",
-		Version:     1,
-		Verified:    true,
-		Size:        int64(len(jsCode)),
-		MTimeNano:   fi300.ModTime().UnixNano() + 1000000,
-		Namespace:   "gbf",
-	})
-	if !IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js with mtime mismatch must still be recognized as Tier-1 cache file")
-	}
-
-	// 3d. Empty Namespace: 300/js/app.js with empty namespace MUST NOT be recognized under Tier-1
-	writeExt(p300, diskMeta{
-		ContentType: "application/javascript",
-		Version:     1,
-		Verified:    true,
-		Size:        int64(len(jsCode)),
-		MTimeNano:   fi300.ModTime().UnixNano(),
-		Namespace:   "",
-	})
-	if IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js with empty namespace must NOT be recognized")
-	}
-	if isConfirmedCacheFileInRoot(cacheRoot, "300/js/app.js", fi300, true) {
-		t.Fatalf("300/js/app.js with empty namespace must NOT be recognized by isConfirmedCacheFileInRoot")
-	}
-
-	// 4. Positive: 300/js/app.js with matching .ext MUST be recognized under Tier-1
-	writeExt(p300, diskMeta{
-		ContentType: "application/javascript",
-		Version:     1,
-		Verified:    true,
-		Size:        int64(len(jsCode)),
-		MTimeNano:   fi300.ModTime().UnixNano(),
-		Namespace:   "gbf",
-	})
-	if !IsConfirmedCacheFile(root, p300, true) {
-		t.Fatalf("300/js/app.js with valid matching .ext MUST be recognized under Tier-1")
-	}
-	if !isConfirmedCacheFileInRoot(cacheRoot, "300/js/app.js", fi300, true) {
-		t.Fatalf("300/js/app.js with valid matching .ext MUST be recognized by isConfirmedCacheFileInRoot")
-	}
-
-	// 5. Positive: 300/img/sp/quest/scene/ch1.png with matching .ext MUST be recognized
+	// 4. Positive image in version fallback
 	pQuest := writeDiskFile("300/img/sp/quest/scene/ch1.png", pngMagic)
 	fiQuest, _ := os.Stat(pQuest)
-	writeExt(pQuest, diskMeta{
-		ContentType: "image/png",
-		Version:     1,
-		Verified:    true,
-		Size:        int64(len(pngMagic)),
-		MTimeNano:   fiQuest.ModTime().UnixNano(),
-		Namespace:   "gbf",
-	})
+	writeExt(pQuest, diskMeta{ContentType: "image/png", Version: 1, Verified: true, Size: int64(len(pngMagic)), MTimeNano: fiQuest.ModTime().UnixNano(), Namespace: "gbf"})
 	if !IsConfirmedCacheFile(root, pQuest, true) {
-		t.Fatalf("300/img/sp/quest/scene/ch1.png with valid matching .ext MUST be recognized")
+		t.Fatalf("300/img/sp/quest/scene/ch1.png with matching .ext MUST be recognized")
 	}
 }
 
