@@ -709,6 +709,96 @@ func TestValidateCacheOverwriteTarget_Tier1PersonalNoteRegression(t *testing.T) 
 	_ = os.Remove(streamJS + ".ext")
 }
 
+func TestValidateCacheOverwriteTarget_SVGAndJSON(t *testing.T) {
+	tempBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+		tempBase = resolved
+	}
+	root := filepath.Join(tempBase, "cache_svg_json")
+	_ = os.MkdirAll(root, 0755)
+	_ = cache.EnsureRootMarker(root)
+
+	// Subtest 1: Valid SVG formats
+	validDirectSVG := filepath.Join(root, "assets", "img", "icon.svg")
+	_ = os.MkdirAll(filepath.Dir(validDirectSVG), 0755)
+	_ = os.WriteFile(validDirectSVG, []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><circle cx="18" cy="18" r="10"/></svg>`), 0644)
+	_ = os.WriteFile(validDirectSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	validXmlSVG := filepath.Join(root, "assets", "img", "logo.svg")
+	_ = os.WriteFile(validXmlSVG, []byte(`<?xml version="1.0" encoding="UTF-8"?><svg viewBox="0 0 100 100"><rect width="100" height="100"/></svg>`), 0644)
+	_ = os.WriteFile(validXmlSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	// Subtest 2: Valid JSON atlas format
+	validJSON := filepath.Join(root, "assets", "img", "sp", "atlas", "raid_ui_6.json")
+	_ = os.MkdirAll(filepath.Dir(validJSON), 0755)
+	_ = os.WriteFile(validJSON, []byte(`{"images":["sp/atlas/raid_ui_6.png?v=0"],"frames":[[5,5,516,92],[527,5,440,40]]}`), 0644)
+	_ = os.WriteFile(validJSON+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+	if err := validateCacheOverwriteTarget(root); err != nil {
+		t.Fatalf("expected valid SVG and JSON assets to pass validateCacheOverwriteTarget: %v", err)
+	}
+
+	// Subtest 3: Negative SVG - plain text disguised as SVG
+	badTextSVG := filepath.Join(root, "assets", "img", "fake.svg")
+	_ = os.WriteFile(badTextSVG, []byte("this is plain text not svg"), 0644)
+	_ = os.WriteFile(badTextSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject plain text disguised as SVG")
+	}
+	_ = os.Remove(badTextSVG)
+	_ = os.Remove(badTextSVG + ".ext")
+
+	// Subtest 4: Negative SVG - non-SVG XML (e.g. plist)
+	plistSVG := filepath.Join(root, "assets", "img", "plist.svg")
+	_ = os.WriteFile(plistSVG, []byte(`<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist><plist version="1.0"><dict></dict></plist>`), 0644)
+	_ = os.WriteFile(plistSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject non-SVG XML documents")
+	}
+	_ = os.Remove(plistSVG)
+	_ = os.Remove(plistSVG + ".ext")
+
+	// Subtest 5: Negative SVG - HTML error page
+	htmlSVG := filepath.Join(root, "assets", "img", "html_error.svg")
+	_ = os.WriteFile(htmlSVG, []byte("<!doctype html><html><body>502 Bad Gateway</body></html>"), 0644)
+	_ = os.WriteFile(htmlSVG+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject HTML error disguised as SVG")
+	}
+	_ = os.Remove(htmlSVG)
+	_ = os.Remove(htmlSVG + ".ext")
+
+	// Subtest 6: Negative JSON - malformed JSON syntax
+	malformedJSON := filepath.Join(root, "assets", "img", "sp", "atlas", "broken.json")
+	_ = os.WriteFile(malformedJSON, []byte(`{"images":["broken",`), 0644)
+	_ = os.WriteFile(malformedJSON+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject malformed JSON syntax")
+	}
+	_ = os.Remove(malformedJSON)
+	_ = os.Remove(malformedJSON + ".ext")
+
+	// Subtest 7: Negative JSON - plain text disguised as JSON
+	textJSON := filepath.Join(root, "assets", "img", "sp", "atlas", "note.json")
+	_ = os.WriteFile(textJSON, []byte("this is a text note with no json tokens"), 0644)
+	_ = os.WriteFile(textJSON+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject plain text disguised as JSON")
+	}
+	_ = os.Remove(textJSON)
+	_ = os.Remove(textJSON + ".ext")
+
+	// Subtest 8: Negative JSON - HTML error disguised as JSON
+	htmlJSON := filepath.Join(root, "assets", "img", "sp", "atlas", "html_err.json")
+	_ = os.WriteFile(htmlJSON, []byte("<html><body>503 Service Unavailable</body></html>"), 0644)
+	_ = os.WriteFile(htmlJSON+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	if err := validateCacheOverwriteTarget(root); err == nil {
+		t.Fatal("expected validateCacheOverwriteTarget to reject HTML error disguised as JSON")
+	}
+	_ = os.Remove(htmlJSON)
+	_ = os.Remove(htmlJSON + ".ext")
+}
+
 func TestHandleMigrateStandardCache_MissingOrEmptySourceInOverwrite(t *testing.T) {
 	// Subtest 1: Missing source directory
 	t.Run("MissingSourceDirectory", func(t *testing.T) {

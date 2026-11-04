@@ -250,7 +250,7 @@ func isSupportedOverwriteAssetExtension(slashRel string) bool {
 	ext := filepath.Ext(lower)
 	switch ext {
 	// Images
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico":
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg":
 		return true
 	// Audio / Video
 	case ".mp3", ".wav", ".ogg", ".m4a", ".mp4", ".webm":
@@ -260,6 +260,9 @@ func isSupportedOverwriteAssetExtension(slashRel string) bool {
 		return true
 	// Web scripts & stylesheets
 	case ".js", ".css":
+		return true
+	// Structured data / texture atlas
+	case ".json":
 		return true
 	default:
 		return false
@@ -397,6 +400,25 @@ func verifyOverwriteAssetContent(filePath, slashRel string) error {
 				}
 				return fmt.Errorf("读取 JS/CSS 内容失败: %w", rErr)
 			}
+		}
+	case ".svg":
+		trimmed := bytes.TrimSpace(sample)
+		isDirectSVG := bytes.HasPrefix(trimmed, []byte("<svg"))
+		isXMLWithSVG := bytes.HasPrefix(trimmed, []byte("<?xml")) && bytes.Contains(bytes.ToLower(sample), []byte("<svg"))
+		if !isDirectSVG && !isXMLWithSVG {
+			return fmt.Errorf("SVG 素材文件缺少有效 XML 或 SVG 标签声明: %s", slashRel)
+		}
+	case ".json":
+		trimmed := bytes.TrimSpace(sample)
+		if !bytes.HasPrefix(trimmed, []byte("{")) && !bytes.HasPrefix(trimmed, []byte("[")) {
+			return fmt.Errorf("JSON 素材文件未以有效 JSON 结构起始: %s", slashRel)
+		}
+		fullBytes, rErr := os.ReadFile(filePath)
+		if rErr != nil {
+			return fmt.Errorf("读取 JSON 素材内容失败: %w", rErr)
+		}
+		if !json.Valid(fullBytes) {
+			return fmt.Errorf("JSON 素材文件内容语法无效: %s", slashRel)
 		}
 	default:
 		return fmt.Errorf("不支持进行覆盖验证的素材类型: %s", slashRel)
