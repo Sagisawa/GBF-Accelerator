@@ -289,6 +289,36 @@ func setupDarwinMigrationTestServer(t *testing.T, sourceDir, targetDir string) (
 	return ctrl, cfgMgr, cacheMgr, cfgPath
 }
 
+func setupStandardMigrationDirs(t *testing.T, withAssets bool) (sourceDir, targetDir, srcFile, targetFile string, ctrl *ControlServer, cfgMgr *config.Manager, cfgPath string) {
+	t.Helper()
+	tempBase := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
+		tempBase = resolved
+	}
+	sourceDir = filepath.Join(tempBase, "source_cache")
+	_ = os.MkdirAll(sourceDir, 0755)
+	targetDir = filepath.Join(tempBase, "target_cache")
+	_ = os.MkdirAll(targetDir, 0755)
+
+	if withAssets {
+		_ = cache.EnsureRootMarker(sourceDir)
+		_ = cache.EnsureRootMarker(targetDir)
+		pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
+		srcFile = filepath.Join(sourceDir, "assets", "img", "sp", "ui", "icon.png")
+		_ = os.MkdirAll(filepath.Dir(srcFile), 0755)
+		_ = os.WriteFile(srcFile, pngMagic, 0644)
+		_ = os.WriteFile(srcFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+
+		targetFile = filepath.Join(targetDir, "assets", "img", "sp", "ui", "old.png")
+		_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
+		_ = os.WriteFile(targetFile, pngMagic, 0644)
+		_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
+	}
+
+	ctrl, cfgMgr, _, cfgPath = setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+	return
+}
+
 func TestHandleMigrateStandardCache_ModesAndCompat(t *testing.T) {
 	sourceDir := t.TempDir()
 	if resolved, err := filepath.EvalSymlinks(sourceDir); err == nil {
@@ -755,36 +785,9 @@ func TestHandleMigrateStandardCache_RequestBodyBoundaries(t *testing.T) {
 }
 
 func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
-	pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
-
-	setupAssets := func(sourceDir, targetDir string) (string, string) {
-		_ = os.MkdirAll(sourceDir, 0755)
-		_ = cache.EnsureRootMarker(sourceDir)
-		srcFile := filepath.Join(sourceDir, "assets", "img", "sp", "ui", "icon.png")
-		_ = os.MkdirAll(filepath.Dir(srcFile), 0755)
-		_ = os.WriteFile(srcFile, pngMagic, 0644)
-		_ = os.WriteFile(srcFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-		_ = os.MkdirAll(targetDir, 0755)
-		_ = cache.EnsureRootMarker(targetDir)
-		targetFile := filepath.Join(targetDir, "assets", "img", "sp", "ui", "old.png")
-		_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
-		_ = os.WriteFile(targetFile, pngMagic, 0644)
-		_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-		return srcFile, targetFile
-	}
-
 	// Subtest 1: Second rename fails, rollback succeeds
 	t.Run("SecondRenameFailsRollbackSucceeds", func(t *testing.T) {
-		tempBase := t.TempDir()
-		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-			tempBase = resolved
-		}
-		sourceDir := filepath.Join(tempBase, "src")
-		targetDir := filepath.Join(tempBase, "dst")
-		_, targetFile := setupAssets(sourceDir, targetDir)
-
-		ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+		_, _, _, targetFile, ctrl, _, _ := setupStandardMigrationDirs(t, true)
 
 		origRename := renameFunc
 		renameCalls := 0
@@ -820,15 +823,7 @@ func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
 
 	// Subtest 2: Second rename fails, rollback ALSO fails
 	t.Run("SecondRenameFailsRollbackFails", func(t *testing.T) {
-		tempBase := t.TempDir()
-		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-			tempBase = resolved
-		}
-		sourceDir := filepath.Join(tempBase, "src")
-		targetDir := filepath.Join(tempBase, "dst")
-		setupAssets(sourceDir, targetDir)
-
-		ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+		_, _, _, _, ctrl, _, _ := setupStandardMigrationDirs(t, true)
 
 		origRename := renameFunc
 		renameCalls := 0
@@ -866,15 +861,7 @@ func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
 
 	// Subtest 3: Commit fails, new directory cleanup fails, rollback succeeds
 	t.Run("CommitFailsCleanupFailsRollbackSucceeds", func(t *testing.T) {
-		tempBase := t.TempDir()
-		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-			tempBase = resolved
-		}
-		sourceDir := filepath.Join(tempBase, "src")
-		targetDir := filepath.Join(tempBase, "dst")
-		setupAssets(sourceDir, targetDir)
-
-		ctrl, _, _, cfgPath := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+		_, targetDir, _, _, ctrl, _, cfgPath := setupStandardMigrationDirs(t, true)
 
 		origRemoveAll := removeAllFunc
 		removeAllFunc = func(path string) error {
@@ -909,15 +896,7 @@ func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
 
 	// Subtest 4: Backup cleanup fails, returns 200 with warning
 	t.Run("BackupCleanupFailsWarningReported", func(t *testing.T) {
-		tempBase := t.TempDir()
-		if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-			tempBase = resolved
-		}
-		sourceDir := filepath.Join(tempBase, "src")
-		targetDir := filepath.Join(tempBase, "dst")
-		setupAssets(sourceDir, targetDir)
-
-		ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+		_, _, _, _, ctrl, _, _ := setupStandardMigrationDirs(t, true)
 
 		origRemoveAll := removeAllFunc
 		removeAllFunc = func(path string) error {
@@ -1027,29 +1006,7 @@ func TestHandleMigrateStandardCache_MigrateMissingSourceAllowed(t *testing.T) {
 }
 
 func TestHandleMigrateStandardCache_PostRenameBackupReverificationFailure(t *testing.T) {
-	tempBase := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-		tempBase = resolved
-	}
-	pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
-
-	sourceDir := filepath.Join(tempBase, "source_cache")
-	_ = os.MkdirAll(sourceDir, 0755)
-	_ = cache.EnsureRootMarker(sourceDir)
-	srcFile := filepath.Join(sourceDir, "assets", "img", "sp", "ui", "icon.png")
-	_ = os.MkdirAll(filepath.Dir(srcFile), 0755)
-	_ = os.WriteFile(srcFile, pngMagic, 0644)
-	_ = os.WriteFile(srcFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	targetDir := filepath.Join(tempBase, "target_cache")
-	_ = os.MkdirAll(targetDir, 0755)
-	_ = cache.EnsureRootMarker(targetDir)
-	targetFile := filepath.Join(targetDir, "assets", "img", "sp", "ui", "old.png")
-	_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
-	_ = os.WriteFile(targetFile, pngMagic, 0644)
-	_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+	_, _, _, targetFile, ctrl, _, _ := setupStandardMigrationDirs(t, true)
 
 	origRename := renameFunc
 	renameCalls := 0
@@ -1090,29 +1047,7 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationFailure(t *tes
 }
 
 func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackFailure_Overwrite(t *testing.T) {
-	tempBase := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-		tempBase = resolved
-	}
-	pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
-
-	sourceDir := filepath.Join(tempBase, "source_cache")
-	_ = os.MkdirAll(sourceDir, 0755)
-	_ = cache.EnsureRootMarker(sourceDir)
-	srcFile := filepath.Join(sourceDir, "assets", "img", "sp", "ui", "icon.png")
-	_ = os.MkdirAll(filepath.Dir(srcFile), 0755)
-	_ = os.WriteFile(srcFile, pngMagic, 0644)
-	_ = os.WriteFile(srcFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	targetDir := filepath.Join(tempBase, "target_cache")
-	_ = os.MkdirAll(targetDir, 0755)
-	_ = cache.EnsureRootMarker(targetDir)
-	targetFile := filepath.Join(targetDir, "assets", "img", "sp", "ui", "old.png")
-	_ = os.MkdirAll(filepath.Dir(targetFile), 0755)
-	_ = os.WriteFile(targetFile, pngMagic, 0644)
-	_ = os.WriteFile(targetFile+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-
-	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+	_, _, _, targetFile, ctrl, _, _ := setupStandardMigrationDirs(t, true)
 
 	origRename := renameFunc
 	renameCalls := 0
@@ -1172,18 +1107,7 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackFailur
 }
 
 func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackFailure_Migrate(t *testing.T) {
-	tempBase := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-		tempBase = resolved
-	}
-
-	sourceDir := filepath.Join(tempBase, "source_cache")
-	_ = os.MkdirAll(sourceDir, 0755)
-
-	targetDir := filepath.Join(tempBase, "target_cache")
-	_ = os.MkdirAll(targetDir, 0755) // initially empty, passes validateEmptyMigrationTarget
-
-	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+	_, _, _, _, ctrl, _, _ := setupStandardMigrationDirs(t, false)
 
 	origRename := renameFunc
 	renameCalls := 0
@@ -1234,18 +1158,7 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackFailur
 }
 
 func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackSuccess_Migrate(t *testing.T) {
-	tempBase := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(tempBase); err == nil {
-		tempBase = resolved
-	}
-
-	sourceDir := filepath.Join(tempBase, "source_cache")
-	_ = os.MkdirAll(sourceDir, 0755)
-
-	targetDir := filepath.Join(tempBase, "target_cache")
-	_ = os.MkdirAll(targetDir, 0755) // initially empty, passes validateEmptyMigrationTarget
-
-	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
+	_, targetDir, _, _, ctrl, _, _ := setupStandardMigrationDirs(t, false)
 
 	origRename := renameFunc
 	renameCalls := 0
@@ -1281,6 +1194,6 @@ func TestHandleMigrateStandardCache_PostRenameBackupReverificationRollbackSucces
 	// Original directory must have been restored
 	restoredFile := filepath.Join(targetDir, "unexpected.dat")
 	if _, err := os.Stat(restoredFile); err != nil {
-		t.Fatalf("expected restored file to exist at targetDir: %v", err)
+		t.Fatalf("expected restored file %s to exist at targetDir: %v", restoredFile, err)
 	}
 }

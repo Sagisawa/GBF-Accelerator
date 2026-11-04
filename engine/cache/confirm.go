@@ -194,19 +194,6 @@ func isPositiveVersionSegment(s string) bool {
 	return false
 }
 
-// isTier1VersionFallbackPath checks whether slashRel matches the historical GBF version fallback
-// directory structure without the leading "assets/" prefix (e.g. "<ver>/<category>/...").
-func isTier1VersionFallbackPath(slashRel string) bool {
-	segs := splitCleanSegments(filepath.ToSlash(slashRel))
-	if len(segs) < 3 {
-		return false
-	}
-	if !isPositiveVersionSegment(segs[0]) {
-		return false
-	}
-	return isKnownGBFCategory(segs[1])
-}
-
 // parseCachePathTopLevelShape validates whether slashRel conforms to a recognized cache top-level shape:
 // - assets/, assets_en/, assets_jp/ (>= 2 segments)
 // - hosts/<ns>/... (>= 3 segments, with valid sanitized <ns>)
@@ -263,19 +250,6 @@ func parseCachePathTopLevelShape(slashRel string) (ns string, cleanKey string, i
 	}
 
 	return "", "", false, false
-}
-
-// isConfirmedCachePathStructure checks whether slashRel matches the canonical cache namespace and top-level
-// shape and possesses a valid asset extension. Retained for backward-compatible call sites.
-func isConfirmedCachePathStructure(slashRel string) (ns string, cleanKey string, ok bool) {
-	nsCand, keyCand, _, shapeOK := parseCachePathTopLevelShape(slashRel)
-	if !shapeOK {
-		return "", "", false
-	}
-	if !isAssetExtension(strings.ToLower(keyCand)) {
-		return "", "", false
-	}
-	return nsCand, keyCand, true
 }
 
 // IsConfirmedCacheDirectory reports whether a relative directory belongs to a valid cache top-level shape.
@@ -593,11 +567,6 @@ func verifyCacheFileMagic(filePath, cleanLower string) bool {
 	}
 	defer f.Close()
 	return verifyCacheFileMagicFromReader(f, cleanLower)
-}
-
-// VerifyCacheFileMagic reads the file header (up to 512 bytes) and validates magic bytes and non-HTML content.
-func VerifyCacheFileMagic(filePath, cleanLower string) bool {
-	return verifyCacheFileMagic(filePath, cleanLower)
 }
 
 // IsAcceleratorTempFile checks whether slashRel matches the naming pattern of temporary cache files.

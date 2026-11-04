@@ -235,7 +235,7 @@ func TestIsAcceleratorTempFile(t *testing.T) {
 	}
 }
 
-func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
+func TestIsTier2Candidate_Structure(t *testing.T) {
 	cases := []struct {
 		rel  string
 		want bool
@@ -267,7 +267,7 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 		{"personal_data/photo.png", false},
 		{"user_workspace/doc.png", false},
 		{"my_backup/game.png", false},
-		{"12345/btn.png", false}, // version dir without category
+		{"12345/btn.png", false},         // version dir without category
 		{"2026/photos/photo.png", false}, // version dir with invalid category
 		{"hosts/invalid:host/app.js", false},
 
@@ -279,9 +279,9 @@ func TestIsConfirmedCachePathStructure_Tightened(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		_, _, got := isConfirmedCachePathStructure(tc.rel)
+		_, got := isTier2Candidate(tc.rel, true)
 		if got != tc.want {
-			t.Errorf("isConfirmedCachePathStructure(%q) = %v; want %v", tc.rel, got, tc.want)
+			t.Errorf("isTier2Candidate(%q) = %v; want %v", tc.rel, got, tc.want)
 		}
 	}
 }
@@ -415,7 +415,7 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 	// 1. Negative: 2026/photos/photo.png (invalid category) rejected under all tiers
 	p2026 := writeDiskFile("2026/photos/photo.png", pngMagic)
 	fi2026, _ := os.Stat(p2026)
-	if IsConfirmedCacheFile(root, p2026, true) || isTier1VersionFallbackPath("2026/photos/photo.png") || isConfirmedCacheDir("2026/photos") {
+	if IsConfirmedCacheFile(root, p2026, true) || isConfirmedCacheDir("2026/photos") {
 		t.Fatalf("2026/photos/photo.png must return false for version fallback checks")
 	}
 	writeExt(p2026, diskMeta{ContentType: "image/png", Version: 1, Verified: true, Size: int64(len(pngMagic)), MTimeNano: fi2026.ModTime().UnixNano(), Namespace: "gbf"})
