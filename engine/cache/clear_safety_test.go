@@ -19,8 +19,7 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 		"content-type": "image/png",
 		"etag":         `"test-etag"`,
 	}
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/btn.png", headers, validPng) {
+	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/btn.png", headers, testValidPNG) {
 		t.Fatalf("failed to save valid cache asset")
 	}
 
@@ -159,17 +158,13 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 }
 
 func TestClearAll_LegacyAttributionWithAndWithoutMarker(t *testing.T) {
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-
 	t.Run("without root marker", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		mgr := NewManager(tmpDir, 64)
 		defer mgr.Close()
 		_ = os.Remove(filepath.Join(tmpDir, RootMarkerFileName))
 
-		legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
-		_ = os.MkdirAll(filepath.Dir(legacyFile), 0755)
-		_ = os.WriteFile(legacyFile, validPng, 0644)
+		legacyFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
 
 		deleted, _, skipped := mgr.ClearAll()
 		if deleted != 0 {
@@ -190,9 +185,7 @@ func TestClearAll_LegacyAttributionWithAndWithoutMarker(t *testing.T) {
 
 		_ = EnsureRootMarker(tmpDir)
 
-		legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
-		_ = os.MkdirAll(filepath.Dir(legacyFile), 0755)
-		_ = os.WriteFile(legacyFile, validPng, 0644)
+		legacyFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
 
 		deleted, _, _ := mgr.ClearAll()
 		if deleted != 1 {
@@ -228,11 +221,7 @@ func TestClearAll_RejectsSymlinks(t *testing.T) {
 	mgr := NewManager(tmpDir, 64)
 	defer mgr.Close()
 
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	externalPng := filepath.Join(extDir, "important_secret.png")
-	if err := os.WriteFile(externalPng, validPng, 0644); err != nil {
-		t.Fatalf("write external file failed: %v", err)
-	}
+	externalPng := writeTestDiskFile(t, extDir, "important_secret.png", testValidPNG)
 
 	cacheSubDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
 	if err := os.MkdirAll(cacheSubDir, 0755); err != nil {
@@ -260,7 +249,7 @@ func TestClearAll_RejectsSymlinks(t *testing.T) {
 		t.Errorf("expected at least 3 skipped symlink entries, got %d", skipped)
 	}
 
-	if content, err := os.ReadFile(externalPng); err != nil || len(content) != len(validPng) {
+	if content, err := os.ReadFile(externalPng); err != nil || len(content) != len(testValidPNG) {
 		t.Errorf("BUG: external file was deleted or corrupted by ClearAll: %v", err)
 	}
 
@@ -276,9 +265,7 @@ func TestClearAll_RejectsReplacedFileObject(t *testing.T) {
 	mgr := NewManager(tmpDir, 64)
 	defer mgr.Close()
 
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	headers := map[string]string{"content-type": "image/png"}
-	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/replace_me.png", headers, validPng) {
+	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/replace_me.png", testPNGHeaders, testValidPNG) {
 		t.Fatalf("failed to save cache asset")
 	}
 
@@ -310,8 +297,7 @@ func TestClearAll_CleanCacheNoFalseSkippedCount(t *testing.T) {
 	mgr := NewManager(tmpDir, 64)
 	defer mgr.Close()
 
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	_ = mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/clean.png", map[string]string{"content-type": "image/png"}, validPng)
+	_ = mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/clean.png", testPNGHeaders, testValidPNG)
 
 	deleted, freed, skipped := mgr.ClearAll()
 	if deleted != 2 {
@@ -332,7 +318,6 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 
 	_ = EnsureRootMarker(tmpDir)
 
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 	validMp3 := []byte("ID3\x04\x00\x00\x00\x00\x00#TIT2\x00\x00\x00\x05\x00\x00\x03test\x00")
 	validJs := []byte(`(function(){ console.log("custom script"); })();`)
 	validCss := []byte(`body { margin: 0; background-color: #ffffff; }`)
@@ -343,28 +328,25 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 		data []byte
 	}
 	userFiles := []userFileEntry{
-		{"personal_data/quest/photo.png", validPng},
-		{"personal_data/photo.png", validPng},
-		{"user_workspace/private/photo.png", validPng},
+		{"personal_data/quest/photo.png", testValidPNG},
+		{"personal_data/photo.png", testValidPNG},
+		{"user_workspace/private/photo.png", testValidPNG},
 		{"my_backup/sound/audio.mp3", validMp3},
 		{"user_scripts/custom.js", validJs},
 		{"my_styles/theme.css", validCss},
-		{"2026/photos/event.png", validPng},
+		{"2026/photos/event.png", testValidPNG},
 		{"assets/document.docx", []byte("docx content")},
 		{"assets/12345/archive.zip", []byte("zip content")},
 		{"assets/12345/document.docx", []byte("docx content 2")},
-		{"12345/personal/test.png", validPng},
+		{"12345/personal/test.png", testValidPNG},
 	}
 
 	for _, uf := range userFiles {
-		p := filepath.Join(tmpDir, filepath.FromSlash(uf.rel))
-		_ = os.MkdirAll(filepath.Dir(p), 0755)
-		_ = os.WriteFile(p, uf.data, 0644)
+		writeTestDiskFile(t, tmpDir, uf.rel, uf.data)
 	}
 
 	// Also add user photo with paired .ext in non-cache path
-	pairedUserPhoto := filepath.Join(tmpDir, "personal_data", "paired.png")
-	_ = os.WriteFile(pairedUserPhoto, validPng, 0644)
+	pairedUserPhoto := writeTestDiskFile(t, tmpDir, "personal_data/paired.png", testValidPNG)
 	fi, _ := os.Stat(pairedUserPhoto)
 	_ = os.WriteFile(pairedUserPhoto+".ext", []byte(fmt.Sprintf(`{"v":1,"size":%d,"mtime":%d,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`, fi.Size(), fi.ModTime().UnixNano())), 0644)
 
@@ -373,14 +355,12 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 		rel  string
 		data []byte
 	}{
-		{"assets/12345/img/sp/btn.png", validPng},
-		{"assets/img/sp/quest.png", validPng},
+		{"assets/12345/img/sp/btn.png", testValidPNG},
+		{"assets/img/sp/quest.png", testValidPNG},
 		{"sound/voice/attack.mp3", validMp3},
 	}
 	for _, cf := range legitCacheFiles {
-		p := filepath.Join(tmpDir, filepath.FromSlash(cf.rel))
-		_ = os.MkdirAll(filepath.Dir(p), 0755)
-		_ = os.WriteFile(p, cf.data, 0644)
+		writeTestDiskFile(t, tmpDir, cf.rel, cf.data)
 	}
 
 	deleted, _, skipped := mgr.ClearAll()
@@ -429,8 +409,6 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 }
 
 func TestClearAll_PreservesFileWithMismatchedExtMetadata(t *testing.T) {
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-
 	tests := []struct {
 		name          string
 		metaGen       func(fi os.FileInfo) []byte
@@ -494,10 +472,7 @@ func TestClearAll_PreservesFileWithMismatchedExtMetadata(t *testing.T) {
 			defer mgr.Close()
 			_ = EnsureRootMarker(tmpDir)
 
-			subDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
-			_ = os.MkdirAll(subDir, 0755)
-			pngPath := filepath.Join(subDir, "target.png")
-			_ = os.WriteFile(pngPath, validPng, 0644)
+			pngPath := writeTestDiskFile(t, tmpDir, "assets/12345/img/sp/target.png", testValidPNG)
 			fi, _ := os.Stat(pngPath)
 
 			extPath := pngPath + ".ext"
@@ -566,44 +541,30 @@ func TestClearAll_PreservesOrphanExtFilesEvenIfValidJSON(t *testing.T) {
 }
 
 func TestClearAll_RootMarkerValidationRejectsInvalid(t *testing.T) {
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-
 	tests := []struct {
 		name      string
 		setupRoot func(t *testing.T, tmpDir string)
 	}{
-		{
-			name: "wrong marker content",
-			setupRoot: func(t *testing.T, tmpDir string) {
-				_ = os.WriteFile(filepath.Join(tmpDir, RootMarkerFileName), []byte("Wrong content\n"), 0644)
-			},
-		},
-		{
-			name: "empty marker file",
-			setupRoot: func(t *testing.T, tmpDir string) {
-				_ = os.WriteFile(filepath.Join(tmpDir, RootMarkerFileName), []byte{}, 0644)
-			},
-		},
-		{
-			name: "directory as marker",
-			setupRoot: func(t *testing.T, tmpDir string) {
-				markerPath := filepath.Join(tmpDir, RootMarkerFileName)
-				_ = os.Remove(markerPath)
-				_ = os.Mkdir(markerPath, 0755)
-			},
-		},
-		{
-			name: "symlink as marker",
-			setupRoot: func(t *testing.T, tmpDir string) {
-				markerPath := filepath.Join(tmpDir, RootMarkerFileName)
-				_ = os.Remove(markerPath)
-				extTarget := filepath.Join(t.TempDir(), "target.txt")
-				_ = os.WriteFile(extTarget, []byte(RootMarkerExpectedContent), 0644)
-				if err := os.Symlink(extTarget, markerPath); err != nil {
-					t.Skipf("skipping symlink: %v", err)
-				}
-			},
-		},
+		{"wrong marker content", func(t *testing.T, tmpDir string) {
+			_ = os.WriteFile(filepath.Join(tmpDir, RootMarkerFileName), []byte("Wrong content\n"), 0644)
+		}},
+		{"empty marker file", func(t *testing.T, tmpDir string) {
+			_ = os.WriteFile(filepath.Join(tmpDir, RootMarkerFileName), nil, 0644)
+		}},
+		{"directory as marker", func(t *testing.T, tmpDir string) {
+			markerPath := filepath.Join(tmpDir, RootMarkerFileName)
+			_ = os.Remove(markerPath)
+			_ = os.Mkdir(markerPath, 0755)
+		}},
+		{"symlink as marker", func(t *testing.T, tmpDir string) {
+			markerPath := filepath.Join(tmpDir, RootMarkerFileName)
+			_ = os.Remove(markerPath)
+			extTarget := filepath.Join(t.TempDir(), "target.txt")
+			_ = os.WriteFile(extTarget, []byte(RootMarkerExpectedContent), 0644)
+			if err := os.Symlink(extTarget, markerPath); err != nil {
+				t.Skipf("skipping symlink: %v", err)
+			}
+		}},
 	}
 
 	for _, tc := range tests {
@@ -613,10 +574,7 @@ func TestClearAll_RootMarkerValidationRejectsInvalid(t *testing.T) {
 			defer mgr.Close()
 
 			tc.setupRoot(t, tmpDir)
-
-			legacyFile := filepath.Join(tmpDir, "assets", "img", "sp", "legacy.png")
-			_ = os.MkdirAll(filepath.Dir(legacyFile), 0755)
-			_ = os.WriteFile(legacyFile, validPng, 0644)
+			legacyFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
 
 			deleted, _, skipped := mgr.ClearAll()
 			if deleted != 0 || skipped != 1 {
@@ -747,9 +705,7 @@ func TestClearAll_NamespaceSafetyMatrix(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		fullPath := filepath.Join(tmpDir, filepath.FromSlash(tc.relPath))
-		_ = os.MkdirAll(filepath.Dir(fullPath), 0755)
-		_ = os.WriteFile(fullPath, payload, 0644)
+		fullPath := writeTestDiskFile(t, tmpDir, tc.relPath, payload)
 		fi, _ := os.Stat(fullPath)
 		_ = writeDiskExtFile(fullPath, diskMeta{
 			ContentType: "application/javascript",
@@ -787,7 +743,6 @@ func TestClearAll_NamespaceSafetyMatrix(t *testing.T) {
 func TestClearAll_PureACGPowerDirectoryE2E(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 	acgFiles := []string{
 		"assets/12345/img/sp/quest.png",
 		"assets/img/sp/btn.png",
@@ -795,9 +750,7 @@ func TestClearAll_PureACGPowerDirectoryE2E(t *testing.T) {
 	}
 
 	for _, rel := range acgFiles {
-		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
-		_ = os.MkdirAll(filepath.Dir(full), 0755)
-		_ = os.WriteFile(full, validPng, 0644)
+		writeTestDiskFile(t, tmpDir, rel, testValidPNG)
 	}
 
 	mgr := NewManager(tmpDir, 64)
@@ -841,24 +794,13 @@ func TestClearAll_QuarantineFilesStrictMatchingAndUserPreserved(t *testing.T) {
 	mgr := NewManager(tmpDir, 64)
 	defer mgr.Close()
 
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+	quarData := writeTestDiskFile(t, tmpDir, "assets/12345/js/tampered.js.quarantine.1730000000", []byte("tampered content"))
+	quarExt := writeTestDiskFile(t, tmpDir, "assets/12345/js/tampered.js.ext.quarantine.1730000000", []byte(`{"v":1}`))
+	quarPng := writeTestDiskFile(t, tmpDir, "assets/img/sp/bad.png.quarantine.1730000001", testValidPNG)
 
-	quarData := filepath.Join(tmpDir, "assets", "12345", "js", "tampered.js.quarantine.1730000000")
-	quarExt := filepath.Join(tmpDir, "assets", "12345", "js", "tampered.js.ext.quarantine.1730000000")
-	quarPng := filepath.Join(tmpDir, "assets", "img", "sp", "bad.png.quarantine.1730000001")
-	_ = os.MkdirAll(filepath.Dir(quarData), 0755)
-	_ = os.MkdirAll(filepath.Dir(quarPng), 0755)
-	_ = os.WriteFile(quarData, []byte("tampered content"), 0644)
-	_ = os.WriteFile(quarExt, []byte(`{"v":1}`), 0644)
-	_ = os.WriteFile(quarPng, validPng, 0644)
-
-	userDoc := filepath.Join(tmpDir, "x.quarantine.docx")
-	userFolderDoc := filepath.Join(tmpDir, "personal_data", "notes.quarantine.123")
-	userAssetDoc := filepath.Join(tmpDir, "assets", "12345", "user.docx.quarantine.123")
-	_ = os.MkdirAll(filepath.Dir(userFolderDoc), 0755)
-	_ = os.WriteFile(userDoc, []byte("user docx content"), 0644)
-	_ = os.WriteFile(userFolderDoc, []byte("user notes content"), 0644)
-	_ = os.WriteFile(userAssetDoc, []byte("user docx in assets"), 0644)
+	userDoc := writeTestDiskFile(t, tmpDir, "x.quarantine.docx", []byte("user docx content"))
+	userFolderDoc := writeTestDiskFile(t, tmpDir, "personal_data/notes.quarantine.123", []byte("user notes content"))
+	userAssetDoc := writeTestDiskFile(t, tmpDir, "assets/12345/user.docx.quarantine.123", []byte("user docx in assets"))
 
 	deleted, _, skipped := mgr.ClearAll()
 	if deleted != 3 || skipped < 3 {
@@ -884,7 +826,6 @@ func TestClearAll_HistoricalCompatibilitySafetyAndSeparation(t *testing.T) {
 	mgr := NewManager(tmpDir, 64)
 	defer mgr.Close()
 
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 	validJS := []byte("console.log('client-code');")
 	validIco := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10}
 
@@ -896,20 +837,18 @@ func TestClearAll_HistoricalCompatibilitySafetyAndSeparation(t *testing.T) {
 		{"hosts/granbluefantasy.com/_app/style.css", []byte("body{margin:0}"), `{"v":1,"ct":"text/css","verified":true}`},
 		{"hosts/game.granbluefantasy.jp/assets/font/basic.woff", []byte("woff-data"), `{"v":1,"ct":"application/font-woff","verified":true}`},
 		{"hosts/ava-a.sp.mbga.jp/avatar.gif", []byte("GIF89a"), `{"v":1,"ct":"image/gif","verified":true}`},
-		{"hosts/connect.mobage.jp/static/icon.png", validPng, `{"v":1,"ct":"image/png","verified":true}`},
+		{"hosts/connect.mobage.jp/static/icon.png", testValidPNG, `{"v":1,"ct":"image/png","verified":true}`},
 		{"hosts/steam.granbluefantasy.com/icon.ico", validIco, `{"v":1,"ct":"image/x-icon","verified":true}`},
 		{"jssdk/mobage-jssdk-client.3.10.1.min.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`},
 		{"favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`},
-		{"assets/icon.png", validPng, `{"v":1,"ct":"image/png","ns":"gbf"}`},
-		{"assets/common/img.png", validPng, `{"v":1,"ct":"image/png","ns":"gbf"}`},
-		{"assets/random_module/asset.png", validPng, `{"v":1,"ct":"image/png","ns":"gbf"}`},
+		{"assets/icon.png", testValidPNG, `{"v":1,"ct":"image/png","ns":"gbf"}`},
+		{"assets/common/img.png", testValidPNG, `{"v":1,"ct":"image/png","ns":"gbf"}`},
+		{"assets/random_module/asset.png", testValidPNG, `{"v":1,"ct":"image/png","ns":"gbf"}`},
 	}
 
 	for _, item := range mustDeleteFiles {
-		full := filepath.Join(tmpDir, filepath.FromSlash(item.rel))
-		_ = os.MkdirAll(filepath.Dir(full), 0755)
-		_ = os.WriteFile(full, item.content, 0644)
-		_ = os.WriteFile(full+".ext", []byte(item.meta), 0644)
+		p := writeTestDiskFile(t, tmpDir, item.rel, item.content)
+		_ = os.WriteFile(p+".ext", []byte(item.meta), 0644)
 	}
 
 	mustPreserveFiles := []struct {
@@ -917,24 +856,22 @@ func TestClearAll_HistoricalCompatibilitySafetyAndSeparation(t *testing.T) {
 		content []byte
 		meta    string
 	}{
-		{"hosts/untrusted-domain.com/photo.png", validPng, `{"v":1,"ct":"image/png","verified":true}`},
+		{"hosts/untrusted-domain.com/photo.png", testValidPNG, `{"v":1,"ct":"image/png","verified":true}`},
 		{"hosts/malicious.org/script.js", validJS, `{"v":1,"ct":"application/javascript","verified":true}`},
 		{"hosts/granbluefantasy.com/unverified.js", validJS, `{"v":1,"ct":"application/javascript","verified":false}`},
 		{"notes.txt", []byte("personal notes"), ""},
-		{"root_photo.png", validPng, ""},
+		{"root_photo.png", testValidPNG, ""},
 		{"my_favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`},
-		{"favicon.png", validPng, `{"v":1,"ct":"image/png","ns":"gbf"}`},
+		{"favicon.png", testValidPNG, `{"v":1,"ct":"image/png","ns":"gbf"}`},
 		{"jssdk_notes.txt", []byte("notes on jssdk"), ""},
 		{"jssdk_backup/app.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`},
 		{"jssdk/document.docx", []byte("secret document"), ""},
 	}
 
 	for _, item := range mustPreserveFiles {
-		full := filepath.Join(tmpDir, filepath.FromSlash(item.rel))
-		_ = os.MkdirAll(filepath.Dir(full), 0755)
-		_ = os.WriteFile(full, item.content, 0644)
+		p := writeTestDiskFile(t, tmpDir, item.rel, item.content)
 		if item.meta != "" {
-			_ = os.WriteFile(full+".ext", []byte(item.meta), 0644)
+			_ = os.WriteFile(p+".ext", []byte(item.meta), 0644)
 		}
 	}
 

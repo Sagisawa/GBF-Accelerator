@@ -95,13 +95,7 @@ func TestBreakdownScanSearchAndRetentionPreview(t *testing.T) {
 
 	writeAsset := func(relPath string, data []byte, withExt bool) {
 		t.Helper()
-		full := filepath.Join(tmpDir, filepath.FromSlash(relPath))
-		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
-			t.Fatalf("mkdir failed: %v", err)
-		}
-		if err := os.WriteFile(full, data, 0644); err != nil {
-			t.Fatalf("write failed: %v", err)
-		}
+		full := writeTestDiskFile(t, tmpDir, relPath, data)
 		if withExt {
 			fi, _ := os.Stat(full)
 			ns := "gbf"
@@ -140,16 +134,9 @@ func TestBreakdownScanSearchAndRetentionPreview(t *testing.T) {
 	writeAsset("hosts/sub.example.com/assets/img/sp/ui/data.png", []byte("\x89PNG\r\n\x1a\nhostui"), false)
 
 	// Orphan .ext file and excluded .tmp. / .quarantine files
-	orphanExt := filepath.Join(tmpDir, "assets", "img", "sp", "orphan.png.ext")
-	_ = os.MkdirAll(filepath.Dir(orphanExt), 0755)
-	_ = os.WriteFile(orphanExt, []byte(`{"v":1}`), 0644)
-
-	tmpFile := filepath.Join(tmpDir, "assets", "img", "sp", "writing.png.tmp.123.456.1")
-	_ = os.WriteFile(tmpFile, []byte("inflight"), 0644)
-
-	quarFile := filepath.Join(tmpDir, "assets", "js", "set-error-handler.js.quarantine.999")
-	_ = os.MkdirAll(filepath.Dir(quarFile), 0755)
-	_ = os.WriteFile(quarFile, []byte("quarantined"), 0644)
+	_ = writeTestDiskFile(t, tmpDir, "assets/img/sp/orphan.png.ext", []byte(`{"v":1}`))
+	tmpFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/writing.png.tmp.123.456.1", []byte("inflight"))
+	quarFile := writeTestDiskFile(t, tmpDir, "assets/js/set-error-handler.js.quarantine.999", []byte("quarantined"))
 
 	var lastProg ScanProgress
 	snap := mgr.ScanBreakdownWithProgress(func(p ScanProgress) {
@@ -1610,150 +1597,126 @@ func TestDeleteSnapshotSkipsModifiedLingeringExtWhenDataMissing(t *testing.T) {
 }
 
 func TestDeleteSnapshotSkipsModifiedOrReplacedPairedExtWhenDataPresent(t *testing.T) {
-	t.Run("ModifiedInPlace", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		mgr := NewManager(tmpDir, 32)
-		defer mgr.Close()
+	tests := []struct {
+		name        string
+		key         string
+		body        []byte
+		needMarker  bool
+		mutate      func(t *testing.T, dataPath, extPath string) []byte
+		assertExtra func(t *testing.T, dataPath, extPath string, extra []byte)
+	}{
+		{
+			name: "ModifiedInPlace",
+			key:  "assets/js/mod_ext.js",
+			body: []byte("console.log('mod_in_place_test');"),
+			mutate: func(t *testing.T, dataPath, extPath string) []byte {
+				time.Sleep(10 * time.Millisecond)
+				dataFi, _ := os.Stat(dataPath)
+				newMeta := []byte(fmt.Sprintf(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true,"extra":"large_payload_to_change_size","size":%d,"mtime":%d}`, dataFi.Size(), dataFi.ModTime().UnixNano()))
+				if err := os.WriteFile(extPath, newMeta, 0644); err != nil {
+					t.Fatalf("WriteFile extPath failed: %v", err)
+				}
+				return newMeta
+			},
+			assertExtra: func(t *testing.T, dataPath, extPath string, extra []byte) {
+				if _, err := os.Stat(dataPath); !os.IsNotExist(err) {
+					t.Fatalf("expected data file to be removed from disk, got err=%v", err)
+				}
+				if data, err := os.ReadFile(extPath); err != nil || !bytes.Equal(data, extra) {
+					t.Fatalf("expected modified .ext to remain intact on disk, got err=%v, data=%s", err, string(data))
+				}
+			},
+		},
+		{
+			name: "ReplacedWithNewFile",
+			key:  "assets/js/replace_ext.js",
+			body: []byte("console.log('replace_ext_test');"),
+			mutate: func(t *testing.T, dataPath, extPath string) []byte {
+				origMeta, err := os.ReadFile(extPath)
+				if err != nil {
+					t.Fatalf("ReadFile extPath failed: %v", err)
+				}
+				if err := os.Remove(extPath); err != nil {
+					t.Fatalf("Remove extPath failed: %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+				if err := os.WriteFile(extPath, origMeta, 0644); err != nil {
+					t.Fatalf("WriteFile extPath failed: %v", err)
+				}
+				return nil
+			},
+			assertExtra: func(t *testing.T, dataPath, extPath string, extra []byte) {
+				if _, err := os.Stat(extPath); err != nil {
+					t.Fatalf("expected replaced .ext to remain on disk, got err=%v", err)
+				}
+			},
+		},
+		{
+			name:       "ExtAppearedAfterSnapshot",
+			key:        "assets/js/no_ext.js",
+			body:       []byte("console.log('no_ext');"),
+			needMarker: true,
+			mutate: func(t *testing.T, dataPath, extPath string) []byte {
+				noExtFi, _ := os.Stat(dataPath)
+				newExtData := []byte(fmt.Sprintf(`{"ct":"application/javascript","v":1,"size":%d,"mtime":%d}`, noExtFi.Size(), noExtFi.ModTime().UnixNano()))
+				if err := os.WriteFile(extPath, newExtData, 0644); err != nil {
+					t.Fatalf("WriteFile extPath failed: %v", err)
+				}
+				return nil
+			},
+			assertExtra: func(t *testing.T, dataPath, extPath string, extra []byte) {
+				if _, err := os.Stat(extPath); err != nil {
+					t.Fatalf("expected new .ext to remain on disk, got err=%v", err)
+				}
+			},
+		},
+	}
 
-		headers := map[string]string{"content-type": "application/javascript"}
-		body := []byte("console.log('mod_in_place_test');")
-		if !mgr.SaveWithNamespace("gbf", "assets/js/mod_ext.js", headers, body) {
-			t.Fatalf("SaveWithNamespace failed")
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			if tc.needMarker {
+				if err := EnsureRootMarker(tmpDir); err != nil {
+					t.Fatalf("EnsureRootMarker failed: %v", err)
+				}
+			}
+			mgr := NewManager(tmpDir, 32)
+			defer mgr.Close()
 
-		snap := mgr.ScanBreakdownWithProgress(nil, nil)
-		if snap == nil || !snap.Valid {
-			t.Fatalf("expected valid snapshot")
-		}
+			dataPath := filepath.Join(tmpDir, filepath.FromSlash(tc.key))
+			extPath := dataPath + ".ext"
 
-		dataPath := filepath.Join(tmpDir, "assets", "js", "mod_ext.js")
-		extPath := dataPath + ".ext"
+			if tc.needMarker {
+				writeTestDiskFile(t, tmpDir, tc.key, tc.body)
+			} else {
+				if !mgr.SaveWithNamespace("gbf", tc.key, testJSHeaders, tc.body) {
+					t.Fatalf("SaveWithNamespace failed")
+				}
+			}
 
-		// Modify .ext content, size, and mtime after snapshot while preserving matching size/mtime for data file
-		time.Sleep(10 * time.Millisecond)
-		dataFi, _ := os.Stat(dataPath)
-		newMeta := []byte(fmt.Sprintf(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true,"extra":"large_payload_to_change_size","size":%d,"mtime":%d}`, dataFi.Size(), dataFi.ModTime().UnixNano()))
-		if err := os.WriteFile(extPath, newMeta, 0644); err != nil {
-			t.Fatalf("WriteFile extPath failed: %v", err)
-		}
+			snap := mgr.ScanBreakdownWithProgress(nil, nil)
+			if snap == nil || !snap.Valid {
+				t.Fatalf("expected valid snapshot")
+			}
 
-		res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
-		if err != nil {
-			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
-		}
-		if res.DeletedAssetFiles != 1 {
-			t.Fatalf("expected data file to be deleted (DeletedAssetFiles=1), got %+v", res)
-		}
-		if res.DeletedMetaFiles != 0 {
-			t.Fatalf("expected modified .ext NOT to be deleted (DeletedMetaFiles=0), got %+v", res)
-		}
-		if res.SkippedChangedCount != 1 {
-			t.Fatalf("expected SkippedChangedCount=1 for modified .ext, got %+v", res)
-		}
-		if _, err := os.Stat(dataPath); !os.IsNotExist(err) {
-			t.Fatalf("expected data file to be removed from disk, got err=%v", err)
-		}
-		if data, err := os.ReadFile(extPath); err != nil || !bytes.Equal(data, newMeta) {
-			t.Fatalf("expected modified .ext to remain intact on disk, got err=%v, data=%s", err, string(data))
-		}
-	})
+			extra := tc.mutate(t, dataPath, extPath)
 
-	t.Run("ReplacedWithNewFile", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		mgr := NewManager(tmpDir, 32)
-		defer mgr.Close()
-
-		headers := map[string]string{"content-type": "application/javascript"}
-		body := []byte("console.log('replace_ext_test');")
-		if !mgr.SaveWithNamespace("gbf", "assets/js/replace_ext.js", headers, body) {
-			t.Fatalf("SaveWithNamespace failed")
-		}
-
-		snap := mgr.ScanBreakdownWithProgress(nil, nil)
-		if snap == nil || !snap.Valid {
-			t.Fatalf("expected valid snapshot")
-		}
-
-		dataPath := filepath.Join(tmpDir, "assets", "js", "replace_ext.js")
-		extPath := dataPath + ".ext"
-
-		// Read existing ext, remove it, and recreate as a new file so physical file identity changes
-		origMeta, err := os.ReadFile(extPath)
-		if err != nil {
-			t.Fatalf("ReadFile extPath failed: %v", err)
-		}
-		if err := os.Remove(extPath); err != nil {
-			t.Fatalf("Remove extPath failed: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-		if err := os.WriteFile(extPath, origMeta, 0644); err != nil {
-			t.Fatalf("WriteFile extPath failed: %v", err)
-		}
-
-		res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
-		if err != nil {
-			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
-		}
-		if res.DeletedAssetFiles != 1 {
-			t.Fatalf("expected data file to be deleted (DeletedAssetFiles=1), got %+v", res)
-		}
-		if res.DeletedMetaFiles != 0 {
-			t.Fatalf("expected replaced .ext NOT to be deleted, got %+v", res)
-		}
-		if res.SkippedChangedCount != 1 {
-			t.Fatalf("expected SkippedChangedCount=1 for replaced .ext, got %+v", res)
-		}
-		if _, err := os.Stat(extPath); err != nil {
-			t.Fatalf("expected replaced .ext to remain on disk, got err=%v", err)
-		}
-	})
-
-	t.Run("ExtAppearedAfterSnapshot", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		if err := EnsureRootMarker(tmpDir); err != nil {
-			t.Fatalf("EnsureRootMarker failed: %v", err)
-		}
-		mgr := NewManager(tmpDir, 32)
-		defer mgr.Close()
-
-		dataPath := filepath.Join(tmpDir, "assets", "js", "no_ext.js")
-		if err := os.MkdirAll(filepath.Dir(dataPath), 0755); err != nil {
-			t.Fatalf("MkdirAll failed: %v", err)
-		}
-		if err := os.WriteFile(dataPath, []byte("console.log('no_ext');"), 0644); err != nil {
-			t.Fatalf("WriteFile dataPath failed: %v", err)
-		}
-
-		snap := mgr.ScanBreakdownWithProgress(nil, nil)
-		if snap == nil || !snap.Valid {
-			t.Fatalf("expected valid snapshot")
-		}
-
-		// Create a .ext file after snapshot was taken with matching size/mtime
-		extPath := dataPath + ".ext"
-		noExtFi, _ := os.Stat(dataPath)
-		newExtData := []byte(fmt.Sprintf(`{"ct":"application/javascript","v":1,"size":%d,"mtime":%d}`, noExtFi.Size(), noExtFi.ModTime().UnixNano()))
-		if err := os.WriteFile(extPath, newExtData, 0644); err != nil {
-			t.Fatalf("WriteFile extPath failed: %v", err)
-		}
-
-		res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
-		if err != nil {
-			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
-		}
-		if res.DeletedAssetFiles != 1 {
-			t.Fatalf("expected data file to be deleted, got %+v", res)
-		}
-		if res.DeletedMetaFiles != 0 {
-			t.Fatalf("expected newly appeared .ext NOT to be deleted, got %+v", res)
-		}
-		if res.SkippedChangedCount != 1 {
-			t.Fatalf("expected SkippedChangedCount=1 for new .ext, got %+v", res)
-		}
-		if _, err := os.Stat(extPath); err != nil {
-			t.Fatalf("expected new .ext to remain on disk, got err=%v", err)
-		}
-	})
+			res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+			}
+			if res.DeletedAssetFiles != 1 {
+				t.Fatalf("expected data file to be deleted (DeletedAssetFiles=1), got %+v", res)
+			}
+			if res.DeletedMetaFiles != 0 {
+				t.Fatalf("expected .ext NOT to be deleted (DeletedMetaFiles=0), got %+v", res)
+			}
+			if res.SkippedChangedCount != 1 {
+				t.Fatalf("expected SkippedChangedCount=1 for .ext, got %+v", res)
+			}
+			tc.assertExtra(t, dataPath, extPath, extra)
+		})
+	}
 }
 
 func TestAuditAndRepair_PreservesActiveStreamingTempFileAndRemovesOrphan(t *testing.T) {
@@ -2045,33 +2008,13 @@ func TestBreakdown_ClearCategories_SkippedChangedAndAlreadyMissingConsistency(t 
 			t.Fatalf("expected valid snapshot")
 		}
 
-		// Acquire a pre-deletion persistence token before the file vanishes
-		_, _, staleFile, staleGen, staleTok, ok := mgr.saveRAMInternal("gbf", key, headers, body, false, true)
-		if !ok {
-			t.Fatalf("saveRAMInternal failed")
-		}
-
 		// Externally remove the disk file and its .ext while leaving RAM / ResidentPool / diskMeta populated
 		diskPath := filepath.Join(tmpDir, "assets", "js", "vanished.js")
 		_ = os.Remove(diskPath)
 		_ = os.Remove(diskPath + ".ext")
 
-		rGen := mgr.residentPool.NextGeneration()
-		mgr.residentPool.ResetForGen(rGen)
-		ramKey := makeRAMKey("gbf", key)
-		mgr.residentPool.Set(ramKey, &CacheItem{
-			Key:         ramKey,
-			Data:        body,
-			ContentType: "application/javascript",
-			Size:        int64(len(body)),
-		})
-		mgr.setDiskMeta(ramKey, diskMetaEntry{
-			size:      int64(len(body)),
-			namespace: "gbf",
-			exists:    true,
-			hasMeta:   true,
-			verified:  true,
-		})
+		ramKey, staleGen, staleTok := populateMemoryStateForTest(mgr, "gbf", key, body)
+		staleFile := diskPath
 
 		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
 		if err != nil {
@@ -2127,26 +2070,7 @@ func TestBreakdown_ClearCategories_SkippedChangedAndAlreadyMissingConsistency(t 
 		}
 
 		// Populate RAM, ResidentPool, diskMeta, and acquire an active token
-		_, _, _, _, activeTok, ok := mgr.saveRAMInternal("gbf", key, headers, body, false, true)
-		if !ok {
-			t.Fatalf("saveRAMInternal failed")
-		}
-		ramKey := makeRAMKey("gbf", key)
-		rGen := mgr.residentPool.NextGeneration()
-		mgr.residentPool.ResetForGen(rGen)
-		mgr.residentPool.Set(ramKey, &CacheItem{
-			Key:         ramKey,
-			Data:        body,
-			ContentType: "application/javascript",
-			Size:        int64(len(body)),
-		})
-		mgr.setDiskMeta(ramKey, diskMetaEntry{
-			size:      int64(len(body)),
-			namespace: "gbf",
-			exists:    true,
-			hasMeta:   true,
-			verified:  true,
-		})
+		ramKey, _, activeTok := populateMemoryStateForTest(mgr, "gbf", key, body)
 
 		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
 		if err != nil {
@@ -2231,230 +2155,148 @@ func TestBreakdownAndCategoryCleanupExcludeUnconfirmedFiles(t *testing.T) {
 }
 
 func TestAlreadyMissingSidecarValidationAndMemoryLifecycle(t *testing.T) {
-	headers := map[string]string{"content-type": "application/javascript"}
+	headers := testJSHeaders
 	body := []byte("console.log('already_missing_lifecycle');")
 
-	t.Run("FileMissing_SidecarUnchanged_ClearsMemory_PreservesSidecar", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		mgr := NewManager(tmpDir, 32)
-		defer mgr.Close()
+	tests := []struct {
+		name          string
+		key           string
+		mutate        func(t *testing.T, dataPath, extPath string)
+		checkDelRes   func(t *testing.T, res *DeleteResult)
+		expectMemory  bool
+		checkTokenExt func(t *testing.T, mgr *Manager, staleFile string, staleGen uint64, staleTok opToken, extPath string)
+	}{
+		{
+			name: "FileMissing_SidecarUnchanged_ClearsMemory_PreservesSidecar",
+			key:  "assets/js/missing_sidecar_ok.js",
+			mutate: func(t *testing.T, dataPath, extPath string) {
+				if err := os.Remove(dataPath); err != nil {
+					t.Fatalf("Remove dataPath failed: %v", err)
+				}
+			},
+			checkDelRes: func(t *testing.T, res *DeleteResult) {
+				if res.AlreadyMissingCount != 1 || res.SkippedChangedCount != 0 {
+					t.Fatalf("expected AlreadyMissingCount=1 and SkippedChangedCount=0, got %+v", res)
+				}
+			},
+			expectMemory: false,
+			checkTokenExt: func(t *testing.T, mgr *Manager, staleFile string, staleGen uint64, staleTok opToken, extPath string) {
+				if mgr.saveToDiskWithToken(staleFile, headers, body, staleGen, staleTok) {
+					t.Fatalf("expected pre-deletion token to be invalidated when sidecar is unchanged")
+				}
+				if _, err := os.Stat(extPath); err != nil {
+					t.Fatalf("expected orphan .ext file to remain on disk: %v", err)
+				}
+			},
+		},
+		{
+			name: "FileMissing_SidecarModified_PreservesMemoryAndTokens",
+			key:  "assets/js/missing_sidecar_mod.js",
+			mutate: func(t *testing.T, dataPath, extPath string) {
+				if err := os.Remove(dataPath); err != nil {
+					t.Fatalf("Remove dataPath failed: %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+				modExt := []byte(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true,"extra":"payload_to_change_size"}`)
+				if err := os.WriteFile(extPath, modExt, 0644); err != nil {
+					t.Fatalf("WriteFile extPath failed: %v", err)
+				}
+			},
+			checkDelRes: func(t *testing.T, res *DeleteResult) {
+				if res.SkippedChangedCount != 1 || res.AlreadyMissingCount != 0 {
+					t.Fatalf("expected SkippedChangedCount=1 and AlreadyMissingCount=0, got %+v", res)
+				}
+			},
+			expectMemory: true,
+			checkTokenExt: func(t *testing.T, mgr *Manager, staleFile string, staleGen uint64, staleTok opToken, extPath string) {
+				if !mgr.isOpTokenValid(staleTok) {
+					t.Fatalf("expected persistence token to remain valid when sidecar changed")
+				}
+				modExt := []byte(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true,"extra":"payload_to_change_size"}`)
+				if data, err := os.ReadFile(extPath); err != nil || !bytes.Equal(data, modExt) {
+					t.Fatalf("expected modified .ext file to remain on disk: %v", err)
+				}
+			},
+		},
+		{
+			name: "FileMissing_AbnormalSidecar_PreservesMemoryAndReportsFailure",
+			key:  "assets/js/missing_sidecar_abnormal.js",
+			mutate: func(t *testing.T, dataPath, extPath string) {
+				if err := os.Remove(dataPath); err != nil {
+					t.Fatalf("Remove dataPath failed: %v", err)
+				}
+				if err := os.Remove(extPath); err != nil {
+					t.Fatalf("Remove extPath failed: %v", err)
+				}
+				if err := os.Mkdir(extPath, 0755); err != nil {
+					t.Fatalf("Mkdir extPath failed: %v", err)
+				}
+			},
+			checkDelRes: func(t *testing.T, res *DeleteResult) {
+				if res.FailedCount != 1 {
+					t.Fatalf("expected FailedCount=1 for abnormal sidecar, got %+v", res)
+				}
+			},
+			expectMemory: true,
+			checkTokenExt: func(t *testing.T, mgr *Manager, staleFile string, staleGen uint64, staleTok opToken, extPath string) {
+				if !mgr.isOpTokenValid(staleTok) {
+					t.Fatalf("expected persistence token to remain valid when sidecar is abnormal")
+				}
+			},
+		},
+	}
 
-		key := "assets/js/missing_sidecar_ok.js"
-		if !mgr.SaveWithNamespace("gbf", key, headers, body) {
-			t.Fatalf("SaveWithNamespace failed")
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			mgr := NewManager(tmpDir, 32)
+			defer mgr.Close()
 
-		snap := mgr.ScanBreakdownWithProgress(nil, nil)
-		if snap == nil || !snap.Valid {
-			t.Fatalf("expected valid snapshot")
-		}
+			if !mgr.SaveWithNamespace("gbf", tc.key, headers, body) {
+				t.Fatalf("SaveWithNamespace failed")
+			}
 
-		// Warm RAM and acquire persistence token
-		_, _, staleFile, staleGen, staleTok, ok := mgr.saveRAMInternal("gbf", key, headers, body, false, true)
-		if !ok {
-			t.Fatalf("saveRAMInternal failed")
-		}
-		ramKey := makeRAMKey("gbf", key)
-		rGen := mgr.residentPool.Generation()
-		mgr.residentPool.ResetForGen(rGen)
-		mgr.residentPool.Set(ramKey, &CacheItem{
-			Key:         ramKey,
-			Data:        body,
-			ContentType: "application/javascript",
-			Size:        int64(len(body)),
+			snap := mgr.ScanBreakdownWithProgress(nil, nil)
+			if snap == nil || !snap.Valid {
+				t.Fatalf("expected valid snapshot")
+			}
+
+			ramKey, staleGen, staleTok := populateMemoryStateForTest(mgr, "gbf", tc.key, body)
+			staleFile := filepath.Join(tmpDir, filepath.FromSlash(tc.key))
+			dataPath := staleFile
+			extPath := dataPath + ".ext"
+
+			tc.mutate(t, dataPath, extPath)
+
+			delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+			}
+			tc.checkDelRes(t, delRes)
+
+			if tc.expectMemory {
+				if _, ok := mgr.ramCache.Get(ramKey); !ok {
+					t.Fatalf("expected RAM cache entry to be preserved")
+				}
+				if _, ok := mgr.residentPool.Get(ramKey); !ok {
+					t.Fatalf("expected ResidentPool entry to be preserved")
+				}
+				if _, ok := mgr.getDiskMeta(ramKey); !ok {
+					t.Fatalf("expected diskMeta entry to be preserved")
+				}
+			} else {
+				if _, ok := mgr.ramCache.Get(ramKey); ok {
+					t.Fatalf("expected RAM cache entry to be cleared")
+				}
+				if _, ok := mgr.residentPool.Get(ramKey); ok {
+					t.Fatalf("expected ResidentPool entry to be cleared")
+				}
+				if _, ok := mgr.getDiskMeta(ramKey); ok {
+					t.Fatalf("expected diskMeta entry to be cleared")
+				}
+			}
+
+			tc.checkTokenExt(t, mgr, staleFile, staleGen, staleTok, extPath)
 		})
-		mgr.setDiskMeta(ramKey, diskMetaEntry{
-			size:      int64(len(body)),
-			namespace: "gbf",
-			exists:    true,
-			hasMeta:   true,
-			verified:  true,
-		})
-
-		// Remove ONLY the data file, leave .ext intact on disk
-		dataPath := filepath.Join(tmpDir, "assets", "js", "missing_sidecar_ok.js")
-		extPath := dataPath + ".ext"
-		if err := os.Remove(dataPath); err != nil {
-			t.Fatalf("Remove dataPath failed: %v", err)
-		}
-
-		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
-		if err != nil {
-			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
-		}
-		if delRes.AlreadyMissingCount != 1 || delRes.SkippedChangedCount != 0 {
-			t.Fatalf("expected AlreadyMissingCount=1 and SkippedChangedCount=0, got %+v", delRes)
-		}
-
-		// Memory states must be cleared and token invalidated
-		if _, ok := mgr.ramCache.Get(ramKey); ok {
-			t.Fatalf("expected RAM cache entry to be cleared when sidecar is unchanged")
-		}
-		if _, ok := mgr.residentPool.Get(ramKey); ok {
-			t.Fatalf("expected ResidentPool entry to be cleared when sidecar is unchanged")
-		}
-		if _, ok := mgr.getDiskMeta(ramKey); ok {
-			t.Fatalf("expected diskMeta entry to be cleared when sidecar is unchanged")
-		}
-		if mgr.saveToDiskWithToken(staleFile, headers, body, staleGen, staleTok) {
-			t.Fatalf("expected pre-deletion token to be invalidated when sidecar is unchanged")
-		}
-
-		// Orphan .ext must remain on disk intact
-		if _, err := os.Stat(extPath); err != nil {
-			t.Fatalf("expected orphan .ext file to remain on disk: %v", err)
-		}
-	})
-
-	t.Run("FileMissing_SidecarModified_PreservesMemoryAndTokens", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		mgr := NewManager(tmpDir, 32)
-		defer mgr.Close()
-
-		key := "assets/js/missing_sidecar_mod.js"
-		if !mgr.SaveWithNamespace("gbf", key, headers, body) {
-			t.Fatalf("SaveWithNamespace failed")
-		}
-
-		snap := mgr.ScanBreakdownWithProgress(nil, nil)
-		if snap == nil || !snap.Valid {
-			t.Fatalf("expected valid snapshot")
-		}
-
-		// Warm RAM and acquire persistence token
-		_, _, staleFile, staleGen, staleTok, ok := mgr.saveRAMInternal("gbf", key, headers, body, false, true)
-		if !ok {
-			t.Fatalf("saveRAMInternal failed")
-		}
-		ramKey := makeRAMKey("gbf", key)
-		rGen := mgr.residentPool.Generation()
-		mgr.residentPool.ResetForGen(rGen)
-		mgr.residentPool.Set(ramKey, &CacheItem{
-			Key:         ramKey,
-			Data:        body,
-			ContentType: "application/javascript",
-			Size:        int64(len(body)),
-		})
-		mgr.setDiskMeta(ramKey, diskMetaEntry{
-			size:      int64(len(body)),
-			namespace: "gbf",
-			exists:    true,
-			hasMeta:   true,
-			verified:  true,
-		})
-
-		// Remove data file and modify .ext
-		dataPath := filepath.Join(tmpDir, "assets", "js", "missing_sidecar_mod.js")
-		extPath := dataPath + ".ext"
-		if err := os.Remove(dataPath); err != nil {
-			t.Fatalf("Remove dataPath failed: %v", err)
-		}
-		time.Sleep(10 * time.Millisecond)
-		modExt := []byte(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true,"extra":"payload_to_change_size"}`)
-		if err := os.WriteFile(extPath, modExt, 0644); err != nil {
-			t.Fatalf("WriteFile extPath failed: %v", err)
-		}
-
-		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
-		if err != nil {
-			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
-		}
-		if delRes.SkippedChangedCount != 1 || delRes.AlreadyMissingCount != 0 {
-			t.Fatalf("expected SkippedChangedCount=1 and AlreadyMissingCount=0, got %+v", delRes)
-		}
-
-		// Memory states and token must be preserved because sidecar changed
-		if _, ok := mgr.ramCache.Get(ramKey); !ok {
-			t.Fatalf("expected RAM cache entry to be preserved when sidecar changed")
-		}
-		if _, ok := mgr.residentPool.Get(ramKey); !ok {
-			t.Fatalf("expected ResidentPool entry to be preserved when sidecar changed")
-		}
-		if _, ok := mgr.getDiskMeta(ramKey); !ok {
-			t.Fatalf("expected diskMeta entry to be preserved when sidecar changed")
-		}
-		if !mgr.isOpTokenValid(staleTok) {
-			t.Fatalf("expected persistence token to remain valid when sidecar changed")
-		}
-		_ = staleFile
-		_ = staleGen
-
-		// Modified .ext must remain on disk intact
-		if data, err := os.ReadFile(extPath); err != nil || !bytes.Equal(data, modExt) {
-			t.Fatalf("expected modified .ext file to remain on disk: %v", err)
-		}
-	})
-
-	t.Run("FileMissing_AbnormalSidecar_PreservesMemoryAndReportsFailure", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		mgr := NewManager(tmpDir, 32)
-		defer mgr.Close()
-
-		key := "assets/js/missing_sidecar_abnormal.js"
-		if !mgr.SaveWithNamespace("gbf", key, headers, body) {
-			t.Fatalf("SaveWithNamespace failed")
-		}
-
-		snap := mgr.ScanBreakdownWithProgress(nil, nil)
-		if snap == nil || !snap.Valid {
-			t.Fatalf("expected valid snapshot")
-		}
-
-		// Warm RAM and acquire persistence token
-		_, _, _, _, staleTok, ok := mgr.saveRAMInternal("gbf", key, headers, body, false, true)
-		if !ok {
-			t.Fatalf("saveRAMInternal failed")
-		}
-		ramKey := makeRAMKey("gbf", key)
-		rGen := mgr.residentPool.Generation()
-		mgr.residentPool.ResetForGen(rGen)
-		mgr.residentPool.Set(ramKey, &CacheItem{
-			Key:         ramKey,
-			Data:        body,
-			ContentType: "application/javascript",
-			Size:        int64(len(body)),
-		})
-		mgr.setDiskMeta(ramKey, diskMetaEntry{
-			size:      int64(len(body)),
-			namespace: "gbf",
-			exists:    true,
-			hasMeta:   true,
-			verified:  true,
-		})
-
-		// Remove data file and replace .ext with a directory
-		dataPath := filepath.Join(tmpDir, "assets", "js", "missing_sidecar_abnormal.js")
-		extPath := dataPath + ".ext"
-		if err := os.Remove(dataPath); err != nil {
-			t.Fatalf("Remove dataPath failed: %v", err)
-		}
-		if err := os.Remove(extPath); err != nil {
-			t.Fatalf("Remove extPath failed: %v", err)
-		}
-		if err := os.Mkdir(extPath, 0755); err != nil {
-			t.Fatalf("Mkdir extPath failed: %v", err)
-		}
-
-		delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
-		if err != nil {
-			t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
-		}
-		if delRes.FailedCount != 1 {
-			t.Fatalf("expected FailedCount=1 for abnormal sidecar, got %+v", delRes)
-		}
-
-		// Memory states and token must be preserved because sidecar is abnormal
-		if _, ok := mgr.ramCache.Get(ramKey); !ok {
-			t.Fatalf("expected RAM cache entry to be preserved when sidecar is abnormal")
-		}
-		if _, ok := mgr.residentPool.Get(ramKey); !ok {
-			t.Fatalf("expected ResidentPool entry to be preserved when sidecar is abnormal")
-		}
-		if _, ok := mgr.getDiskMeta(ramKey); !ok {
-			t.Fatalf("expected diskMeta entry to be preserved when sidecar is abnormal")
-		}
-		if !mgr.isOpTokenValid(staleTok) {
-			t.Fatalf("expected persistence token to remain valid when sidecar is abnormal")
-		}
-	})
+	}
 }

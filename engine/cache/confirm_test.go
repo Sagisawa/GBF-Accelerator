@@ -17,11 +17,10 @@ func TestIsConfirmedCacheFile_Tier1ValidExt(t *testing.T) {
 		"content-type": "image/png",
 		"etag":         `"test-etag"`,
 	}
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
 	// Save file with .ext metadata
 	relPath := "assets/12345/img/sp/test.png"
-	if !mgr.SaveWithNamespace("gbf", relPath, headers, validPng) {
+	if !mgr.SaveWithNamespace("gbf", relPath, headers, testValidPNG) {
 		t.Fatalf("failed to save asset")
 	}
 
@@ -43,17 +42,9 @@ func TestIsConfirmedCacheFile_Tier1ValidExt(t *testing.T) {
 
 func TestIsConfirmedCacheFile_Tier2LegacyWithoutExt(t *testing.T) {
 	tmpDir := t.TempDir()
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
 	// Create legacy ACGPower cache structure directly on disk (no .ext file)
-	legacyRel := filepath.Join("assets", "img", "sp", "legacy.png")
-	legacyFull := filepath.Join(tmpDir, legacyRel)
-	if err := os.MkdirAll(filepath.Dir(legacyFull), 0755); err != nil {
-		t.Fatalf("mkdir failed: %v", err)
-	}
-	if err := os.WriteFile(legacyFull, validPng, 0644); err != nil {
-		t.Fatalf("write failed: %v", err)
-	}
+	legacyFull := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
 
 	// Case A: Without root marker -> MUST be rejected!
 	if IsConfirmedCacheFile(tmpDir, legacyFull, false) {
@@ -66,61 +57,48 @@ func TestIsConfirmedCacheFile_Tier2LegacyWithoutExt(t *testing.T) {
 	}
 
 	// Case C: Non-asset extension with root marker -> MUST be rejected!
-	userDocFull := filepath.Join(tmpDir, "assets", "img", "sp", "doc.docx")
-	if err := os.WriteFile(userDocFull, []byte("user doc"), 0644); err != nil {
-		t.Fatalf("write user doc failed: %v", err)
-	}
+	userDocFull := writeTestDiskFile(t, tmpDir, "assets/img/sp/doc.docx", []byte("user doc"))
 	if IsConfirmedCacheFile(tmpDir, userDocFull, true) {
 		t.Errorf("file with non-asset extension must NOT be confirmed")
 	}
 }
 
+
 func TestIsConfirmedCacheFile_RejectsNonCacheFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// 1. Files in cache root (e.g. doc.txt, notes.pdf, or even a .png in root)
-	rootFiles := []string{"doc.txt", "notes.pdf", "data.csv", "image.png"}
-	for _, name := range rootFiles {
-		p := filepath.Join(tmpDir, name)
-		_ = os.WriteFile(p, []byte("test content"), 0644)
+	for _, name := range []string{"doc.txt", "notes.pdf", "data.csv", "image.png"} {
+		p := writeTestDiskFile(t, tmpDir, name, []byte("test content"))
 		if IsConfirmedCacheFile(tmpDir, p, true) {
 			t.Errorf("file in cache root %q must NOT be confirmed", name)
 		}
 	}
 
 	// 2. Nested user files with non-cache extensions (including .csv)
-	userDir := filepath.Join(tmpDir, "user_folder")
-	_ = os.MkdirAll(userDir, 0755)
-	nonCacheExts := []string{"document.docx", "data.csv", "sheet.xlsx", "archive.zip", "exec.exe"}
-	for _, name := range nonCacheExts {
-		p := filepath.Join(userDir, name)
-		_ = os.WriteFile(p, []byte("test content"), 0644)
+	for _, name := range []string{"document.docx", "data.csv", "sheet.xlsx", "archive.zip", "exec.exe"} {
+		p := writeTestDiskFile(t, tmpDir, filepath.Join("user_folder", name), []byte("test content"))
 		if IsConfirmedCacheFile(tmpDir, p, true) {
 			t.Errorf("user file with non-cache extension %q must NOT be confirmed", name)
 		}
 	}
 
 	// 3. Empty files (size == 0)
-	emptyFile := filepath.Join(tmpDir, "assets", "img", "sp", "empty.png")
-	_ = os.MkdirAll(filepath.Dir(emptyFile), 0755)
-	_ = os.WriteFile(emptyFile, []byte{}, 0644)
+	emptyFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/empty.png", nil)
 	if IsConfirmedCacheFile(tmpDir, emptyFile, true) {
 		t.Errorf("empty file (size 0) must NOT be confirmed")
 	}
 
 	// 4. System junk files
-	junkFiles := []string{".DS_Store", "Thumbs.db", "desktop.ini", "._asset.png"}
-	for _, name := range junkFiles {
-		p := filepath.Join(tmpDir, "assets", "img", "sp", name)
-		_ = os.WriteFile(p, []byte("junk"), 0644)
+	for _, name := range []string{".DS_Store", "Thumbs.db", "desktop.ini", "._asset.png"} {
+		p := writeTestDiskFile(t, tmpDir, filepath.Join("assets/img/sp", name), []byte("junk"))
 		if IsConfirmedCacheFile(tmpDir, p, true) {
 			t.Errorf("system junk file %q must NOT be confirmed", name)
 		}
 	}
 
 	// 5. Root marker itself
-	markerFile := filepath.Join(tmpDir, RootMarkerFileName)
-	_ = os.WriteFile(markerFile, []byte("marker"), 0644)
+	markerFile := writeTestDiskFile(t, tmpDir, RootMarkerFileName, []byte("marker"))
 	if IsConfirmedCacheFile(tmpDir, markerFile, true) {
 		t.Errorf("root marker file itself must NOT be confirmed as cache asset")
 	}
@@ -315,13 +293,9 @@ func TestIsConfirmedCacheDir(t *testing.T) {
 
 func TestIsConfirmedCacheFile_StrictExtAndPath(t *testing.T) {
 	tmpDir := t.TempDir()
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
 	// 1. User file on non-cache path with valid paired .ext JSON: MUST BE REJECTED!
-	userDir := filepath.Join(tmpDir, "personal_data")
-	_ = os.MkdirAll(userDir, 0755)
-	userPhoto := filepath.Join(userDir, "photo.png")
-	_ = os.WriteFile(userPhoto, validPng, 0644)
+	userPhoto := writeTestDiskFile(t, tmpDir, "personal_data/photo.png", testValidPNG)
 	fi, _ := os.Stat(userPhoto)
 	userExt := userPhoto + ".ext"
 	_ = os.WriteFile(userExt, []byte(fmt.Sprintf(`{"v":1,"size":%d,"mtime":%d,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`, fi.Size(), fi.ModTime().UnixNano())), 0644)
@@ -331,10 +305,7 @@ func TestIsConfirmedCacheFile_StrictExtAndPath(t *testing.T) {
 	}
 
 	// 2. Legitimate cache path with corrupted / empty .ext: MUST NOT fall through to Tier 2!
-	cacheDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
-	_ = os.MkdirAll(cacheDir, 0755)
-	cacheFile := filepath.Join(cacheDir, "broken_ext.png")
-	_ = os.WriteFile(cacheFile, validPng, 0644)
+	cacheFile := writeTestDiskFile(t, tmpDir, "assets/12345/img/sp/broken_ext.png", testValidPNG)
 	brokenExt := cacheFile + ".ext"
 	_ = os.WriteFile(brokenExt, []byte("not valid json at all"), 0644)
 
@@ -344,8 +315,7 @@ func TestIsConfirmedCacheFile_StrictExtAndPath(t *testing.T) {
 	}
 
 	// 3. Legitimate cache path with 0-byte .ext: MUST NOT fall through to Tier 2!
-	emptyExtFile := filepath.Join(cacheDir, "empty_ext.png")
-	_ = os.WriteFile(emptyExtFile, validPng, 0644)
+	emptyExtFile := writeTestDiskFile(t, tmpDir, "assets/12345/img/sp/empty_ext.png", testValidPNG)
 	emptyExt := emptyExtFile + ".ext"
 	_ = os.WriteFile(emptyExt, []byte{}, 0644)
 
@@ -358,11 +328,7 @@ func TestIsConfirmedCacheFile_RejectsSymlinks(t *testing.T) {
 	tmpDir := t.TempDir()
 	extDir := t.TempDir()
 
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	externalPng := filepath.Join(extDir, "secret.png")
-	if err := os.WriteFile(externalPng, validPng, 0644); err != nil {
-		t.Fatalf("failed to write external png: %v", err)
-	}
+	externalPng := writeTestDiskFile(t, extDir, "secret.png", testValidPNG)
 
 	// Create symlink pointing outside baseDir to externalPng
 	cacheSubDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
@@ -388,13 +354,6 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 		t.Fatalf("EnsureRootMarker failed: %v", err)
 	}
 
-	writeDiskFile := func(relPath string, data []byte) string {
-		full := filepath.Join(root, filepath.FromSlash(relPath))
-		_ = os.MkdirAll(filepath.Dir(full), 0755)
-		_ = os.WriteFile(full, data, 0644)
-		return full
-	}
-
 	writeExt := func(full string, meta diskMeta) {
 		_ = writeDiskExtFile(full, meta)
 	}
@@ -408,7 +367,7 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 		"300/personal/app.js",
 		"300/js/app.docx",
 	} {
-		p := writeDiskFile(invalidRel, jsCode)
+		p := writeTestDiskFile(t, root, invalidRel, jsCode)
 		if IsConfirmedCacheFile(root, p, true) {
 			t.Fatalf("%s must return false for version fallback checks", invalidRel)
 		}
@@ -424,8 +383,8 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 	}
 
 	// 2. Bare version assets without .ext: Tier-2 gated on root marker
-	p300 := writeDiskFile("300/js/app.js", jsCode)
-	pQuestLegacy := writeDiskFile("300/img/sp/quest/scene/ch1.png", pngMagic)
+	p300 := writeTestDiskFile(t, root, "300/js/app.js", jsCode)
+	pQuestLegacy := writeTestDiskFile(t, root, "300/img/sp/quest/scene/ch1.png", pngMagic)
 	for _, p := range []string{p300, pQuestLegacy} {
 		if !IsConfirmedCacheFile(root, p, true) {
 			t.Fatalf("%s without .ext must be confirmed under Tier-2 when root marker is present", p)
@@ -464,7 +423,7 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 	}
 
 	// 4. Positive image in version fallback
-	pQuest := writeDiskFile("300/img/sp/quest/scene/ch1.png", pngMagic)
+	pQuest := writeTestDiskFile(t, root, "300/img/sp/quest/scene/ch1.png", pngMagic)
 	fiQuest, _ := os.Stat(pQuest)
 	writeExt(pQuest, diskMeta{ContentType: "image/png", Version: 1, Verified: true, Size: int64(len(pngMagic)), MTimeNano: fiQuest.ModTime().UnixNano(), Namespace: "gbf"})
 	if !IsConfirmedCacheFile(root, pQuest, true) {
@@ -734,6 +693,3 @@ func TestRootFaviconSupport(t *testing.T) {
 		}
 	}
 }
-
-
-
