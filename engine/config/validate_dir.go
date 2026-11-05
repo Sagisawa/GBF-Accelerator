@@ -11,14 +11,14 @@ import (
 
 // Standard error codes for cache directory validation
 const (
-	ErrCodeEmpty              = "ERR_EMPTY_PATH"
-	ErrCodeRoot               = "ERR_ROOT_DIRECTORY"
-	ErrCodeDriveRoot          = "ERR_DRIVE_ROOT"
-	ErrCodeUNCRoot            = "ERR_UNC_ROOT"
-	ErrCodeSystemDir          = "ERR_SYSTEM_DIRECTORY"
-	ErrCodeUserProtectedDir   = "ERR_USER_PROTECTED_DIRECTORY"
-	ErrCodeAncestorProtected  = "ERR_ANCESTOR_PROTECTED_DIRECTORY"
-	ErrCodeInvalidPath        = "ERR_INVALID_PATH"
+	ErrCodeEmpty             = "ERR_EMPTY_PATH"
+	ErrCodeRoot              = "ERR_ROOT_DIRECTORY"
+	ErrCodeDriveRoot         = "ERR_DRIVE_ROOT"
+	ErrCodeUNCRoot           = "ERR_UNC_ROOT"
+	ErrCodeSystemDir         = "ERR_SYSTEM_DIRECTORY"
+	ErrCodeUserProtectedDir  = "ERR_USER_PROTECTED_DIRECTORY"
+	ErrCodeAncestorProtected = "ERR_ANCESTOR_PROTECTED_DIRECTORY"
+	ErrCodeInvalidPath       = "ERR_INVALID_PATH"
 )
 
 // CacheDirValidationError is a structured error returned when a candidate
@@ -33,27 +33,26 @@ func (e *CacheDirValidationError) Error() string {
 	return fmt.Sprintf("invalid cache directory %q (%s): %s", e.Path, e.Code, e.Message)
 }
 
+func dirErr(p, code, msg string) error {
+	return &CacheDirValidationError{Code: code, Message: msg, Path: p}
+}
+
 // IsSystemJunk returns true if the filename represents OS metadata or system junk
 // that should be ignored when determining if a directory is clean or empty,
 // and should never be deleted by ClearAll.
 func IsSystemJunk(name string) bool {
 	base := filepath.Base(name)
-	if base == ".DS_Store" {
+	if base == ".DS_Store" || strings.HasPrefix(base, "._") {
 		return true
 	}
-	if strings.HasPrefix(base, "._") {
-		return true
-	}
-	clean := strings.ToLower(base)
-	switch clean {
+	switch strings.ToLower(base) {
 	case ".spotlight-v100", ".fseventsd", ".trashes", "thumbs.db", "desktop.ini", "$recycle.bin", "system volume information":
 		return true
 	}
 	return false
 }
 
-// IsDirClean checks whether a directory exists and contains no user or non-junk files.
-// System junk files (.DS_Store, Thumbs.db, desktop.ini, etc.) are ignored.
+// IsDirClean checks whether a directory exists and contains no non-junk files.
 func IsDirClean(dirPath string) (bool, error) {
 	entries, err := os.ReadDir(dirPath)
 	if err != nil {
@@ -77,172 +76,85 @@ func resolveSymlinksWithAncestors(p string) string {
 	if p == "" {
 		return ""
 	}
-	abs, err := filepath.Abs(p)
-	if err == nil {
+	if abs, err := filepath.Abs(p); err == nil {
 		p = abs
 	}
-	// Try direct EvalSymlinks
 	if resolved, err := filepath.EvalSymlinks(p); err == nil {
 		return resolved
 	}
-
 	clean := filepath.Clean(p)
-	current := clean
-	var tail []string
-	for {
-		parent := filepath.Dir(current)
-		if parent == current || parent == "." || parent == "" {
+	for cur := clean; ; {
+		parent := filepath.Dir(cur)
+		if parent == cur || parent == "." || parent == "" {
 			break
 		}
-		tail = append([]string{filepath.Base(current)}, tail...)
-		current = parent
-		if resolved, err := filepath.EvalSymlinks(current); err == nil {
-			result := resolved
-			for _, seg := range tail {
-				result = filepath.Join(result, seg)
+		cur = parent
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			if rel, err := filepath.Rel(cur, clean); err == nil {
+				return filepath.Join(resolved, rel)
 			}
-			return result
+			return clean
 		}
 	}
 	return clean
 }
 
 // ValidateCacheDir validates that rawPath is a safe directory for storing cache.
-// It resolves symlinks (falling back to existing ancestors if non-existent)
-// and rejects drive roots, filesystem roots, UNC share roots, system directories,
-// and protected user top-level directories (while allowing dedicated subdirectories).
 func ValidateCacheDir(rawPath string) error {
 	resolved := resolveSymlinksWithAncestors(rawPath)
 	homeDir, _ := os.UserHomeDir()
 	return ValidateCacheDirForPlatform(resolved, runtime.GOOS, homeDir, nil)
 }
 
-// splitPathSegments splits a path into cleaned segments for robust ancestor/descendant matching.
-// Handles both Windows and Unix slash styles in a platform-independent way so Windows paths
-// are accurately evaluated on Linux CI and vice versa.
-func splitPathSegments(p string, isWindows bool) []string {
-	clean := p
+func normalizePath(p string, isWindows, caseInsensitive bool) string {
+	s := strings.TrimSpace(p)
+	if s == "" {
+		return ""
+	}
 	if isWindows {
-		clean = strings.ReplaceAll(clean, `\`, `/`)
-	}
-	if strings.HasPrefix(clean, `//?/unc/`) || strings.HasPrefix(clean, `//?/UNC/`) {
-		clean = "//" + clean[8:]
-	} else if strings.HasPrefix(clean, `//?/`) {
-		clean = clean[4:]
-	}
-	clean = path.Clean(clean)
-	parts := strings.Split(clean, "/")
-	var res []string
-	for _, part := range parts {
-		if part != "" && part != "." {
-			if isWindows {
-				res = append(res, strings.ToLower(part))
-			} else {
-				res = append(res, part)
-			}
+		s = strings.ReplaceAll(s, "\\", "/")
+		if len(s) >= 8 && strings.EqualFold(s[:8], "//?/unc/") {
+			s = "//" + s[8:]
+		} else if strings.HasPrefix(s, "//?/") {
+			s = s[4:]
 		}
 	}
-	return res
+	if caseInsensitive {
+		s = strings.ToLower(s)
+	}
+	isUNC := isWindows && strings.HasPrefix(s, "//")
+	s = path.Clean(s)
+	if isUNC && !strings.HasPrefix(s, "//") {
+		s = "/" + s
+	}
+	return s
 }
 
-// isDriveRoot checks whether a segment list represents a Windows drive root (e.g. ["c:"]).
-func isDriveRoot(segs []string) bool {
-	if len(segs) == 1 {
-		s := strings.TrimSuffix(segs[0], ".")
-		if len(s) == 2 && s[1] == ':' && ((s[0] >= 'a' && s[0] <= 'z') || (s[0] >= 'A' && s[0] <= 'Z')) {
-			return true
-		}
-	}
-	return false
+func isSubpath(p, parent string) bool {
+	return p == parent || strings.HasPrefix(p, parent+"/")
 }
 
-// isUNCRoot checks whether a path represents a Windows UNC share root (e.g. \\server\share or //server/share).
-func isUNCRoot(p string) bool {
-	norm := strings.ReplaceAll(p, `\`, `/`)
-	if strings.HasPrefix(norm, `//?/unc/`) || strings.HasPrefix(norm, `//?/UNC/`) {
-		norm = "//" + norm[8:]
-	} else if strings.HasPrefix(norm, `//?/`) {
-		norm = norm[4:]
-	}
-	if !strings.HasPrefix(norm, "//") {
-		return false
-	}
-	trimmed := strings.Trim(norm, "/")
-	parts := strings.Split(trimmed, "/")
-	// Exactly 2 components: server and share
-	return len(parts) == 2
+func isDriveRoot(norm string) bool {
+	return (len(norm) == 2 || (len(norm) == 3 && norm[2] == '/')) && norm[1] == ':' && ((norm[0] >= 'a' && norm[0] <= 'z') || (norm[0] >= 'A' && norm[0] <= 'Z'))
 }
 
-// isUNCShare checks whether a path is under a Windows UNC share.
-func isUNCShare(p string) bool {
-	norm := strings.ReplaceAll(p, `\`, `/`)
-	if strings.HasPrefix(norm, `//?/unc/`) || strings.HasPrefix(norm, `//?/UNC/`) {
-		norm = "//" + norm[8:]
-	} else if strings.HasPrefix(norm, `//?/`) {
-		norm = norm[4:]
-	}
-	return strings.HasPrefix(norm, "//")
-}
-
-// segmentsEqual checks exact segment match (handling case-insensitivity on Windows/macOS).
-func segmentsEqual(a, b []string, caseInsensitive bool) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if caseInsensitive {
-			if !strings.EqualFold(a[i], b[i]) {
-				return false
-			}
-		} else {
-			if a[i] != b[i] {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// isAncestorOf checks if ancestorSegs is a strict ancestor of targetSegs.
-func isAncestorOf(ancestorSegs, targetSegs []string, caseInsensitive bool) bool {
-	if len(ancestorSegs) >= len(targetSegs) {
-		return false
-	}
-	for i := range ancestorSegs {
-		if caseInsensitive {
-			if !strings.EqualFold(ancestorSegs[i], targetSegs[i]) {
-				return false
-			}
-		} else {
-			if ancestorSegs[i] != targetSegs[i] {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// isDescendantOf checks if targetSegs is a strict descendant of parentSegs.
-func isDescendantOf(targetSegs, parentSegs []string, caseInsensitive bool) bool {
-	return isAncestorOf(parentSegs, targetSegs, caseInsensitive)
-}
+var (
+	winSystemDirs       = []string{"windows", "program files", "program files (x86)", "programdata", "recovery", "$recycle.bin", "system volume information"}
+	unixStrictSysDirs   = []string{"/bin", "/sbin", "/usr", "/etc", "/dev", "/proc", "/sys", "/private/etc", "/system", "/library", "/applications"}
+	unixAllowSubSys     = []string{"/var", "/tmp", "/private/var", "/private/tmp", "/private", "/users", "/home", "/volumes", "/mnt", "/media"}
+	standardUserFolders = []string{"desktop", "downloads", "documents", "pictures", "music", "videos", "movies"}
+)
 
 // ValidateCacheDirForPlatform is the platform-independent core validation logic.
-// It can be tested on any OS (including Linux CI) by specifying targetGOOS ("windows", "darwin", "linux").
-func ValidateCacheDirForPlatform(rawPath string, targetGOOS string, homeDir string, evalSymlinks func(string) (string, error)) error {
+func ValidateCacheDirForPlatform(rawPath, targetGOOS, homeDir string, evalSymlinks func(string) (string, error)) error {
 	trimmed := strings.TrimSpace(rawPath)
 	if trimmed == "" {
-		return &CacheDirValidationError{
-			Code:    ErrCodeEmpty,
-			Message: "cache directory cannot be empty",
-			Path:    rawPath,
-		}
+		return dirErr(rawPath, ErrCodeEmpty, "cache directory cannot be empty")
 	}
 
 	isWindows := targetGOOS == "windows"
 	caseInsensitive := isWindows || targetGOOS == "darwin"
 
-	// Resolve symlinks if a custom resolver was provided
 	resolved := trimmed
 	if evalSymlinks != nil {
 		if res, err := evalSymlinks(trimmed); err == nil && res != "" {
@@ -250,170 +162,61 @@ func ValidateCacheDirForPlatform(rawPath string, targetGOOS string, homeDir stri
 		}
 	}
 
-	segs := splitPathSegments(resolved, isWindows)
-	if len(segs) == 0 {
-		return &CacheDirValidationError{
-			Code:    ErrCodeRoot,
-			Message: "filesystem root cannot be used as cache directory",
-			Path:    rawPath,
-		}
-	}
+	norm := normalizePath(resolved, isWindows, caseInsensitive)
 
-	// 1. Root directory validation
-	if isWindows {
-		if isDriveRoot(segs) {
-			return &CacheDirValidationError{
-				Code:    ErrCodeDriveRoot,
-				Message: "drive root (e.g. C:\\) cannot be used as cache directory",
-				Path:    rawPath,
-			}
-		}
-		if isUNCRoot(resolved) {
-			return &CacheDirValidationError{
-				Code:    ErrCodeUNCRoot,
-				Message: "network share root (e.g. \\\\server\\share) cannot be used as cache directory",
-				Path:    rawPath,
-			}
-		}
-	} else {
-		// Unix / macOS filesystem root: "/" produces 0 segments after split
-		// If resolved was literally "/"
-		cleanSlash := filepath.ToSlash(resolved)
-		if cleanSlash == "/" {
-			return &CacheDirValidationError{
-				Code:    ErrCodeRoot,
-				Message: "root directory (/) cannot be used as cache directory",
-				Path:    rawPath,
-			}
-		}
+	if norm == "/" || norm == "." || norm == "" {
+		return dirErr(rawPath, ErrCodeRoot, "root directory (/) cannot be used as cache directory")
 	}
-
-	// 2. System directories definition
-	var systemDirs [][]string
-	var systemRootsAllowSubdirs [][]string // e.g. /tmp, /var, /private/var where descendants are allowed
 
 	if isWindows {
-		// Drive letter of target if available, or check against any drive letter
-		systemDirNames := []string{
-			"windows",
-			"program files",
-			"program files (x86)",
-			"programdata",
-			"recovery",
-			"$recycle.bin",
-			"system volume information",
+		if isDriveRoot(norm) {
+			return dirErr(rawPath, ErrCodeDriveRoot, "drive root (e.g. C:\\) cannot be used as cache directory")
 		}
-		for _, name := range systemDirNames {
-			// e.g. ["c:", "windows"] or relative ["windows"]
-			if len(segs) > 0 && len(segs[0]) == 2 && segs[0][1] == ':' {
-				systemDirs = append(systemDirs, []string{segs[0], name})
-			} else {
-				systemDirs = append(systemDirs, []string{name})
-			}
-		}
-
-		// Exact user root directories on Windows that reject the root itself but allow subdirectories
-		// e.g. C:\Users (subdirectories like C:\Users\<user>\cache are allowed)
-		if len(segs) > 0 && len(segs[0]) == 2 && segs[0][1] == ':' {
-			systemRootsAllowSubdirs = append(systemRootsAllowSubdirs, []string{segs[0], "users"})
-		} else {
-			systemRootsAllowSubdirs = append(systemRootsAllowSubdirs, []string{"users"})
-		}
-	} else {
-		// Unix / macOS system directories
-		strictSys := []string{
-			"/bin", "/sbin", "/usr", "/etc", "/dev", "/proc", "/sys",
-			"/private/etc", "/System", "/Library", "/Applications",
-		}
-		for _, s := range strictSys {
-			systemDirs = append(systemDirs, splitPathSegments(s, false))
-		}
-
-		// System / mount directories that reject the dir itself, but ALLOW subdirectories
-		// e.g. /var, /tmp, /private/var, /private/tmp, /private, /Users, /home, /Volumes, /mnt, /media
-		allowSubSys := []string{
-			"/var", "/tmp", "/private/var", "/private/tmp", "/private",
-			"/Users", "/home", "/Volumes", "/mnt", "/media",
-		}
-		for _, s := range allowSubSys {
-			systemRootsAllowSubdirs = append(systemRootsAllowSubdirs, splitPathSegments(s, false))
+		if strings.HasPrefix(norm, "//") && len(strings.Split(strings.Trim(norm, "/"), "/")) <= 2 {
+			return dirErr(rawPath, ErrCodeUNCRoot, "network share root (e.g. \\\\server\\share) cannot be used as cache directory")
 		}
 	}
 
-	// Check system directories that reject exact match and descendants
-	for _, sysSegs := range systemDirs {
-		if segmentsEqual(segs, sysSegs, caseInsensitive) || isDescendantOf(segs, sysSegs, caseInsensitive) {
-			return &CacheDirValidationError{
-				Code:    ErrCodeSystemDir,
-				Message: fmt.Sprintf("system directory %q cannot be used as cache directory", resolved),
-				Path:    rawPath,
-			}
+	checkPath, checkDirs := norm, unixStrictSysDirs
+	if isWindows {
+		checkDirs = winSystemDirs
+		if len(norm) >= 2 && norm[1] == ':' {
+			checkPath = strings.TrimPrefix(norm[2:], "/")
+		}
+	}
+	for _, sys := range checkDirs {
+		if isSubpath(checkPath, sys) {
+			return dirErr(rawPath, ErrCodeSystemDir, fmt.Sprintf("system directory %q cannot be used as cache directory", resolved))
 		}
 	}
 
-	// 3. User protected directories (Home directory and standard user folders)
-	var homeSegs []string
+	var normHome string
 	if homeDir != "" {
-		homeSegs = splitPathSegments(homeDir, isWindows)
+		normHome = normalizePath(homeDir, isWindows, caseInsensitive)
 	}
 
-	// If target is ancestor of user home directory (e.g. C:\Users or /Users or /home):
-	if len(homeSegs) > 1 {
-		// Ancestors of home:
-		for i := 1; i < len(homeSegs); i++ {
-			ancestor := homeSegs[:i]
-			if !isDriveRoot(ancestor) && segmentsEqual(segs, ancestor, caseInsensitive) {
-				return &CacheDirValidationError{
-					Code:    ErrCodeAncestorProtected,
-					Message: fmt.Sprintf("ancestor directory %q of user home cannot be used as cache directory", resolved),
-					Path:    rawPath,
-				}
-			}
-		}
+	if normHome != "" && !isDriveRoot(norm) && norm != "/" && norm != "" && strings.HasPrefix(normHome, norm+"/") {
+		return dirErr(rawPath, ErrCodeAncestorProtected, fmt.Sprintf("ancestor directory %q of user home cannot be used as cache directory", resolved))
 	}
 
-	// Check system roots that only reject exact match (descendants allowed, like /tmp/mycache, /private/var/folders/...)
-	for _, sysRoot := range systemRootsAllowSubdirs {
-		if segmentsEqual(segs, sysRoot, caseInsensitive) {
-			return &CacheDirValidationError{
-				Code:    ErrCodeSystemDir,
-				Message: fmt.Sprintf("system root directory %q cannot be used as cache directory; please use a dedicated subdirectory", resolved),
-				Path:    rawPath,
-			}
+	allowSubSys := unixAllowSubSys
+	if isWindows {
+		allowSubSys = []string{"users"}
+	}
+	for _, sys := range allowSubSys {
+		if checkPath == sys {
+			return dirErr(rawPath, ErrCodeSystemDir, fmt.Sprintf("system root directory %q cannot be used as cache directory; please use a dedicated subdirectory", resolved))
 		}
 	}
 
-	if len(homeSegs) > 0 {
-		// User home directory itself: exact match is rejected
-		if segmentsEqual(segs, homeSegs, caseInsensitive) {
-			return &CacheDirValidationError{
-				Code:    ErrCodeUserProtectedDir,
-				Message: "user home directory cannot be used directly as cache directory; please choose a dedicated subdirectory",
-				Path:    rawPath,
-			}
+	if normHome != "" {
+		if norm == normHome {
+			return dirErr(rawPath, ErrCodeUserProtectedDir, "user home directory cannot be used directly as cache directory; please choose a dedicated subdirectory")
 		}
-
-		// Standard user folders under home
-		standardFolders := []string{
-			"desktop",
-			"downloads",
-			"documents",
-			"pictures",
-			"music",
-			"videos",
-			"movies",
-		}
-		for _, folder := range standardFolders {
-			folderSegs := append(append([]string{}, homeSegs...), folder)
-			// EXACT match: reject! Standard folders like Downloads/downloads are rejected regardless of OS casing.
-			if len(segs) == len(folderSegs) && segmentsEqual(segs[:len(homeSegs)], homeSegs, caseInsensitive) && strings.EqualFold(segs[len(homeSegs)], folder) {
-				return &CacheDirValidationError{
-					Code:    ErrCodeUserProtectedDir,
-					Message: fmt.Sprintf("standard user folder %q cannot be used directly as cache directory; please choose a dedicated subdirectory", folder),
-					Path:    rawPath,
-				}
+		for _, folder := range standardUserFolders {
+			if strings.EqualFold(norm, normHome+"/"+folder) {
+				return dirErr(rawPath, ErrCodeUserProtectedDir, fmt.Sprintf("standard user folder %q cannot be used directly as cache directory; please choose a dedicated subdirectory", folder))
 			}
-			// Descendants (e.g. ~/Downloads/ACGPower/cache): explicitly ALLOWED!
 		}
 	}
 
