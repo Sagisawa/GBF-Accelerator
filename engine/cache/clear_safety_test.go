@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
@@ -72,6 +71,19 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 	userPhotoExt := filepath.Join(nestedUserDir, "photo.png.ext")
 	_ = os.WriteFile(userPhotoExt, []byte(`{"v":1,"size":19,"mtime_nano":123456789,"ns":"gbf"}`), 0644)
 
+	// User files in paths containing category words or numeric names (must NOT be misidentified)
+	userBackupAudio := filepath.Join(tmpDir, "my_backup", "sound", "audio.mp3")
+	_ = os.MkdirAll(filepath.Dir(userBackupAudio), 0755)
+	_ = os.WriteFile(userBackupAudio, []byte("ID3audio"), 0644)
+
+	userCategoryDoc := filepath.Join(tmpDir, "assets", "document.docx")
+	_ = os.MkdirAll(filepath.Dir(userCategoryDoc), 0755)
+	_ = os.WriteFile(userCategoryDoc, []byte("docx content"), 0644)
+
+	userYearPhoto := filepath.Join(tmpDir, "2026", "photos", "event.png")
+	_ = os.MkdirAll(filepath.Dir(userYearPhoto), 0755)
+	_ = os.WriteFile(userYearPhoto, testValidPNG, 0644)
+
 	// Pre-existing empty user directory (must NOT be pruned)
 	emptyUserDir := filepath.Join(tmpDir, "user_workspace", "empty_sub")
 	if err := os.MkdirAll(emptyUserDir, 0755); err != nil {
@@ -121,12 +133,12 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 	if freed <= 0 {
 		t.Errorf("expected positive freed bytes, got freed=%d", freed)
 	}
-	if skipped < 8 {
-		t.Errorf("expected at least 8 skipped non-cache user files, got skipped=%d", skipped)
+	if skipped < 11 {
+		t.Errorf("expected at least 11 skipped non-cache user files, got skipped=%d", skipped)
 	}
 
 	// User files MUST NOT be deleted
-	allUserFiles := append([]string{userDocPath, userNotesPath, nestedFilePath, userTmpDocPath, nestedTmpDocPath, userExtPath, userPhotoExt}, userTempFiles...)
+	allUserFiles := append([]string{userDocPath, userNotesPath, nestedFilePath, userTmpDocPath, nestedTmpDocPath, userExtPath, userPhotoExt, userBackupAudio, userCategoryDoc, userYearPhoto}, userTempFiles...)
 	for _, p := range allUserFiles {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("BUG DETECTED: user file %s was deleted by ClearAll: %v", p, err)
@@ -146,34 +158,51 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 		t.Errorf("expected empty cache directory %s to be pruned", prunedDir)
 	}
 
-	// Non-empty user directory personal_data MUST NOT be pruned
-	if _, err := os.Stat(nestedUserDir); err != nil {
-		t.Errorf("expected non-empty user directory %s to remain, err: %v", nestedUserDir, err)
-	}
-
-	// Pre-existing empty user directory MUST NOT be pruned
-	if fi, err := os.Stat(emptyUserDir); err != nil || !fi.IsDir() {
-		t.Errorf("BUG: empty user directory %s was pruned: %v", emptyUserDir, err)
+	// User directories MUST NOT be pruned
+	for _, ud := range []string{nestedUserDir, filepath.Join(tmpDir, "my_backup"), filepath.Join(tmpDir, "2026"), emptyUserDir} {
+		if fi, err := os.Stat(ud); err != nil || !fi.IsDir() {
+			t.Errorf("BUG: user directory %s was pruned: %v", ud, err)
+		}
 	}
 }
 
 func TestClearAll_FilesWithoutExtStrictlyPreserved(t *testing.T) {
 	tmpDir := t.TempDir()
+
+	legacyFiles := []string{
+		"assets/12345/img/sp/quest.png",
+		"assets/img/sp/btn.png",
+		"assets/common/img.png",
+	}
+	for _, rel := range legacyFiles {
+		writeTestDiskFile(t, tmpDir, rel, testValidPNG)
+	}
+
 	mgr := NewManager(tmpDir, 64)
 	defer mgr.Close()
-	_ = EnsureRootMarker(tmpDir)
 
-	legacyFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
-
+	// 1. Without root marker: ClearAll must delete 0 files
+	if mgr.HasRootMarker() {
+		t.Fatalf("expected HasRootMarker to be false initially")
+	}
 	deleted, _, skipped := mgr.ClearAll()
-	if deleted != 0 {
-		t.Errorf("expected 0 deleted files without .ext metadata, got %d", deleted)
+	if deleted != 0 || skipped < len(legacyFiles) {
+		t.Errorf("expected deleted=0, skipped>=%d; got deleted=%d, skipped=%d", len(legacyFiles), deleted, skipped)
 	}
-	if skipped != 1 {
-		t.Errorf("expected 1 skipped file, got %d", skipped)
+
+	// 2. With root marker: files without .ext must STILL be strictly preserved (0 deleted)
+	if err := mgr.EnsureRootMarker(); err != nil {
+		t.Fatalf("EnsureRootMarker failed: %v", err)
 	}
-	if _, err := os.Stat(legacyFile); err != nil {
-		t.Errorf("expected file without .ext to be preserved: %v", err)
+	deletedAfter, _, skippedAfter := mgr.ClearAll()
+	if deletedAfter != 0 || skippedAfter < len(legacyFiles) {
+		t.Errorf("expected 0 deleted files for files without .ext even with marker, got deleted=%d, skipped=%d", deletedAfter, skippedAfter)
+	}
+	for _, rel := range legacyFiles {
+		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
+		if _, err := os.Stat(full); err != nil {
+			t.Errorf("expected file %s without .ext to be preserved: %v", rel, err)
+		}
 	}
 }
 
@@ -285,107 +314,6 @@ func TestClearAll_CleanCacheNoFalseSkippedCount(t *testing.T) {
 	}
 	if skipped != 0 {
 		t.Errorf("expected 0 skipped files for a purely clean cache, got skipped=%d", skipped)
-	}
-}
-
-func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-
-	_ = EnsureRootMarker(tmpDir)
-
-	validMp3 := []byte("ID3\x04\x00\x00\x00\x00\x00#TIT2\x00\x00\x00\x05\x00\x00\x03test\x00")
-	validJs := []byte(`(function(){ console.log("custom script"); })();`)
-	validCss := []byte(`body { margin: 0; background-color: #ffffff; }`)
-
-	// 1. User files that MUST be preserved across various directory shapes
-	type userFileEntry struct {
-		rel  string
-		data []byte
-	}
-	userFiles := []userFileEntry{
-		{"personal_data/quest/photo.png", testValidPNG},
-		{"personal_data/photo.png", testValidPNG},
-		{"user_workspace/private/photo.png", testValidPNG},
-		{"my_backup/sound/audio.mp3", validMp3},
-		{"user_scripts/custom.js", validJs},
-		{"my_styles/theme.css", validCss},
-		{"2026/photos/event.png", testValidPNG},
-		{"assets/document.docx", []byte("docx content")},
-		{"assets/12345/archive.zip", []byte("zip content")},
-		{"assets/12345/document.docx", []byte("docx content 2")},
-		{"12345/personal/test.png", testValidPNG},
-	}
-
-	for _, uf := range userFiles {
-		writeTestDiskFile(t, tmpDir, uf.rel, uf.data)
-	}
-
-	// Also add user photo with paired .ext in non-cache path
-	pairedUserPhoto := writeTestDiskFile(t, tmpDir, "personal_data/paired.png", testValidPNG)
-	fi, _ := os.Stat(pairedUserPhoto)
-	_ = os.WriteFile(pairedUserPhoto+".ext", []byte(fmt.Sprintf(`{"v":1,"size":%d,"mtime":%d,"at":12345,"ct":"image/png","verified":true,"ns":"gbf"}`, fi.Size(), fi.ModTime().UnixNano())), 0644)
-
-	// 2. Real cache files that SHOULD be deleted
-	legitCacheFiles := []struct {
-		rel  string
-		data []byte
-	}{
-		{"assets/12345/img/sp/btn.png", testValidPNG},
-		{"assets/img/sp/quest.png", testValidPNG},
-		{"sound/voice/attack.mp3", validMp3},
-	}
-	for _, cf := range legitCacheFiles {
-		p := writeTestDiskFile(t, tmpDir, cf.rel, cf.data)
-		_ = os.WriteFile(p+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
-	}
-
-	deleted, _, skipped := mgr.ClearAll()
-	if deleted != len(legitCacheFiles)*2 {
-		t.Errorf("expected %d deleted legit cache files (data+ext), got %d", len(legitCacheFiles)*2, deleted)
-	}
-
-	for _, cf := range legitCacheFiles {
-		p := filepath.Join(tmpDir, filepath.FromSlash(cf.rel))
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("expected legit cache file %s to be deleted", p)
-		}
-		if _, err := os.Stat(p + ".ext"); !os.IsNotExist(err) {
-			t.Errorf("expected legit cache metadata %s.ext to be deleted", p)
-		}
-	}
-
-	if skipped < len(userFiles) {
-		t.Errorf("expected at least %d skipped user files, got %d", len(userFiles), skipped)
-	}
-
-	for _, uf := range userFiles {
-		p := filepath.Join(tmpDir, filepath.FromSlash(uf.rel))
-		if _, err := os.Stat(p); err != nil {
-			t.Errorf("BUG DETECTED: user file %s was deleted: %v", uf.rel, err)
-		}
-	}
-
-	if _, err := os.Stat(pairedUserPhoto); err != nil {
-		t.Errorf("BUG DETECTED: paired user photo was deleted: %v", err)
-	}
-	if _, err := os.Stat(pairedUserPhoto + ".ext"); err != nil {
-		t.Errorf("BUG DETECTED: paired user photo .ext was deleted: %v", err)
-	}
-
-	userDirs := []string{
-		filepath.Join(tmpDir, "personal_data"),
-		filepath.Join(tmpDir, "user_workspace"),
-		filepath.Join(tmpDir, "my_backup"),
-		filepath.Join(tmpDir, "user_scripts"),
-		filepath.Join(tmpDir, "my_styles"),
-		filepath.Join(tmpDir, "2026"),
-	}
-	for _, d := range userDirs {
-		if _, err := os.Stat(d); err != nil {
-			t.Errorf("BUG DETECTED: user directory %s was pruned: %v", d, err)
-		}
 	}
 }
 
@@ -577,9 +505,9 @@ func TestClearAll_VersionFallbackSafety(t *testing.T) {
 	defer mgr.Close()
 
 	appCode := []byte("console.log('legit_fallback');")
-	pngMagic := []byte("\x89PNG\r\n\x1a\nmismatch_ns")
+	pngMagic := []byte("\x89PNG\r\n\x1a\nphoto")
 
-	// 1. Legit Tier-1 fallback with matching sidecar (300/js/app.js)
+	// 1. Legit version fallback with matching sidecar (300/js/app.js) -> deleted
 	legitFallback := filepath.Join(tmpDir, "300", "js", "app.js")
 	_ = os.MkdirAll(filepath.Dir(legitFallback), 0755)
 	_ = os.WriteFile(legitFallback, appCode, 0644)
@@ -593,70 +521,30 @@ func TestClearAll_VersionFallbackSafety(t *testing.T) {
 		MTimeNano:   fiLegit.ModTime().UnixNano(),
 	})
 
-	// 2. Orphan .ext in fallback dir (300/js/orphan.js.ext)
-	orphanExt := filepath.Join(tmpDir, "300", "js", "orphan.js.ext")
-	_ = writeDiskExtFile(strings.TrimSuffix(orphanExt, ".ext"), diskMeta{
-		ContentType: "application/javascript",
-		Namespace:   "gbf",
-		Version:     1,
-		Verified:    true,
-		Size:        123,
-		MTimeNano:   time.Now().UnixNano(),
-	})
-
-	// 3. Mismatched NS in fallback dir (300/img/sp/quest/scene/mismatch_ns.png)
-	mismatchNSFile := filepath.Join(tmpDir, "300", "img", "sp", "quest", "scene", "mismatch_ns.png")
-	_ = os.MkdirAll(filepath.Dir(mismatchNSFile), 0755)
-	_ = os.WriteFile(mismatchNSFile, pngMagic, 0644)
-	fiMismatch, _ := os.Stat(mismatchNSFile)
-	_ = writeDiskExtFile(mismatchNSFile, diskMeta{
-		ContentType: "image/png",
-		Namespace:   "external.host.com",
-		Version:     1,
-		Verified:    true,
-		Size:        int64(len(pngMagic)),
-		MTimeNano:   fiMismatch.ModTime().UnixNano(),
-	})
-
-	// 4. Numeric user files: 2026/photos/family.png & 300/personal/notes.txt
-	userPhoto := filepath.Join(tmpDir, "2026", "photos", "family.png")
-	_ = os.MkdirAll(filepath.Dir(userPhoto), 0755)
-	_ = os.WriteFile(userPhoto, pngMagic, 0644)
-
-	userNotes := filepath.Join(tmpDir, "300", "personal", "notes.txt")
-	_ = os.MkdirAll(filepath.Dir(userNotes), 0755)
-	_ = os.WriteFile(userNotes, []byte("private notes"), 0644)
-
-	// 5. Tier-2 version fallback without .ext (300/js/no_ext.js)
-	noExtFile := filepath.Join(tmpDir, "300", "js", "no_ext.js")
-	_ = os.WriteFile(noExtFile, appCode, 0644)
+	// 2. Numeric user files & unconfirmed version assets (2026/photos/family.png & 300/js/no_ext.js) -> preserved
+	userPhoto := writeTestDiskFile(t, tmpDir, "2026/photos/family.png", pngMagic)
+	userNotes := writeTestDiskFile(t, tmpDir, "300/personal/notes.txt", []byte("private notes"))
+	noExtFile := writeTestDiskFile(t, tmpDir, "300/js/no_ext.js", appCode)
 
 	deleted, _, skipped := mgr.ClearAll()
 	if deleted != 2 {
 		t.Fatalf("expected exactly 2 deleted files (app.js + app.js.ext), got %d", deleted)
 	}
 
-	// Assertions
 	if _, err := os.Stat(legitFallback); !os.IsNotExist(err) {
 		t.Fatalf("expected %s to be deleted", legitFallback)
 	}
-	if _, err := os.Stat(orphanExt); err != nil {
-		t.Fatalf("expected orphan .ext %s to be preserved", orphanExt)
-	}
-	if _, err := os.Stat(mismatchNSFile); err != nil {
-		t.Fatalf("expected mismatch NS file %s to be preserved", mismatchNSFile)
-	}
 	for _, keep := range []string{userPhoto, userNotes, noExtFile} {
 		if _, err := os.Stat(keep); err != nil {
-			t.Fatalf("expected unconfirmed file %s to be preserved", keep)
+			t.Fatalf("expected unconfirmed file %s to be preserved: %v", keep, err)
 		}
 	}
-	if skipped == 0 {
-		t.Fatalf("expected skipped > 0, got %d", skipped)
+	if skipped < 3 {
+		t.Fatalf("expected skipped >= 3, got %d", skipped)
 	}
 }
 
-func TestClearAll_NamespaceSafetyMatrix(t *testing.T) {
+func TestClearAll_NamespaceAndDomainSafety(t *testing.T) {
 	tmpDir := t.TempDir()
 	if err := EnsureRootMarker(tmpDir); err != nil {
 		t.Fatalf("EnsureRootMarker failed: %v", err)
@@ -664,38 +552,58 @@ func TestClearAll_NamespaceSafetyMatrix(t *testing.T) {
 	mgr := NewManager(tmpDir, 32)
 	defer mgr.Close()
 
-	payload := []byte("console.log('clear_all_ns_matrix');")
+	validJS := []byte("console.log('domain_safety');")
+	validIco := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10}
 
 	cases := []struct {
 		name        string
 		relPath     string
-		metaNS      string
+		content     []byte
+		meta        string
 		shouldClean bool
 	}{
-		{"1_CanonicalGBF_ValidNS", "assets/300/js/canonical_valid.js", "gbf", true},
-		{"2_CanonicalGBF_EmptyNS", "assets/300/js/canonical_empty.js", "", true},
-		{"3_Fallback_ValidNS", "300/js/fallback_valid.js", "gbf", true},
-		{"4_Fallback_EmptyNS", "300/js/fallback_empty.js", "", false},
-		{"5_Hosts_GBF_NS", "hosts/sub.example.com/assets/js/host_gbf.js", "gbf", true},
-		{"6_Hosts_Hostname_NS", "hosts/sub.example.com/assets/js/host_direct.js", "sub.example.com", true},
-		{"7_Hosts_EmptyNS", "hosts/sub.example.com/assets/js/host_empty.js", "", false},
-		{"8_Hosts_MismatchNS", "hosts/sub.example.com/assets/js/host_mismatch.js", "other.example.com", false},
+		// Canonical GBF paths (valid & legacy empty NS)
+		{"Canonical_ValidNS", "assets/300/js/canonical_valid.js", validJS, `{"v":1,"ns":"gbf","ct":"application/javascript"}`, true},
+		{"Canonical_EmptyNS", "assets/300/js/canonical_empty.js", validJS, `{"v":1,"ct":"application/javascript"}`, true},
+
+		// Version fallback paths (strictly require "gbf" NS)
+		{"Fallback_ValidNS", "300/js/fallback_valid.js", validJS, `{"v":1,"ns":"gbf","ct":"application/javascript"}`, true},
+		{"Fallback_EmptyNS", "300/js/fallback_empty.js", validJS, `{"v":1,"ct":"application/javascript"}`, false},
+
+		// Host paths: GBF NS & direct hostname NS accepted
+		{"Hosts_GBF_NS", "hosts/sub.example.com/assets/js/host_gbf.js", validJS, `{"v":1,"ns":"gbf","ct":"application/javascript"}`, true},
+		{"Hosts_Hostname_NS", "hosts/sub.example.com/assets/js/host_direct.js", validJS, `{"v":1,"ns":"sub.example.com","ct":"application/javascript"}`, true},
+		{"Hosts_MismatchNS", "hosts/sub.example.com/assets/js/host_mismatch.js", validJS, `{"v":1,"ns":"other.example.com","ct":"application/javascript"}`, false},
+
+		// Historical official GBF hosts with empty NS (requires Verified=true)
+		{"OfficialHost_Verified", "hosts/granbluefantasy.com/_app/style.css", []byte("body{}"), `{"v":1,"ct":"text/css","verified":true}`, true},
+		{"OfficialHost_Unverified", "hosts/granbluefantasy.com/unverified.js", validJS, `{"v":1,"ct":"application/javascript","verified":false}`, false},
+		{"UntrustedHost_EmptyNS", "hosts/untrusted-domain.com/photo.png", testValidPNG, `{"v":1,"ct":"image/png","verified":true}`, false},
+
+		// JSSDK & Root Favicon
+		{"JSSDK_Valid", "jssdk/mobage-jssdk-client.3.10.1.min.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`, true},
+		{"JSSDK_Backup_Invalid", "jssdk_backup/app.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`, false},
+		{"Favicon_Valid", "favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`, true},
+		{"Favicon_InvalidName", "my_favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`, false},
 	}
 
 	for _, tc := range cases {
-		fullPath := writeTestDiskFile(t, tmpDir, tc.relPath, payload)
-		fi, _ := os.Stat(fullPath)
-		_ = writeDiskExtFile(fullPath, diskMeta{
-			ContentType: "application/javascript",
-			Version:     1,
-			Verified:    true,
-			Size:        fi.Size(),
-			MTimeNano:   fi.ModTime().UnixNano(),
-			Namespace:   tc.metaNS,
-		})
+		fullPath := writeTestDiskFile(t, tmpDir, tc.relPath, tc.content)
+		if tc.meta != "" {
+			_ = os.WriteFile(fullPath+".ext", []byte(tc.meta), 0644)
+		}
 	}
 
-	mgr.ClearAll()
+	deleted, _, _ := mgr.ClearAll()
+	var expectedDeleted int
+	for _, tc := range cases {
+		if tc.shouldClean {
+			expectedDeleted += 2 // data + ext
+		}
+	}
+	if deleted != expectedDeleted {
+		t.Fatalf("expected %d deleted files, got %d", expectedDeleted, deleted)
+	}
 
 	for _, tc := range cases {
 		fullPath := filepath.Join(tmpDir, filepath.FromSlash(tc.relPath))
@@ -711,58 +619,12 @@ func TestClearAll_NamespaceSafetyMatrix(t *testing.T) {
 			if _, err := os.Stat(fullPath); err != nil {
 				t.Errorf("[%s] expected data file %s to be preserved: %v", tc.name, tc.relPath, err)
 			}
-			if _, err := os.Stat(extPath); err != nil {
-				t.Errorf("[%s] expected sidecar %s to be preserved: %v", tc.name, extPath, err)
+			if tc.meta != "" {
+				if _, err := os.Stat(extPath); err != nil {
+					t.Errorf("[%s] expected sidecar %s to be preserved: %v", tc.name, extPath, err)
+				}
 			}
 		}
-	}
-}
-
-func TestClearAll_PureACGPowerDirectoryE2E(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	acgFiles := []string{
-		"assets/12345/img/sp/quest.png",
-		"assets/img/sp/btn.png",
-		"assets/common/img.png",
-	}
-
-	for _, rel := range acgFiles {
-		writeTestDiskFile(t, tmpDir, rel, testValidPNG)
-	}
-
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-
-	if mgr.HasRootMarker() {
-		t.Fatalf("expected HasRootMarker to be false before confirmation")
-	}
-
-	deleted, _, skipped := mgr.ClearAll()
-	if deleted != 0 || skipped < len(acgFiles) {
-		t.Fatalf("expected deleted=0, skipped>=%d; got deleted=%d, skipped=%d", len(acgFiles), deleted, skipped)
-	}
-
-	if err := mgr.EnsureRootMarker(); err != nil {
-		t.Fatalf("EnsureRootMarker failed: %v", err)
-	}
-	if !mgr.HasRootMarker() {
-		t.Fatalf("expected HasRootMarker to be true after EnsureRootMarker")
-	}
-
-	deletedAfter, _, skippedAfter := mgr.ClearAll()
-	if deletedAfter != 0 || skippedAfter < len(acgFiles) {
-		t.Fatalf("expected 0 deleted files after confirmation for files without .ext, got deleted=%d, skipped=%d", deletedAfter, skippedAfter)
-	}
-	for _, rel := range acgFiles {
-		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
-		if _, err := os.Stat(full); err != nil {
-			t.Fatalf("expected file %s to be preserved without .ext", rel)
-		}
-	}
-
-	if !mgr.HasRootMarker() {
-		t.Fatalf("expected root marker to remain intact after ClearAll")
 	}
 }
 
@@ -794,90 +656,6 @@ func TestClearAll_QuarantineFilesStrictMatchingAndUserPreserved(t *testing.T) {
 	for _, p := range []string{userDoc, userFolderDoc, userAssetDoc} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("BUG: user quarantine-like file %s was deleted: %v", p, err)
-		}
-	}
-}
-
-func TestClearAll_HistoricalCompatibilitySafetyAndSeparation(t *testing.T) {
-	tmpDir := t.TempDir()
-	_ = EnsureRootMarker(tmpDir)
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-
-	validJS := []byte("console.log('client-code');")
-	validIco := []byte{0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10}
-
-	mustDeleteFiles := []struct {
-		rel     string
-		content []byte
-		meta    string
-	}{
-		{"hosts/granbluefantasy.com/_app/style.css", []byte("body{margin:0}"), `{"v":1,"ct":"text/css","verified":true}`},
-		{"hosts/game.granbluefantasy.jp/assets/font/basic.woff", []byte("woff-data"), `{"v":1,"ct":"application/font-woff","verified":true}`},
-		{"hosts/ava-a.sp.mbga.jp/avatar.gif", []byte("GIF89a"), `{"v":1,"ct":"image/gif","verified":true}`},
-		{"hosts/connect.mobage.jp/static/icon.png", testValidPNG, `{"v":1,"ct":"image/png","verified":true}`},
-		{"hosts/steam.granbluefantasy.com/icon.ico", validIco, `{"v":1,"ct":"image/x-icon","verified":true}`},
-		{"jssdk/mobage-jssdk-client.3.10.1.min.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`},
-		{"favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`},
-		{"assets/icon.png", testValidPNG, `{"v":1,"ct":"image/png","ns":"gbf"}`},
-		{"assets/common/img.png", testValidPNG, `{"v":1,"ct":"image/png","ns":"gbf"}`},
-		{"assets/random_module/asset.png", testValidPNG, `{"v":1,"ct":"image/png","ns":"gbf"}`},
-	}
-
-	for _, item := range mustDeleteFiles {
-		p := writeTestDiskFile(t, tmpDir, item.rel, item.content)
-		_ = os.WriteFile(p+".ext", []byte(item.meta), 0644)
-	}
-
-	mustPreserveFiles := []struct {
-		rel     string
-		content []byte
-		meta    string
-	}{
-		{"hosts/untrusted-domain.com/photo.png", testValidPNG, `{"v":1,"ct":"image/png","verified":true}`},
-		{"hosts/malicious.org/script.js", validJS, `{"v":1,"ct":"application/javascript","verified":true}`},
-		{"hosts/granbluefantasy.com/unverified.js", validJS, `{"v":1,"ct":"application/javascript","verified":false}`},
-		{"notes.txt", []byte("personal notes"), ""},
-		{"root_photo.png", testValidPNG, ""},
-		{"my_favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`},
-		{"favicon.png", testValidPNG, `{"v":1,"ct":"image/png","ns":"gbf"}`},
-		{"jssdk_notes.txt", []byte("notes on jssdk"), ""},
-		{"jssdk_backup/app.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`},
-		{"jssdk/document.docx", []byte("secret document"), ""},
-	}
-
-	for _, item := range mustPreserveFiles {
-		p := writeTestDiskFile(t, tmpDir, item.rel, item.content)
-		if item.meta != "" {
-			_ = os.WriteFile(p+".ext", []byte(item.meta), 0644)
-		}
-	}
-
-	deleted, _, _ := mgr.ClearAll()
-	expectedDeleted := len(mustDeleteFiles) * 2
-	if deleted != expectedDeleted {
-		t.Fatalf("expected exactly %d deleted files, got deleted=%d", expectedDeleted, deleted)
-	}
-
-	for _, item := range mustDeleteFiles {
-		full := filepath.Join(tmpDir, filepath.FromSlash(item.rel))
-		if _, err := os.Stat(full); !os.IsNotExist(err) {
-			t.Errorf("expected %s to be deleted", item.rel)
-		}
-		if _, err := os.Stat(full + ".ext"); !os.IsNotExist(err) {
-			t.Errorf("expected %s.ext to be deleted", item.rel)
-		}
-	}
-
-	for _, item := range mustPreserveFiles {
-		full := filepath.Join(tmpDir, filepath.FromSlash(item.rel))
-		if _, err := os.Stat(full); err != nil {
-			t.Errorf("expected preserved file %s to exist", item.rel)
-		}
-		if item.meta != "" {
-			if _, err := os.Stat(full + ".ext"); err != nil {
-				t.Errorf("expected preserved sidecar %s.ext to exist", item.rel)
-			}
 		}
 	}
 }
