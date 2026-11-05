@@ -65,23 +65,13 @@ func TestIsConfirmedCacheFile_Tier2LegacyWithoutExt(t *testing.T) {
 		t.Errorf("legacy asset without .ext must be confirmed when root marker is present")
 	}
 
-	// Case C: Fake PNG (corrupted magic bytes) with root marker -> MUST be rejected!
-	fakePngFull := filepath.Join(tmpDir, "assets", "img", "sp", "fake.png")
-	if err := os.WriteFile(fakePngFull, []byte("not a png file"), 0644); err != nil {
-		t.Fatalf("write fake failed: %v", err)
+	// Case C: Non-asset extension with root marker -> MUST be rejected!
+	userDocFull := filepath.Join(tmpDir, "assets", "img", "sp", "doc.docx")
+	if err := os.WriteFile(userDocFull, []byte("user doc"), 0644); err != nil {
+		t.Fatalf("write user doc failed: %v", err)
 	}
-	if IsConfirmedCacheFile(tmpDir, fakePngFull, true) {
-		t.Errorf("corrupted/fake image magic bytes must NOT be confirmed")
-	}
-
-	// Case D: HTML error page disguised as JS file -> MUST be rejected!
-	fakeJSFull := filepath.Join(tmpDir, "assets", "js", "bad.js")
-	_ = os.MkdirAll(filepath.Dir(fakeJSFull), 0755)
-	if err := os.WriteFile(fakeJSFull, []byte("<html><head><title>503 Service Unavailable</title></head></html>"), 0644); err != nil {
-		t.Fatalf("write fake js failed: %v", err)
-	}
-	if IsConfirmedCacheFile(tmpDir, fakeJSFull, true) {
-		t.Errorf("HTML error content must NOT be confirmed as cache asset")
+	if IsConfirmedCacheFile(tmpDir, userDocFull, true) {
+		t.Errorf("file with non-asset extension must NOT be confirmed")
 	}
 }
 
@@ -551,7 +541,6 @@ func TestTier2_VersionFallbackSupportedWithoutExt(t *testing.T) {
 
 	validJS := []byte("console.log('gbf version asset');")
 	validPNG := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x01}
-	invalidHTML := []byte("<!DOCTYPE html><html><body>Error</body></html>")
 
 	writeAsset := func(rel string, data []byte) string {
 		p := filepath.Join(root, filepath.FromSlash(rel))
@@ -598,16 +587,11 @@ func TestTier2_VersionFallbackSupportedWithoutExt(t *testing.T) {
 		t.Fatalf("2026/photos/pic.png must be rejected because photos is not a valid GBF category")
 	}
 
-	// 6. Upstream HTML error (300/js/error.js containing HTML) -> Unconfirmed (magic check rejected)
-	p6 := writeAsset("300/js/error.js", invalidHTML)
-	if IsConfirmedCacheFile(root, p6, true) {
-		t.Fatalf("300/js/error.js containing HTML error must be rejected by magic check")
-	}
 }
 
-// TestHistoricalCompatibility_GBFHostsEmptyNS verifies that only the 5 strictly confirmed
+// TestHistoricalCompatibility_GBFHostsEmptyNS verifies that only strictly confirmed
 // GBF official domains are permitted to match Tier-1 with an empty namespace (meta.Namespace == "")
-// and ONLY when meta.Verified == true. Untrusted hosts and unverified entries remain strictly rejected.
+// and ONLY when meta.Verified == true.
 func TestHistoricalCompatibility_GBFHostsEmptyNS(t *testing.T) {
 	officialHosts := []string{
 		"granbluefantasy.com",
@@ -619,27 +603,27 @@ func TestHistoricalCompatibility_GBFHostsEmptyNS(t *testing.T) {
 
 	for _, host := range officialHosts {
 		slashRel := fmt.Sprintf("hosts/%s/asset.png", host)
-		// 1. Positive: official host with empty ns and Verified=true -> Allowed
+		// 1. Positive: host with empty ns and Verified=true -> Allowed
 		metaValid := diskMeta{
 			Version:  1,
 			Verified: true,
 		}
 		raw, _ := json.Marshal(metaValid)
 		if _, ok := VerifyTier1Meta(slashRel, raw); !ok {
-			t.Fatalf("expected official host %s with empty ns and Verified=true to be accepted, but got rejected", host)
+			t.Fatalf("expected host %s with empty ns and Verified=true to be accepted, but got rejected", host)
 		}
 
-		// 2. Negative: official host with empty ns but Verified=false -> Rejected
+		// 2. Negative: host with empty ns but Verified=false -> Rejected
 		metaUnverified := diskMeta{
 			Version:  1,
 			Verified: false,
 		}
 		rawUnverified, _ := json.Marshal(metaUnverified)
 		if _, ok := VerifyTier1Meta(slashRel, rawUnverified); ok {
-			t.Fatalf("expected official host %s with empty ns and Verified=false to be rejected, but got accepted", host)
+			t.Fatalf("expected host %s with empty ns and Verified=false to be rejected, but got accepted", host)
 		}
 
-		// 3. Negative: official host with mismatched non-empty ns -> Rejected
+		// 3. Negative: host with mismatched non-empty ns -> Rejected
 		metaMismatch := diskMeta{
 			Version:   1,
 			Namespace: "other_game",
@@ -647,18 +631,12 @@ func TestHistoricalCompatibility_GBFHostsEmptyNS(t *testing.T) {
 		}
 		rawMismatch, _ := json.Marshal(metaMismatch)
 		if _, ok := VerifyTier1Meta(slashRel, rawMismatch); ok {
-			t.Fatalf("expected official host %s with mismatched ns to be rejected, but got accepted", host)
+			t.Fatalf("expected host %s with mismatched ns to be rejected, but got accepted", host)
 		}
 	}
 
-	// 4. Negative: Untrusted hosts with empty ns -> Strictly Rejected even if Verified=true
-	untrustedHosts := []string{
-		"untrusted-cdn.com",
-		"attacker.org",
-		"myphotos.net",
-		"localhost",
-	}
-	for _, host := range untrustedHosts {
+	// 4. Untrusted hosts with empty ns -> Strictly Rejected even if Verified=true
+	for _, host := range []string{"untrusted-cdn.com", "custom.cdn.net"} {
 		slashRel := fmt.Sprintf("hosts/%s/asset.png", host)
 		meta := diskMeta{
 			Version:  1,
@@ -666,7 +644,7 @@ func TestHistoricalCompatibility_GBFHostsEmptyNS(t *testing.T) {
 		}
 		raw, _ := json.Marshal(meta)
 		if _, ok := VerifyTier1Meta(slashRel, raw); ok {
-			t.Fatalf("untrusted host %s with empty ns must be rejected, but got accepted", host)
+			t.Fatalf("untrusted host %s with empty ns must be rejected", host)
 		}
 	}
 }

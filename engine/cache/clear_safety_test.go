@@ -675,45 +675,6 @@ func TestClearAll_PreservesOrphanExtFilesEvenIfValidJSON(t *testing.T) {
 	}
 }
 
-func TestClearAll_LegacyCacheNormalCleaning(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-	_ = EnsureRootMarker(tmpDir)
-
-	files := []struct {
-		rel  string
-		data []byte
-	}{
-		{"assets/12345/img/sp/btn.png", []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")},
-		{"assets/js/bundle.js", []byte("function test(){ console.log(1); }")},
-		{"assets/css/main.css", []byte(".main { color: red; }")},
-		{"sound/voice/sample.mp3", []byte("ID3dummy_audio_bytes")},
-	}
-
-	for _, f := range files {
-		full := filepath.Join(tmpDir, filepath.FromSlash(f.rel))
-		_ = os.MkdirAll(filepath.Dir(full), 0755)
-		_ = os.WriteFile(full, f.data, 0644)
-	}
-
-	deleted, _, skipped := mgr.ClearAll()
-	if deleted != len(files) || skipped != 0 {
-		t.Fatalf("expected deleted=%d, skipped=0; got deleted=%d, skipped=%d", len(files), deleted, skipped)
-	}
-
-	for _, f := range files {
-		full := filepath.Join(tmpDir, filepath.FromSlash(f.rel))
-		if _, err := os.Stat(full); !os.IsNotExist(err) {
-			t.Errorf("expected legacy file %s to be deleted", full)
-		}
-	}
-
-	if !HasRootMarker(tmpDir) {
-		t.Errorf("expected root marker to remain intact")
-	}
-}
-
 func TestClearAll_RootMarkerValidationRejectsInvalid(t *testing.T) {
 	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 

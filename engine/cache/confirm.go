@@ -157,10 +157,7 @@ func isHistoricalEmptyNSHost(host string) bool {
 		"rising.granbluefantasy.jp":
 		return true
 	default:
-		if strings.HasSuffix(lower, ".granbluefantasy.jp") || strings.HasSuffix(lower, ".granbluefantasy.com") {
-			return true
-		}
-		return false
+		return strings.HasSuffix(lower, ".granbluefantasy.jp") || strings.HasSuffix(lower, ".granbluefantasy.com")
 	}
 }
 
@@ -466,12 +463,11 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 		return false
 	}
 
-	// --- Tier 2: Legacy ACGPower asset without .ext metadata file ---
+	// --- Tier 2: Legacy asset without .ext metadata file ---
 	cleanLower, ok := isTier2Candidate(slashRel, hasRootMarker)
 	if !ok {
 		return false
 	}
-
 	return verifyCacheFileMagic(fullPath, cleanLower)
 }
 

@@ -141,8 +141,6 @@ func validateCacheMigrationTree(root string) error {
 		return fmt.Errorf("迁移源必须是普通目录: %s", root)
 	}
 	hasMarker := cache.HasRootMarker(root)
-	sampledLegacyCount := 0
-	const maxLegacyMagicSamples = 50
 
 	return filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -231,12 +229,6 @@ func validateCacheMigrationTree(root string) error {
 		}
 		if info.Size() <= 0 {
 			return fmt.Errorf("迁移目录包含无法确认归属的空文件: %s", rel)
-		}
-		if sampledLegacyCount < maxLegacyMagicSamples {
-			if !cache.IsConfirmedCacheFile(root, path, true) {
-				return fmt.Errorf("迁移目录包含无法确认归属的文件: %s", rel)
-			}
-			sampledLegacyCount++
 		}
 		return nil
 	})
