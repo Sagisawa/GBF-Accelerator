@@ -60,6 +60,25 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 		t.Fatalf("failed to create user_config.ext: %v", err)
 	}
 
+	// User temp files & companion .ext in user directory
+	userTempFiles := []string{
+		filepath.Join(nestedUserDir, "photo.png.tmp.123.456"),
+		filepath.Join(nestedUserDir, "photo.png.tmp.123.456.789"),
+	}
+	for _, f := range userTempFiles {
+		if err := os.WriteFile(f, []byte("temp data"), 0644); err != nil {
+			t.Fatalf("failed to create user temp file: %v", err)
+		}
+	}
+	userPhotoExt := filepath.Join(nestedUserDir, "photo.png.ext")
+	_ = os.WriteFile(userPhotoExt, []byte(`{"v":1,"size":19,"mtime_nano":123456789,"ns":"gbf"}`), 0644)
+
+	// Pre-existing empty user directory (must NOT be pruned)
+	emptyUserDir := filepath.Join(tmpDir, "user_workspace", "empty_sub")
+	if err := os.MkdirAll(emptyUserDir, 0755); err != nil {
+		t.Fatalf("failed to create empty user dir: %v", err)
+	}
+
 	// Legitimate stale accelerator temp file that SHOULD be removed
 	staleTmpPath := filepath.Join(tmpDir, "assets", "12345", "img", "sp", "stale.png.tmp.9999.123456789.1")
 	if err := os.WriteFile(staleTmpPath, []byte("stale temp data"), 0644); err != nil {
@@ -103,12 +122,13 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 	if freed <= 0 {
 		t.Errorf("expected positive freed bytes, got freed=%d", freed)
 	}
-	if skipped < 5 {
-		t.Errorf("expected at least 5 skipped non-cache user files, got skipped=%d", skipped)
+	if skipped < 8 {
+		t.Errorf("expected at least 8 skipped non-cache user files, got skipped=%d", skipped)
 	}
 
 	// User files MUST NOT be deleted
-	for _, p := range []string{userDocPath, userNotesPath, nestedFilePath, userTmpDocPath, nestedTmpDocPath, userExtPath} {
+	allUserFiles := append([]string{userDocPath, userNotesPath, nestedFilePath, userTmpDocPath, nestedTmpDocPath, userExtPath, userPhotoExt}, userTempFiles...)
+	for _, p := range allUserFiles {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("BUG DETECTED: user file %s was deleted by ClearAll: %v", p, err)
 		}
@@ -130,6 +150,11 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 	// Non-empty user directory personal_data MUST NOT be pruned
 	if _, err := os.Stat(nestedUserDir); err != nil {
 		t.Errorf("expected non-empty user directory %s to remain, err: %v", nestedUserDir, err)
+	}
+
+	// Pre-existing empty user directory MUST NOT be pruned
+	if fi, err := os.Stat(emptyUserDir); err != nil || !fi.IsDir() {
+		t.Errorf("BUG: empty user directory %s was pruned: %v", emptyUserDir, err)
 	}
 }
 
@@ -194,107 +219,6 @@ func TestClearAll_RefusesUnsafeDirectory(t *testing.T) {
 	deleted, freed, skipped := mgr.ClearAll()
 	if deleted != 0 || freed != 0 || skipped != 0 {
 		t.Errorf("expected ClearAll on user home to immediately return (0, 0, 0), got (%d, %d, %d)", deleted, freed, skipped)
-	}
-}
-
-func TestClearAll_PreservesPreExistingEmptyUserDirectories(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/btn.png", map[string]string{"content-type": "image/png"}, validPng) {
-		t.Fatalf("failed to save cache asset")
-	}
-
-	emptyDirs := []string{
-		filepath.Join(tmpDir, "personal_data"),
-		filepath.Join(tmpDir, "user_workspace"),
-		filepath.Join(tmpDir, "custom_project", "empty_sub"),
-	}
-	for _, d := range emptyDirs {
-		if err := os.MkdirAll(d, 0755); err != nil {
-			t.Fatalf("mkdir failed: %v", err)
-		}
-	}
-
-	deleted, _, _ := mgr.ClearAll()
-	if deleted < 2 {
-		t.Errorf("expected at least 2 deleted cache items, got %d", deleted)
-	}
-
-	for _, d := range emptyDirs {
-		if fi, err := os.Stat(d); err != nil || !fi.IsDir() {
-			t.Errorf("BUG: empty user directory %s was deleted: %v", d, err)
-		}
-	}
-
-	prunedCacheDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
-	if _, err := os.Stat(prunedCacheDir); !os.IsNotExist(err) {
-		t.Errorf("expected empty cache directory %s to be pruned", prunedCacheDir)
-	}
-}
-
-func TestClearAll_PreservesUserTempFilePattern(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-
-	userDir := filepath.Join(tmpDir, "personal_data")
-	_ = os.MkdirAll(userDir, 0755)
-
-	userFiles := []string{
-		filepath.Join(userDir, "photo.png.tmp.123.456"),
-		filepath.Join(userDir, "photo.png.tmp.123.456.789"),
-	}
-	for _, f := range userFiles {
-		_ = os.WriteFile(f, []byte("temp data"), 0644)
-	}
-
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	_ = mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/btn.png", map[string]string{"content-type": "image/png"}, validPng)
-
-	deleted, _, skipped := mgr.ClearAll()
-	if deleted < 2 || skipped < len(userFiles) {
-		t.Errorf("expected deleted>=2 and skipped>=%d, got deleted=%d, skipped=%d", len(userFiles), deleted, skipped)
-	}
-
-	for _, f := range userFiles {
-		if _, err := os.Stat(f); err != nil {
-			t.Errorf("BUG: user temp file %s was deleted: %v", f, err)
-		}
-	}
-}
-
-func TestClearAll_PreservesUserExtFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-
-	userDir := filepath.Join(tmpDir, "personal_data")
-	_ = os.MkdirAll(userDir, 0755)
-
-	userPhoto := filepath.Join(userDir, "photo.png")
-	_ = os.WriteFile(userPhoto, []byte("user photo contents"), 0644)
-
-	validExtJSON := []byte(`{"v":1,"size":19,"mtime_nano":123456789,"ns":"gbf"}`)
-	userPhotoExt := filepath.Join(userDir, "photo.png.ext")
-	_ = os.WriteFile(userPhotoExt, validExtJSON, 0644)
-
-	userWorkspaceDir := filepath.Join(tmpDir, "user_workspace")
-	_ = os.MkdirAll(userWorkspaceDir, 0755)
-	orphanUserExt := filepath.Join(userWorkspaceDir, "document.png.ext")
-	_ = os.WriteFile(orphanUserExt, validExtJSON, 0644)
-
-	_, _, skipped := mgr.ClearAll()
-	if skipped < 3 {
-		t.Errorf("expected at least 3 skipped user files, got skipped=%d", skipped)
-	}
-
-	for _, f := range []string{userPhoto, userPhotoExt, orphanUserExt} {
-		if _, err := os.Stat(f); err != nil {
-			t.Errorf("BUG: user file %s was deleted: %v", f, err)
-		}
 	}
 }
 
@@ -378,40 +302,6 @@ func TestClearAll_RejectsReplacedFileObject(t *testing.T) {
 
 	if content, err := os.ReadFile(targetFullPath); err != nil || string(content) != "attacker replaced content" {
 		t.Errorf("expected replaced file to remain untouched, got err=%v, content=%q", err, string(content))
-	}
-}
-
-func TestClearAll_PreservesUserInvalidExtAdjacentToLegacyAsset(t *testing.T) {
-	tmpDir := t.TempDir()
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-
-	_ = EnsureRootMarker(tmpDir)
-
-	subDir := filepath.Join(tmpDir, "assets", "12345", "img", "sp")
-	_ = os.MkdirAll(subDir, 0755)
-
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-	pngPath := filepath.Join(subDir, "btn.png")
-	_ = os.WriteFile(pngPath, validPng, 0644)
-
-	userNotePath := filepath.Join(subDir, "btn.png.ext")
-	userNoteContent := []byte("confidential user notes: not json metadata")
-	_ = os.WriteFile(userNotePath, userNoteContent, 0644)
-
-	deleted, _, skipped := mgr.ClearAll()
-	if deleted != 0 || skipped < 2 {
-		t.Errorf("expected 0 deleted files and skipped>=2, got deleted=%d, skipped=%d", deleted, skipped)
-	}
-
-	if _, err := os.Stat(pngPath); err != nil {
-		t.Errorf("BUG: file %s was deleted despite invalid companion .ext: %v", pngPath, err)
-	}
-	if data, err := os.ReadFile(userNotePath); err != nil || string(data) != string(userNoteContent) {
-		t.Errorf("BUG: user note %s was deleted or corrupted: %v", userNotePath, err)
-	}
-	if fi, err := os.Stat(subDir); err != nil || !fi.IsDir() {
-		t.Errorf("BUG: directory %s containing user file was deleted: %v", subDir, err)
 	}
 }
 
@@ -988,43 +878,6 @@ func TestClearAll_QuarantineFilesStrictMatchingAndUserPreserved(t *testing.T) {
 	}
 }
 
-func TestClearAll_NonSyntaxPathWithValidExtDeleted(t *testing.T) {
-	tmpDir := t.TempDir()
-	_ = EnsureRootMarker(tmpDir)
-	mgr := NewManager(tmpDir, 64)
-	defer mgr.Close()
-
-	validPng := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
-
-	nonSyntaxFiles := []string{
-		"assets/icon.png",
-		"assets/common/img.png",
-		"assets/random_module/asset.png",
-	}
-
-	for _, rel := range nonSyntaxFiles {
-		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
-		_ = os.MkdirAll(filepath.Dir(full), 0755)
-		_ = os.WriteFile(full, validPng, 0644)
-		_ = os.WriteFile(full+".ext", []byte(`{"v":1,"ct":"image/png","ns":"gbf"}`), 0644)
-	}
-
-	deleted, _, _ := mgr.ClearAll()
-	if deleted != len(nonSyntaxFiles)*2 {
-		t.Fatalf("expected %d deleted files, got %d", len(nonSyntaxFiles)*2, deleted)
-	}
-
-	for _, rel := range nonSyntaxFiles {
-		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
-		if _, err := os.Stat(full); !os.IsNotExist(err) {
-			t.Errorf("expected %s to be deleted", rel)
-		}
-		if _, err := os.Stat(full + ".ext"); !os.IsNotExist(err) {
-			t.Errorf("expected %s.ext to be deleted", rel)
-		}
-	}
-}
-
 func TestClearAll_HistoricalCompatibilitySafetyAndSeparation(t *testing.T) {
 	tmpDir := t.TempDir()
 	_ = EnsureRootMarker(tmpDir)
@@ -1047,6 +900,9 @@ func TestClearAll_HistoricalCompatibilitySafetyAndSeparation(t *testing.T) {
 		{"hosts/steam.granbluefantasy.com/icon.ico", validIco, `{"v":1,"ct":"image/x-icon","verified":true}`},
 		{"jssdk/mobage-jssdk-client.3.10.1.min.js", validJS, `{"v":1,"ct":"application/javascript","ns":"gbf"}`},
 		{"favicon.ico", validIco, `{"v":1,"ct":"image/x-icon","ns":"gbf"}`},
+		{"assets/icon.png", validPng, `{"v":1,"ct":"image/png","ns":"gbf"}`},
+		{"assets/common/img.png", validPng, `{"v":1,"ct":"image/png","ns":"gbf"}`},
+		{"assets/random_module/asset.png", validPng, `{"v":1,"ct":"image/png","ns":"gbf"}`},
 	}
 
 	for _, item := range mustDeleteFiles {

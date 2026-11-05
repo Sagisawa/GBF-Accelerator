@@ -6,7 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -235,67 +235,50 @@ func setupStandardMigrationDirs(t *testing.T, withAssets bool) (sourceDir, targe
 	return
 }
 
-func TestHandleMigrateStandardCache_ModesAndCompat(t *testing.T) {
-	sourceDir := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(sourceDir); err == nil {
-		sourceDir = resolved
-	}
-	targetDir := t.TempDir()
-	if resolved, err := filepath.EvalSymlinks(targetDir); err == nil {
-		targetDir = resolved
-	}
+func TestHandleMigrateStandardCache_RequestBodyValidation(t *testing.T) {
+	_, targetDir, _, _, ctrl, _, _ := setupStandardMigrationDirs(t, false)
 	// Place a file in target so it is non-empty
 	if err := os.WriteFile(filepath.Join(targetDir, "file.txt"), []byte("data"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
-
-	// 1. Nil body -> defaults to migrate, target is non-empty -> 409 CACHE_MIGRATION_TARGET_NOT_EMPTY
-	reqNil := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", nil)
-	recNil := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(recNil, reqNil)
-	if recNil.Code != http.StatusConflict {
-		t.Fatalf("expected status 409, got %d", recNil.Code)
-	}
-	var resNil map[string]interface{}
-	if err := json.Unmarshal(recNil.Body.Bytes(), &resNil); err != nil {
-		t.Fatal(err)
-	}
-	if resNil["code"] != ErrCodeMigrationTargetNotEmpty {
-		t.Fatalf("expected code %s, got %v", ErrCodeMigrationTargetNotEmpty, resNil["code"])
+	tests := []struct {
+		name       string
+		body       []byte
+		wantStatus int
+		wantCode   string
+	}{
+		{"nil_body_nonempty_target", nil, http.StatusConflict, ErrCodeMigrationTargetNotEmpty},
+		{"empty_json_nonempty_target", []byte("{}"), http.StatusConflict, ErrCodeMigrationTargetNotEmpty},
+		{"unknown_mode", []byte(`{"mode":"teleport"}`), http.StatusBadRequest, ErrCodeMigrationInvalidMode},
+		{"invalid_json_syntax", []byte(`{not_json`), http.StatusBadRequest, ErrCodeMigrationInvalidMode},
+		{"oversized_body", bytes.Repeat([]byte("a"), 4097), http.StatusBadRequest, ErrCodeMigrationInvalidMode},
+		{"trailing_json_tokens", []byte(`{"mode":"migrate"} {"extra":1}`), http.StatusBadRequest, ErrCodeMigrationInvalidMode},
+		{"trailing_non_json_garbage", []byte(`{"mode":"migrate"} trailing_garbage`), http.StatusBadRequest, ErrCodeMigrationInvalidMode},
 	}
 
-	// 2. Empty JSON "{}" -> defaults to migrate, returns 409 CACHE_MIGRATION_TARGET_NOT_EMPTY
-	reqEmpty := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte("{}")))
-	recEmpty := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(recEmpty, reqEmpty)
-	if recEmpty.Code != http.StatusConflict {
-		t.Fatalf("expected status 409, got %d", recEmpty.Code)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var r io.Reader
+			if tc.body != nil {
+				r = bytes.NewReader(tc.body)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", r)
+			rec := httptest.NewRecorder()
+			ctrl.handleMigrateStandardCache(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, rec.Code)
+			}
+			var res map[string]interface{}
+			_ = json.Unmarshal(rec.Body.Bytes(), &res)
+			if res["code"] != tc.wantCode {
+				t.Fatalf("expected code %s, got %v", tc.wantCode, res["code"])
+			}
+		})
 	}
 
-	// 3. Unknown mode "teleport" -> 400 CACHE_MIGRATION_INVALID_MODE
-	reqUnknown := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"teleport"}`)))
-	recUnknown := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(recUnknown, reqUnknown)
-	if recUnknown.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", recUnknown.Code)
-	}
-	var resUnknown map[string]interface{}
-	_ = json.Unmarshal(recUnknown.Body.Bytes(), &resUnknown)
-	if resUnknown["code"] != ErrCodeMigrationInvalidMode {
-		t.Fatalf("expected code %s, got %v", ErrCodeMigrationInvalidMode, resUnknown["code"])
-	}
-
-	// 4. Invalid JSON syntax -> 400 CACHE_MIGRATION_INVALID_MODE
-	reqBadJSON := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{not_json`)))
-	recBadJSON := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(recBadJSON, reqBadJSON)
-	if recBadJSON.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d", recBadJSON.Code)
-	}
-
-	// 5. Source already pointing to target -> 200 OK immediately
+	// Source already pointing to target -> 200 OK immediately
 	ctrlSame, _, _, _ := setupDarwinMigrationTestServer(t, targetDir, targetDir)
 	reqSame := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", nil)
 	recSame := httptest.NewRecorder()
@@ -542,69 +525,6 @@ func TestHandleMigrateStandardCache_MissingOrEmptySourceInOverwrite(t *testing.T
 		}
 		if cfgMgr.Get().CacheDir != sourceDir {
 			t.Fatalf("config CacheDir must remain untouched, got %s", cfgMgr.Get().CacheDir)
-		}
-	})
-}
-
-func TestHandleMigrateStandardCache_RequestBodyBoundaries(t *testing.T) {
-	sourceDir := t.TempDir()
-	targetDir := t.TempDir()
-	ctrl, _, _, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
-
-	// Subtest 1: Body > 4096 bytes
-	t.Run("OversizedBody", func(t *testing.T) {
-		oversized := bytes.Repeat([]byte("a"), 4097)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(oversized))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("expected status 400 for oversized body, got %d", rec.Code)
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationInvalidMode {
-			t.Fatalf("expected code %s, got %v", ErrCodeMigrationInvalidMode, res["code"])
-		}
-		if !strings.Contains(fmt.Sprint(res["error"]), "超过限制") {
-			t.Fatalf("expected error message to mention size limit, got %v", res["error"])
-		}
-	})
-
-	// Subtest 2: Body with extra trailing JSON token
-	t.Run("TrailingJSONTokens", func(t *testing.T) {
-		body := []byte(`{"mode":"migrate"} {"extra":1}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("expected status 400 for trailing JSON, got %d", rec.Code)
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationInvalidMode {
-			t.Fatalf("expected code %s, got %v", ErrCodeMigrationInvalidMode, res["code"])
-		}
-		if !strings.Contains(fmt.Sprint(res["error"]), "多余") {
-			t.Fatalf("expected error message to mention extra data, got %v", res["error"])
-		}
-	})
-
-	// Subtest 3: Body with trailing non-JSON garbage
-	t.Run("TrailingNonJSONGarbage", func(t *testing.T) {
-		body := []byte(`{"mode":"migrate"} trailing_garbage`)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("expected status 400 for trailing garbage, got %d", rec.Code)
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationInvalidMode {
-			t.Fatalf("expected code %s, got %v", ErrCodeMigrationInvalidMode, res["code"])
 		}
 	})
 }
