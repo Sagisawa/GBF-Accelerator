@@ -148,38 +148,27 @@ func TestValidateCacheOverwriteTarget_Structural(t *testing.T) {
 		t.Fatalf("expected valid cache structure to pass: %v", err)
 	}
 
-	// 6. Unknown top-level directory (e.g. personal_docs): MUST FAIL
-	badDir := filepath.Join(cacheRoot, "personal_docs")
-	_ = os.MkdirAll(badDir, 0755)
-	if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
-		t.Fatal("expected unknown top-level directory to FAIL")
+	// 6-9. Unknown top-level entries, symlinks, and temp streaming files: MUST FAIL
+	invalidEntries := []struct {
+		name    string
+		create  func(path string) error
+		cleanup func(path string) error
+	}{
+		{"personal_docs", func(p string) error { return os.MkdirAll(p, 0755) }, os.RemoveAll},
+		{"notes.txt", func(p string) error { return os.WriteFile(p, []byte("my notes"), 0644) }, os.Remove},
+		{"sym_entry", func(p string) error { return os.Symlink(filePath, p) }, os.Remove},
+		{"assets.tmp.123.456.789", func(p string) error { return os.WriteFile(p, []byte("temp"), 0644) }, os.Remove},
 	}
-	_ = os.RemoveAll(badDir)
-
-	// 7. Unknown root file (e.g. notes.txt): MUST FAIL
-	unknownFile := filepath.Join(cacheRoot, "notes.txt")
-	_ = os.WriteFile(unknownFile, []byte("my notes"), 0644)
-	if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
-		t.Fatal("expected unknown root file to FAIL")
-	}
-	_ = os.Remove(unknownFile)
-
-	// 8. Root symlink entry: MUST FAIL
-	symlinkEntry := filepath.Join(cacheRoot, "sym_entry")
-	if err := os.Symlink(filePath, symlinkEntry); err == nil {
-		if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
-			t.Fatal("expected symlink inside root to FAIL")
+	for _, ie := range invalidEntries {
+		entryPath := filepath.Join(cacheRoot, ie.name)
+		if err := ie.create(entryPath); err != nil {
+			t.Fatal(err)
 		}
-		_ = os.Remove(symlinkEntry)
+		if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
+			t.Fatalf("expected invalid entry %s to FAIL", ie.name)
+		}
+		_ = ie.cleanup(entryPath)
 	}
-
-	// 9. Root temp streaming file: MUST FAIL
-	tempFile := filepath.Join(cacheRoot, "assets.tmp.123.456.789")
-	_ = os.WriteFile(tempFile, []byte("temp"), 0644)
-	if err := validateCacheOverwriteTarget(cacheRoot); err == nil {
-		t.Fatal("expected root temp file to FAIL")
-	}
-	_ = os.Remove(tempFile)
 }
 
 func setupDarwinMigrationTestServer(t *testing.T, sourceDir, targetDir string) (*ControlServer, *config.Manager, *cache.Manager, string) {
@@ -235,6 +224,21 @@ func setupStandardMigrationDirs(t *testing.T, withAssets bool) (sourceDir, targe
 	return
 }
 
+func execMigrateRequest(ctrl *ControlServer, body []byte) (int, map[string]interface{}) {
+	var r io.Reader
+	if body != nil {
+		r = bytes.NewReader(body)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", r)
+	rec := httptest.NewRecorder()
+	ctrl.handleMigrateStandardCache(rec, req)
+	var res map[string]interface{}
+	if rec.Body.Len() > 0 {
+		_ = json.Unmarshal(rec.Body.Bytes(), &res)
+	}
+	return rec.Code, res
+}
+
 func TestHandleMigrateStandardCache_RequestBodyValidation(t *testing.T) {
 	_, targetDir, _, _, ctrl, _, _ := setupStandardMigrationDirs(t, false)
 	// Place a file in target so it is non-empty
@@ -259,19 +263,10 @@ func TestHandleMigrateStandardCache_RequestBodyValidation(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			var r io.Reader
-			if tc.body != nil {
-				r = bytes.NewReader(tc.body)
+			code, res := execMigrateRequest(ctrl, tc.body)
+			if code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d", tc.wantStatus, code)
 			}
-			req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", r)
-			rec := httptest.NewRecorder()
-			ctrl.handleMigrateStandardCache(rec, req)
-
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("expected status %d, got %d", tc.wantStatus, rec.Code)
-			}
-			var res map[string]interface{}
-			_ = json.Unmarshal(rec.Body.Bytes(), &res)
 			if res["code"] != tc.wantCode {
 				t.Fatalf("expected code %s, got %v", tc.wantCode, res["code"])
 			}
@@ -280,11 +275,9 @@ func TestHandleMigrateStandardCache_RequestBodyValidation(t *testing.T) {
 
 	// Source already pointing to target -> 200 OK immediately
 	ctrlSame, _, _, _ := setupDarwinMigrationTestServer(t, targetDir, targetDir)
-	reqSame := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", nil)
-	recSame := httptest.NewRecorder()
-	ctrlSame.handleMigrateStandardCache(recSame, reqSame)
-	if recSame.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", recSame.Code)
+	codeSame, _ := execMigrateRequest(ctrlSame, nil)
+	if codeSame != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", codeSame)
 	}
 }
 
@@ -308,18 +301,9 @@ func TestHandleMigrateStandardCache_SwitchOnly(t *testing.T) {
 	ctrl, cfgMgr, cacheMgr, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
 
 	// switch_only should succeed without touching or deleting notes.txt
-	body := []byte(`{"mode":"switch_only"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	var res map[string]interface{}
-	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
-		t.Fatal(err)
+	code, res := execMigrateRequest(ctrl, []byte(`{"mode":"switch_only"}`))
+	if code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %v", code, res)
 	}
 	if res["mode"] != "switch_only" || res["ok"] != true {
 		t.Fatalf("unexpected response: %v", res)
@@ -352,15 +336,10 @@ func TestHandleMigrateStandardCache_OverwriteSafety(t *testing.T) {
 	}
 
 	body := []byte(`{"mode":"overwrite"}`)
-	reqReject := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-	recReject := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(recReject, reqReject)
-
-	if recReject.Code != http.StatusConflict {
-		t.Fatalf("expected status 409 for unconfirmed target, got %d: %s", recReject.Code, recReject.Body.String())
+	codeReject, resReject := execMigrateRequest(ctrl, body)
+	if codeReject != http.StatusConflict {
+		t.Fatalf("expected status 409 for unconfirmed target, got %d: %v", codeReject, resReject)
 	}
-	var resReject map[string]interface{}
-	_ = json.Unmarshal(recReject.Body.Bytes(), &resReject)
 	if resReject["code"] != ErrCodeMigrationTargetUnconfirmed {
 		t.Fatalf("expected code %s, got %v", ErrCodeMigrationTargetUnconfirmed, resReject["code"])
 	}
@@ -371,12 +350,9 @@ func TestHandleMigrateStandardCache_OverwriteSafety(t *testing.T) {
 	_ = os.Remove(userPdf)
 
 	// 2. Target contains ONLY verified GBF cache: OVERWRITE MUST SUCCEED
-	reqSuccess := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-	recSuccess := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(recSuccess, reqSuccess)
-
-	if recSuccess.Code != http.StatusOK {
-		t.Fatalf("expected status 200 for valid overwrite, got %d: %s", recSuccess.Code, recSuccess.Body.String())
+	codeSuccess, _ := execMigrateRequest(ctrl, body)
+	if codeSuccess != http.StatusOK {
+		t.Fatalf("expected status 200 for valid overwrite, got %d", codeSuccess)
 	}
 
 	// Verify target now contains src icon from sourceDir
@@ -419,16 +395,10 @@ func TestHandleMigrateStandardCache_ConcurrentSourceChange(t *testing.T) {
 	}
 	t.Cleanup(func() { beforeMigrationApplyHook = nil })
 
-	body := []byte(`{"mode":"switch_only"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("expected status 409, got %d: %s", rec.Code, rec.Body.String())
+	code, res := execMigrateRequest(ctrl, []byte(`{"mode":"switch_only"}`))
+	if code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d: %v", code, res)
 	}
-	var res map[string]interface{}
-	_ = json.Unmarshal(rec.Body.Bytes(), &res)
 	if res["code"] != ErrCodeMigrationSourceChanged {
 		t.Fatalf("expected code %s, got %v", ErrCodeMigrationSourceChanged, res["code"])
 	}
@@ -445,16 +415,10 @@ func TestHandleMigrateStandardCache_CommitFailureRollsBackDirectory(t *testing.T
 	}
 	t.Cleanup(func() { beforeMigrationApplyHook = nil })
 
-	body := []byte(`{"mode":"overwrite"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-	rec := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(rec, req)
-
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected status 500 on commit failure, got %d: %s", rec.Code, rec.Body.String())
+	code, res := execMigrateRequest(ctrl, []byte(`{"mode":"overwrite"}`))
+	if code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 on commit failure, got %d: %v", code, res)
 	}
-	var res map[string]interface{}
-	_ = json.Unmarshal(rec.Body.Bytes(), &res)
 	if res["code"] != ErrCodeMigrationConfigCommitFailed {
 		t.Fatalf("expected code %s, got %v", ErrCodeMigrationConfigCommitFailed, res["code"])
 	}
@@ -470,63 +434,49 @@ func TestHandleMigrateStandardCache_CommitFailureRollsBackDirectory(t *testing.T
 }
 
 func TestHandleMigrateStandardCache_MissingOrEmptySourceInOverwrite(t *testing.T) {
-	// Subtest 1: Missing source directory
-	t.Run("MissingSourceDirectory", func(t *testing.T) {
-		sourceDir, _, _, targetFile, ctrl, cfgMgr, _ := setupStandardMigrationDirs(t, true)
-		_ = os.RemoveAll(sourceDir)
+	cases := []struct {
+		name       string
+		setup      func(sourceDir, srcFile string)
+		wantStatus int
+	}{
+		{
+			name: "MissingSourceDirectory",
+			setup: func(sourceDir, _ string) {
+				_ = os.RemoveAll(sourceDir)
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "EmptySourceDirectory",
+			setup: func(sourceDir, srcFile string) {
+				_ = os.Remove(srcFile)
+				_ = os.Remove(srcFile + ".ext")
+				_ = os.WriteFile(filepath.Join(sourceDir, ".DS_Store"), []byte("junk"), 0644)
+			},
+			wantStatus: http.StatusConflict,
+		},
+	}
 
-		body := []byte(`{"mode":"overwrite"}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sourceDir, _, srcFile, targetFile, ctrl, cfgMgr, _ := setupStandardMigrationDirs(t, true)
+			tc.setup(sourceDir, srcFile)
 
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("expected status 400 for missing source, got %d: %s", rec.Code, rec.Body.String())
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationSourceUnconfirmed {
-			t.Fatalf("expected code %s, got %v", ErrCodeMigrationSourceUnconfirmed, res["code"])
-		}
-
-		// Ensure target file is completely preserved
-		if _, err := os.Stat(targetFile); err != nil {
-			t.Fatalf("target file must not be modified or deleted: %v", err)
-		}
-		if cfgMgr.Get().CacheDir != sourceDir {
-			t.Fatalf("config CacheDir must remain untouched, got %s", cfgMgr.Get().CacheDir)
-		}
-	})
-
-	// Subtest 2: Empty source directory (contains only .gbf_cache and system junk)
-	t.Run("EmptySourceDirectory", func(t *testing.T) {
-		sourceDir, _, srcFile, targetFile, ctrl, cfgMgr, _ := setupStandardMigrationDirs(t, true)
-		_ = os.Remove(srcFile)
-		_ = os.Remove(srcFile + ".ext")
-		_ = os.WriteFile(filepath.Join(sourceDir, ".DS_Store"), []byte("junk"), 0644)
-
-		body := []byte(`{"mode":"overwrite"}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusConflict {
-			t.Fatalf("expected status 409 for empty source in overwrite, got %d: %s", rec.Code, rec.Body.String())
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationSourceUnconfirmed {
-			t.Fatalf("expected code %s, got %v", ErrCodeMigrationSourceUnconfirmed, res["code"])
-		}
-
-		// Ensure target file is completely preserved
-		if _, err := os.Stat(targetFile); err != nil {
-			t.Fatalf("target file must not be modified or deleted: %v", err)
-		}
-		if cfgMgr.Get().CacheDir != sourceDir {
-			t.Fatalf("config CacheDir must remain untouched, got %s", cfgMgr.Get().CacheDir)
-		}
-	})
+			code, res := execMigrateRequest(ctrl, []byte(`{"mode":"overwrite"}`))
+			if code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d: %v", tc.wantStatus, code, res)
+			}
+			if res["code"] != ErrCodeMigrationSourceUnconfirmed {
+				t.Fatalf("expected code %s, got %v", ErrCodeMigrationSourceUnconfirmed, res["code"])
+			}
+			if _, err := os.Stat(targetFile); err != nil {
+				t.Fatalf("target file must not be modified or deleted: %v", err)
+			}
+			if cfgMgr.Get().CacheDir != sourceDir {
+				t.Fatalf("config CacheDir must remain untouched, got %s", cfgMgr.Get().CacheDir)
+			}
+		})
+	}
 }
 
 func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
@@ -546,16 +496,10 @@ func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
 		}
 		t.Cleanup(func() { renameFunc = origRename })
 
-		body := []byte(`{"mode":"overwrite"}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("expected status 500, got %d: %s", rec.Code, rec.Body.String())
+		code, res := execMigrateRequest(ctrl, []byte(`{"mode":"overwrite"}`))
+		if code != http.StatusInternalServerError {
+			t.Fatalf("expected status 500, got %d: %v", code, res)
 		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
 		if res["code"] != ErrCodeMigrationReplacementFailed {
 			t.Fatalf("expected code %s, got %v", ErrCodeMigrationReplacementFailed, res["code"])
 		}
@@ -586,16 +530,10 @@ func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
 		}
 		t.Cleanup(func() { renameFunc = origRename })
 
-		body := []byte(`{"mode":"overwrite"}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("expected status 500, got %d: %s", rec.Code, rec.Body.String())
+		code, res := execMigrateRequest(ctrl, []byte(`{"mode":"overwrite"}`))
+		if code != http.StatusInternalServerError {
+			t.Fatalf("expected status 500, got %d: %v", code, res)
 		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
 		if res["code"] != ErrCodeMigrationRollbackFailed {
 			t.Fatalf("expected code %s, got %v", ErrCodeMigrationRollbackFailed, res["code"])
 		}
@@ -624,16 +562,10 @@ func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
 		}
 		t.Cleanup(func() { beforeMigrationApplyHook = nil })
 
-		body := []byte(`{"mode":"overwrite"}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("expected status 500, got %d: %s", rec.Code, rec.Body.String())
+		code, res := execMigrateRequest(ctrl, []byte(`{"mode":"overwrite"}`))
+		if code != http.StatusInternalServerError {
+			t.Fatalf("expected status 500, got %d: %v", code, res)
 		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
 		if res["backup_dir"] == nil || res["backup_dir"] == "" {
 			t.Fatalf("expected backup_dir to be present in error response")
 		}
@@ -652,16 +584,10 @@ func TestHandleMigrateStandardCache_TransactionFailures(t *testing.T) {
 		}
 		t.Cleanup(func() { removeAllFunc = origRemoveAll })
 
-		body := []byte(`{"mode":"overwrite"}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader(body))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected status 200 with warning, got %d: %s", rec.Code, rec.Body.String())
+		code, res := execMigrateRequest(ctrl, []byte(`{"mode":"overwrite"}`))
+		if code != http.StatusOK {
+			t.Fatalf("expected status 200 with warning, got %d: %v", code, res)
 		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
 		if res["warning"] == nil || res["warning"] == "" {
 			t.Fatalf("expected warning to be returned in response")
 		}
@@ -735,12 +661,9 @@ func TestHandleMigrateStandardCache_MigrateMissingSourceAllowed(t *testing.T) {
 	ctrl, cfgMgr, cacheMgr, _ := setupDarwinMigrationTestServer(t, sourceDir, targetDir)
 	_ = os.RemoveAll(sourceDir) // Ensure source directory does not exist
 
-	req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"migrate"}`)))
-	rec := httptest.NewRecorder()
-	ctrl.handleMigrateStandardCache(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status 200 for migrate with missing source, got %d: %s", rec.Code, rec.Body.String())
+	code, _ := execMigrateRequest(ctrl, []byte(`{"mode":"migrate"}`))
+	if code != http.StatusOK {
+		t.Fatalf("expected status 200 for migrate with missing source, got %d", code)
 	}
 	if cfgMgr.Get().CacheDir != targetDir {
 		t.Fatalf("expected config CacheDir to be %s, got %s", targetDir, cfgMgr.Get().CacheDir)
@@ -751,146 +674,72 @@ func TestHandleMigrateStandardCache_MigrateMissingSourceAllowed(t *testing.T) {
 }
 
 func TestHandleMigrateStandardCache_PostRenameBackupReverification(t *testing.T) {
-	t.Run("Overwrite_RollbackSuccess", func(t *testing.T) {
-		_, _, _, targetFile, ctrl, _, _ := setupStandardMigrationDirs(t, true)
-		origRename := renameFunc
-		renameCalls := 0
-		renameFunc = func(oldpath, newpath string) error {
-			renameCalls++
-			if renameCalls == 1 {
-				err := origRename(oldpath, newpath)
-				if err == nil {
-					_ = os.WriteFile(filepath.Join(newpath, "injected_user_doc.txt"), []byte("unconfirmed"), 0644)
+	cases := []struct {
+		name         string
+		withAssets   bool
+		mode         string
+		failRollback bool
+		corruptFile  string
+		wantStatus   int
+		wantCode     string
+	}{
+		{"Overwrite_RollbackSuccess", true, "overwrite", false, "injected_user_doc.txt", http.StatusConflict, ErrCodeMigrationTargetUnconfirmed},
+		{"Overwrite_RollbackFailure", true, "overwrite", true, "corrupt_note.txt", http.StatusInternalServerError, ErrCodeMigrationRollbackFailed},
+		{"Migrate_RollbackSuccess", false, "migrate", false, "unexpected.dat", http.StatusConflict, ErrCodeMigrationTargetNotEmpty},
+		{"Migrate_RollbackFailure", false, "migrate", true, "unexpected.dat", http.StatusInternalServerError, ErrCodeMigrationRollbackFailed},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, targetDir, _, targetFile, ctrl, _, _ := setupStandardMigrationDirs(t, tc.withAssets)
+			origRename := renameFunc
+			renameCalls := 0
+			var capturedBackupDir string
+			renameFunc = func(oldpath, newpath string) error {
+				renameCalls++
+				if renameCalls == 1 {
+					capturedBackupDir = newpath
+					err := origRename(oldpath, newpath)
+					if err == nil {
+						_ = os.WriteFile(filepath.Join(newpath, tc.corruptFile), []byte("unconfirmed"), 0644)
+					}
+					return err
 				}
-				return err
-			}
-			return origRename(oldpath, newpath)
-		}
-		t.Cleanup(func() { renameFunc = origRename })
-
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"overwrite"}`)))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusConflict {
-			t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationTargetUnconfirmed {
-			t.Fatalf("expected %s, got %v", ErrCodeMigrationTargetUnconfirmed, res["code"])
-		}
-		if _, err := os.Stat(targetFile); err != nil {
-			t.Fatalf("expected targetFile to exist after rollback: %v", err)
-		}
-	})
-
-	t.Run("Overwrite_RollbackFailure", func(t *testing.T) {
-		_, _, _, targetFile, ctrl, _, _ := setupStandardMigrationDirs(t, true)
-		origRename := renameFunc
-		renameCalls := 0
-		var capturedBackupDir string
-		renameFunc = func(oldpath, newpath string) error {
-			renameCalls++
-			if renameCalls == 1 {
-				capturedBackupDir = newpath
-				err := origRename(oldpath, newpath)
-				if err == nil {
-					_ = os.WriteFile(filepath.Join(newpath, "corrupt_note.txt"), []byte("unconfirmed"), 0644)
+				if renameCalls == 2 && tc.failRollback {
+					return errors.New("simulated rollback rename failure")
 				}
-				return err
+				return origRename(oldpath, newpath)
 			}
-			if renameCalls == 2 {
-				return errors.New("simulated rollback rename failure")
+			t.Cleanup(func() { renameFunc = origRename })
+
+			code, res := execMigrateRequest(ctrl, []byte(`{"mode":"`+tc.mode+`"}`))
+			if code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d: %v", tc.wantStatus, code, res)
 			}
-			return origRename(oldpath, newpath)
-		}
-		t.Cleanup(func() { renameFunc = origRename })
+			if res["code"] != tc.wantCode {
+				t.Fatalf("expected %s, got %v", tc.wantCode, res["code"])
+			}
 
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"overwrite"}`)))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationRollbackFailed || res["backup_dir"] != capturedBackupDir {
-			t.Fatalf("expected rollback failure response, got %v", res)
-		}
-		if _, err := os.Stat(targetFile); !os.IsNotExist(err) {
-			t.Fatalf("targetFile must not exist at original path after failed rollback")
-		}
-	})
-
-	t.Run("Migrate_RollbackSuccess", func(t *testing.T) {
-		_, targetDir, _, _, ctrl, _, _ := setupStandardMigrationDirs(t, false)
-		origRename := renameFunc
-		renameCalls := 0
-		renameFunc = func(oldpath, newpath string) error {
-			renameCalls++
-			if renameCalls == 1 {
-				err := origRename(oldpath, newpath)
-				if err == nil {
-					_ = os.WriteFile(filepath.Join(newpath, "unexpected.dat"), []byte("data"), 0644)
+			if tc.failRollback {
+				if res["backup_dir"] != capturedBackupDir || capturedBackupDir == "" {
+					t.Fatalf("expected rollback failure response with backup_dir %s, got %v", capturedBackupDir, res)
 				}
-				return err
-			}
-			return origRename(oldpath, newpath)
-		}
-		t.Cleanup(func() { renameFunc = origRename })
-
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"migrate"}`)))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusConflict {
-			t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationTargetNotEmpty {
-			t.Fatalf("expected %s, got %v", ErrCodeMigrationTargetNotEmpty, res["code"])
-		}
-		if _, err := os.Stat(filepath.Join(targetDir, "unexpected.dat")); err != nil {
-			t.Fatalf("expected restored file to exist at targetDir: %v", err)
-		}
-	})
-
-	t.Run("Migrate_RollbackFailure", func(t *testing.T) {
-		_, _, _, _, ctrl, _, _ := setupStandardMigrationDirs(t, false)
-		origRename := renameFunc
-		renameCalls := 0
-		var capturedBackupDir string
-		renameFunc = func(oldpath, newpath string) error {
-			renameCalls++
-			if renameCalls == 1 {
-				capturedBackupDir = newpath
-				err := origRename(oldpath, newpath)
-				if err == nil {
-					_ = os.WriteFile(filepath.Join(newpath, "unexpected.dat"), []byte("data"), 0644)
+				if tc.withAssets {
+					if _, err := os.Stat(targetFile); !os.IsNotExist(err) {
+						t.Fatalf("targetFile must not exist at original path after failed rollback")
+					}
 				}
-				return err
+			} else {
+				if tc.withAssets {
+					if _, err := os.Stat(targetFile); err != nil {
+						t.Fatalf("expected targetFile to exist after rollback: %v", err)
+					}
+				} else {
+					if _, err := os.Stat(filepath.Join(targetDir, tc.corruptFile)); err != nil {
+						t.Fatalf("expected restored file to exist at targetDir: %v", err)
+					}
+				}
 			}
-			if renameCalls == 2 {
-				return errors.New("simulated rollback rename failure")
-			}
-			return origRename(oldpath, newpath)
-		}
-		t.Cleanup(func() { renameFunc = origRename })
-
-		req := httptest.NewRequest(http.MethodPost, "/api/cache/migrate-standard", bytes.NewReader([]byte(`{"mode":"migrate"}`)))
-		rec := httptest.NewRecorder()
-		ctrl.handleMigrateStandardCache(rec, req)
-
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
-		}
-		var res map[string]interface{}
-		_ = json.Unmarshal(rec.Body.Bytes(), &res)
-		if res["code"] != ErrCodeMigrationRollbackFailed || res["backup_dir"] != capturedBackupDir {
-			t.Fatalf("expected rollback failure response, got %v", res)
-		}
-	})
+		})
+	}
 }

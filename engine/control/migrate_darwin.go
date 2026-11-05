@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -290,23 +291,13 @@ func RecoverResidualMigrationBackup(backupDir, targetDir string) error {
 		return fmt.Errorf("非法备份目录名称: %s", baseName)
 	}
 
-	tFi, tErr := os.Lstat(targetDir)
-	if tErr == nil {
-		if tFi.Mode()&os.ModeSymlink != 0 || !tFi.IsDir() {
-			return fmt.Errorf("目标路径不是普通目录: %s", targetDir)
-		}
-		entries, rErr := os.ReadDir(targetDir)
-		if rErr != nil {
-			return rErr
-		}
-		if len(entries) > 0 {
-			return fmt.Errorf("目标目录并非空目录，拒绝恢复覆盖: %s", targetDir)
-		}
+	if err := validateEmptyMigrationTarget(targetDir); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(targetDir); err == nil {
 		if err := removeFunc(targetDir); err != nil {
 			return fmt.Errorf("移除空目标目录以便恢复失败: %w", err)
 		}
-	} else if !os.IsNotExist(tErr) {
-		return tErr
 	}
 
 	return renameFunc(backupDir, targetDir)
@@ -381,6 +372,57 @@ func validateEmptyMigrationTarget(target string) error {
 	return nil
 }
 
+func validateTargetForMode(dir, mode string) (string, error) {
+	if mode == "overwrite" {
+		if err := validateCacheOverwriteTarget(dir); err != nil {
+			return ErrCodeMigrationTargetUnconfirmed, fmt.Errorf("目标目录包含无法确认为 GBF 缓存的文件，拒绝覆盖现有内容: %w", err)
+		}
+	} else {
+		if err := validateEmptyMigrationTarget(dir); err != nil {
+			return ErrCodeMigrationTargetNotEmpty, err
+		}
+	}
+	return "", nil
+}
+
+func parseMigrateRequestMode(r io.Reader) (string, error) {
+	if r == nil {
+		return "migrate", nil
+	}
+	limitedReader := io.LimitReader(r, maxMigrateBodySize+1)
+	bodyBytes, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return "", errors.New("读取请求体失败")
+	}
+	if len(bodyBytes) > maxMigrateBodySize {
+		return "", fmt.Errorf("请求体大小超过限制 (%d 字节)", maxMigrateBodySize)
+	}
+	trimmed := bytes.TrimSpace(bodyBytes)
+	if len(trimmed) == 0 {
+		return "migrate", nil
+	}
+	var mReq migrateStandardRequest
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&mReq); err != nil {
+		return "", fmt.Errorf("请求体 JSON 格式无效: %v", err)
+	}
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
+		return "", errors.New("请求体包含多余的 JSON 内容或非法数据")
+	}
+	switch mReq.Mode {
+	case "", "migrate":
+		return "migrate", nil
+	case "switch_only":
+		return "switch_only", nil
+	case "overwrite":
+		return "overwrite", nil
+	default:
+		return "", fmt.Errorf("不支持的操作模式: %q", mReq.Mode)
+	}
+}
+
 func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *http.Request) {
 	taskID, _, ok := c.tryBeginCacheTask("migrate_standard")
 	if !ok {
@@ -388,71 +430,28 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 		return
 	}
 
+	fail := func(status int, code string, msg string, kv ...string) {
+		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
+		resp := map[string]interface{}{"ok": false, "error": msg}
+		if code != "" {
+			resp["code"] = code
+		}
+		for i := 0; i+1 < len(kv); i += 2 {
+			resp[kv[i]] = kv[i+1]
+		}
+		c.sendJSON(w, status, resp)
+	}
+
 	targetDir := standardCacheDirProvider()
 	if targetDir == "" {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, "Unable to determine user home directory")
-		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-			"ok": false, "error": "无法获取当前用户的 Home 目录",
-		})
+		fail(http.StatusInternalServerError, "", "无法获取当前用户的 Home 目录")
 		return
 	}
 
-	// Request mode parsing
-	reqMode := "migrate"
-	if req.Body != nil {
-		limitedReader := io.LimitReader(req.Body, maxMigrateBodySize+1)
-		bodyBytes, err := io.ReadAll(limitedReader)
-		if err != nil {
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, "读取请求体失败")
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationInvalidMode, "error": "读取请求体失败",
-			})
-			return
-		}
-		if len(bodyBytes) > maxMigrateBodySize {
-			msg := fmt.Sprintf("请求体大小超过限制 (%d 字节)", maxMigrateBodySize)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationInvalidMode, "error": msg,
-			})
-			return
-		}
-		trimmed := bytes.TrimSpace(bodyBytes)
-		if len(trimmed) > 0 {
-			var mReq migrateStandardRequest
-			dec := json.NewDecoder(bytes.NewReader(trimmed))
-			dec.DisallowUnknownFields()
-			if err := dec.Decode(&mReq); err != nil {
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, "请求体 JSON 格式无效")
-				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"ok": false, "code": ErrCodeMigrationInvalidMode, "error": fmt.Sprintf("请求体 JSON 格式无效: %v", err),
-				})
-				return
-			}
-			var extra json.RawMessage
-			if err := dec.Decode(&extra); err != io.EOF {
-				msg := "请求体包含多余的 JSON 内容或非法数据"
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"ok": false, "code": ErrCodeMigrationInvalidMode, "error": msg,
-				})
-				return
-			}
-			switch mReq.Mode {
-			case "", "migrate":
-				reqMode = "migrate"
-			case "switch_only":
-				reqMode = "switch_only"
-			case "overwrite":
-				reqMode = "overwrite"
-			default:
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, "不支持的操作模式")
-				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"ok": false, "code": ErrCodeMigrationInvalidMode, "error": fmt.Sprintf("不支持的操作模式: %q", mReq.Mode),
-				})
-				return
-			}
-		}
+	reqMode, err := parseMigrateRequestMode(req.Body)
+	if err != nil {
+		fail(http.StatusBadRequest, ErrCodeMigrationInvalidMode, err.Error())
+		return
 	}
 
 	curCfg := c.cfgMgr.Get()
@@ -471,28 +470,18 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 
 	// Reject self-overlap or parent-child nesting in overwrite mode
 	if reqMode == "overwrite" && isSameOrNestedPath(sourceDir, targetDir) {
-		msg := "源目录与目标目录相同或存在路径嵌套，拒绝覆盖操作"
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok": false, "code": ErrCodeMigrationInvalidMode, "error": msg,
-		})
+		fail(http.StatusBadRequest, ErrCodeMigrationInvalidMode, "源目录与目标目录相同或存在路径嵌套，拒绝覆盖操作")
 		return
 	}
 
 	// Mode: switch_only
 	if reqMode == "switch_only" {
 		if err := config.ValidateCacheDir(targetDir); err != nil {
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok": false, "error": fmt.Sprintf("标准缓存目标路径校验失败: %v", err),
-			})
+			fail(http.StatusBadRequest, "", fmt.Sprintf("标准缓存目标路径校验失败: %v", err))
 			return
 		}
 		if err := ensureNoSymlinkPathComponents(targetDir); err != nil {
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok": false, "error": fmt.Sprintf("迁移目标路径校验失败: %v", err),
-			})
+			fail(http.StatusBadRequest, "", fmt.Sprintf("迁移目标路径校验失败: %v", err))
 			return
 		}
 
@@ -500,27 +489,17 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 		if tFi, tErr := os.Lstat(targetDir); tErr != nil {
 			if os.IsNotExist(tErr) {
 				if err := os.MkdirAll(targetDir, 0755); err != nil {
-					c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-					c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-						"ok": false, "error": fmt.Sprintf("创建标准缓存目录失败: %v", err),
-					})
+					fail(http.StatusInternalServerError, "", fmt.Sprintf("创建标准缓存目录失败: %v", err))
 					return
 				}
 				targetCreatedByUs = true
 			} else {
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, tErr.Error())
-				c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-					"ok": false, "error": tErr.Error(),
-				})
+				fail(http.StatusInternalServerError, "", tErr.Error())
 				return
 			}
 		} else {
 			if tFi.Mode()&os.ModeSymlink != 0 || !tFi.IsDir() {
-				msg := "迁移目标不是普通目录"
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"ok": false, "error": msg,
-				})
+				fail(http.StatusBadRequest, "", "迁移目标不是普通目录")
 				return
 			}
 		}
@@ -534,11 +513,7 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 
 		latestCfg := c.cfgMgr.Candidate()
 		if filepath.Clean(latestCfg.CacheDir) != filepath.Clean(sourceDir) {
-			msg := "操作期间源缓存目录已被其他操作修改"
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationSourceChanged, "error": msg,
-			})
+			fail(http.StatusConflict, ErrCodeMigrationSourceChanged, "操作期间源缓存目录已被其他操作修改")
 			return
 		}
 
@@ -549,11 +524,7 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 			if targetCreatedByUs {
 				_ = removeFunc(targetDir) // Safe cleanup of empty directory created by us
 			}
-			msg := fmt.Sprintf("配置提交失败: %v", err)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationConfigCommitFailed, "error": msg,
-			})
+			fail(http.StatusInternalServerError, ErrCodeMigrationConfigCommitFailed, fmt.Sprintf("配置提交失败: %v", err))
 			return
 		}
 
@@ -573,147 +544,78 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 
 	// Common validation for migrate and overwrite modes
 	if err := ensureNoSymlinkPathComponents(sourceDir); err != nil {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok": false, "error": fmt.Sprintf("迁移源路径校验失败: %v", err),
-		})
+		fail(http.StatusBadRequest, "", fmt.Sprintf("迁移源路径校验失败: %v", err))
 		return
 	}
 	if err := config.ValidateCacheDir(targetDir); err != nil {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok": false, "error": fmt.Sprintf("标准缓存目标路径校验失败: %v", err),
-		})
+		fail(http.StatusBadRequest, "", fmt.Sprintf("标准缓存目标路径校验失败: %v", err))
 		return
 	}
 	if err := ensureNoSymlinkPathComponents(targetDir); err != nil {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok": false, "error": fmt.Sprintf("迁移目标路径校验失败: %v", err),
-		})
+		fail(http.StatusBadRequest, "", fmt.Sprintf("迁移目标路径校验失败: %v", err))
 		return
 	}
 
 	sourceInfo, statErr := os.Lstat(sourceDir)
 	if reqMode == "overwrite" {
 		if statErr != nil {
-			msg := fmt.Sprintf("源缓存目录不存在或无法访问: %v", statErr)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-			})
+			fail(http.StatusBadRequest, ErrCodeMigrationSourceUnconfirmed, fmt.Sprintf("源缓存目录不存在或无法访问: %v", statErr))
 			return
 		}
 		if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
-			msg := "迁移源必须是普通目录，拒绝处理符号链接或文件"
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-			})
+			fail(http.StatusBadRequest, ErrCodeMigrationSourceUnconfirmed, "迁移源必须是普通目录，拒绝处理符号链接或文件")
 			return
 		}
 		if err := validateCacheMigrationTree(sourceDir); err != nil {
-			msg := fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-			})
+			fail(http.StatusConflict, ErrCodeMigrationSourceUnconfirmed, fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err))
 			return
 		}
 		hasAssets, err := hasConfirmedCacheAssets(sourceDir)
 		if err != nil {
-			msg := fmt.Sprintf("检查源缓存内容失败: %v", err)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-			})
+			fail(http.StatusInternalServerError, ErrCodeMigrationSourceUnconfirmed, fmt.Sprintf("检查源缓存内容失败: %v", err))
 			return
 		}
 		if !hasAssets {
-			msg := "源缓存目录为空或未包含任何有效缓存素材，拒绝覆盖已有目标缓存"
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-			})
+			fail(http.StatusConflict, ErrCodeMigrationSourceUnconfirmed, "源缓存目录为空或未包含任何有效缓存素材，拒绝覆盖已有目标缓存")
 			return
 		}
 	} else {
 		// In "migrate" mode, allow non-existent source directory for backward compatibility
 		if statErr == nil {
 			if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.IsDir() {
-				msg := "迁移源必须是普通目录，拒绝处理符号链接或文件"
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-				c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-					"ok": false, "error": msg,
-				})
+				fail(http.StatusBadRequest, "", "迁移源必须是普通目录，拒绝处理符号链接或文件")
 				return
 			}
 			if err := validateCacheMigrationTree(sourceDir); err != nil {
-				msg := fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err)
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-				c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-					"ok": false, "code": ErrCodeMigrationSourceUnconfirmed, "error": msg,
-				})
+				fail(http.StatusConflict, ErrCodeMigrationSourceUnconfirmed, fmt.Sprintf("迁移已停止，源目录包含无法确认归属的数据，原目录保持不变: %v", err))
 				return
 			}
 		} else if !os.IsNotExist(statErr) {
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, statErr.Error())
-			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-				"ok": false, "error": statErr.Error(),
-			})
+			fail(http.StatusInternalServerError, "", statErr.Error())
 			return
 		}
 	}
 
 	parentDir := filepath.Dir(targetDir)
 	if err := os.MkdirAll(parentDir, 0755); err != nil {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-			"ok": false, "error": fmt.Sprintf("创建标准缓存父目录失败: %v", err),
-		})
+		fail(http.StatusInternalServerError, "", fmt.Sprintf("创建标准缓存父目录失败: %v", err))
 		return
 	}
 	if err := ensureNoSymlinkPathComponents(targetDir); err != nil {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok": false, "error": fmt.Sprintf("迁移目标路径校验失败: %v", err),
-		})
+		fail(http.StatusBadRequest, "", fmt.Sprintf("迁移目标路径校验失败: %v", err))
 		return
 	}
 
 	// Pre-check target before staging
-	if reqMode == "overwrite" {
-		if err := validateCacheOverwriteTarget(targetDir); err != nil {
-			msg := fmt.Sprintf("目标目录包含无法确认为 GBF 缓存的文件，拒绝覆盖现有内容: %v", err)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-				"ok":         false,
-				"code":       ErrCodeMigrationTargetUnconfirmed,
-				"target_dir": targetDir,
-				"error":      msg,
-			})
-			return
-		}
-	} else {
-		if err := validateEmptyMigrationTarget(targetDir); err != nil {
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-				"ok":         false,
-				"code":       ErrCodeMigrationTargetNotEmpty,
-				"target_dir": targetDir,
-				"error":      err.Error(),
-			})
-			return
-		}
+	if errCode, err := validateTargetForMode(targetDir, reqMode); err != nil {
+		fail(http.StatusConflict, errCode, err.Error(), "target_dir", targetDir)
+		return
 	}
 
 	// Stage source cache in the target's parent directory
 	stageDir, err := os.MkdirTemp(parentDir, ".gbf-cache-migration-*")
 	if err != nil {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-			"ok": false, "error": fmt.Sprintf("创建迁移暂存目录失败: %v", err),
-		})
+		fail(http.StatusInternalServerError, "", fmt.Sprintf("创建迁移暂存目录失败: %v", err))
 		return
 	}
 	stageCommitted := false
@@ -732,11 +634,7 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 			fallbackCmd := exec.CommandContext(ctx, "cp", "-R", sourceDir+string(filepath.Separator)+".", stageDir)
 			fbOut, fbErr := fallbackCmd.CombinedOutput()
 			if fbErr != nil {
-				msg := fmt.Sprintf("复制缓存至暂存目录失败: %v: %s (clone: %s)", fbErr, string(fbOut), string(out))
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-				c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-					"ok": false, "error": msg,
-				})
+				fail(http.StatusInternalServerError, "", fmt.Sprintf("复制缓存至暂存目录失败: %v: %s (clone: %s)", fbErr, string(fbOut), string(out)))
 				return
 			}
 		}
@@ -770,21 +668,13 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 			return nil
 		})
 		if purgeErr != nil {
-			msg := fmt.Sprintf("清理暂存目录残留失败: %v", purgeErr)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-				"ok": false, "error": msg,
-			})
+			fail(http.StatusInternalServerError, "", fmt.Sprintf("清理暂存目录残留失败: %v", purgeErr))
 			return
 		}
 	}
 
 	if err := validateCacheMigrationTree(stageDir); err != nil {
-		msg := fmt.Sprintf("迁移暂存目录复核失败，未切换配置: %v", err)
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-			"ok": false, "error": msg,
-		})
+		fail(http.StatusConflict, "", fmt.Sprintf("迁移暂存目录复核失败，未切换配置: %v", err))
 		return
 	}
 
@@ -797,45 +687,18 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 
 	latestCfg := c.cfgMgr.Candidate()
 	if filepath.Clean(latestCfg.CacheDir) != filepath.Clean(sourceDir) {
-		msg := "操作期间源缓存目录已被其他操作修改"
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-		c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-			"ok": false, "code": ErrCodeMigrationSourceChanged, "error": msg,
-		})
+		fail(http.StatusConflict, ErrCodeMigrationSourceChanged, "操作期间源缓存目录已被其他操作修改")
 		return
 	}
 
 	// Re-verify target directory immediately before replacement
 	if err := ensureNoSymlinkPathComponents(targetDir); err != nil {
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok": false, "error": fmt.Sprintf("迁移目标路径校验失败: %v", err),
-		})
+		fail(http.StatusBadRequest, "", fmt.Sprintf("迁移目标路径校验失败: %v", err))
 		return
 	}
-	if reqMode == "overwrite" {
-		if err := validateCacheOverwriteTarget(targetDir); err != nil {
-			msg := fmt.Sprintf("目标目录复核失败，拒绝覆盖现有内容: %v", err)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-				"ok":         false,
-				"code":       ErrCodeMigrationTargetUnconfirmed,
-				"target_dir": targetDir,
-				"error":      msg,
-			})
-			return
-		}
-	} else {
-		if err := validateEmptyMigrationTarget(targetDir); err != nil {
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-			c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-				"ok":         false,
-				"code":       ErrCodeMigrationTargetNotEmpty,
-				"target_dir": targetDir,
-				"error":      err.Error(),
-			})
-			return
-		}
+	if errCode, err := validateTargetForMode(targetDir, reqMode); err != nil {
+		fail(http.StatusConflict, errCode, err.Error(), "target_dir", targetDir)
+		return
 	}
 
 	// Execute directory replacement with rollback backup
@@ -848,60 +711,19 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 	if targetExists {
 		oldBackupDir = filepath.Join(parentDir, fmt.Sprintf(".gbf-cache-old-%d", time.Now().UnixNano()))
 		if err := renameFunc(targetDir, oldBackupDir); err != nil {
-			msg := fmt.Sprintf("重命名现有目标目录至备份失败: %v", err)
-			c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-			c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-				"ok": false, "code": ErrCodeMigrationReplacementFailed, "error": msg,
-			})
+			fail(http.StatusInternalServerError, ErrCodeMigrationReplacementFailed, fmt.Sprintf("重命名现有目标目录至备份失败: %v", err))
 			return
 		}
 
 		// Re-verify the frozen backup directory to eliminate the filesystem race window
-		if reqMode == "overwrite" {
-			if err := validateCacheOverwriteTarget(oldBackupDir); err != nil {
-				if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
-					msg := fmt.Sprintf("现有目标目录确权复核失败且原目录恢复失败: %v (恢复错误: %v, 原缓存备份保留于: %s)", err, rbErr, oldBackupDir)
-					c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-					c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-						"ok":         false,
-						"code":       ErrCodeMigrationRollbackFailed,
-						"backup_dir": oldBackupDir,
-						"error":      msg,
-					})
-					return
-				}
-				msg := fmt.Sprintf("现有目标目录备份确权复核失败，已恢复原目录，拒绝覆盖: %v", err)
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-				c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-					"ok":         false,
-					"code":       ErrCodeMigrationTargetUnconfirmed,
-					"target_dir": targetDir,
-					"error":      msg,
-				})
+		if errCode, err := validateTargetForMode(oldBackupDir, reqMode); err != nil {
+			if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
+				msg := fmt.Sprintf("现有目标目录确权复核失败且原目录恢复失败: %v (恢复错误: %v, 原缓存备份保留于: %s)", err, rbErr, oldBackupDir)
+				fail(http.StatusInternalServerError, ErrCodeMigrationRollbackFailed, msg, "backup_dir", oldBackupDir)
 				return
 			}
-		} else {
-			if err := validateEmptyMigrationTarget(oldBackupDir); err != nil {
-				if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
-					msg := fmt.Sprintf("迁移目标目录非空复核失败且原目录恢复失败: %v (恢复错误: %v, 原缓存备份保留于: %s)", err, rbErr, oldBackupDir)
-					c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-					c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-						"ok":         false,
-						"code":       ErrCodeMigrationRollbackFailed,
-						"backup_dir": oldBackupDir,
-						"error":      msg,
-					})
-					return
-				}
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, err.Error())
-				c.sendJSON(w, http.StatusConflict, map[string]interface{}{
-					"ok":         false,
-					"code":       ErrCodeMigrationTargetNotEmpty,
-					"target_dir": targetDir,
-					"error":      err.Error(),
-				})
-				return
-			}
+			fail(http.StatusConflict, errCode, err.Error(), "target_dir", targetDir)
+			return
 		}
 	}
 
@@ -909,18 +731,11 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 		if targetExists {
 			if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
 				msg := fmt.Sprintf("重命名暂存目录失败且回滚备份失败: %v (回滚错误: %v, 备份位于: %s)", err, rbErr, oldBackupDir)
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-				c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-					"ok": false, "code": ErrCodeMigrationRollbackFailed, "backup_dir": oldBackupDir, "error": msg,
-				})
+				fail(http.StatusInternalServerError, ErrCodeMigrationRollbackFailed, msg, "backup_dir", oldBackupDir)
 				return
 			}
 		}
-		msg := fmt.Sprintf("提交迁移目录失败: %v", err)
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-			"ok": false, "code": ErrCodeMigrationReplacementFailed, "error": msg,
-		})
+		fail(http.StatusInternalServerError, ErrCodeMigrationReplacementFailed, fmt.Sprintf("提交迁移目录失败: %v", err))
 		return
 	}
 
@@ -930,27 +745,18 @@ func (c *ControlServer) handleMigrateStandardCache(w http.ResponseWriter, req *h
 
 	if err := c.cfgMgr.Commit(candidate); err != nil {
 		cleanupErr := removeAllFunc(targetDir)
+		extra := ""
+		if cleanupErr != nil {
+			extra = fmt.Sprintf(" (新目录清理失败: %v)", cleanupErr)
+		}
 		if targetExists {
 			if rbErr := renameFunc(oldBackupDir, targetDir); rbErr != nil {
-				msg := fmt.Sprintf("配置持久化失败且恢复旧目录失败: %v (恢复错误: %v, 备份位于: %s)", err, rbErr, oldBackupDir)
-				if cleanupErr != nil {
-					msg += fmt.Sprintf(" (新目录清理失败: %v)", cleanupErr)
-				}
-				c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-				c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-					"ok": false, "code": ErrCodeMigrationRollbackFailed, "backup_dir": oldBackupDir, "error": msg,
-				})
+				msg := fmt.Sprintf("配置持久化失败且恢复旧目录失败: %v (恢复错误: %v, 备份位于: %s)%s", err, rbErr, oldBackupDir, extra)
+				fail(http.StatusInternalServerError, ErrCodeMigrationRollbackFailed, msg, "backup_dir", oldBackupDir)
 				return
 			}
 		}
-		msg := fmt.Sprintf("配置持久化失败: %v", err)
-		if cleanupErr != nil {
-			msg += fmt.Sprintf(" (新目录清理失败: %v)", cleanupErr)
-		}
-		c.finishCacheTask(taskID, "migrate_standard", "failed", false, nil, msg)
-		c.sendJSON(w, http.StatusInternalServerError, map[string]interface{}{
-			"ok": false, "code": ErrCodeMigrationConfigCommitFailed, "error": msg,
-		})
+		fail(http.StatusInternalServerError, ErrCodeMigrationConfigCommitFailed, fmt.Sprintf("配置持久化失败: %v%s", err, extra))
 		return
 	}
 
