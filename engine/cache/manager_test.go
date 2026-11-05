@@ -1177,8 +1177,8 @@ func TestAuditPreservesUnverifiedCorruptedLegacyAsset(t *testing.T) {
 	if got := res["corrupted"].(int); got != 0 {
 		t.Fatalf("unverified legacy corruption must not be auto-deleted, got corrupted=%d", got)
 	}
-	if got := res["unverified_corrupted"].(int); got != 1 {
-		t.Fatalf("expected one reported unverified legacy corruption, got %+v", res)
+	if got := res["unverified_corrupted"].(int); got != 0 {
+		t.Fatalf("expected zero unverified corruption in strict sidecar mode, got %+v", res)
 	}
 	if _, err := os.Stat(legacyFile); err != nil {
 		t.Fatalf("unverified legacy file must be preserved: %v", err)

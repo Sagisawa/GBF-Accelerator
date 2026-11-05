@@ -23,12 +23,11 @@ func TestBoostLifecycle_ClearAll(t *testing.T) {
 	defer mgr.Close()
 
 	// 1. Prewarm with an asset
-	assetsDir := filepath.Join(tempDir, "assets", "12345", "img", "sp")
-	_ = os.MkdirAll(assetsDir, 0755)
-	p := filepath.Join(assetsDir, "test.png")
 	data := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRtest")
-	_ = os.WriteFile(p, data, 0644)
-	// The root marker and valid PNG exercise Tier-2 ownership; no fake .ext is needed.
+	headers := map[string]string{"content-type": "image/png"}
+	if !mgr.SaveWithNamespace("gbf", "assets/12345/img/sp/test.png", headers, data) {
+		t.Fatalf("failed to save test asset")
+	}
 
 	mgr.PrewarmBoostPoolWithProgress(nil, nil, nil)
 	if item, src := mgr.GetWithNamespace("gbf", "assets/12345/img/sp/test.png"); item == nil || src != "RAM-BOOST" {

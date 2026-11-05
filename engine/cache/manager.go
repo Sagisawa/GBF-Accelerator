@@ -2792,12 +2792,6 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			return nil
 		}
 		if !isConfirmedCacheFileInRoot(root, rel, rootInfo, hasRootMarker) {
-			// Damaged legacy files without a valid .ext cannot pass Tier 2 because their
-			// contents no longer validate. Report them, but preserve them as unowned data.
-			if isUnverifiedLegacyCacheCandidateInRoot(root, rel, rootInfo, hasRootMarker) &&
-				(walkInfo.Size() == 0 || !IsValidCacheFile(p, "", p)) {
-				unverifiedCorrupted++
-			}
 			skipped++
 			return nil
 		}

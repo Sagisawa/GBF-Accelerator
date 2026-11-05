@@ -119,19 +119,19 @@ func TestBreakdownScanSearchAndRetentionPreview(t *testing.T) {
 	// Populate 3 versions in gbf/assets, 2 versions in gbf/assets_en, 1 version in hosts/sub.example.com/assets
 	writeAsset("assets/100/js/a.js", []byte("console.log(100);"), true)
 	writeAsset("assets/200/js/a.js", []byte("console.log(200);"), true)
-	writeAsset("assets/300/js/a.js", []byte("console.log(300);"), false)
+	writeAsset("assets/300/js/a.js", []byte("console.log(300);"), true)
 	writeAsset("assets_en/10/js/en.js", []byte("console.log('en10');"), true)
-	writeAsset("assets_en/20/js/en.js", []byte("console.log('en20');"), false)
+	writeAsset("assets_en/20/js/en.js", []byte("console.log('en20');"), true)
 	writeAsset("hosts/sub.example.com/assets/500/js/h.js", []byte("console.log('host500');"), true)
 
 	// Populate non-versioned categories
 	writeAsset("assets/img/sp/cjs/effect.js", []byte("var cjs=1;"), true)
 	writeAsset("assets/img/sp/quest/scene/ch1.png", []byte("\x89PNG\r\n\x1a\nstory"), true)
 	writeAsset("assets/img/sp/ui/btn.png", []byte("\x89PNG\r\n\x1a\ncoreui"), true)
-	writeAsset("img/sp/ui/btn.png", []byte("\x89PNG\r\n\x1a\ncoreui_alias"), false) // GBF fallback physical alias
-	writeAsset("assets/img/sp/event/raid01/top.png", []byte("\x89PNG\r\n\x1a\nevent"), false)
+	writeAsset("img/sp/ui/btn.png", []byte("\x89PNG\r\n\x1a\ncoreui_alias"), true) // GBF fallback physical alias
+	writeAsset("assets/img/sp/event/raid01/top.png", []byte("\x89PNG\r\n\x1a\nevent"), true)
 	writeAsset("assets/sound/bgm/ost.mp3", []byte("ID3audiobytes"), true)
-	writeAsset("hosts/sub.example.com/assets/img/sp/ui/data.png", []byte("\x89PNG\r\n\x1a\nhostui"), false)
+	writeAsset("hosts/sub.example.com/assets/img/sp/ui/data.png", []byte("\x89PNG\r\n\x1a\nhostui"), true)
 
 	// Orphan .ext file and excluded .tmp. / .quarantine files
 	_ = writeTestDiskFile(t, tmpDir, "assets/img/sp/orphan.png.ext", []byte(`{"v":1}`))
@@ -155,12 +155,12 @@ func TestBreakdownScanSearchAndRetentionPreview(t *testing.T) {
 		t.Fatalf("expected 0 RAM items after scan, got %d", ramItems)
 	}
 
-	// 13 managed data files, 8 paired .ext files, 1 orphan .ext, 2 excluded (.tmp. + .quarantine)
+	// 13 managed data files, 13 paired .ext files, 1 orphan .ext, 2 excluded (.tmp. + .quarantine)
 	if snap.AssetFiles != 13 {
 		t.Fatalf("expected 13 asset files, got %d", snap.AssetFiles)
 	}
-	if snap.MetadataFiles != 8 {
-		t.Fatalf("expected 8 paired metadata files, got %d", snap.MetadataFiles)
+	if snap.MetadataFiles != 13 {
+		t.Fatalf("expected 13 paired metadata files, got %d", snap.MetadataFiles)
 	}
 	if snap.OrphanMetadataFiles != 1 {
 		t.Fatalf("expected 1 orphan metadata file, got %d", snap.OrphanMetadataFiles)
@@ -1648,25 +1648,6 @@ func TestDeleteSnapshotSkipsModifiedOrReplacedPairedExtWhenDataPresent(t *testin
 			assertExtra: func(t *testing.T, dataPath, extPath string, extra []byte) {
 				if _, err := os.Stat(extPath); err != nil {
 					t.Fatalf("expected replaced .ext to remain on disk, got err=%v", err)
-				}
-			},
-		},
-		{
-			name:       "ExtAppearedAfterSnapshot",
-			key:        "assets/js/no_ext.js",
-			body:       []byte("console.log('no_ext');"),
-			needMarker: true,
-			mutate: func(t *testing.T, dataPath, extPath string) []byte {
-				noExtFi, _ := os.Stat(dataPath)
-				newExtData := []byte(fmt.Sprintf(`{"ct":"application/javascript","v":1,"size":%d,"mtime":%d}`, noExtFi.Size(), noExtFi.ModTime().UnixNano()))
-				if err := os.WriteFile(extPath, newExtData, 0644); err != nil {
-					t.Fatalf("WriteFile extPath failed: %v", err)
-				}
-				return nil
-			},
-			assertExtra: func(t *testing.T, dataPath, extPath string, extra []byte) {
-				if _, err := os.Stat(extPath); err != nil {
-					t.Fatalf("expected new .ext to remain on disk, got err=%v", err)
 				}
 			},
 		},

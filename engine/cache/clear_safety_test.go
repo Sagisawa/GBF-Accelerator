@@ -157,47 +157,24 @@ func TestClearAll_PreservesNonCacheFilesAndSystemJunk(t *testing.T) {
 	}
 }
 
-func TestClearAll_LegacyAttributionWithAndWithoutMarker(t *testing.T) {
-	t.Run("without root marker", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		mgr := NewManager(tmpDir, 64)
-		defer mgr.Close()
-		_ = os.Remove(filepath.Join(tmpDir, RootMarkerFileName))
+func TestClearAll_FilesWithoutExtStrictlyPreserved(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr := NewManager(tmpDir, 64)
+	defer mgr.Close()
+	_ = EnsureRootMarker(tmpDir)
 
-		legacyFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
+	legacyFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
 
-		deleted, _, skipped := mgr.ClearAll()
-		if deleted != 0 {
-			t.Errorf("expected 0 deleted files without root marker, got %d", deleted)
-		}
-		if skipped != 1 {
-			t.Errorf("expected 1 skipped file, got %d", skipped)
-		}
-		if _, err := os.Stat(legacyFile); err != nil {
-			t.Errorf("expected legacy file to be preserved without root marker: %v", err)
-		}
-	})
-
-	t.Run("with root marker", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		mgr := NewManager(tmpDir, 64)
-		defer mgr.Close()
-
-		_ = EnsureRootMarker(tmpDir)
-
-		legacyFile := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
-
-		deleted, _, _ := mgr.ClearAll()
-		if deleted != 1 {
-			t.Errorf("expected 1 deleted file with root marker, got %d", deleted)
-		}
-		if _, err := os.Stat(legacyFile); !os.IsNotExist(err) {
-			t.Errorf("expected legacy file to be deleted with root marker: %v", err)
-		}
-		if !HasRootMarker(tmpDir) {
-			t.Errorf("expected root marker to remain intact after ClearAll")
-		}
-	})
+	deleted, _, skipped := mgr.ClearAll()
+	if deleted != 0 {
+		t.Errorf("expected 0 deleted files without .ext metadata, got %d", deleted)
+	}
+	if skipped != 1 {
+		t.Errorf("expected 1 skipped file, got %d", skipped)
+	}
+	if _, err := os.Stat(legacyFile); err != nil {
+		t.Errorf("expected file without .ext to be preserved: %v", err)
+	}
 }
 
 func TestClearAll_RefusesUnsafeDirectory(t *testing.T) {
@@ -360,18 +337,22 @@ func TestClearAll_PreservesUserFilesUnderCategoryPaths(t *testing.T) {
 		{"sound/voice/attack.mp3", validMp3},
 	}
 	for _, cf := range legitCacheFiles {
-		writeTestDiskFile(t, tmpDir, cf.rel, cf.data)
+		p := writeTestDiskFile(t, tmpDir, cf.rel, cf.data)
+		_ = os.WriteFile(p+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644)
 	}
 
 	deleted, _, skipped := mgr.ClearAll()
-	if deleted != len(legitCacheFiles) {
-		t.Errorf("expected %d deleted legit cache files, got %d", len(legitCacheFiles), deleted)
+	if deleted != len(legitCacheFiles)*2 {
+		t.Errorf("expected %d deleted legit cache files (data+ext), got %d", len(legitCacheFiles)*2, deleted)
 	}
 
 	for _, cf := range legitCacheFiles {
 		p := filepath.Join(tmpDir, filepath.FromSlash(cf.rel))
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("expected legit cache file %s to be deleted", p)
+		}
+		if _, err := os.Stat(p + ".ext"); !os.IsNotExist(err) {
+			t.Errorf("expected legit cache metadata %s.ext to be deleted", p)
 		}
 	}
 
@@ -651,8 +632,8 @@ func TestClearAll_VersionFallbackSafety(t *testing.T) {
 	_ = os.WriteFile(noExtFile, appCode, 0644)
 
 	deleted, _, skipped := mgr.ClearAll()
-	if deleted < 3 {
-		t.Fatalf("expected at least 3 deleted files (app.js + app.js.ext + no_ext.js), got %d", deleted)
+	if deleted != 2 {
+		t.Fatalf("expected exactly 2 deleted files (app.js + app.js.ext), got %d", deleted)
 	}
 
 	// Assertions
@@ -665,13 +646,10 @@ func TestClearAll_VersionFallbackSafety(t *testing.T) {
 	if _, err := os.Stat(mismatchNSFile); err != nil {
 		t.Fatalf("expected mismatch NS file %s to be preserved", mismatchNSFile)
 	}
-	for _, keep := range []string{userPhoto, userNotes} {
+	for _, keep := range []string{userPhoto, userNotes, noExtFile} {
 		if _, err := os.Stat(keep); err != nil {
-			t.Fatalf("expected unconfirmed user file %s to be preserved", keep)
+			t.Fatalf("expected unconfirmed file %s to be preserved", keep)
 		}
-	}
-	if _, err := os.Stat(noExtFile); !os.IsNotExist(err) {
-		t.Fatalf("expected Tier-2 legacy version file %s to be deleted under root marker", noExtFile)
 	}
 	if skipped == 0 {
 		t.Fatalf("expected skipped > 0, got %d", skipped)
@@ -772,14 +750,14 @@ func TestClearAll_PureACGPowerDirectoryE2E(t *testing.T) {
 		t.Fatalf("expected HasRootMarker to be true after EnsureRootMarker")
 	}
 
-	deletedAfter, _, _ := mgr.ClearAll()
-	if deletedAfter != len(acgFiles) {
-		t.Fatalf("expected %d deleted files after confirmation, got %d", len(acgFiles), deletedAfter)
+	deletedAfter, _, skippedAfter := mgr.ClearAll()
+	if deletedAfter != 0 || skippedAfter < len(acgFiles) {
+		t.Fatalf("expected 0 deleted files after confirmation for files without .ext, got deleted=%d, skipped=%d", deletedAfter, skippedAfter)
 	}
 	for _, rel := range acgFiles {
 		full := filepath.Join(tmpDir, filepath.FromSlash(rel))
-		if _, err := os.Stat(full); !os.IsNotExist(err) {
-			t.Fatalf("expected file %s to be deleted after confirmation", rel)
+		if _, err := os.Stat(full); err != nil {
+			t.Fatalf("expected file %s to be preserved without .ext", rel)
 		}
 	}
 

@@ -3,7 +3,6 @@ package cache
 import (
 	"bytes"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -361,61 +360,9 @@ func VerifyTier1Meta(slashRel string, metaBytes []byte) (diskMeta, bool) {
 	return parsedMeta, true
 }
 
-// isTier2Candidate checks whether slashRel meets structural requirements for Tier-2 legacy cache:
-// root marker present + top-level shape valid + valid asset file extension.
-func isTier2Candidate(slashRel string, hasRootMarker bool) (cleanKey string, ok bool) {
-	if !hasRootMarker {
-		return "", false
-	}
-	if strings.EqualFold(filepath.ToSlash(filepath.Clean(slashRel)), "favicon.ico") {
-		// Root-level favicon.ico is strictly Tier-1 only and requires a valid paired .ext
-		return "", false
-	}
-	_, keyCand, _, shapeOK := parseCachePathTopLevelShape(slashRel)
-	if !shapeOK {
-		return "", false
-	}
-	cleanLower := strings.ToLower(keyCand)
-	if !isAssetExtension(cleanLower) {
-		return "", false
-	}
-	return cleanLower, true
-}
-
-// IsTier2Candidate checks whether slashRel meets structural requirements for Tier-2 legacy cache:
-// root marker present + top-level shape valid + valid asset file extension.
-func IsTier2Candidate(slashRel string, hasRootMarker bool) (cleanKey string, ok bool) {
-	return isTier2Candidate(slashRel, hasRootMarker)
-}
-
-// isUnverifiedLegacyCacheCandidateInRoot identifies a structurally plausible legacy cache path
-// that has no sidecar ownership record. It is diagnostic-only: callers must never delete it.
-func isUnverifiedLegacyCacheCandidateInRoot(root *os.Root, rel string, fi os.FileInfo, hasRootMarker bool) bool {
-	if root == nil || !hasRootMarker || fi == nil || !fi.Mode().IsRegular() {
-		return false
-	}
-	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	slashRel := filepath.ToSlash(rel)
-	baseName := filepath.Base(rel)
-	if slashRel == RootMarkerFileName || config.IsSystemJunk(baseName) ||
-		strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") ||
-		isAcceleratorQuarantineFile(slashRel) {
-		return false
-	}
-	if _, ok := isTier2Candidate(slashRel, hasRootMarker); !ok {
-		return false
-	}
-	_, err := root.Lstat(rel + ".ext")
-	return os.IsNotExist(err)
-}
-
-// IsConfirmedCacheFile determines whether a file on disk belongs to GBF-Accelerator/ACGPower cache.
+// IsConfirmedCacheFile determines whether a file on disk belongs to GBF-Accelerator cache.
 // It explicitly rejects non-regular files and symbolic links using os.Lstat.
-// Two-tier hierarchy:
-// Tier 1 (Strong proof): A valid paired .ext file exists whose metadata (version=1, namespace) matches.
-// Tier 2 (Legacy ACGPower without .ext): Root marker exists + valid top-level shape + asset extension + magic bytes.
+// Strict Sidecar Ownership: A valid paired .ext file is required.
 func IsConfirmedCacheFile(baseDir, fullPath string, hasRootMarker bool) bool {
 	fi, err := os.Lstat(fullPath)
 	if err != nil || fi == nil || !fi.Mode().IsRegular() {
@@ -446,7 +393,7 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 		return false
 	}
 
-	// --- Tier 1: Strong evidence via valid paired .ext metadata file ---
+	// Strict Sidecar Ownership: Valid paired .ext metadata file required
 	extPath := fullPath + ".ext"
 	extFi, extErr := os.Lstat(extPath)
 	if extErr == nil {
@@ -459,16 +406,8 @@ func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasR
 		}
 		_, ok := VerifyTier1Meta(slashRel, metaBytes)
 		return ok
-	} else if !os.IsNotExist(extErr) {
-		return false
 	}
-
-	// --- Tier 2: Legacy asset without .ext metadata file ---
-	cleanLower, ok := isTier2Candidate(slashRel, hasRootMarker)
-	if !ok {
-		return false
-	}
-	return verifyCacheFileMagic(fullPath, cleanLower)
+	return false
 }
 
 // isConfirmedCacheFileInRoot performs confirmed cache file verification inside an *os.Root.
@@ -478,7 +417,7 @@ func isConfirmedCacheFileInRoot(root *os.Root, rel string, fi os.FileInfo, hasRo
 }
 
 // isConfirmedCacheFileInRootDetailed performs verified cache attribution inside an *os.Root,
-// returning whether the file is confirmed, and whether it was confirmed via Tier 1 paired metadata.
+// returning whether the file is confirmed, and whether it was confirmed via paired metadata.
 func isConfirmedCacheFileInRootDetailed(root *os.Root, rel string, fi os.FileInfo, hasRootMarker bool) (confirmed bool, isTier1 bool) {
 	if fi == nil || !fi.Mode().IsRegular() || fi.Size() <= 0 {
 		return false, false
@@ -497,7 +436,7 @@ func isConfirmedCacheFileInRootDetailed(root *os.Root, rel string, fi os.FileInf
 		return false, false
 	}
 
-	// Tier 1: Check paired .ext metadata file via root
+	// Check paired .ext metadata file via root
 	extRel := rel + ".ext"
 	extFi, extErr := root.Lstat(extRel)
 	if extErr == nil {
@@ -509,60 +448,9 @@ func isConfirmedCacheFileInRootDetailed(root *os.Root, rel string, fi os.FileInf
 			return false, false
 		}
 		_, ok := VerifyTier1Meta(slashRel, metaBytes)
-		if ok {
-			return true, true
-		}
-		return false, false
-	} else if !os.IsNotExist(extErr) {
-		return false, false
-	}
-
-	// Tier 2: Legacy asset without .ext (requires root marker)
-	cleanLower, ok := isTier2Candidate(slashRel, hasRootMarker)
-	if !ok {
-		return false, false
-	}
-
-	f, err := root.Open(rel)
-	if err != nil {
-		return false, false
-	}
-	defer f.Close()
-	if verifyCacheFileMagicFromReader(f, cleanLower) {
-		return true, false
+		return ok, ok
 	}
 	return false, false
-}
-
-// verifyCacheFileMagicFromReader validates magic bytes and non-HTML content from an io.Reader.
-func verifyCacheFileMagicFromReader(r io.Reader, cleanLower string) bool {
-	var buf [512]byte
-	n, err := io.ReadFull(r, buf[:])
-	if (err != nil && err != io.EOF && err != io.ErrUnexpectedEOF) || n == 0 {
-		return false
-	}
-
-	sample := buf[:n]
-	if n >= 2 && sample[0] == 0x1f && sample[1] == 0x8b {
-		return validateCompleteGzipStream(cleanLower, io.MultiReader(bytes.NewReader(sample), r))
-	}
-
-	sampleLower := bytes.TrimSpace(bytes.ToLower(sample))
-	if isHTMLContent(sampleLower) {
-		return false
-	}
-
-	return checkMagicBytes(cleanLower, sample)
-}
-
-// verifyCacheFileMagic reads the file header (up to 512 bytes) and validates magic bytes and non-HTML content.
-func verifyCacheFileMagic(filePath, cleanLower string) bool {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	return verifyCacheFileMagicFromReader(f, cleanLower)
 }
 
 // IsAcceleratorTempFile checks whether slashRel matches the naming pattern of temporary cache files.

@@ -220,18 +220,8 @@ func validateCacheMigrationTree(root string) error {
 			return nil
 		}
 
-		// Legacy file without .ext: check directory shape, asset extension, and sampled magic bytes
-		if !hasMarker {
-			return fmt.Errorf("未标记缓存目录包含无法确认归属的文件: %s", rel)
-		}
-		// All files must check directory structure and asset extension
-		if _, ok := cache.IsTier2Candidate(slashRel, true); !ok {
-			return fmt.Errorf("迁移目录包含无法确认归属的文件 (目录结构或素材扩展名无效): %s", rel)
-		}
-		if info.Size() <= 0 {
-			return fmt.Errorf("迁移目录包含无法确认归属的空文件: %s", rel)
-		}
-		return nil
+		// Data file without valid paired .ext is unconfirmed
+		return fmt.Errorf("迁移目录包含未纳入元数据确权的文件 (缺少有效 .ext): %s", rel)
 	})
 }
 

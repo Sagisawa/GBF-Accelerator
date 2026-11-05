@@ -40,23 +40,20 @@ func TestIsConfirmedCacheFile_Tier1ValidExt(t *testing.T) {
 	}
 }
 
-func TestIsConfirmedCacheFile_Tier2LegacyWithoutExt(t *testing.T) {
+func TestIsConfirmedCacheFile_WithoutExtRejected(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create legacy ACGPower cache structure directly on disk (no .ext file)
 	legacyFull := writeTestDiskFile(t, tmpDir, "assets/img/sp/legacy.png", testValidPNG)
 
-	// Case A: Without root marker -> MUST be rejected!
+	// Without .ext -> MUST be rejected both with and without root marker
 	if IsConfirmedCacheFile(tmpDir, legacyFull, false) {
-		t.Errorf("legacy asset without .ext must NOT be confirmed if root marker is missing")
+		t.Errorf("legacy asset without .ext must NOT be confirmed without marker")
+	}
+	if IsConfirmedCacheFile(tmpDir, legacyFull, true) {
+		t.Errorf("legacy asset without .ext must NOT be confirmed even with root marker")
 	}
 
-	// Case B: With root marker -> confirmed!
-	if !IsConfirmedCacheFile(tmpDir, legacyFull, true) {
-		t.Errorf("legacy asset without .ext must be confirmed when root marker is present")
-	}
-
-	// Case C: Non-asset extension with root marker -> MUST be rejected!
+	// Non-asset extension with root marker -> MUST be rejected!
 	userDocFull := writeTestDiskFile(t, tmpDir, "assets/img/sp/doc.docx", []byte("user doc"))
 	if IsConfirmedCacheFile(tmpDir, userDocFull, true) {
 		t.Errorf("file with non-asset extension must NOT be confirmed")
@@ -203,57 +200,6 @@ func TestIsAcceleratorTempFile(t *testing.T) {
 	}
 }
 
-func TestIsTier2Candidate_Structure(t *testing.T) {
-	cases := []struct {
-		rel  string
-		want bool
-	}{
-		// Legitimate cache paths conforming to top-level shape:
-		{"assets/12345/img/sp/btn.png", true},
-		{"assets/img/sp/btn.png", true},
-		{"assets/12345/js/app.js", true},
-		{"assets/12345/sound/bgm.mp3", true},
-		{"assets/app/sample.png", true},
-		{"assets/app/js/set-error-handler.js", true},
-		{"assets/app.js", true},
-		{"assets_en/app.js", true},
-		{"assets_jp/app.js", true},
-		{"assets/icon.png", true},
-		{"assets/common/img.png", true},
-		{"img/sp/btn.png", true},
-		{"sound/bgm.mp3", true},
-		{"sound/voice/3040001_v.mp3", true},
-		{"sound/se/se_100.mp3", true},
-		{"manifest/app.js", true},
-		{"hosts/example.com/assets/app.js", true},
-		{"hosts/example.com/assets/12345/img/sp/btn.png", true},
-		{"hosts/example.com/img/sp/btn.png", true},
-		{"12345/img/sp/btn.png", true},
-		{"300/js/app.js", true},
-
-		// Non-cache paths or invalid top-level shapes - MUST be rejected:
-		{"personal_data/photo.png", false},
-		{"user_workspace/doc.png", false},
-		{"my_backup/game.png", false},
-		{"12345/btn.png", false},         // version dir without category
-		{"2026/photos/photo.png", false}, // version dir with invalid category
-		{"hosts/invalid:host/app.js", false},
-
-		// Non-asset file extensions - MUST be rejected:
-		{"assets/document.docx", false},
-		{"assets/sheet.xlsx", false},
-		{"assets/archive.zip", false},
-		{"assets/program.exe", false},
-	}
-
-	for _, tc := range cases {
-		_, got := isTier2Candidate(tc.rel, true)
-		if got != tc.want {
-			t.Errorf("isTier2Candidate(%q) = %v; want %v", tc.rel, got, tc.want)
-		}
-	}
-}
-
 func TestIsConfirmedCacheDir(t *testing.T) {
 	cases := []struct {
 		dir  string
@@ -382,26 +328,15 @@ func TestTier1VersionFallbackNegativeAndPositiveValidation(t *testing.T) {
 		t.Fatalf("2026/photos/photo.png must NOT be recognized even with valid .ext")
 	}
 
-	// 2. Bare version assets without .ext: Tier-2 gated on root marker
+	// 2. Bare version assets without .ext: strictly unconfirmed
 	p300 := writeTestDiskFile(t, root, "300/js/app.js", jsCode)
 	pQuestLegacy := writeTestDiskFile(t, root, "300/img/sp/quest/scene/ch1.png", pngMagic)
 	for _, p := range []string{p300, pQuestLegacy} {
-		if !IsConfirmedCacheFile(root, p, true) {
-			t.Fatalf("%s without .ext must be confirmed under Tier-2 when root marker is present", p)
-		}
-		if IsConfirmedCacheFile(root, p, false) {
-			t.Fatalf("%s without .ext must NOT be confirmed when root marker is absent", p)
+		if IsConfirmedCacheFile(root, p, true) || IsConfirmedCacheFile(root, p, false) {
+			t.Fatalf("%s without .ext must be rejected", p)
 		}
 	}
-	cacheRoot, err := os.OpenRoot(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cacheRoot.Close()
 	fi300, _ := os.Stat(p300)
-	if !isUnverifiedLegacyCacheCandidateInRoot(cacheRoot, "300/js/app.js", fi300, true) {
-		t.Fatalf("300/js/app.js without .ext must be treated as unverified legacy candidate")
-	}
 
 	// 3. 300/js/app.js with .ext permutations
 	extCases := []struct {
@@ -591,16 +526,13 @@ func TestJSSDKCategorySupport(t *testing.T) {
 		t.Fatalf("jssdk asset with paired .ext must be confirmed under Tier-1")
 	}
 
-	// 2. Positive Tier-2: jssdk file without .ext under root marker
+	// 2. jssdk file without .ext must NOT be confirmed
 	xdframePath := filepath.Join(jssdkDir, "mobage-jssdk-xdframe.2.3.min.js")
 	if err := os.WriteFile(xdframePath, validJS, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if !IsConfirmedCacheFile(root, xdframePath, true) {
-		t.Fatalf("jssdk asset without .ext under root marker must be confirmed under Tier-2")
-	}
-	if IsConfirmedCacheFile(root, xdframePath, false) {
-		t.Fatalf("jssdk asset without .ext without root marker must NOT be confirmed")
+	if IsConfirmedCacheFile(root, xdframePath, true) || IsConfirmedCacheFile(root, xdframePath, false) {
+		t.Fatalf("jssdk asset without .ext must NOT be confirmed")
 	}
 
 	// 3. Negative: non-asset extension in jssdk

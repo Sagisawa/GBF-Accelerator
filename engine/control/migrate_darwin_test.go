@@ -43,9 +43,21 @@ func TestValidateCacheMigrationTreeRejectsUnconfirmedFiles(t *testing.T) {
 	if err := os.WriteFile(asset, png, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateCacheMigrationTree(root); err != nil {
-		t.Fatalf("confirmed Tier-2 source tree should pass: %v", err)
+	if err := os.WriteFile(asset+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
+		t.Fatal(err)
 	}
+	if err := validateCacheMigrationTree(root); err != nil {
+		t.Fatalf("confirmed source tree should pass: %v", err)
+	}
+
+	bareAsset := filepath.Join(root, "assets", "img", "sp", "ui", "bare.png")
+	if err := os.WriteFile(bareAsset, png, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCacheMigrationTree(root); err == nil {
+		t.Fatal("migration must reject a file missing companion .ext metadata")
+	}
+	_ = os.Remove(bareAsset)
 
 	userFile := filepath.Join(root, "personal_data", "profile.png")
 	if err := os.MkdirAll(filepath.Dir(userFile), 0755); err != nil {
