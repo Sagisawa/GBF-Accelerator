@@ -2824,14 +2824,6 @@ func (c *ControlServer) handleConfirmCacheRoot(w http.ResponseWriter, req *http.
 	if c.rejectUnsafeCacheMaintenance(w) {
 		return
 	}
-	if err := c.cacheMgr.ValidateDestructiveCacheDir(); err != nil {
-		c.sendJSON(w, http.StatusBadRequest, map[string]interface{}{
-			"ok":    false,
-			"code":  "UNSAFE_CACHE_DIR",
-			"error": fmt.Sprintf("缓存目录校验失败: %v", err),
-		})
-		return
-	}
 
 	if c.cacheMgr.HasRootMarker() {
 		c.sendJSON(w, http.StatusOK, map[string]interface{}{

@@ -16,12 +16,8 @@ import (
 
 func TestClassifyCacheEntry(t *testing.T) {
 	cases := []struct {
-		name     string
-		ns       string
-		key      string
-		expected string
+		name, ns, key, expected string
 	}{
-		// Priority 1: versioned
 		{"versioned assets js", "gbf", "assets/1728446123/js/app.js", CategoryVersioned},
 		{"versioned assets_en js", "gbf", "assets_en/1728446123/js/app.js", CategoryVersioned},
 		{"versioned assets_jp css", "gbf", "assets_jp/1728446123/css/style.css", CategoryVersioned},
@@ -30,19 +26,13 @@ func TestClassifyCacheEntry(t *testing.T) {
 		{"non-numeric version dir is not versioned", "gbf", "assets/v1728446123/js/app.js", CategoryOther},
 		{"leading zero version dir is not versioned", "gbf", "assets/012345/js/app.js", CategoryOther},
 		{"unsupported prefix version dir is other", "gbf", "assets_kr/1728446123/js/app.js", CategoryOther},
-
-		// Priority 2: battle_cjs
 		{"battle_cjs standard", "gbf", "assets/img/sp/cjs/npc_3040001000_01.js", CategoryBattleCJS},
 		{"battle_cjs en", "gbf", "assets_en/img/sp/cjs/enemy_1001.png", CategoryBattleCJS},
 		{"battle_cjs fallback without assets prefix", "gbf", "img/sp/cjs/summon_2040001.js", CategoryBattleCJS},
-
-		// Priority 3: story
 		{"story quest scene", "gbf", "assets/img/sp/quest/scene/character/body/3040001000.png", CategoryStory},
 		{"story sidestory", "gbf", "assets/img/sp/sidestory/banner/side_01.png", CategoryStory},
 		{"story comic", "gbf", "assets_en/img/sp/comic/episode_100.jpg", CategoryStory},
 		{"story audio inside quest scene", "gbf", "assets/img/sp/quest/scene/voice/scene_01.mp3", CategoryStory},
-
-		// Priority 4: core_ui
 		{"core_ui event common", "gbf", "assets/img/sp/event/common/parts/btn_ok.png", CategoryCoreUI},
 		{"core_ui quest assist", "gbf", "assets/img/sp/quest/assist/bg_list.png", CategoryCoreUI},
 		{"core_ui quest select", "gbf", "assets/img/sp/quest/select/chapter_bg.png", CategoryCoreUI},
@@ -53,21 +43,15 @@ func TestClassifyCacheEntry(t *testing.T) {
 		{"core_ui sp replicard", "gbf", "assets/img/sp/replicard/stage.png", CategoryCoreUI},
 		{"core_ui sprite", "gbf", "assets/img/sprite/sheet_01.png", CategoryCoreUI},
 		{"core_ui fallback without assets prefix", "gbf", "img/sp/ui/header.png", CategoryCoreUI},
-
-		// Priority 5: event_gacha (and segment boundary verification)
 		{"event_gacha specific event", "gbf", "assets/img/sp/event/teamraid075/top_logo.png", CategoryEventGacha},
 		{"event_gacha common prefix but not common segment", "gbf", "assets/img/sp/event/common_campaign_2026/banner.png", CategoryEventGacha},
 		{"event_gacha gacha", "gbf", "assets/img/sp/gacha/header_legend.png", CategoryEventGacha},
 		{"event_gacha banner", "gbf", "assets/img/sp/banner/camp_01.png", CategoryEventGacha},
 		{"event_gacha campaign", "gbf", "assets/img/sp/campaign/summer/top.png", CategoryEventGacha},
 		{"event_gacha loginbonus", "gbf", "assets/img/sp/loginbonus/stamp.png", CategoryEventGacha},
-
-		// Priority 6: audio
 		{"audio sound dir", "gbf", "assets/sound/voice/3040001_attack.mp3", CategoryAudio},
 		{"audio sound fallback", "gbf", "sound/bgm/main_theme.ogg", CategoryAudio},
 		{"audio by extension outside sound dir", "gbf", "assets/movie/audio_track.m4a", CategoryAudio},
-
-		// Priority 7: other
 		{"other unknown quest subdir", "gbf", "assets/img/sp/quest/unknown_future_mode/icon.png", CategoryOther},
 		{"other arcarum prefix mismatch", "gbf", "assets/img/sp/arcarum_special_promo/banner.png", CategoryOther},
 		{"other unsupported language prefix", "gbf", "assets_kr/sound/voice/test.mp3", CategoryOther},
@@ -117,21 +101,20 @@ func TestBreakdownScanSearchAndRetentionPreview(t *testing.T) {
 	}
 
 	// Populate 3 versions in gbf/assets, 2 versions in gbf/assets_en, 1 version in hosts/sub.example.com/assets
-	writeAsset("assets/100/js/a.js", []byte("console.log(100);"), true)
-	writeAsset("assets/200/js/a.js", []byte("console.log(200);"), true)
-	writeAsset("assets/300/js/a.js", []byte("console.log(300);"), true)
-	writeAsset("assets_en/10/js/en.js", []byte("console.log('en10');"), true)
-	writeAsset("assets_en/20/js/en.js", []byte("console.log('en20');"), true)
-	writeAsset("hosts/sub.example.com/assets/500/js/h.js", []byte("console.log('host500');"), true)
-
-	// Populate non-versioned categories
-	writeAsset("assets/img/sp/cjs/effect.js", []byte("var cjs=1;"), true)
-	writeAsset("assets/img/sp/quest/scene/ch1.png", []byte("\x89PNG\r\n\x1a\nstory"), true)
-	writeAsset("assets/img/sp/ui/btn.png", []byte("\x89PNG\r\n\x1a\ncoreui"), true)
-	writeAsset("img/sp/ui/btn.png", []byte("\x89PNG\r\n\x1a\ncoreui_alias"), true) // GBF fallback physical alias
-	writeAsset("assets/img/sp/event/raid01/top.png", []byte("\x89PNG\r\n\x1a\nevent"), true)
-	writeAsset("assets/sound/bgm/ost.mp3", []byte("ID3audiobytes"), true)
-	writeAsset("hosts/sub.example.com/assets/img/sp/ui/data.png", []byte("\x89PNG\r\n\x1a\nhostui"), true)
+	for _, a := range []struct {
+		rel  string
+		data []byte
+	}{
+		{"assets/100/js/a.js", []byte("console.log(100);")}, {"assets/200/js/a.js", []byte("console.log(200);")},
+		{"assets/300/js/a.js", []byte("console.log(300);")}, {"assets_en/10/js/en.js", []byte("console.log('en10');")},
+		{"assets_en/20/js/en.js", []byte("console.log('en20');")}, {"hosts/sub.example.com/assets/500/js/h.js", []byte("console.log('host500');")},
+		{"assets/img/sp/cjs/effect.js", []byte("var cjs=1;")}, {"assets/img/sp/quest/scene/ch1.png", []byte("\x89PNG\r\n\x1a\nstory")},
+		{"assets/img/sp/ui/btn.png", []byte("\x89PNG\r\n\x1a\ncoreui")}, {"img/sp/ui/btn.png", []byte("\x89PNG\r\n\x1a\ncoreui_alias")},
+		{"assets/img/sp/event/raid01/top.png", []byte("\x89PNG\r\n\x1a\nevent")}, {"assets/sound/bgm/ost.mp3", []byte("ID3audiobytes")},
+		{"hosts/sub.example.com/assets/img/sp/ui/data.png", []byte("\x89PNG\r\n\x1a\nhostui")},
+	} {
+		writeAsset(a.rel, a.data, true)
+	}
 
 	// Orphan .ext file and excluded .tmp. / .quarantine files
 	_ = writeTestDiskFile(t, tmpDir, "assets/img/sp/orphan.png.ext", []byte(`{"v":1}`))
@@ -312,23 +295,14 @@ func TestControlledDeletionCategoryCleanupAndSlim(t *testing.T) {
 	headers := map[string]string{"content-type": "image/png"}
 	pngData := []byte("\x89PNG\r\n\x1a\nvalid_png_payload")
 
-	// Save both GBF primary and fallback alias on disk
-	if !mgr.SaveWithNamespace("gbf", "assets/img/sp/ui/dual.png", headers, pngData) {
-		t.Fatalf("Save primary failed")
-	}
-	if !mgr.SaveWithNamespace("gbf", "img/sp/ui/dual.png", headers, pngData) {
-		t.Fatalf("Save alias failed")
-	}
-	// Save story and event assets
-	if !mgr.SaveWithNamespace("gbf", "assets/img/sp/quest/scene/s1.png", headers, pngData) {
-		t.Fatalf("Save story failed")
-	}
-	if !mgr.SaveWithNamespace("gbf", "assets/img/sp/event/ev01/banner.png", headers, pngData) {
-		t.Fatalf("Save event failed")
-	}
-	// Save non-GBF asset
-	if !mgr.SaveWithNamespace("other.host", "assets/img/sp/event/ev01/banner.png", headers, pngData) {
-		t.Fatalf("Save other.host failed")
+	for _, a := range []struct{ ns, path string }{
+		{"gbf", "assets/img/sp/ui/dual.png"}, {"gbf", "img/sp/ui/dual.png"},
+		{"gbf", "assets/img/sp/quest/scene/s1.png"}, {"gbf", "assets/img/sp/event/ev01/banner.png"},
+		{"other.host", "assets/img/sp/event/ev01/banner.png"},
+	} {
+		if !mgr.SaveWithNamespace(a.ns, a.path, headers, pngData) {
+			t.Fatalf("Save %s failed", a.path)
+		}
 	}
 
 	snap := mgr.ScanBreakdownWithProgress(nil, nil)
@@ -418,13 +392,11 @@ func TestTempTokenEvictionAndDiscardFailClosed(t *testing.T) {
 
 	// 1. Verify DiscardDiskTempFile reclaims token registration on aborted downloads
 	for i := 0; i < 1100; i++ {
-		k := fmt.Sprintf("/assets/js/aborted_%d.js", i)
-		f, tp, _, err := mgr.CreateDiskTempFile("gbf", k)
+		f, tp, _, err := mgr.CreateDiskTempFile("gbf", fmt.Sprintf("/assets/js/aborted_%d.js", i))
 		if err != nil {
 			t.Fatalf("CreateDiskTempFile failed at %d: %v", i, err)
 		}
-		_ = f.Close()
-		mgr.DiscardDiskTempFile(tp)
+		_ = f.Close(); mgr.DiscardDiskTempFile(tp)
 	}
 	mgr.tempTokensMu.Lock()
 	remainingAfterDiscard := len(mgr.tempTokens)
@@ -441,8 +413,7 @@ func TestTempTokenEvictionAndDiscardFailClosed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateDiskTempFile failed at %d: %v", i, err)
 		}
-		_, _ = f.Write(validJS)
-		_ = f.Close()
+		_, _ = f.Write(validJS); _ = f.Close()
 		txs = append(txs, tx{key: k, tmpPath: tp, gen: g})
 	}
 
@@ -2006,15 +1977,9 @@ func TestBreakdown_ClearCategories_SkippedChangedAndAlreadyMissingConsistency(t 
 		}
 
 		// Memory states must be cleared and stale token invalidated even though disk file was AlreadyMissing
-		if _, ok := mgr.ramCache.Get(ramKey); ok {
-			t.Fatalf("expected RAM cache entry to be cleared when disk file is AlreadyMissing")
-		}
-		if _, ok := mgr.residentPool.Get(ramKey); ok {
-			t.Fatalf("expected ResidentPool entry to be cleared when disk file is AlreadyMissing")
-		}
-		if _, ok := mgr.getDiskMeta(ramKey); ok {
-			t.Fatalf("expected diskMeta entry to be cleared when disk file is AlreadyMissing")
-		}
+		if _, ok := mgr.ramCache.Get(ramKey); ok { t.Fatal("expected RAM cache entry to be cleared") }
+		if _, ok := mgr.residentPool.Get(ramKey); ok { t.Fatal("expected ResidentPool entry to be cleared") }
+		if _, ok := mgr.getDiskMeta(ramKey); ok { t.Fatal("expected diskMeta entry to be cleared") }
 		if mgr.saveToDiskWithToken(staleFile, headers, body, staleGen, staleTok) {
 			t.Fatalf("expected pre-deletion token to be invalidated when disk file is AlreadyMissing")
 		}
@@ -2061,15 +2026,9 @@ func TestBreakdown_ClearCategories_SkippedChangedAndAlreadyMissingConsistency(t 
 			t.Fatalf("expected FailedCount=1 on path boundary failure, got %+v", delRes)
 		}
 
-		if _, ok := mgr.ramCache.Get(ramKey); !ok {
-			t.Fatalf("expected RAM cache entry to be preserved on path boundary failure")
-		}
-		if _, ok := mgr.residentPool.Get(ramKey); !ok {
-			t.Fatalf("expected ResidentPool entry to be preserved on path boundary failure")
-		}
-		if _, ok := mgr.getDiskMeta(ramKey); !ok {
-			t.Fatalf("expected diskMeta entry to be preserved on path boundary failure")
-		}
+		if _, ok := mgr.ramCache.Get(ramKey); !ok { t.Fatal("expected RAM cache entry to be preserved") }
+		if _, ok := mgr.residentPool.Get(ramKey); !ok { t.Fatal("expected ResidentPool entry to be preserved") }
+		if _, ok := mgr.getDiskMeta(ramKey); !ok { t.Fatal("expected diskMeta entry to be preserved") }
 		shard := mgr.tokenShardByCanon(activeTok.canonKey)
 		shard.mu.Lock()
 		tokValid := isTokenValidLocked(shard, activeTok, mgr.generation)
@@ -2082,202 +2041,85 @@ func TestBreakdown_ClearCategories_SkippedChangedAndAlreadyMissingConsistency(t 
 
 func TestBreakdownAndCategoryCleanupExcludeUnconfirmedFiles(t *testing.T) {
 	base := t.TempDir()
-	if err := EnsureRootMarker(base); err != nil {
-		t.Fatal(err)
-	}
+	_ = EnsureRootMarker(base)
 	mgr := NewManager(base, 16)
 	defer mgr.Close()
 
-	validRel := "assets/img/ui/icon/weapon/confirmed.png"
-	validBody := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRconfirmed")
-	if !mgr.Save(validRel, map[string]string{"content-type": "image/png"}, validBody) {
-		t.Fatal("failed to save confirmed asset")
-	}
-	validPath := filepath.Join(base, filepath.FromSlash(validRel))
-
-	userPath := filepath.Join(base, "personal_data", "avatar.png")
-	if err := os.MkdirAll(filepath.Dir(userPath), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(userPath, validBody, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	badPair := filepath.Join(base, "assets", "img", "ui", "icon", "weapon", "unverified.png")
-	if err := os.WriteFile(badPair, validBody, 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(badPair+".ext", []byte("{malformed metadata"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	validRel, validBody := "assets/img/ui/icon/weapon/confirmed.png", []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRconfirmed")
+	if !mgr.Save(validRel, testPNGHeaders, validBody) { t.Fatal("failed to save confirmed asset") }
+	writeTestDiskFile(t, base, "personal_data/avatar.png", validBody)
+	badPair := writeTestDiskFile(t, base, "assets/img/ui/icon/weapon/unverified.png", validBody)
+	_ = os.WriteFile(badPair+".ext", []byte("{malformed metadata"), 0644)
 
 	snap := mgr.ScanBreakdownWithProgress(nil, nil)
-	if snap == nil || !snap.Valid {
-		t.Fatalf("expected valid scan snapshot, got %+v", snap)
+	if snap == nil || !snap.Valid || snap.AssetFiles != 1 {
+		t.Fatalf("expected 1 confirmed asset in scan snapshot, got %+v", snap)
 	}
-	if snap.AssetFiles != 1 {
-		t.Fatalf("only the confirmed cache asset should be counted, got %d", snap.AssetFiles)
-	}
-	category := ClassifyCacheEntry("gbf", validRel)
-	if !IsSelectableCleanupCategory(category) {
-		t.Fatalf("unexpected unselectable category %q", category)
-	}
-	if _, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{category}, []string{"gbf"}, nil, nil); err != nil {
+	cat := ClassifyCacheEntry("gbf", validRel)
+	if _, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{cat}, []string{"gbf"}, nil, nil); err != nil {
 		t.Fatalf("category cleanup failed: %v", err)
 	}
-	if _, err := os.Stat(validPath); !os.IsNotExist(err) {
-		t.Fatalf("confirmed asset should have been removed, got %v", err)
+	if _, err := os.Stat(filepath.Join(base, filepath.FromSlash(validRel))); !os.IsNotExist(err) {
+		t.Fatalf("confirmed asset should have been removed: %v", err)
 	}
-	for _, keep := range []string{userPath, badPair, badPair + ".ext"} {
-		if _, err := os.Stat(keep); err != nil {
-			t.Fatalf("unconfirmed file %s was not preserved: %v", keep, err)
-		}
-	}
+	assertPathStatus(t, base, []string{"personal_data/avatar.png", "assets/img/ui/icon/weapon/unverified.png", "assets/img/ui/icon/weapon/unverified.png.ext"}, true)
 }
 
 func TestAlreadyMissingSidecarValidationAndMemoryLifecycle(t *testing.T) {
-	headers := testJSHeaders
-	body := []byte("console.log('already_missing_lifecycle');")
-
-	tests := []struct {
-		name          string
-		key           string
-		mutate        func(t *testing.T, dataPath, extPath string)
-		checkDelRes   func(t *testing.T, res *DeleteResult)
-		expectMemory  bool
-		checkTokenExt func(t *testing.T, mgr *Manager, staleFile string, staleGen uint64, staleTok opToken, extPath string)
+	body, modExt := []byte("console.log('lifecycle');"), []byte(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true}`)
+	for _, tc := range []struct {
+		name, key, mutate        string
+		missing, skipped, failed int
+		expectMemory             bool
 	}{
-		{
-			name: "FileMissing_SidecarUnchanged_ClearsMemory_PreservesSidecar",
-			key:  "assets/js/missing_sidecar_ok.js",
-			mutate: func(t *testing.T, dataPath, extPath string) {
-				if err := os.Remove(dataPath); err != nil {
-					t.Fatalf("Remove dataPath failed: %v", err)
-				}
-			},
-			checkDelRes: func(t *testing.T, res *DeleteResult) {
-				if res.AlreadyMissingCount != 1 || res.SkippedChangedCount != 0 {
-					t.Fatalf("expected AlreadyMissingCount=1 and SkippedChangedCount=0, got %+v", res)
-				}
-			},
-			expectMemory: false,
-			checkTokenExt: func(t *testing.T, mgr *Manager, staleFile string, staleGen uint64, staleTok opToken, extPath string) {
-				if mgr.saveToDiskWithToken(staleFile, headers, body, staleGen, staleTok) {
-					t.Fatalf("expected pre-deletion token to be invalidated when sidecar is unchanged")
-				}
-				if _, err := os.Stat(extPath); err != nil {
-					t.Fatalf("expected orphan .ext file to remain on disk: %v", err)
-				}
-			},
-		},
-		{
-			name: "FileMissing_SidecarModified_PreservesMemoryAndTokens",
-			key:  "assets/js/missing_sidecar_mod.js",
-			mutate: func(t *testing.T, dataPath, extPath string) {
-				if err := os.Remove(dataPath); err != nil {
-					t.Fatalf("Remove dataPath failed: %v", err)
-				}
-				time.Sleep(10 * time.Millisecond)
-				modExt := []byte(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true,"extra":"payload_to_change_size"}`)
-				if err := os.WriteFile(extPath, modExt, 0644); err != nil {
-					t.Fatalf("WriteFile extPath failed: %v", err)
-				}
-			},
-			checkDelRes: func(t *testing.T, res *DeleteResult) {
-				if res.SkippedChangedCount != 1 || res.AlreadyMissingCount != 0 {
-					t.Fatalf("expected SkippedChangedCount=1 and AlreadyMissingCount=0, got %+v", res)
-				}
-			},
-			expectMemory: true,
-			checkTokenExt: func(t *testing.T, mgr *Manager, staleFile string, staleGen uint64, staleTok opToken, extPath string) {
-				if !mgr.isOpTokenValid(staleTok) {
-					t.Fatalf("expected persistence token to remain valid when sidecar changed")
-				}
-				modExt := []byte(`{"ct":"application/javascript","ns":"gbf","v":1,"updated":true,"extra":"payload_to_change_size"}`)
-				if data, err := os.ReadFile(extPath); err != nil || !bytes.Equal(data, modExt) {
-					t.Fatalf("expected modified .ext file to remain on disk: %v", err)
-				}
-			},
-		},
-		{
-			name: "FileMissing_AbnormalSidecar_PreservesMemoryAndReportsFailure",
-			key:  "assets/js/missing_sidecar_abnormal.js",
-			mutate: func(t *testing.T, dataPath, extPath string) {
-				if err := os.Remove(dataPath); err != nil {
-					t.Fatalf("Remove dataPath failed: %v", err)
-				}
-				if err := os.Remove(extPath); err != nil {
-					t.Fatalf("Remove extPath failed: %v", err)
-				}
-				if err := os.Mkdir(extPath, 0755); err != nil {
-					t.Fatalf("Mkdir extPath failed: %v", err)
-				}
-			},
-			checkDelRes: func(t *testing.T, res *DeleteResult) {
-				if res.FailedCount != 1 {
-					t.Fatalf("expected FailedCount=1 for abnormal sidecar, got %+v", res)
-				}
-			},
-			expectMemory: true,
-			checkTokenExt: func(t *testing.T, mgr *Manager, staleFile string, staleGen uint64, staleTok opToken, extPath string) {
-				if !mgr.isOpTokenValid(staleTok) {
-					t.Fatalf("expected persistence token to remain valid when sidecar is abnormal")
-				}
-			},
-		},
-	}
-
-	for _, tc := range tests {
+		{"FileMissing_SidecarUnchanged", "assets/js/missing_ok.js", "unchanged", 1, 0, 0, false},
+		{"FileMissing_SidecarModified", "assets/js/missing_mod.js", "modified", 0, 1, 0, true},
+		{"FileMissing_AbnormalSidecar", "assets/js/missing_abnormal.js", "abnormal", 0, 0, 1, true},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
 			mgr := NewManager(tmpDir, 32)
 			defer mgr.Close()
-
-			if !mgr.SaveWithNamespace("gbf", tc.key, headers, body) {
+			if !mgr.SaveWithNamespace("gbf", tc.key, testJSHeaders, body) {
 				t.Fatalf("SaveWithNamespace failed")
 			}
-
 			snap := mgr.ScanBreakdownWithProgress(nil, nil)
-			if snap == nil || !snap.Valid {
-				t.Fatalf("expected valid snapshot")
-			}
-
 			ramKey, staleGen, staleTok := populateMemoryStateForTest(mgr, "gbf", tc.key, body)
-			staleFile := filepath.Join(tmpDir, filepath.FromSlash(tc.key))
-			dataPath := staleFile
+			dataPath := filepath.Join(tmpDir, filepath.FromSlash(tc.key))
 			extPath := dataPath + ".ext"
-
-			tc.mutate(t, dataPath, extPath)
-
-			delRes, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
-			if err != nil {
-				t.Fatalf("ClearCategoriesWithProgress failed: %v", err)
+			_ = os.Remove(dataPath)
+			if tc.mutate == "modified" {
+				time.Sleep(10 * time.Millisecond)
+				_ = os.WriteFile(extPath, modExt, 0644)
+			} else if tc.mutate == "abnormal" {
+				_ = os.Remove(extPath)
+				_ = os.Mkdir(extPath, 0755)
 			}
-			tc.checkDelRes(t, delRes)
-
-			if tc.expectMemory {
-				if _, ok := mgr.ramCache.Get(ramKey); !ok {
-					t.Fatalf("expected RAM cache entry to be preserved")
+			res, err := mgr.ClearCategoriesWithProgress(snap.SnapshotID, []string{CategoryOther}, nil, nil, nil)
+			if err != nil || res.AlreadyMissingCount != tc.missing || res.SkippedChangedCount != tc.skipped || res.FailedCount != tc.failed {
+				t.Fatalf("unexpected ClearCategories: res=%+v, err=%v", res, err)
+			}
+			if _, hasRAM := mgr.ramCache.Get(ramKey); hasRAM != tc.expectMemory {
+				t.Fatalf("expected ram %v", tc.expectMemory)
+			} else if _, hasRes := mgr.residentPool.Get(ramKey); hasRes != tc.expectMemory {
+				t.Fatalf("expected resident %v", tc.expectMemory)
+			} else if _, hasDisk := mgr.getDiskMeta(ramKey); hasDisk != tc.expectMemory {
+				t.Fatalf("expected disk %v", tc.expectMemory)
+			}
+			if tc.mutate == "unchanged" {
+				if mgr.saveToDiskWithToken(dataPath, testJSHeaders, body, staleGen, staleTok) {
+					t.Fatal("expected pre-deletion token invalidated")
 				}
-				if _, ok := mgr.residentPool.Get(ramKey); !ok {
-					t.Fatalf("expected ResidentPool entry to be preserved")
+				if _, err := os.Stat(extPath); err != nil {
+					t.Fatalf("expected orphan .ext to remain: %v", err)
 				}
-				if _, ok := mgr.getDiskMeta(ramKey); !ok {
-					t.Fatalf("expected diskMeta entry to be preserved")
-				}
-			} else {
-				if _, ok := mgr.ramCache.Get(ramKey); ok {
-					t.Fatalf("expected RAM cache entry to be cleared")
-				}
-				if _, ok := mgr.residentPool.Get(ramKey); ok {
-					t.Fatalf("expected ResidentPool entry to be cleared")
-				}
-				if _, ok := mgr.getDiskMeta(ramKey); ok {
-					t.Fatalf("expected diskMeta entry to be cleared")
+			} else if !mgr.isOpTokenValid(staleTok) {
+				t.Fatal("expected token valid")
+			} else if tc.mutate == "modified" {
+				if data, err := os.ReadFile(extPath); err != nil || !bytes.Equal(data, modExt) {
+					t.Fatalf("expected modified .ext: %v", err)
 				}
 			}
-
-			tc.checkTokenExt(t, mgr, staleFile, staleGen, staleTok, extPath)
 		})
 	}
 }

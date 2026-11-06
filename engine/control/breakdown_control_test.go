@@ -33,31 +33,13 @@ func seedControlTestCache(t *testing.T, baseDir string) {
 		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
 			t.Fatalf("write %s: %v", full, err)
 		}
-		fi, err := os.Stat(full)
-		if err != nil {
-			t.Fatalf("stat %s: %v", full, err)
-		}
 		ns := "gbf"
 		if strings.HasPrefix(relPath, "hosts/") {
-			parts := strings.SplitN(relPath, "/", 3)
-			if len(parts) != 3 {
-				t.Fatalf("invalid host fixture path: %s", relPath)
+			if parts := strings.SplitN(relPath, "/", 3); len(parts) == 3 {
+				ns = parts[1]
 			}
-			ns = parts[1]
 		}
-		meta := map[string]interface{}{
-			"ct":       "application/octet-stream",
-			"ns":       ns,
-			"v":        1,
-			"verified": true,
-			"size":     fi.Size(),
-			"mtime":    fi.ModTime().UnixNano(),
-		}
-		metaBytes, err := json.Marshal(meta)
-		if err != nil {
-			t.Fatalf("marshal ext metadata: %v", err)
-		}
-		if err := os.WriteFile(full+".ext", metaBytes, 0644); err != nil {
+		if err := os.WriteFile(full+".ext", []byte(fmt.Sprintf(`{"ct":"application/octet-stream","ns":%q,"v":1,"verified":true}`, ns)), 0644); err != nil {
 			t.Fatalf("write ext %s: %v", full, err)
 		}
 	}

@@ -512,57 +512,16 @@ func TestResolveDiskFileOwner(t *testing.T) {
 
 	// 1. Static path test cases (no .ext file on disk)
 	cases := []struct {
-		name        string
-		path        string
-		expectedNS  string
-		expectedKey string
-		expectedRAM string
-		expectedOK  bool
+		name, path, expectedNS, expectedKey, expectedRAM string
+		expectedOK                                       bool
 	}{
-		{
-			name:        "standard GBF asset",
-			path:        filepath.Join(tempBase, "assets", "sound.mp3"),
-			expectedNS:  "gbf",
-			expectedKey: "assets/sound.mp3",
-			expectedRAM: "assets/sound.mp3",
-			expectedOK:  true,
-		},
-		{
-			name:        "external host asset",
-			path:        filepath.Join(tempBase, "hosts", "prd-game-a.example.com", "assets", "img.png"),
-			expectedNS:  "prd-game-a.example.com",
-			expectedKey: "assets/img.png",
-			expectedRAM: "prd-game-a.example.com\x00assets/img.png",
-			expectedOK:  true,
-		},
-		{
-			name:       "incomplete host path rejected",
-			path:       filepath.Join(tempBase, "hosts", "short"),
-			expectedOK: false,
-		},
-		{
-			name:       "path traversal outside base rejected",
-			path:       filepath.Join(tempBase, "..", "outside.png"),
-			expectedOK: false,
-		},
-		{
-			name:       "deep relative traversal rejected",
-			path:       filepath.Join(tempBase, "assets", "..", "..", "outside.png"),
-			expectedOK: false,
-		},
-		{
-			name:        "namespace with port sanitized",
-			path:        filepath.Join(tempBase, "hosts", "myhost.com_8080", "assets", "data.bin"),
-			expectedNS:  "myhost.com_8080",
-			expectedKey: "assets/data.bin",
-			expectedRAM: "myhost.com_8080\x00assets/data.bin",
-			expectedOK:  true,
-		},
-		{
-			name:       "base path itself rejected",
-			path:       tempBase,
-			expectedOK: false,
-		},
+		{name: "standard GBF asset", path: filepath.Join(tempBase, "assets", "sound.mp3"), expectedNS: "gbf", expectedKey: "assets/sound.mp3", expectedRAM: "assets/sound.mp3", expectedOK: true},
+		{name: "external host asset", path: filepath.Join(tempBase, "hosts", "prd-game-a.example.com", "assets", "img.png"), expectedNS: "prd-game-a.example.com", expectedKey: "assets/img.png", expectedRAM: "prd-game-a.example.com\x00assets/img.png", expectedOK: true},
+		{name: "incomplete host path rejected", path: filepath.Join(tempBase, "hosts", "short"), expectedOK: false},
+		{name: "path traversal outside base rejected", path: filepath.Join(tempBase, "..", "outside.png"), expectedOK: false},
+		{name: "deep relative traversal rejected", path: filepath.Join(tempBase, "assets", "..", "..", "outside.png"), expectedOK: false},
+		{name: "namespace with port sanitized", path: filepath.Join(tempBase, "hosts", "myhost.com_8080", "assets", "data.bin"), expectedNS: "myhost.com_8080", expectedKey: "assets/data.bin", expectedRAM: "myhost.com_8080\x00assets/data.bin", expectedOK: true},
+		{name: "base path itself rejected", path: tempBase, expectedOK: false},
 	}
 
 	for _, tc := range cases {
@@ -575,118 +534,56 @@ func TestResolveDiskFileOwner(t *testing.T) {
 			if !tc.expectedOK {
 				return
 			}
-			if ns != tc.expectedNS {
-				t.Errorf("path %q: expected ns=%q, got %q", tc.path, tc.expectedNS, ns)
-			}
-			if cleanKey != tc.expectedKey {
-				t.Errorf("path %q: expected cleanKey=%q, got %q", tc.path, tc.expectedKey, cleanKey)
-			}
-			if ramKey != tc.expectedRAM {
-				t.Errorf("path %q: expected ramKey=%q, got %q", tc.path, tc.expectedRAM, ramKey)
+			if ns != tc.expectedNS || cleanKey != tc.expectedKey || ramKey != tc.expectedRAM {
+				t.Errorf("path %q: got (%q, %q, %q), want (%q, %q, %q)", tc.path, ns, cleanKey, ramKey, tc.expectedNS, tc.expectedKey, tc.expectedRAM)
 			}
 		})
 	}
 
+	writeExtAsset := func(subDir, file, extData string) string {
+		p := filepath.Join(tempBase, filepath.FromSlash(subDir), file)
+		_ = os.MkdirAll(filepath.Dir(p), 0755)
+		_ = os.WriteFile(p, []byte("data"), 0644)
+		_ = os.WriteFile(p+".ext", []byte(extData), 0644)
+		return p
+	}
+
 	// 2. Metadata (.ext file) behavior
 	t.Run("ext file overrides namespace to gbf", func(t *testing.T) {
-		assetPath := filepath.Join(tempBase, "hosts", "prd-game-a.example.com", "assets", "gbf_override.png")
-		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(assetPath, []byte("data"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(assetPath+".ext", []byte(`{"v":1,"ns":"gbf"}`), 0644); err != nil {
-			t.Fatal(err)
-		}
-
+		assetPath := writeExtAsset("hosts/prd-game-a.example.com/assets", "gbf_override.png", `{"v":1,"ns":"gbf"}`)
 		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(tempBase, assetPath)
-		if !ok {
-			t.Fatalf("expected ok=true, got false")
-		}
-		if ns != "gbf" {
-			t.Errorf("expected ns='gbf', got %q", ns)
+		if !ok || ns != "gbf" {
+			t.Fatalf("expected ok=true ns='gbf', got ok=%v ns=%q", ok, ns)
 		}
 		expectedKey := "hosts/prd-game-a.example.com/assets/gbf_override.png"
-		if cleanKey != expectedKey {
-			t.Errorf("expected cleanKey=%q, got %q", expectedKey, cleanKey)
-		}
-		if ramKey != expectedKey {
-			t.Errorf("expected ramKey=%q, got %q", expectedKey, ramKey)
+		if cleanKey != expectedKey || ramKey != expectedKey {
+			t.Errorf("expected %q, got cleanKey=%q ramKey=%q", expectedKey, cleanKey, ramKey)
 		}
 	})
 
 	t.Run("ext file overrides namespace to custom host", func(t *testing.T) {
-		assetPath := filepath.Join(tempBase, "hosts", "alias.example.com", "assets", "custom_override.png")
-		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(assetPath, []byte("data"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(assetPath+".ext", []byte(`{"v":1,"ns":"canonical.example.com"}`), 0644); err != nil {
-			t.Fatal(err)
-		}
-
+		assetPath := writeExtAsset("hosts/alias.example.com/assets", "custom_override.png", `{"v":1,"ns":"canonical.example.com"}`)
 		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(tempBase, assetPath)
-		if !ok {
-			t.Fatalf("expected ok=true, got false")
+		if !ok || ns != "canonical.example.com" {
+			t.Fatalf("expected ok=true, got ok=%v ns=%q", ok, ns)
 		}
-		if ns != "canonical.example.com" {
-			t.Errorf("expected ns='canonical.example.com', got %q", ns)
-		}
-		if cleanKey != "assets/custom_override.png" {
-			t.Errorf("expected cleanKey='assets/custom_override.png', got %q", cleanKey)
-		}
-		expectedRAM := "canonical.example.com\x00assets/custom_override.png"
-		if ramKey != expectedRAM {
-			t.Errorf("expected ramKey=%q, got %q", expectedRAM, ramKey)
+		if cleanKey != "assets/custom_override.png" || ramKey != "canonical.example.com\x00assets/custom_override.png" {
+			t.Errorf("unexpected cleanKey=%q ramKey=%q", cleanKey, ramKey)
 		}
 	})
 
 	t.Run("ext file with forbidden hosts namespace rejected", func(t *testing.T) {
-		assetPath := filepath.Join(tempBase, "hosts", "alias.example.com", "assets", "forbidden_ns.png")
-		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(assetPath, []byte("data"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(assetPath+".ext", []byte(`{"v":1,"ns":"hosts"}`), 0644); err != nil {
-			t.Fatal(err)
-		}
-
-		_, _, _, ok := resolveDiskFileOwner(tempBase, assetPath)
-		if ok {
+		assetPath := writeExtAsset("hosts/alias.example.com/assets", "forbidden_ns.png", `{"v":1,"ns":"hosts"}`)
+		if _, _, _, ok := resolveDiskFileOwner(tempBase, assetPath); ok {
 			t.Errorf("expected ok=false for ext file with ns='hosts', got true")
 		}
 	})
 
 	t.Run("ext file corrupted falls back to directory namespace", func(t *testing.T) {
-		assetPath := filepath.Join(tempBase, "hosts", "prd-game-a.example.com", "assets", "corrupted.png")
-		if err := os.MkdirAll(filepath.Dir(assetPath), 0755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(assetPath, []byte("data"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(assetPath+".ext", []byte(`invalid json`), 0644); err != nil {
-			t.Fatal(err)
-		}
-
+		assetPath := writeExtAsset("hosts/prd-game-a.example.com/assets", "corrupted.png", `invalid json`)
 		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(tempBase, assetPath)
-		if !ok {
-			t.Fatalf("expected ok=true, got false")
-		}
-		if ns != "prd-game-a.example.com" {
-			t.Errorf("expected ns='prd-game-a.example.com', got %q", ns)
-		}
-		if cleanKey != "assets/corrupted.png" {
-			t.Errorf("expected cleanKey='assets/corrupted.png', got %q", cleanKey)
-		}
-		expectedRAM := "prd-game-a.example.com\x00assets/corrupted.png"
-		if ramKey != expectedRAM {
-			t.Errorf("expected ramKey=%q, got %q", expectedRAM, ramKey)
+		if !ok || ns != "prd-game-a.example.com" || cleanKey != "assets/corrupted.png" || ramKey != "prd-game-a.example.com\x00assets/corrupted.png" {
+			t.Fatalf("unexpected result: ok=%v ns=%q cleanKey=%q ramKey=%q", ok, ns, cleanKey, ramKey)
 		}
 	})
 
@@ -1107,11 +1004,6 @@ func TestMaxRAMItemSize(t *testing.T) {
 	}
 }
 
-
-
-
-
-
 func TestClearAllRefusesProtectedCacheRootBeforeClearingRAM(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -1131,56 +1023,16 @@ func TestClearAllRefusesProtectedCacheRootBeforeClearingRAM(t *testing.T) {
 	}
 }
 
-func TestAuditPreservesUnconfirmedUserFiles(t *testing.T) {
+func TestAuditPreservesUnconfirmedAndLegacyFiles(t *testing.T) {
 	base := t.TempDir()
-	if err := EnsureRootMarker(base); err != nil {
-		t.Fatal(err)
-	}
-	userFile := filepath.Join(base, "assets", "personal_data", "profile.png")
-	if err := os.MkdirAll(filepath.Dir(userFile), 0755); err != nil {
-		t.Fatal(err)
-	}
-	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRuser")
-	if err := os.WriteFile(userFile, png, 0644); err != nil {
-		t.Fatal(err)
-	}
+	_ = EnsureRootMarker(base)
+	writeTestDiskFile(t, base, "assets/personal_data/profile.png", []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRuser"))
+	writeTestDiskFile(t, base, "assets/img/sp/ui/legacy_broken.png", []byte("not-a-png"))
 	mgr := NewManager(base, 16)
 	defer mgr.Close()
 	res := mgr.AuditAndRepair()
-	if res["ok"] != true {
-		t.Fatalf("audit failed: %+v", res)
+	if res["ok"] != true || res["corrupted"].(int) != 0 || res["unverified_corrupted"].(int) != 0 {
+		t.Fatalf("unverified files must not be auto-deleted, got %+v", res)
 	}
-	if _, err := os.Stat(userFile); err != nil {
-		t.Fatalf("unconfirmed user file was altered: %v", err)
-	}
-}
-
-func TestAuditPreservesUnverifiedCorruptedLegacyAsset(t *testing.T) {
-	base := t.TempDir()
-	if err := EnsureRootMarker(base); err != nil {
-		t.Fatal(err)
-	}
-	legacyFile := filepath.Join(base, "assets", "img", "sp", "ui", "legacy_broken.png")
-	if err := os.MkdirAll(filepath.Dir(legacyFile), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(legacyFile, []byte("not-a-png"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	mgr := NewManager(base, 16)
-	defer mgr.Close()
-	res := mgr.AuditAndRepair()
-	if res["ok"] != true {
-		t.Fatalf("audit failed: %+v", res)
-	}
-	if got := res["corrupted"].(int); got != 0 {
-		t.Fatalf("unverified legacy corruption must not be auto-deleted, got corrupted=%d", got)
-	}
-	if got := res["unverified_corrupted"].(int); got != 0 {
-		t.Fatalf("expected zero unverified corruption in strict sidecar mode, got %+v", res)
-	}
-	if _, err := os.Stat(legacyFile); err != nil {
-		t.Fatalf("unverified legacy file must be preserved: %v", err)
-	}
+	assertPathStatus(t, base, []string{"assets/personal_data/profile.png", "assets/img/sp/ui/legacy_broken.png"}, true)
 }

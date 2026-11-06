@@ -135,7 +135,7 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 			return nil
 		}
 		// Rule VII: Strictly exclude .ext, .tmp.*, .quarantine
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || isAcceleratorQuarantineFile(p) {
+		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || IsAcceleratorQuarantineFile(p) {
 			return nil
 		}
 

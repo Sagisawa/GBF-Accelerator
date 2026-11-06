@@ -369,28 +369,18 @@ describe('cache breakdown & targeted management APIs', () => {
   })
 
   it('calls POST /api/cache/migrate-standard with switch_only and overwrite modes', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
+    for (const mode of ['switch_only', 'overwrite'] as const) {
+      globalThis.fetch = vi.fn().mockResolvedValue({
         ok: true,
-        new_dir: '/Users/test/Library/Application Support/GBF-Accelerator/cache',
-        message: 'Switched cache',
-      }),
-    }) as any
-
-    await migrateToStandardCache({ mode: 'switch_only' })
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/migrate-standard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'switch_only' }),
-    })
-
-    await migrateToStandardCache({ mode: 'overwrite' })
-    expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/migrate-standard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'overwrite' }),
-    })
+        json: async () => ({ ok: true, new_dir: '/Users/test/Library/Application Support/GBF-Accelerator/cache', message: 'Switched cache' }),
+      }) as any
+      await migrateToStandardCache({ mode })
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/cache/migrate-standard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      })
+    }
   })
 
   it('throws CacheMigrationError with structured code and targetDir on conflict', async () => {
@@ -416,5 +406,3 @@ describe('cache breakdown & targeted management APIs', () => {
     }
   })
 })
-
-

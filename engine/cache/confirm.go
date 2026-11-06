@@ -17,11 +17,12 @@ const (
 	RootMarkerExpectedText    = "GBF-Accelerator Cache Root"
 )
 
-// verifyRootMarkerContent validates that the root marker content matches expected text.
-// Note: Root marker content verification is a hygiene gate against accidental deletion,
-// not an unfalsifiable cryptographic proof of origin.
-func verifyRootMarkerContent(data []byte) bool {
-	return bytes.Equal(bytes.TrimSpace(data), []byte(RootMarkerExpectedText))
+func verifyMarkerFileInfo(fi os.FileInfo, readFn func() ([]byte, error)) bool {
+	if fi == nil || !fi.Mode().IsRegular() || fi.Size() == 0 || fi.Size() > 256 {
+		return false
+	}
+	content, err := readFn()
+	return err == nil && bytes.Equal(bytes.TrimSpace(content), []byte(RootMarkerExpectedText))
 }
 
 // HasRootMarker checks whether the root marker file exists in baseDir as a regular file
@@ -32,491 +33,193 @@ func HasRootMarker(baseDir string) bool {
 	}
 	markerPath := filepath.Join(baseDir, RootMarkerFileName)
 	fi, err := os.Lstat(markerPath)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 || fi.Size() > 256 {
-		return false
-	}
-	content, err := os.ReadFile(markerPath)
-	if err != nil {
-		return false
-	}
-	return verifyRootMarkerContent(content)
+	return err == nil && verifyMarkerFileInfo(fi, func() ([]byte, error) { return os.ReadFile(markerPath) })
 }
 
-// hasRootMarkerInRoot checks whether the root marker file exists inside root as a regular file
-// with the expected marker content, using root-relative handles to prevent symlink traversal.
 func hasRootMarkerInRoot(root *os.Root) bool {
 	if root == nil {
 		return false
 	}
 	fi, err := root.Lstat(RootMarkerFileName)
-	if err != nil || !fi.Mode().IsRegular() || fi.Size() == 0 || fi.Size() > 256 {
-		return false
-	}
-	content, err := root.ReadFile(RootMarkerFileName)
-	if err != nil {
-		return false
-	}
-	return verifyRootMarkerContent(content)
+	return err == nil && verifyMarkerFileInfo(fi, func() ([]byte, error) { return root.ReadFile(RootMarkerFileName) })
 }
 
 // EnsureRootMarker writes the root marker file to baseDir if not already present with valid content.
-// To avoid data loss, it strictly refuses to overwrite existing user files, directories, symlinks,
-// or unrecognized files named .gbf_cache.
 func EnsureRootMarker(baseDir string) error {
-	if baseDir == "" {
-		return os.ErrInvalid
-	}
-	if HasRootMarker(baseDir) {
-		return nil
-	}
+	if baseDir == "" { return os.ErrInvalid }
+	if HasRootMarker(baseDir) { return nil }
 	markerPath := filepath.Join(baseDir, RootMarkerFileName)
-	fi, err := os.Lstat(markerPath)
-	if err == nil {
-		if fi.Mode()&os.ModeSymlink != 0 {
-			return errors.New("root marker path is a symlink")
-		}
-		if fi.IsDir() {
-			return errors.New("root marker path is a directory")
-		}
+	if fi, err := os.Lstat(markerPath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 { return errors.New("root marker path is a symlink") }
+		if fi.IsDir() { return errors.New("root marker path is a directory") }
 		return errors.New("existing .gbf_cache file contains unrecognized content; refusing to overwrite")
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-
-	f, err := os.OpenFile(markerPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	_, err = f.Write([]byte(RootMarkerExpectedContent))
-	return err
+	return os.WriteFile(markerPath, []byte(RootMarkerExpectedContent), 0644)
 }
 
-// HasRootMarker checks whether the current cache root has the root marker.
 func (m *Manager) HasRootMarker() bool {
 	m.mu.RLock()
-	base := m.cacheBase
-	m.mu.RUnlock()
-	return HasRootMarker(base)
+	defer m.mu.RUnlock()
+	return HasRootMarker(m.cacheBase)
 }
 
-// EnsureRootMarker writes the root marker to the current cache root.
 func (m *Manager) EnsureRootMarker() error {
 	m.mu.RLock()
-	base := m.cacheBase
-	m.mu.RUnlock()
-	return EnsureRootMarker(base)
+	defer m.mu.RUnlock()
+	return EnsureRootMarker(m.cacheBase)
 }
 
-// ValidateDestructiveCacheDir rejects roots that are not safe targets for disk maintenance.
 func (m *Manager) ValidateDestructiveCacheDir() error {
-	if m == nil {
-		return errors.New("cache manager is unavailable")
-	}
+	if m == nil { return errors.New("cache manager is unavailable") }
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
-	if err := config.ValidateCacheDir(base); err != nil {
-		return err
-	}
-	fi, err := os.Lstat(base)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+	if err := config.ValidateCacheDir(base); err != nil { return err }
+	if fi, err := os.Lstat(base); err == nil && (fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir()) {
 		return errors.New("cache root must be an ordinary directory, not a symlink or file")
+	} else if err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	return nil
 }
 
-// isKnownGBFCategory checks whether cat matches any top-level GBF static asset category.
-func isKnownGBFCategory(cat string) bool {
-	switch cat {
-	case "js", "css", "img", "sound", "font", "manifest", "html", "misc", "cjs", "json", "model", "app", "jssdk":
-		return true
-	default:
-		return false
-	}
+func isKnownGBFCategory(c string) bool {
+	return strings.Contains(" js css img sound font manifest html misc cjs json model app jssdk ", " "+c+" ")
 }
 
-// isHistoricalEmptyNSHost checks whether host belongs to the strictly confirmed GBF official domains
-// that historically generated cache sidecars without the "ns" field.
 func isHistoricalEmptyNSHost(host string) bool {
-	lower := strings.ToLower(host)
-	switch lower {
-	case "granbluefantasy.com",
-		"game.granbluefantasy.jp",
-		"ava-a.sp.mbga.jp",
-		"connect.mobage.jp",
-		"steam.granbluefantasy.com",
-		"extrafes.granbluefantasy.jp",
-		"rising.granbluefantasy.jp":
-		return true
-	default:
-		return strings.HasSuffix(lower, ".granbluefantasy.jp") || strings.HasSuffix(lower, ".granbluefantasy.com")
-	}
+	l := strings.ToLower(host)
+	return l == "granbluefantasy.com" || strings.HasSuffix(l, ".granbluefantasy.jp") ||
+		strings.HasSuffix(l, ".granbluefantasy.com") || l == "ava-a.sp.mbga.jp" || l == "connect.mobage.jp"
 }
 
 func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
 	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
-		}
+		if s[i] < '0' || s[i] > '9' { return false }
 	}
-	return true
+	return len(s) > 0
 }
 
 func isPositiveVersionSegment(s string) bool {
-	if s == "" || len(s) > 19 {
-		return false
-	}
-	if !isAllDigits(s) {
-		return false
-	}
-	if len(s) > 1 && s[0] == '0' {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if s[i] != '0' {
-			return true
-		}
-	}
-	return false
+	return s != "" && s != "0" && len(s) <= 19 && isAllDigits(s) && s[0] != '0'
 }
 
-// parseCachePathTopLevelShape validates whether slashRel conforms to a recognized cache top-level shape:
-// - assets/, assets_en/, assets_jp/ (>= 2 segments)
-// - hosts/<ns>/... (>= 3 segments, with valid sanitized <ns>)
-// - positive integer version directory (e.g. 300/...) (>= 2 segments)
-// - top-level category directory (e.g. js/, img/, sound/, ...) (>= 2 segments)
-//
-// Deep directory syntax (subfolder whitelists) is deliberately not checked here because
-// write-side cache keys have no deep grammar restrictions and game CDN paths evolve over time.
-func parseCachePathTopLevelShape(slashRel string) (ns string, cleanKey string, isHosts bool, ok bool) {
+func parseValidHostNS(rawNS string) (string, bool) {
+	if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) { return "", false }
+	ns := sanitizeNamespace(rawNS)
+	return ns, ns != "" && ns != "hosts" && ns != "gbf" && ns == strings.ToLower(rawNS)
+}
+
+func isGBFTopLevel(first string) bool {
+	return first == "assets" || first == "assets_en" || first == "assets_jp" || isKnownGBFCategory(first)
+}
+
+func parseCachePathTopLevelShape(slashRel string) (string, string, bool, bool) {
 	if slashRel == "" || slashRel == "." || strings.HasPrefix(slashRel, "..") {
 		return "", "", false, false
 	}
-	clean := filepath.ToSlash(filepath.Clean(slashRel))
-	clean = strings.TrimPrefix(clean, "/")
+	clean := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(slashRel)), "/")
 	segs := splitCleanSegments(clean)
-	if len(segs) < 2 {
-		if len(segs) == 1 && strings.EqualFold(segs[0], "favicon.ico") {
-			return "gbf", "favicon.ico", false, true
+	if len(segs) == 1 && strings.EqualFold(segs[0], "favicon.ico") {
+		return "gbf", "favicon.ico", false, true
+	}
+	if len(segs) >= 3 && segs[0] == "hosts" {
+		if ns, ok := parseValidHostNS(segs[1]); ok {
+			return ns, strings.Join(segs[2:], "/"), true, true
 		}
 		return "", "", false, false
 	}
-
-	first := segs[0]
-	if first == "hosts" {
-		if len(segs) < 3 {
-			return "", "", false, false
-		}
-		rawNS := segs[1]
-		if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) {
-			return "", "", false, false
-		}
-		nsCandidate := sanitizeNamespace(rawNS)
-		if nsCandidate == "" || nsCandidate == "hosts" || nsCandidate == "gbf" || nsCandidate != strings.ToLower(rawNS) {
-			return "", "", false, false
-		}
-		subKey := strings.Join(segs[2:], "/")
-		return nsCandidate, subKey, true, true
-	}
-
-	if first == "assets" || first == "assets_en" || first == "assets_jp" {
+	if len(segs) >= 2 && (isGBFTopLevel(segs[0]) || (isPositiveVersionSegment(segs[0]) && len(segs) >= 3 && isKnownGBFCategory(segs[1]))) {
 		return "gbf", clean, false, true
 	}
-
-	if isPositiveVersionSegment(first) {
-		// Version fallback path: requires >= 3 segments and segs[1] must be a known category, e.g. 300/js/app.js
-		if len(segs) < 3 || !isKnownGBFCategory(segs[1]) {
-			return "", "", false, false
-		}
-		return "gbf", clean, false, true
-	}
-
-	if isKnownGBFCategory(first) {
-		return "gbf", clean, false, true
-	}
-
 	return "", "", false, false
 }
 
-// IsConfirmedCacheDirectory reports whether a relative directory belongs to a valid cache top-level shape.
 func IsConfirmedCacheDirectory(slashRelDir string) bool {
-	return isConfirmedCacheDir(slashRelDir)
-}
-
-// isConfirmedCacheDir checks whether a relative directory path belongs to the valid cache namespace
-// hierarchy (hosts, hosts/<ns>, assets, assets_en, assets_jp, version dirs, or top-level category dirs).
-func isConfirmedCacheDir(slashRelDir string) bool {
 	if slashRelDir == "" || slashRelDir == "." || strings.HasPrefix(slashRelDir, "..") {
 		return false
 	}
-	clean := filepath.ToSlash(filepath.Clean(slashRelDir))
-	clean = strings.Trim(clean, "/")
-	segs := splitCleanSegments(clean)
+	segs := splitCleanSegments(strings.Trim(filepath.ToSlash(filepath.Clean(slashRelDir)), "/"))
 	if len(segs) == 0 {
 		return false
 	}
-	first := segs[0]
-	if first == "hosts" {
-		if len(segs) == 1 {
-			return true // "hosts" itself
-		}
-		rawNS := segs[1]
-		if strings.Contains(rawNS, "..") || strings.ContainsAny(rawNS, `/\:`) {
-			return false
-		}
-		ns := sanitizeNamespace(rawNS)
-		if ns == "" || ns == "hosts" || ns == "gbf" || ns != strings.ToLower(rawNS) {
-			return false
-		}
-		// hosts/<ns> or any subdirectory under hosts/<ns>
-		return true
+	if segs[0] == "hosts" {
+		return len(segs) == 1 || func() bool { _, ok := parseValidHostNS(segs[1]); return ok }()
 	}
-	if first == "assets" || first == "assets_en" || first == "assets_jp" {
-		return true
-	}
-	if isPositiveVersionSegment(first) {
-		if len(segs) == 1 {
-			return true // "300"
-		}
-		return isKnownGBFCategory(segs[1]) // "300/js", but "2026/photos" -> false
-	}
-	if isKnownGBFCategory(first) {
-		return true
-	}
-	return false
+	return isGBFTopLevel(segs[0]) || (isPositiveVersionSegment(segs[0]) && (len(segs) == 1 || isKnownGBFCategory(segs[1])))
 }
 
-// VerifyTier1Meta is the canonical, unified single source of truth for Tier-1 ownership validation.
-// It verifies:
-// 1. Path top-level shape is valid (assets/assets_en/assets_jp, hosts/<ns>, version dir, or category dir).
-// 2. parseExtFile succeeds and version == 1.
-// 3. Namespace in metadata matches path namespace:
-//    - hosts/<ns> requires metadata namespace matching <ns> (strictly non-empty and non-gbf).
-//    - all other shapes require metadata namespace to be "gbf" or empty.
-//
-// In accordance with specification:
-// - No deep directory syntax check is performed.
-// - No asset extension whitelist check is performed (Tier-1 trusts the verified metadata record).
-// - mtimeNano and size equality is NOT required for attribution (mismatches require content re-verification
-//   by the audit engine, but do not revoke cache ownership).
 func VerifyTier1Meta(slashRel string, metaBytes []byte) (diskMeta, bool) {
 	if slashRel == "" || len(metaBytes) == 0 {
 		return diskMeta{}, false
 	}
 	expectedNS, _, isHosts, shapeOK := parseCachePathTopLevelShape(slashRel)
-	if !shapeOK {
-		return diskMeta{}, false
-	}
 	parsedMeta, parseOK := parseExtFile(metaBytes)
-	if !parseOK || parsedMeta.Version != 1 {
+	if !shapeOK || !parseOK || parsedMeta.Version != 1 {
 		return diskMeta{}, false
 	}
-
-	clean := filepath.ToSlash(slashRel)
-	clean = strings.TrimPrefix(clean, "/")
-	segs := splitCleanSegments(clean)
-	isVerFallback := len(segs) >= 1 && isPositiveVersionSegment(segs[0])
-
+	segs := splitCleanSegments(strings.TrimPrefix(filepath.ToSlash(slashRel), "/"))
 	if isHosts {
-		// For hosts paths (hosts/<host>/...):
-		// - Form A: meta.Namespace == "gbf" is accepted.
-		// - Form B: sanitizeNamespace(meta.Namespace) == expectedNS is accepted.
-		// - Form C (Historical Compatibility): meta.Namespace == "" is accepted ONLY for strictly confirmed
-		//   official GBF hosts and requires parsedMeta.Verified == true.
-		// - All other hosts with empty or mismatched namespace are rejected.
-		if parsedMeta.Namespace == "gbf" {
-			return parsedMeta, true
-		}
-		if sanitizeNamespace(parsedMeta.Namespace) == expectedNS {
-			return parsedMeta, true
-		}
-		if parsedMeta.Namespace == "" && parsedMeta.Verified && isHistoricalEmptyNSHost(expectedNS) {
-			return parsedMeta, true
-		}
-		return diskMeta{}, false
-	} else if isVerFallback {
-		// Bare version fallback paths (e.g. 300/js/app.js) strictly require "gbf" namespace.
-		if parsedMeta.Namespace != "gbf" {
-			return diskMeta{}, false
-		}
-	} else {
-		// Standard GBF paths (assets/..., assets_en/..., assets_jp/..., img/..., sound/..., etc.):
-		// Namespace must be "gbf" or empty (for legacy backward compatibility).
-		if parsedMeta.Namespace != "" && parsedMeta.Namespace != "gbf" && sanitizeNamespace(parsedMeta.Namespace) != "gbf" {
-			return diskMeta{}, false
-		}
+		return parsedMeta, parsedMeta.Namespace == "gbf" || sanitizeNamespace(parsedMeta.Namespace) == expectedNS ||
+			(parsedMeta.Namespace == "" && parsedMeta.Verified && isHistoricalEmptyNSHost(expectedNS))
 	}
-
+	if (len(segs) >= 1 && isPositiveVersionSegment(segs[0]) && parsedMeta.Namespace != "gbf") ||
+		(parsedMeta.Namespace != "" && parsedMeta.Namespace != "gbf" && sanitizeNamespace(parsedMeta.Namespace) != "gbf") {
+		return diskMeta{}, false
+	}
 	return parsedMeta, true
 }
 
-// IsConfirmedCacheFile determines whether a file on disk belongs to GBF-Accelerator cache.
-// It explicitly rejects non-regular files and symbolic links using os.Lstat.
-// Strict Sidecar Ownership: A valid paired .ext file is required.
+func isIgnoredCachePath(slashRel, fileName string) bool {
+	return slashRel == RootMarkerFileName || config.IsSystemJunk(fileName) ||
+		strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") || IsAcceleratorQuarantineFile(slashRel)
+}
+
+func checkConfirmedCacheMeta(slashRel, baseName string, readMeta func() ([]byte, error)) bool {
+	if isIgnoredCachePath(slashRel, baseName) { return false }
+	metaBytes, err := readMeta()
+	if err != nil { return false }
+	_, ok := VerifyTier1Meta(slashRel, metaBytes)
+	return ok
+}
+
 func IsConfirmedCacheFile(baseDir, fullPath string, hasRootMarker bool) bool {
 	fi, err := os.Lstat(fullPath)
-	if err != nil || fi == nil || !fi.Mode().IsRegular() {
-		return false
-	}
-	return IsConfirmedCacheFileWithInfo(baseDir, fullPath, fi, hasRootMarker)
+	return err == nil && IsConfirmedCacheFileWithInfo(baseDir, fullPath, fi, hasRootMarker)
 }
 
-// IsConfirmedCacheFileWithInfo performs confirmed cache file verification using existing FileInfo.
 func IsConfirmedCacheFileWithInfo(baseDir, fullPath string, fi os.FileInfo, hasRootMarker bool) bool {
-	if fi == nil || !fi.Mode().IsRegular() || fi.Size() <= 0 {
-		return false
-	}
-
+	if fi == nil || !fi.Mode().IsRegular() || fi.Size() <= 0 { return false }
 	rel, err := filepath.Rel(baseDir, fullPath)
-	if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
-		return false
-	}
-
-	slashRel := filepath.ToSlash(rel)
-	baseName := filepath.Base(fullPath)
-
-	if slashRel == RootMarkerFileName || config.IsSystemJunk(baseName) {
-		return false
-	}
-
-	if strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") || isAcceleratorQuarantineFile(slashRel) {
-		return false
-	}
-
-	// Strict Sidecar Ownership: Valid paired .ext metadata file required
-	extPath := fullPath + ".ext"
-	extFi, extErr := os.Lstat(extPath)
-	if extErr == nil {
-		if !extFi.Mode().IsRegular() {
-			return false
-		}
-		metaBytes, err := os.ReadFile(extPath)
-		if err != nil {
-			return false
-		}
-		_, ok := VerifyTier1Meta(slashRel, metaBytes)
-		return ok
-	}
-	return false
+	if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") { return false }
+	return checkConfirmedCacheMeta(filepath.ToSlash(rel), filepath.Base(fullPath), func() ([]byte, error) { return os.ReadFile(fullPath + ".ext") })
 }
 
-// isConfirmedCacheFileInRoot performs confirmed cache file verification inside an *os.Root.
 func isConfirmedCacheFileInRoot(root *os.Root, rel string, fi os.FileInfo, hasRootMarker bool) bool {
-	confirmed, _ := isConfirmedCacheFileInRootDetailed(root, rel, fi, hasRootMarker)
-	return confirmed
+	if fi == nil || !fi.Mode().IsRegular() || fi.Size() <= 0 || rel == "" || rel == "." || strings.HasPrefix(rel, "..") { return false }
+	return checkConfirmedCacheMeta(filepath.ToSlash(rel), filepath.Base(rel), func() ([]byte, error) { return root.ReadFile(rel + ".ext") })
 }
 
-// isConfirmedCacheFileInRootDetailed performs verified cache attribution inside an *os.Root,
-// returning whether the file is confirmed, and whether it was confirmed via paired metadata.
-func isConfirmedCacheFileInRootDetailed(root *os.Root, rel string, fi os.FileInfo, hasRootMarker bool) (confirmed bool, isTier1 bool) {
-	if fi == nil || !fi.Mode().IsRegular() || fi.Size() <= 0 {
-		return false, false
-	}
-	if rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
-		return false, false
-	}
-	slashRel := filepath.ToSlash(rel)
-	baseName := filepath.Base(rel)
-
-	if slashRel == RootMarkerFileName || config.IsSystemJunk(baseName) {
-		return false, false
-	}
-
-	if strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") || isAcceleratorQuarantineFile(slashRel) {
-		return false, false
-	}
-
-	// Check paired .ext metadata file via root
-	extRel := rel + ".ext"
-	extFi, extErr := root.Lstat(extRel)
-	if extErr == nil {
-		if !extFi.Mode().IsRegular() {
-			return false, false
-		}
-		metaBytes, err := root.ReadFile(extRel)
-		if err != nil {
-			return false, false
-		}
-		_, ok := VerifyTier1Meta(slashRel, metaBytes)
-		return ok, ok
-	}
-	return false, false
-}
-
-// IsAcceleratorTempFile checks whether slashRel matches the naming pattern of temporary cache files.
 func IsAcceleratorTempFile(slashRel string) bool {
-	return isAcceleratorTempFile(slashRel)
-}
-
-// IsAcceleratorQuarantineFile checks whether slashRel matches the naming pattern of quarantined cache files.
-func IsAcceleratorQuarantineFile(slashRel string) bool {
-	return isAcceleratorQuarantineFile(slashRel)
-}
-
-// isAcceleratorTempFile checks whether slashRel matches the exact naming pattern of temporary files
-// written during cache streaming: <assetPath>.tmp.<pid>.<ts>.<seq> or <assetPath>.ext.tmp.<pid>.<ts>.<seq>.
-// The prefix must conform to a recognized cache top-level shape, and all 3 trailing components must be strictly digits.
-func isAcceleratorTempFile(slashRel string) bool {
 	parts := strings.Split(slashRel, ".tmp.")
-	if len(parts) != 2 {
-		return false
-	}
-	numParts := strings.Split(parts[1], ".")
-	if len(numParts) != 3 {
-		return false
-	}
-	for _, np := range numParts {
-		if !isAllDigits(np) {
-			return false
-		}
-	}
-
-	baseRel := parts[0]
-	baseRel = strings.TrimSuffix(baseRel, ".ext")
-	baseLower := strings.ToLower(baseRel)
-
-	_, cleanKey, _, ok := parseCachePathTopLevelShape(baseLower)
-	if !ok {
-		return false
-	}
-	return isAssetExtension(strings.ToLower(cleanKey))
+	if len(parts) != 2 { return false }
+	np := strings.Split(parts[1], ".")
+	if len(np) != 3 || !isAllDigits(np[0]) || !isAllDigits(np[1]) || !isAllDigits(np[2]) { return false }
+	base := strings.ToLower(strings.TrimSuffix(parts[0], ".ext"))
+	_, cleanKey, _, ok := parseCachePathTopLevelShape(base)
+	return ok && isAssetExtension(strings.ToLower(cleanKey))
 }
 
-// isAcceleratorQuarantineFile checks whether slashRel matches the exact naming pattern of quarantined
-// files: <assetPath>.quarantine.<ts> or <assetPath>.ext.quarantine.<ts>.
-// The base asset path must conform to the cache top-level shape with a valid asset extension, and <ts> must be all digits.
-// User files (such as x.quarantine.docx) return false and are preserved.
-func isAcceleratorQuarantineFile(slashRel string) bool {
+func IsAcceleratorQuarantineFile(slashRel string) bool {
 	slash := filepath.ToSlash(slashRel)
 	idx := strings.LastIndex(slash, ".quarantine.")
-	if idx < 0 {
-		return false
-	}
-	ts := slash[idx+len(".quarantine."):]
-	if !isAllDigits(ts) {
-		return false
-	}
-	basePath := slash[:idx]
-	basePath = strings.TrimSuffix(basePath, ".ext")
-	baseLower := strings.ToLower(basePath)
-
-	if !isAssetExtension(baseLower) {
-		return false
-	}
-
+	if idx < 0 || !isAllDigits(slash[idx+len(".quarantine."):]) { return false }
+	base := strings.ToLower(strings.TrimSuffix(slash[:idx], ".ext"))
+	if !isAssetExtension(base) { return false }
 	if !filepath.IsAbs(slash) && !strings.Contains(slash, ":") {
-		clean := strings.TrimPrefix(baseLower, "/")
-		_, _, _, ok := parseCachePathTopLevelShape(clean)
+		_, _, _, ok := parseCachePathTopLevelShape(strings.TrimPrefix(base, "/"))
 		return ok
 	}
 	return true

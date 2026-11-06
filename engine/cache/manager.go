@@ -29,13 +29,13 @@ const MaxDiskDirectReadSize = 2 * 1024 * 1024
 // diskMeta represents the persisted metadata stored in .ext files.
 // It maintains backward compatibility with Version 1 metadata schemas.
 type diskMeta struct {
-	Namespace       string `json:"ns,omitempty"`
-	LastModified    string `json:"LastModified,omitempty"`
-	ETag            string `json:"ETag,omitempty"`
-	AccessTime      int64  `json:"at,omitempty"`
-	ContentEncoding string `json:"ce,omitempty"`
-	ContentType     string `json:"ct,omitempty"`
-	Version         int    `json:"v"`
+	Namespace         string `json:"ns,omitempty"`
+	LastModified      string `json:"LastModified,omitempty"`
+	ETag              string `json:"ETag,omitempty"`
+	AccessTime        int64  `json:"at,omitempty"`
+	ContentEncoding   string `json:"ce,omitempty"`
+	ContentType       string `json:"ct,omitempty"`
+	Version           int    `json:"v"`
 	// Verified indicates that the cache item has previously passed this project's
 	// cache content validation (IsValidCacheContent) and its physical file size and
 	// mtime have not changed since.
@@ -79,15 +79,15 @@ type Manager struct {
 	persistDone        chan struct{}
 	stopOnce           sync.Once
 	persistMu          sync.RWMutex
-	generation               uint64
-	ramEnabled               atomic.Bool
-	autoRepair               atomic.Bool
-	beforeClearAllRemoveHook func(relPath string)
-	beforeUnlinkHook         func(targetPath string)
+	generation         uint64
+	ramEnabled         atomic.Bool
+	autoRepair         atomic.Bool
+	beforeClearHook    func(relPath string)
+	beforeUnlinkHook   func(targetPath string)
 }
 
 func (m *Manager) SetBeforeClearAllRemoveHookForTest(hook func(relPath string)) {
-	m.beforeClearAllRemoveHook = hook
+	m.beforeClearHook = hook
 }
 
 func (m *Manager) SetBeforeUnlinkHookForTest(hook func(targetPath string)) {
@@ -431,15 +431,19 @@ func (m *Manager) SetCacheBase(base string) {
 
 	m.ramCache.Clear()
 	m.DisableBoost()
-	m.clearMissing()
-	m.clearDiskMeta()
-	m.clearTokenShards()
-	m.clearTempTokens()
-	m.invalidateSnapshots("缓存目录已变更")
+	m.resetVolatileState("缓存目录已变更")
 	if clean, _ := config.IsDirClean(base); clean {
 		_ = os.MkdirAll(base, 0755)
 		_ = EnsureRootMarker(base)
 	}
+}
+
+func (m *Manager) resetVolatileState(reason string) {
+	m.clearMissing()
+	m.clearDiskMeta()
+	m.clearTokenShards()
+	m.clearTempTokens()
+	m.invalidateSnapshots(reason)
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {
@@ -2465,11 +2469,7 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 		m.generation++
 		m.ClearRAM()
 		m.DisableBoost()
-		m.clearMissing()
-		m.clearDiskMeta()
-		m.clearTokenShards()
-		m.clearTempTokens()
-		m.invalidateSnapshots("已执行全盘清空")
+		m.resetVolatileState("已执行全盘清空")
 		return 0, 0, 0, nil
 	}
 	defer root.Close()
@@ -2486,191 +2486,83 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 	affectedDirs := make(map[string]struct{})
 
 	recordAffectedDir := func(fileRel string) {
-		dir := filepath.Dir(fileRel)
-		for dir != "." && dir != "" && dir != "/" {
-			slashDir := filepath.ToSlash(dir)
-			if isConfirmedCacheDir(slashDir) {
+		for dir := filepath.Dir(fileRel); dir != "." && dir != "" && dir != "/"; dir = filepath.Dir(dir) {
+			if IsConfirmedCacheDirectory(filepath.ToSlash(dir)) {
 				affectedDirs[dir] = struct{}{}
 			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
 		}
+	}
+
+	removeEntry := func(targetRel string, origFi os.FileInfo) bool {
+		if m.beforeClearHook != nil {
+			m.beforeClearHook(targetRel)
+		}
+		if curFi, err := root.Lstat(targetRel); err == nil && curFi.Mode().IsRegular() && (origFi == nil || (os.SameFile(origFi, curFi) &&
+			curFi.Size() == origFi.Size() && curFi.ModTime().UnixNano() == origFi.ModTime().UnixNano())) && root.Remove(targetRel) == nil {
+			deletedFiles++
+			freedBytes += curFi.Size()
+			recordAffectedDir(targetRel)
+			return true
+		}
+		return false
 	}
 
 	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
+		if err != nil || p == base {
 			return nil
 		}
-		if p == base {
-			return nil
-		}
-
 		rel, err := filepath.Rel(base, p)
-		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
+		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") || d.IsDir() {
 			return nil
 		}
 		slashRel := filepath.ToSlash(rel)
-
-		if d.IsDir() {
-			// Do NOT unconditionally add walked directories to the pruning list.
-			// Only directories that actually contained confirmed deleted cache files
-			// and belong to valid cache namespaces will be considered for reclamation.
+		if slashRel == RootMarkerFileName || config.IsSystemJunk(filepath.Base(p)) {
 			return nil
 		}
-
-		baseName := filepath.Base(p)
-
-		// Root marker is strictly preserved and not counted as a skipped user file
-		if slashRel == RootMarkerFileName {
-			return nil
-		}
-
-		// System junk files are strictly left untouched (rule 2)
-		if config.IsSystemJunk(baseName) {
-			return nil
-		}
-
-		// Recheck via root.Lstat to ensure we operate on regular files and do not follow symlinks.
-		// Non-regular files (symlinks, devices, named pipes, etc.) are strictly rejected.
 		entryFi, lstatErr := root.Lstat(rel)
 		if lstatErr != nil || !entryFi.Mode().IsRegular() {
-			if lstatErr != nil && os.IsNotExist(lstatErr) {
-				return nil
+			if lstatErr == nil || !os.IsNotExist(lstatErr) {
+				skippedFiles++
 			}
-			skippedFiles++
 			return nil
 		}
 
-		// Temporary files created by accelerator
-		if strings.Contains(slashRel, ".tmp.") {
-			if isAcceleratorTempFile(slashRel) {
-				if !m.isActiveTempFileLocked(p) {
-					if m.beforeClearAllRemoveHook != nil {
-						m.beforeClearAllRemoveHook(rel)
-					}
-					preRemoveFi, err := root.Lstat(rel)
-					if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) &&
-						preRemoveFi.Size() == entryFi.Size() && preRemoveFi.ModTime().UnixNano() == entryFi.ModTime().UnixNano() {
-						if root.Remove(rel) == nil {
-							deletedFiles++
-							freedBytes += preRemoveFi.Size()
-							recordAffectedDir(rel)
-							return nil
-						}
-					}
-				}
-				skippedFiles++
+		if (strings.Contains(slashRel, ".tmp.") && IsAcceleratorTempFile(slashRel) && !m.isActiveTempFileLocked(p)) ||
+			(strings.Contains(slashRel, ".quarantine.") && IsAcceleratorQuarantineFile(slashRel)) {
+			if removeEntry(rel, entryFi) {
 				return nil
 			}
-		}
-
-		// Quarantined files created by accelerator
-		if strings.Contains(slashRel, ".quarantine.") {
-			if isAcceleratorQuarantineFile(slashRel) {
-				if m.beforeClearAllRemoveHook != nil {
-					m.beforeClearAllRemoveHook(rel)
-					}
-				preRemoveFi, err := root.Lstat(rel)
-				if err == nil && preRemoveFi.Mode().IsRegular() && os.SameFile(entryFi, preRemoveFi) &&
-					preRemoveFi.Size() == entryFi.Size() && preRemoveFi.ModTime().UnixNano() == entryFi.ModTime().UnixNano() {
-					if root.Remove(rel) == nil {
-						deletedFiles++
-						freedBytes += preRemoveFi.Size()
-						recordAffectedDir(rel)
-						return nil
-					}
+		} else if !strings.HasSuffix(slashRel, ".ext") && isConfirmedCacheFileInRoot(root, rel, entryFi, hasRootMarker) {
+			if removeEntry(rel, entryFi) {
+				extRel := rel + ".ext"
+				if extFi, err := root.Lstat(extRel); err == nil && extFi.Mode().IsRegular() && removeEntry(extRel, extFi) {
+					return nil
 				}
-				skippedFiles++
-				return nil
 			}
 		}
-
-		// Standalone or orphan .ext metadata file
-		if strings.HasSuffix(slashRel, ".ext") {
-			skippedFiles++
-			return nil
-		}
-
-		// Regular data file: verify cache attribution via root handle
-		confirmed, isTier1 := isConfirmedCacheFileInRootDetailed(root, rel, entryFi, hasRootMarker)
-		if confirmed {
-			if m.beforeClearAllRemoveHook != nil {
-				m.beforeClearAllRemoveHook(rel)
-			}
-
-			// Pre-removal TOCTOU defense: re-stat relative to root and confirm file identity (os.SameFile, size, mtime).
-			preRemoveFi, err := root.Lstat(rel)
-			if err != nil || !preRemoveFi.Mode().IsRegular() || !os.SameFile(entryFi, preRemoveFi) ||
-				preRemoveFi.Size() != entryFi.Size() || preRemoveFi.ModTime().UnixNano() != entryFi.ModTime().UnixNano() {
-				skippedFiles++
-				return nil
-			}
-
-			if root.Remove(rel) == nil {
-				deletedFiles++
-				freedBytes += preRemoveFi.Size()
-				recordAffectedDir(rel)
-
-				if isTier1 {
-					extRel := rel + ".ext"
-					if m.beforeClearAllRemoveHook != nil {
-						m.beforeClearAllRemoveHook(extRel)
-					}
-					extFi, extErr := root.Lstat(extRel)
-					if extErr == nil && extFi.Mode().IsRegular() {
-						if root.Remove(extRel) == nil {
-							deletedFiles++
-							freedBytes += extFi.Size()
-							recordAffectedDir(extRel)
-						} else {
-							skippedFiles++
-						}
-					} else {
-						skippedFiles++
-					}
-				}
-			} else {
-				skippedFiles++
-			}
-		} else {
-			skippedFiles++
-		}
+		skippedFiles++
 		return nil
 	})
 
-	absBase, err := filepath.Abs(base)
-	if err != nil {
-		absBase = base
+	absBase, realBase := base, base
+	if abs, err := filepath.Abs(base); err == nil {
+		absBase, realBase = abs, abs
 	}
-	realBase, err := filepath.EvalSymlinks(absBase)
-	if err != nil {
-		realBase = absBase
+	if real, err := filepath.EvalSymlinks(absBase); err == nil {
+		realBase = real
 	}
 	expectedRootFi, _ := os.Stat(absBase)
 
-	// Collect candidate directories from affectedDirs
-	var dirs []string
+	dirs := make([]string, 0, len(affectedDirs))
 	for d := range affectedDirs {
 		dirs = append(dirs, d)
 	}
-
-	// Prune empty subdirectories bottom-up
-	sort.Slice(dirs, func(i, j int) bool {
-		return len(dirs[i]) > len(dirs[j])
-	})
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
 	for _, relDir := range dirs {
-		targetDir := filepath.Join(base, relDir)
-		_, _, _ = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, nil, targetDir, m.beforeUnlinkHook)
+		_, _, _ = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, nil, filepath.Join(base, relDir), m.beforeUnlinkHook)
 	}
 
-	m.clearMissing()
-	m.clearDiskMeta()
-	m.clearTokenShards()
-	m.clearTempTokens()
-	m.invalidateSnapshots("已执行全盘清空")
+	m.resetVolatileState("已执行全盘清空")
 
 	return deletedFiles, freedBytes, skippedFiles, nil
 }
@@ -2762,20 +2654,16 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 		}
 		if strings.Contains(slashRel, ".tmp.") {
 			// A valid marker plus the exact temp-file writer grammar is required.
-			if !hasRootMarker || !isAcceleratorTempFile(slashRel) {
+			if !hasRootMarker || !IsAcceleratorTempFile(slashRel) {
 				skipped++
 				return nil
 			}
 			scanned++
 			m.persistMu.Lock()
 			if !m.isActiveTempFileLocked(p) {
-				current, statErr := root.Lstat(rel)
-				if statErr == nil && current.Mode().IsRegular() && os.SameFile(walkInfo, current) {
-					beforeRemove, againErr := root.Lstat(rel)
-					if againErr == nil && beforeRemove.Mode().IsRegular() && os.SameFile(current, beforeRemove) {
-						if root.Remove(rel) == nil {
-							tempFilesRemoved++
-						}
+				if cur, err := root.Lstat(rel); err == nil && cur.Mode().IsRegular() && os.SameFile(walkInfo, cur) {
+					if root.Remove(rel) == nil {
+						tempFilesRemoved++
 					}
 				}
 			}
@@ -2831,20 +2719,15 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			m.persistMu.Lock()
 			shard, canonKey := m.tokenShardFor(ns, cleanKey)
 			shard.mu.Lock()
-			current, currentErr := root.Lstat(rel)
-			if currentErr == nil && current.Mode().IsRegular() && os.SameFile(rootInfo, current) {
+			if cur, err := root.Lstat(rel); err == nil && cur.Mode().IsRegular() && os.SameFile(rootInfo, cur) {
 				extRel := rel + ".ext"
 				extInfo, extErr := root.Lstat(extRel)
-				if removeErr := root.Remove(rel); removeErr == nil {
+				if root.Remove(rel) == nil {
 					bumpInvalidateTokenLocked(shard, canonKey)
 					m.clearKeyMemoryState(ns, cleanKey)
 					corrupted++
-					// Only this validated paired sidecar may be removed; unknown/orphan .ext files are preserved.
 					if extErr == nil && extInfo.Mode().IsRegular() {
-						currentExt, currentExtErr := root.Lstat(extRel)
-						if currentExtErr == nil && currentExt.Mode().IsRegular() && os.SameFile(extInfo, currentExt) {
-							_ = root.Remove(extRel)
-						}
+						_ = root.Remove(extRel)
 					}
 				}
 			} else {
@@ -2917,7 +2800,7 @@ func (m *Manager) Warmup(maxItems int) int {
 		if baseName == RootMarkerFileName || config.IsSystemJunk(baseName) {
 			return nil
 		}
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || isAcceleratorQuarantineFile(p) {
+		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || IsAcceleratorQuarantineFile(p) {
 			return nil
 		}
 		info, err := d.Info()

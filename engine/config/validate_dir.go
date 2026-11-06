@@ -41,15 +41,9 @@ func dirErr(p, code, msg string) error {
 // that should be ignored when determining if a directory is clean or empty,
 // and should never be deleted by ClearAll.
 func IsSystemJunk(name string) bool {
-	base := filepath.Base(name)
-	if base == ".DS_Store" || strings.HasPrefix(base, "._") {
-		return true
-	}
-	switch strings.ToLower(base) {
-	case ".spotlight-v100", ".fseventsd", ".trashes", "thumbs.db", "desktop.ini", "$recycle.bin", "system volume information":
-		return true
-	}
-	return false
+	base := strings.ToLower(filepath.Base(name))
+	return base == ".ds_store" || strings.HasPrefix(base, "._") ||
+		strings.Contains(" .spotlight-v100 .fseventsd .trashes thumbs.db desktop.ini $recycle.bin system volume information ", " "+base+" ")
 }
 
 // IsDirClean checks whether a directory exists and contains no non-junk files.
@@ -83,17 +77,12 @@ func resolveSymlinksWithAncestors(p string) string {
 		return resolved
 	}
 	clean := filepath.Clean(p)
-	for cur := clean; ; {
-		parent := filepath.Dir(cur)
-		if parent == cur || parent == "." || parent == "" {
-			break
-		}
-		cur = parent
+	for cur := filepath.Dir(clean); cur != clean && cur != "." && cur != ""; cur = filepath.Dir(cur) {
 		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
 			if rel, err := filepath.Rel(cur, clean); err == nil {
 				return filepath.Join(resolved, rel)
 			}
-			return clean
+			break
 		}
 	}
 	return clean
@@ -163,7 +152,6 @@ func ValidateCacheDirForPlatform(rawPath, targetGOOS, homeDir string, evalSymlin
 	}
 
 	norm := normalizePath(resolved, isWindows, caseInsensitive)
-
 	if norm == "/" || norm == "." || norm == "" {
 		return dirErr(rawPath, ErrCodeRoot, "root directory (/) cannot be used as cache directory")
 	}
@@ -171,15 +159,14 @@ func ValidateCacheDirForPlatform(rawPath, targetGOOS, homeDir string, evalSymlin
 	if isWindows {
 		if isDriveRoot(norm) {
 			return dirErr(rawPath, ErrCodeDriveRoot, "drive root (e.g. C:\\) cannot be used as cache directory")
-		}
-		if strings.HasPrefix(norm, "//") && len(strings.Split(strings.Trim(norm, "/"), "/")) <= 2 {
+		} else if strings.HasPrefix(norm, "//") && len(strings.Split(strings.Trim(norm, "/"), "/")) <= 2 {
 			return dirErr(rawPath, ErrCodeUNCRoot, "network share root (e.g. \\\\server\\share) cannot be used as cache directory")
 		}
 	}
 
-	checkPath, checkDirs := norm, unixStrictSysDirs
+	checkPath, checkDirs, allowSubSys := norm, unixStrictSysDirs, unixAllowSubSys
 	if isWindows {
-		checkDirs = winSystemDirs
+		checkDirs, allowSubSys = winSystemDirs, []string{"users"}
 		if len(norm) >= 2 && norm[1] == ':' {
 			checkPath = strings.TrimPrefix(norm[2:], "/")
 		}
@@ -189,34 +176,24 @@ func ValidateCacheDirForPlatform(rawPath, targetGOOS, homeDir string, evalSymlin
 			return dirErr(rawPath, ErrCodeSystemDir, fmt.Sprintf("system directory %q cannot be used as cache directory", resolved))
 		}
 	}
-
-	var normHome string
 	if homeDir != "" {
-		normHome = normalizePath(homeDir, isWindows, caseInsensitive)
+		if normHome := normalizePath(homeDir, isWindows, caseInsensitive); normHome != "" {
+			if norm == normHome {
+				return dirErr(rawPath, ErrCodeUserProtectedDir, "user home directory cannot be used directly as cache directory; please choose a dedicated subdirectory")
+			} else if !isDriveRoot(norm) && norm != "/" && norm != "" && strings.HasPrefix(normHome, norm+"/") {
+				return dirErr(rawPath, ErrCodeAncestorProtected, fmt.Sprintf("ancestor directory %q of user home cannot be used as cache directory", resolved))
+			}
+			for _, folder := range standardUserFolders {
+				if strings.EqualFold(norm, normHome+"/"+folder) {
+					return dirErr(rawPath, ErrCodeUserProtectedDir, fmt.Sprintf("standard user folder %q cannot be used directly as cache directory; please choose a dedicated subdirectory", folder))
+				}
+			}
+		}
 	}
 
-	if normHome != "" && !isDriveRoot(norm) && norm != "/" && norm != "" && strings.HasPrefix(normHome, norm+"/") {
-		return dirErr(rawPath, ErrCodeAncestorProtected, fmt.Sprintf("ancestor directory %q of user home cannot be used as cache directory", resolved))
-	}
-
-	allowSubSys := unixAllowSubSys
-	if isWindows {
-		allowSubSys = []string{"users"}
-	}
 	for _, sys := range allowSubSys {
 		if checkPath == sys {
 			return dirErr(rawPath, ErrCodeSystemDir, fmt.Sprintf("system root directory %q cannot be used as cache directory; please use a dedicated subdirectory", resolved))
-		}
-	}
-
-	if normHome != "" {
-		if norm == normHome {
-			return dirErr(rawPath, ErrCodeUserProtectedDir, "user home directory cannot be used directly as cache directory; please choose a dedicated subdirectory")
-		}
-		for _, folder := range standardUserFolders {
-			if strings.EqualFold(norm, normHome+"/"+folder) {
-				return dirErr(rawPath, ErrCodeUserProtectedDir, fmt.Sprintf("standard user folder %q cannot be used directly as cache directory; please choose a dedicated subdirectory", folder))
-			}
 		}
 	}
 
