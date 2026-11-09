@@ -1086,41 +1086,22 @@ describe('ClearCacheModal concurrency and state regressions', () => {
     )
     await flushMicrotasks()
 
-    // 1. Initial view: Click Start Migration
-    const startBtn = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('开始迁移'))[0]
-    expect(startBtn).toBeDefined()
-    await startBtn.props.onClick()
-    await flushMicrotasks()
+    const clickBtn = async (label: string) => {
+      const btn = findElements(lastTree, (el) => el.type === 'button' && el.text.includes(label))[0]
+      expect(btn).toBeDefined()
+      await btn.props.onClick()
+      await flushMicrotasks()
+    }
 
+    await clickBtn('开始迁移')
     expect(onMigrateMock).toHaveBeenCalledWith('migrate')
 
-    // 2. Switched to conflict view: Find "仅切换目录" button and "覆盖并迁移..." button
-    const switchBtn = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('仅切换目录'))[0]
-    expect(switchBtn).toBeDefined()
+    await clickBtn('覆盖并迁移...')
+    const confirmBtn = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('确认覆盖并迁移'))[0]
+    expect(confirmBtn).toBeDefined()
 
-    const overwriteBtn = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('覆盖并迁移...'))[0]
-    expect(overwriteBtn).toBeDefined()
-
-    // 3. Click "覆盖并迁移..." -> enter secondary confirmation
-    await overwriteBtn.props.onClick()
-    await flushMicrotasks()
-
-    const confirmOverwriteBtn = findElements(
-      lastTree,
-      (el) => el.type === 'button' && el.text.includes('确认覆盖并迁移')
-    )[0]
-    expect(confirmOverwriteBtn).toBeDefined()
-
-    // 4. Click back button in confirmation -> back to conflict choices
-    const backBtn = findElements(lastTree, (el) => el.type === 'button' && el.text === '返回')[0]
-    expect(backBtn).toBeDefined()
-    await backBtn.props.onClick()
-    await flushMicrotasks()
-
-    // 5. Click "仅切换目录" -> executes switch_only and closes
-    const switchBtnAgain = findElements(lastTree, (el) => el.type === 'button' && el.text.includes('仅切换目录'))[0]
-    await switchBtnAgain.props.onClick()
-    await flushMicrotasks()
+    await clickBtn('返回')
+    await clickBtn('仅切换目录')
 
     expect(modeCalled).toBe('switch_only')
     expect(onCloseMock).toHaveBeenCalled()

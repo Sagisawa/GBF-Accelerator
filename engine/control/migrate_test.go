@@ -59,27 +59,10 @@ func TestMigrateStandardCache_Handler(t *testing.T) {
 		t.Fatal(err)
 	}
 	dummyFile := filepath.Join(sourceCacheDir, "assets", "img", "sp", "ui", "test_asset.png")
-	if err := os.MkdirAll(filepath.Dir(dummyFile), 0755); err != nil {
-		t.Fatal(err)
-	}
+	_ = os.MkdirAll(filepath.Dir(dummyFile), 0755)
 	dummyData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRmigration")
-	if err := os.WriteFile(dummyFile, dummyData, 0644); err != nil {
-		t.Fatal(err)
-	}
-	fi, err := os.Stat(dummyFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	metaBytes, err := json.Marshal(map[string]interface{}{
-		"ct": "image/png", "v": 1, "verified": true,
-		"size": int64(len(dummyData)), "mtime": fi.ModTime().UnixNano(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dummyFile+".ext", metaBytes, 0644); err != nil {
-		t.Fatal(err)
-	}
+	_ = os.WriteFile(dummyFile, dummyData, 0644)
+	_ = os.WriteFile(dummyFile+".ext", []byte(`{"ct":"image/png","v":1,"verified":true,"ns":"gbf"}`), 0644)
 
 	cfgMgr := config.NewManager(cfgPath)
 	cfgMgr.Update(func(c *config.Config) {
