@@ -26,6 +26,8 @@ import {
 } from './api'
 
 import { Modal } from './components/common/Modal'
+import { ToggleSwitch, SettingToggleRow } from './components/common/ToggleSwitch'
+import { LanguageSwitcher } from './components/common/LanguageSwitcher'
 import { LiveLogsWindow } from './components/logs/LiveLogsWindow'
 import { MobileGuideModal } from './components/modals/MobileGuideModal'
 import { ClearCacheModal } from './components/modals/ClearCacheModal'
@@ -1375,41 +1377,7 @@ export const App: React.FC = () => {
             {/* Top Right Master Start / Stop Action Button, Quit Button & Language Switcher */}
             <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
               {/* Language Switcher Capsule */}
-              <div className="inline-flex items-center rounded-xl bg-slate-100 p-0.5 border border-slate-200/90 text-xs font-semibold shadow-2xs">
-                <button
-                  type="button"
-                  onClick={() => setLanguage('zh')}
-                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
-                    language === 'zh'
-                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  简中
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLanguage('en')}
-                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
-                    language === 'en'
-                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  EN
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLanguage('ja')}
-                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
-                    language === 'ja'
-                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  日本語
-                </button>
-              </div>
+              <LanguageSwitcher language={language} onSelect={setLanguage} />
 
               <button
                 type="button"
@@ -1540,117 +1508,110 @@ export const App: React.FC = () => {
               </div>
 
               {/* RAM Cache Setting */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
-                  <input
-                    type="checkbox"
-                    checked={isRamCache}
-                    onChange={handleToggleRamCache}
-                    disabled={Boolean(loadingAction)}
-                    className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                  />
-                  <span>
-                    {t('cards.cache.ramCacheLabel', {
-                      maxMb: ramMaxMb,
-                      gbText: ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : '',
-                    })}
-                  </span>
-                </label>
-
-                {isRamCache && (
-                  <div className="ml-6 space-y-2">
-                    <div className="flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
-                      <span>{t('cards.cache.limitMbLabel')}</span>
-                      <input
-                        type="text"
-                        disabled={Boolean(loadingAction)}
-                        value={ramMbInput}
-                        onChange={(e) => setRamMbInput(e.target.value)}
-                        className="w-24 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleApplyRamMb}
-                        disabled={Boolean(loadingAction)}
-                        aria-busy={isActionLoading('ram-mb')}
-                        className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
-                      >
-                        {isActionLoading('ram-mb') ? t('cards.cache.applying') : t('cards.cache.apply')}
-                      </button>
-                      {(cacheStats?.resident_bytes ?? 0) > 0 ? (
-                        <div className="flex items-center gap-2.5 text-xs font-mono text-slate-600 flex-wrap">
-                          <span>{t('cards.cache.regularLabel', { mb: ramUsageMb })}</span>
-                          <span className="text-amber-700 font-medium">{t('cards.cache.residentLabel', { mb: cacheStats?.resident_mb ?? 0 })}</span>
-                          <span className="font-semibold text-slate-800">{t('cards.cache.usedLabel', { used: cacheStats?.total_ram_mb ?? (ramUsageMb + (cacheStats?.resident_mb ?? 0)), max: ramMaxMb })}</span>
+              <div className="pt-2 border-t border-slate-100">
+                <SettingToggleRow
+                  label={t('cards.cache.ramCacheLabel', {
+                    maxMb: ramMaxMb,
+                    gbText: ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : '',
+                  })}
+                  checked={isRamCache}
+                  onChange={handleToggleRamCache}
+                  disabled={Boolean(loadingAction)}
+                >
+                  {isRamCache && (
+                    <div className="pt-2 space-y-3">
+                      <div className="flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
+                        <span>{t('cards.cache.limitMbLabel')}</span>
+                        <input
+                          type="text"
+                          disabled={Boolean(loadingAction)}
+                          value={ramMbInput}
+                          onChange={(e) => setRamMbInput(e.target.value)}
+                          className="w-24 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleApplyRamMb}
+                          disabled={Boolean(loadingAction)}
+                          aria-busy={isActionLoading('ram-mb')}
+                          className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
+                        >
+                          {isActionLoading('ram-mb') ? t('cards.cache.applying') : t('cards.cache.apply')}
+                        </button>
+                        {(cacheStats?.resident_bytes ?? 0) > 0 ? (
+                          <div className="flex items-center gap-2.5 text-xs font-mono text-slate-600 flex-wrap">
+                            <span>{t('cards.cache.regularLabel', { mb: ramUsageMb })}</span>
+                            <span className="text-amber-700 font-medium">{t('cards.cache.residentLabel', { mb: cacheStats?.resident_mb ?? 0 })}</span>
+                            <span className="font-semibold text-slate-800">{t('cards.cache.usedLabel', { used: cacheStats?.total_ram_mb ?? (ramUsageMb + (cacheStats?.resident_mb ?? 0)), max: ramMaxMb })}</span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 font-mono text-xs">
+                            {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
+                          </span>
+                        )}
+                        <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
+                          <div
+                            className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                            style={{
+                              width: `${Math.min(100, Math.round(((cacheStats?.total_ram_mb ?? ramUsageMb) / Math.max(1, ramMaxMb)) * 100))}%`
+                            }}
+                          />
                         </div>
-                      ) : (
-                        <span className="text-slate-500 font-mono text-xs">
-                          {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
-                        </span>
-                      )}
-                      <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setIsBoostModalOpen(true)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium border active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0 ${
+                            (cacheStats?.resident_bytes ?? 0) > 0
+                              ? 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-300'
+                              : cacheStats?.boost_state === 'loading'
+                              ? 'text-sky-800 bg-sky-50 hover:bg-sky-100 border-sky-300 animate-pulse'
+                              : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-300'
+                          }`}
+                          title={t('cards.cache.boostTooltip')}
+                        >
+                          <Zap className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            {cacheStats?.boost_state === 'loading'
+                              ? t('cards.cache.boostLoading')
+                              : (cacheStats?.resident_bytes ?? 0) > 0
+                              ? t('cards.cache.boostActiveWithMb', { mb: cacheStats?.resident_mb ?? 0 })
+                              : t('cards.cache.boostBtn')}
+                          </span>
+                        </button>
+                        {(cacheStats?.system_total_mb ?? 0) > 0 && (
+                          <span className="text-slate-400 text-xs font-mono ml-auto sm:ml-0">
+                            {t('cards.cache.hostRam', { gb: Math.round((cacheStats?.system_total_mb ?? 0) / 1024) })}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-100/80 flex items-center justify-between gap-4">
                         <div
-                          className="h-full bg-emerald-500 rounded-full transition-all duration-300"
-                          style={{
-                            width: `${Math.min(100, Math.round(((cacheStats?.total_ram_mb ?? ramUsageMb) / Math.max(1, ramMaxMb)) * 100))}%`
-                          }}
+                          className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none leading-snug"
+                          onClick={!loadingAction ? handleToggleRamWarmup : undefined}
+                        >
+                          {t('cards.cache.ramWarmupLabel')}
+                        </div>
+                        <ToggleSwitch
+                          checked={isRamWarmup}
+                          onChange={handleToggleRamWarmup}
+                          disabled={Boolean(loadingAction)}
+                          ariaLabel={t('cards.cache.ramWarmupLabel')}
                         />
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsBoostModalOpen(true)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium border active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0 ${
-                          (cacheStats?.resident_bytes ?? 0) > 0
-                            ? 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-300'
-                            : cacheStats?.boost_state === 'loading'
-                            ? 'text-sky-800 bg-sky-50 hover:bg-sky-100 border-sky-300 animate-pulse'
-                            : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-300'
-                        }`}
-                        title={t('cards.cache.boostTooltip')}
-                      >
-                        <Zap className="w-3.5 h-3.5 shrink-0" />
-                        <span>
-                          {cacheStats?.boost_state === 'loading'
-                            ? t('cards.cache.boostLoading')
-                            : (cacheStats?.resident_bytes ?? 0) > 0
-                            ? t('cards.cache.boostActiveWithMb', { mb: cacheStats?.resident_mb ?? 0 })
-                            : t('cards.cache.boostBtn')}
-                        </span>
-                      </button>
-                      {(cacheStats?.system_total_mb ?? 0) > 0 && (
-                        <span className="text-slate-400 text-xs font-mono ml-auto sm:ml-0">
-                          {t('cards.cache.hostRam', { gb: Math.round((cacheStats?.system_total_mb ?? 0) / 1024) })}
-                        </span>
-                      )}
                     </div>
-
-                    <label className="inline-flex items-start gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none leading-snug">
-                      <input
-                        type="checkbox"
-                        checked={isRamWarmup}
-                        onChange={handleToggleRamWarmup}
-                        disabled={Boolean(loadingAction)}
-                        className="w-3.5 h-3.5 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                      />
-                      <span>{t('cards.cache.ramWarmupLabel')}</span>
-                    </label>
-                  </div>
-                )}
+                  )}
+                </SettingToggleRow>
               </div>
 
-
               {/* Cache Maintenance & Integrity */}
-              <div className="space-y-2 pt-1.5 border-t border-slate-100">
-                <label className="inline-flex items-start gap-2 text-xs sm:text-[13px] text-slate-800 cursor-pointer select-none leading-snug">
-                  <input
-                    type="checkbox"
-                    checked={isAutoRepair}
-                    onChange={handleToggleAutoRepair}
-                    disabled={Boolean(loadingAction)}
-                    className="w-3.5 h-3.5 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                  />
-                  <span>{t('cards.cache.cleanZombiesLabel')}</span>
-                </label>
+              <div className="pt-2 border-t border-slate-100 space-y-2.5">
+                <SettingToggleRow
+                  label={t('cards.cache.cleanZombiesLabel')}
+                  checked={isAutoRepair}
+                  onChange={handleToggleAutoRepair}
+                  disabled={Boolean(loadingAction)}
+                />
 
                 <div className="flex items-center gap-2 pt-0.5 flex-wrap">
                   <button
@@ -1948,32 +1909,20 @@ export const App: React.FC = () => {
               </div>
 
               {/* Mode Toggles */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={isDirect}
-                    onChange={handleToggleDirect}
-                    disabled={Boolean(loadingAction)}
-                    className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                  />
-                  <span>{t('cards.upstream.directModeCheckbox')}</span>
-                </label>
+              <div className="pt-2 border-t border-slate-100">
+                <SettingToggleRow
+                  label={t('cards.upstream.directModeCheckbox')}
+                  checked={isDirect}
+                  onChange={handleToggleDirect}
+                  disabled={Boolean(loadingAction)}
+                />
 
-                <div>
-                  <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
-                    <input
-                      type="checkbox"
-                      disabled={Boolean(loadingAction)}
-                      checked={isShimakaze}
-                      onChange={handleToggleShimakaze}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
-                    />
-                    <span className="text-slate-800">
-                      {t('cards.upstream.shimakazeCheckbox')}
-                    </span>
-                  </label>
-
+                <SettingToggleRow
+                  label={t('cards.upstream.shimakazeCheckbox')}
+                  checked={isShimakaze}
+                  onChange={handleToggleShimakaze}
+                  disabled={Boolean(loadingAction)}
+                >
                   {isShimakaze && (
                     <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs space-y-1">
                       <div>
@@ -1984,11 +1933,11 @@ export const App: React.FC = () => {
                       </div>
                     </div>
                   )}
-                </div>
+                </SettingToggleRow>
               </div>
 
               {/* Listen Port & Allow LAN */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
+              <div className="space-y-2.5 pt-2 border-t border-slate-100">
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   <label className="text-[13px] sm:text-sm text-slate-700 font-medium">{t('cards.network.portLabel')}</label>
                   <input
@@ -2018,32 +1967,33 @@ export const App: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={isAllowLan}
-                        onChange={handleToggleAllowLan}
-                        disabled={Boolean(loadingAction)}
-                        className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                      />
-                      <span>{t('cards.network.allowLan')}</span>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setIsMobileModalOpen(true)}
-                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
-                    >
-                      <QrCode className="w-3.5 h-3.5 shrink-0" />
-                      <span>{t('cards.network.mobileGuide')}</span>
-                    </button>
-                  </div>
-                  {isAllowLan && (
-                    <div className="text-xs text-sky-700 font-medium pl-6">
-                      {t('cards.network.lanIpDesc', { ip: status?.lan_ip || '192.168.x.x', port: currentListenPort })}
-                    </div>
-                  )}
+                <div className="pt-1">
+                  <SettingToggleRow
+                    label={
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span>{t('cards.network.allowLan')}</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setIsMobileModalOpen(true)
+                          }}
+                          className="px-2 py-0.5 rounded-lg text-xs font-normal text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs shrink-0"
+                        >
+                          <QrCode className="w-3.5 h-3.5 shrink-0" />
+                          <span>{t('cards.network.mobileGuide')}</span>
+                        </button>
+                      </div>
+                    }
+                    description={
+                      isAllowLan
+                        ? t('cards.network.lanIpDesc', { ip: status?.lan_ip || '192.168.x.x', port: currentListenPort })
+                        : undefined
+                    }
+                    checked={isAllowLan}
+                    onChange={handleToggleAllowLan}
+                    disabled={Boolean(loadingAction)}
+                  />
                 </div>
               </div>
             </div>
@@ -2105,54 +2055,35 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* System Checkboxes */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <div>
-                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={isAutoPac}
-                      onChange={handleToggleAutoPac}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                    />
-                    <span>
-                      {t('cards.network.autoPacCheckbox')}
-                    </span>
-                  </label>
+              {/* System Integration Toggles */}
+              <div className="pt-2 border-t border-slate-100">
+                <SettingToggleRow
+                  label={t('cards.network.autoPacCheckbox')}
+                  checked={isAutoPac}
+                  onChange={handleToggleAutoPac}
+                  disabled={Boolean(loadingAction)}
+                >
                   {isAutoPac && status?.system_proxy_conflict && (
-                    <div className="mt-2 ml-6 p-2.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 leading-relaxed shadow-2xs">
+                    <div className="mt-2 p-2.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 leading-relaxed shadow-2xs">
                       <span className="font-semibold">{t('cards.network.conflictNotice')}</span>
                       <span className="ml-1 break-all">{status.system_proxy_conflict}</span>
                     </div>
                   )}
-                </div>
+                </SettingToggleRow>
 
-                <div>
-                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={isAutoStart}
-                      onChange={handleToggleAutoStart}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                    />
-                    <span>{t('cards.network.autoStartCheckbox')}</span>
-                  </label>
-                </div>
+                <SettingToggleRow
+                  label={t('cards.network.autoStartCheckbox')}
+                  checked={isAutoStart}
+                  onChange={handleToggleAutoStart}
+                  disabled={Boolean(loadingAction)}
+                />
 
-                <div>
-                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={isAutoUpdate}
-                      onChange={handleToggleAutoUpdate}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                    />
-                    <span>{t('cards.network.autoUpdateCheckbox')}</span>
-                  </label>
-                </div>
+                <SettingToggleRow
+                  label={t('cards.network.autoUpdateCheckbox')}
+                  checked={isAutoUpdate}
+                  onChange={handleToggleAutoUpdate}
+                  disabled={Boolean(loadingAction)}
+                />
               </div>
             </div>
           </div>
@@ -2173,38 +2104,22 @@ export const App: React.FC = () => {
                 </span>
               </div>
 
-              <div className="space-y-3 text-[13px] sm:text-sm text-slate-800">
-                <div>
-                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
-                    <input
-                      type="checkbox"
-                      checked={isPrefetch}
-                      onChange={handleTogglePrefetch}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                    />
-                    <span>
-                      {t('cards.optim.prefetch')}
-                    </span>
-                  </label>
-                </div>
+              <div>
+                <SettingToggleRow
+                  label={t('cards.optim.prefetch')}
+                  checked={isPrefetch}
+                  onChange={handleTogglePrefetch}
+                  disabled={Boolean(loadingAction)}
+                />
 
-                <div>
-                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
-                    <input
-                      type="checkbox"
-                      checked={isBrowserCache}
-                      onChange={handleToggleBrowserCache}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                    />
-                    <span>
-                      {t('cards.optim.browserCache')}
-                    </span>
-                  </label>
-                </div>
+                <SettingToggleRow
+                  label={t('cards.optim.browserCache')}
+                  checked={isBrowserCache}
+                  onChange={handleToggleBrowserCache}
+                  disabled={Boolean(loadingAction)}
+                />
 
-                <div className="p-3 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 leading-relaxed shadow-2xs space-y-1">
+                <div className="mt-3.5 p-3 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 leading-relaxed shadow-2xs space-y-1">
                   <div className="font-semibold flex items-center gap-1.5 text-amber-800">
                     <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
                     <span>{t('cards.optim.subhead')}</span>

@@ -55,39 +55,59 @@ export const Sidebar: React.FC<SidebarProps> = ({
     >
       {/* Top Group: Tabs & Functional Actions */}
       <div className="flex flex-col gap-2 w-full px-3 overflow-y-auto min-h-0">
-        {/* Tab 1: Core Dashboard (控制首页) */}
-        <button
-          type="button"
-          onClick={() => onTabChange('core')}
-          className={`flex items-center justify-center gap-3 px-3 py-2.5 rounded-xl text-base font-semibold transition-all cursor-pointer w-full ${
-            activeTab === 'core'
-              ? 'bg-sky-100/90 text-sky-800 font-bold shadow-2xs'
-              : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100/80'
-          }`}
-          title={t('tabs.core')}
-          aria-label={t('sidebar.overview') || t('tabs.core')}
-        >
-          <Home className="w-5 h-5 shrink-0" strokeWidth={1.85} />
-          <span className="whitespace-nowrap leading-tight">{t('sidebar.overview')}</span>
-        </button>
+        {/* Tabs Container with Smooth Sliding Indicator */}
+        <div className="relative flex flex-col gap-2 w-full">
+          {showAndroidPatch && (
+            <div
+              className={`absolute left-0 right-0 top-0 h-11 rounded-xl transition-all duration-[220ms] ease-[cubic-bezier(.32,.72,0,1)] pointer-events-none z-0 ${
+                activeTab === 'core'
+                  ? 'translate-y-0 bg-sky-100/90 shadow-2xs'
+                  : 'translate-y-[52px] bg-indigo-100/90 shadow-2xs'
+              }`}
+              aria-hidden="true"
+            />
+          )}
+          {!showAndroidPatch && (
+            <div
+              className="absolute left-0 right-0 top-0 h-11 rounded-xl bg-sky-100/90 shadow-2xs pointer-events-none z-0"
+              aria-hidden="true"
+            />
+          )}
 
-        {/* Tab 2: Android Companion (安卓修补) */}
-        {showAndroidPatch && (
+          {/* Tab 1: Core Dashboard (控制首页) */}
           <button
             type="button"
-            onClick={() => onTabChange('android')}
-            className={`flex items-center justify-center gap-3 px-3 py-2.5 rounded-xl text-base font-semibold transition-all cursor-pointer w-full ${
-              activeTab === 'android'
-                ? 'bg-indigo-100/90 text-indigo-800 font-bold shadow-2xs'
-                : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100/80'
+            onClick={() => onTabChange('core')}
+            className={`relative z-10 flex items-center justify-center gap-3 px-3 h-11 rounded-xl text-base font-semibold transition-colors duration-150 cursor-pointer w-full ${
+              activeTab === 'core'
+                ? 'text-sky-800 font-bold'
+                : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100/50'
             }`}
-            title={t('tabs.android')}
-            aria-label={t('sidebar.android') || t('tabs.android')}
+            title={t('tabs.core')}
+            aria-label={t('sidebar.overview') || t('tabs.core')}
           >
-            <Smartphone className="w-5 h-5 shrink-0" strokeWidth={1.85} />
-            <span className="whitespace-nowrap leading-tight">{t('sidebar.android')}</span>
+            <Home className="w-5 h-5 shrink-0" strokeWidth={1.85} />
+            <span className="whitespace-nowrap leading-tight">{t('sidebar.overview')}</span>
           </button>
-        )}
+
+          {/* Tab 2: Android Companion (安卓修补) */}
+          {showAndroidPatch && (
+            <button
+              type="button"
+              onClick={() => onTabChange('android')}
+              className={`relative z-10 flex items-center justify-center gap-3 px-3 h-11 rounded-xl text-base font-semibold transition-colors duration-150 cursor-pointer w-full ${
+                activeTab === 'android'
+                  ? 'text-indigo-800 font-bold'
+                  : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100/50'
+              }`}
+              title={t('tabs.android')}
+              aria-label={t('sidebar.android') || t('tabs.android')}
+            >
+              <Smartphone className="w-5 h-5 shrink-0" strokeWidth={1.85} />
+              <span className="whitespace-nowrap leading-tight">{t('sidebar.android')}</span>
+            </button>
+          )}
+        </div>
 
         <div className="w-full my-1">
           <div className="h-px bg-slate-200/80 mx-1" />
