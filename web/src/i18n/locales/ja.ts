@@ -70,6 +70,19 @@ export const ja: TranslationSchema = {
     "remoteDownloads": "リモート取得キャッシュ",
     "apiForwarding": "ゲームAPI透過転送"
   },
+  "sidebar": {
+    "overview": "ホーム",
+    "android": "Android",
+    "liveLogs": "ライブログ",
+    "diagnostics": "自己診断",
+    "latencyTest": "速度測定",
+    "openFolder": "フォルダ",
+    "clearCache": "キャッシュ削除",
+    "routingTips": "ルーティング",
+    "checkUpdate": "更新確認",
+    "shortcuts": "ショートカット",
+    "github": "GitHub"
+  },
   "tabs": {
     "core": "コア加速・制御",
     "android": "Androidブラウザパッチ"

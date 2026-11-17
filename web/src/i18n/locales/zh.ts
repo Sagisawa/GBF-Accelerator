@@ -68,6 +68,19 @@ export const zh = {
     "remoteDownloads": "远程下载缓存",
     "apiForwarding": "游戏 API 转发"
   },
+  "sidebar": {
+    "overview": "首页",
+    "android": "Android 补丁",
+    "liveLogs": "实时日志",
+    "diagnostics": "运行自检",
+    "latencyTest": "延迟测速",
+    "openFolder": "缓存目录",
+    "clearCache": "清理缓存",
+    "routingTips": "分流说明",
+    "checkUpdate": "检查更新",
+    "shortcuts": "快捷键",
+    "github": "GitHub"
+  },
   "tabs": {
     "core": "核心加速与控制",
     "android": "Android 浏览器 Patch"

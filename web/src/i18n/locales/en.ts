@@ -70,6 +70,19 @@ export const en: TranslationSchema = {
     "remoteDownloads": "Remote Downloads",
     "apiForwarding": "Game API Forwarding"
   },
+  "sidebar": {
+    "overview": "Home",
+    "android": "Android",
+    "liveLogs": "Live Logs",
+    "diagnostics": "Diagnostics",
+    "latencyTest": "Speed Test",
+    "openFolder": "Cache Dir",
+    "clearCache": "Clear Cache",
+    "routingTips": "Routing",
+    "checkUpdate": "Check Update",
+    "shortcuts": "Shortcuts",
+    "github": "GitHub"
+  },
   "tabs": {
     "core": "Core Acceleration & Control",
     "android": "Android Browser Patch"

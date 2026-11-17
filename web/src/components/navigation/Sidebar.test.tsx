@@ -22,6 +22,16 @@ function findNodes(node: any, predicate: (n: any) => boolean): any[] {
   return results
 }
 
+function collectText(node: any): string {
+  if (node == null || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(collectText).join('')
+  if (typeof node === 'object' && node.props) {
+    return collectText(node.props.children)
+  }
+  return ''
+}
+
 describe('Sidebar Navigation Component', () => {
   const defaultProps: SidebarProps = {
     activeTab: 'core',
@@ -40,7 +50,7 @@ describe('Sidebar Navigation Component', () => {
     onOpenShortcuts: vi.fn(),
   }
 
-  it('renders core and android tabs when showAndroidPatch is true', () => {
+  it('renders core and android tabs with text labels when showAndroidPatch is true', () => {
     const onTabChange = vi.fn()
     const el = Sidebar({
       ...defaultProps,
@@ -56,9 +66,15 @@ describe('Sidebar Navigation Component', () => {
     const buttons = findNodes(el, (n) => n.type === 'button')
     expect(buttons.length).toBeGreaterThanOrEqual(8)
 
+    // Check Home (首页) button
+    const homeBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.overview'))
+    expect(homeBtn).toBeDefined()
+    expect(collectText(homeBtn)).toContain(t('sidebar.overview'))
+
     // Trigger android tab click
-    const androidBtn = buttons.find((b) => b.props['aria-label'] === t('tabs.android'))
+    const androidBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.android'))
     expect(androidBtn).toBeDefined()
+    expect(collectText(androidBtn)).toContain(t('sidebar.android'))
     androidBtn.props.onClick()
     expect(onTabChange).toHaveBeenCalledWith('android')
   })
@@ -70,11 +86,11 @@ describe('Sidebar Navigation Component', () => {
     }) as any
 
     const buttons = findNodes(el, (n) => n.type === 'button')
-    const androidBtn = buttons.find((b) => b.props['aria-label'] === t('tabs.android'))
+    const androidBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.android'))
     expect(androidBtn).toBeUndefined()
   })
 
-  it('wires tool action callbacks properly', () => {
+  it('wires tool action callbacks and renders their descriptive text labels', () => {
     const onOpenLogs = vi.fn()
     const onOpenHealth = vi.fn()
     const onOpenLatency = vi.fn()
@@ -98,35 +114,43 @@ describe('Sidebar Navigation Component', () => {
 
     const buttons = findNodes(el, (n) => n.type === 'button')
 
-    const logsBtn = buttons.find((b) => b.props['aria-label'] === t('footer.liveLogs'))
+    const logsBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.liveLogs'))
+    expect(collectText(logsBtn)).toContain(t('sidebar.liveLogs'))
     logsBtn?.props.onClick()
     expect(onOpenLogs).toHaveBeenCalledTimes(1)
 
-    const healthBtn = buttons.find((b) => b.props['aria-label'] === t('footer.diagnostics'))
+    const healthBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.diagnostics'))
+    expect(collectText(healthBtn)).toContain(t('sidebar.diagnostics'))
     healthBtn?.props.onClick()
     expect(onOpenHealth).toHaveBeenCalledTimes(1)
 
-    const latencyBtn = buttons.find((b) => b.props['aria-label'] === t('footer.latencyTest'))
+    const latencyBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.latencyTest'))
+    expect(collectText(latencyBtn)).toContain(t('sidebar.latencyTest'))
     latencyBtn?.props.onClick()
     expect(onOpenLatency).toHaveBeenCalledTimes(1)
 
-    const folderBtn = buttons.find((b) => b.props['aria-label'] === t('footer.openFolder'))
+    const folderBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.openFolder'))
+    expect(collectText(folderBtn)).toContain(t('sidebar.openFolder'))
     folderBtn?.props.onClick()
     expect(onOpenFolder).toHaveBeenCalledTimes(1)
 
-    const clearBtn = buttons.find((b) => b.props['aria-label'] === t('footer.clearCache'))
+    const clearBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.clearCache'))
+    expect(collectText(clearBtn)).toContain(t('sidebar.clearCache'))
     clearBtn?.props.onClick()
     expect(onOpenClearCache).toHaveBeenCalledTimes(1)
 
-    const routingBtn = buttons.find((b) => b.props['aria-label'] === t('footer.routingTips'))
+    const routingBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.routingTips'))
+    expect(collectText(routingBtn)).toContain(t('sidebar.routingTips'))
     routingBtn?.props.onClick()
     expect(onOpenRoutingGuide).toHaveBeenCalledTimes(1)
 
-    const updateBtn = buttons.find((b) => b.props['aria-label'] === t('footer.checkUpdate'))
+    const updateBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.checkUpdate'))
+    expect(collectText(updateBtn)).toContain(t('sidebar.checkUpdate'))
     updateBtn?.props.onClick()
     expect(onCheckUpdate).toHaveBeenCalledTimes(1)
 
-    const shortcutsBtn = buttons.find((b) => b.props['aria-label'] === t('header.shortcuts'))
+    const shortcutsBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.shortcuts'))
+    expect(collectText(shortcutsBtn)).toContain(t('sidebar.shortcuts'))
     shortcutsBtn?.props.onClick()
     expect(onOpenShortcuts).toHaveBeenCalledTimes(1)
   })
