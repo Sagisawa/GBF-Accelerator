@@ -54,7 +54,6 @@ import {
   Zap,
   Power,
   Network,
-  Smartphone,
   HardDrive,
   Globe,
   ShieldCheck,
@@ -1441,38 +1440,6 @@ export const App: React.FC = () => {
           <RealtimeRequestHud status={status} running={isRunning} />
         </div>
       </header>
-
-      {/* Navigation Tabs */}
-      <div className="bg-white border-b border-slate-200/90 px-4 sm:px-6 shrink-0 shadow-2xs">
-        <div className="max-w-5xl mx-auto flex items-center gap-1.5 pt-1.5">
-          <button
-            type="button"
-            onClick={() => setActiveTab('core')}
-            className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
-              activeTab === 'core'
-                ? 'border-sky-600 text-sky-700 bg-sky-50/60 rounded-t-lg'
-                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
-            }`}
-          >
-            <Zap className="w-4 h-4" />
-            <span>{t('tabs.core')}</span>
-          </button>
-          {showAndroidPatch && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('android')}
-              className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
-                activeTab === 'android'
-                  ? 'border-indigo-600 text-indigo-700 bg-indigo-50/60 rounded-t-lg'
-                  : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
-              }`}
-            >
-              <Smartphone className="w-4 h-4" />
-              <span>{t('tabs.android')}</span>
-            </button>
-          )}
-        </div>
-      </div>
 
       {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
       <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-8 sm:pb-10 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
