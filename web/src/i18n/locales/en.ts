@@ -71,17 +71,17 @@ export const en: TranslationSchema = {
     "apiForwarding": "Game API Forwarding"
   },
   "sidebar": {
-    "overview": "Home",
+    "overview": "Dashboard",
     "android": "Android",
     "liveLogs": "Live Logs",
     "diagnostics": "Diagnostics",
     "latencyTest": "Speed Test",
     "openFolder": "Cache Dir",
     "clearCache": "Clear Cache",
-    "routingTips": "Routing",
+    "routingTips": "Routing Tips",
     "checkUpdate": "Check Update",
     "shortcuts": "Shortcuts",
-    "github": "GitHub"
+    "github": "Repository"
   },
   "tabs": {
     "core": "Core Acceleration & Control",

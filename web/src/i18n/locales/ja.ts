@@ -71,17 +71,17 @@ export const ja: TranslationSchema = {
     "apiForwarding": "ゲームAPI透過転送"
   },
   "sidebar": {
-    "overview": "ホーム",
-    "android": "Android",
+    "overview": "操作ホーム",
+    "android": "端末修復",
     "liveLogs": "ライブログ",
-    "diagnostics": "自己診断",
-    "latencyTest": "速度測定",
-    "openFolder": "フォルダ",
-    "clearCache": "キャッシュ削除",
+    "diagnostics": "動作自己診断",
+    "latencyTest": "遅延速度測定",
+    "openFolder": "キャッシュ先",
+    "clearCache": "キャッシュ破棄",
     "routingTips": "ルーティング",
-    "checkUpdate": "更新確認",
+    "checkUpdate": "アップデート",
     "shortcuts": "ショートカット",
-    "github": "GitHub"
+    "github": "プロジェクト"
   },
   "tabs": {
     "core": "コア加速・制御",

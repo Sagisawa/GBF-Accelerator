@@ -50,11 +50,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className="w-40 bg-white border-r border-slate-200/90 flex flex-col py-3 select-none shrink-0 z-30 transition-all overflow-y-auto"
+      className="w-40 bg-white border-r border-slate-200/90 flex flex-col justify-between h-screen sticky top-0 py-3 select-none shrink-0 z-30 transition-all"
       aria-label="Navigation Sidebar"
     >
-      <div className="flex flex-col gap-1 w-full px-2">
-        {/* Tab 1: Core Dashboard (首页) */}
+      {/* Top Group: Tabs & Functional Actions */}
+      <div className="flex flex-col gap-1 w-full px-2 overflow-y-auto min-h-0">
+        {/* Tab 1: Core Dashboard (控制首页) */}
         <button
           type="button"
           onClick={() => onTabChange('core')}
@@ -70,7 +71,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <span className="truncate leading-tight">{t('sidebar.overview')}</span>
         </button>
 
-        {/* Tab 2: Android Companion (Conditionally displayed) */}
+        {/* Tab 2: Android Companion (安卓修补) */}
         {showAndroidPatch && (
           <button
             type="button"
@@ -159,12 +160,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <Compass className="w-5 h-5 shrink-0" strokeWidth={1.8} />
           <span className="truncate leading-tight">{t('sidebar.routingTips')}</span>
         </button>
+      </div>
 
-        {/* 移动到“分流说明”的下面，稍微空一点点 */}
-        <div className="w-full my-2">
-          <div className="h-px bg-slate-200/80 mx-1" />
-        </div>
-
+      {/* Bottom Group: Always pinned to bottom, independent of right content scroll */}
+      <div className="flex flex-col gap-1 w-full px-2 pt-2 shrink-0 border-t border-slate-200/80">
         <button
           type="button"
           onClick={onCheckUpdate}

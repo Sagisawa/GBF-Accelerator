@@ -69,8 +69,8 @@ export const zh = {
     "apiForwarding": "游戏 API 转发"
   },
   "sidebar": {
-    "overview": "首页",
-    "android": "Android 补丁",
+    "overview": "控制首页",
+    "android": "安卓修补",
     "liveLogs": "实时日志",
     "diagnostics": "运行自检",
     "latencyTest": "延迟测速",
@@ -78,8 +78,8 @@ export const zh = {
     "clearCache": "清理缓存",
     "routingTips": "分流说明",
     "checkUpdate": "检查更新",
-    "shortcuts": "快捷键",
-    "github": "GitHub"
+    "shortcuts": "快捷按键",
+    "github": "项目地址"
   },
   "tabs": {
     "core": "核心加速与控制",
