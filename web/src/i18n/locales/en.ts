@@ -78,7 +78,7 @@ export const en: TranslationSchema = {
     "latencyTest": "Speed Test",
     "openFolder": "Cache Dir",
     "clearCache": "Clear Cache",
-    "routingTips": "Routing Tips",
+    "routingTips": "Routing",
     "checkUpdate": "Check Update",
     "shortcuts": "Shortcuts",
     "github": "Repository"
