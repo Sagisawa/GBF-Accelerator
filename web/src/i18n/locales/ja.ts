@@ -72,7 +72,7 @@ export const ja: TranslationSchema = {
   },
   "sidebar": {
     "overview": "操作ホーム",
-    "android": "端末修復",
+    "android": "Androidパッチ",
     "liveLogs": "ライブログ",
     "diagnostics": "自己診断",
     "latencyTest": "遅延測定",
