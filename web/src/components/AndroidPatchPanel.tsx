@@ -3,6 +3,7 @@ import {
   Smartphone,
   UploadCloud,
   CheckCircle2,
+  XCircle,
   AlertTriangle,
   AlertCircle,
   FolderOpen,
@@ -903,43 +904,47 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
           {/* Quick status pills for components */}
           <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
             {/* Java 21+ */}
-            <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+            <span className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
               isPortableJava
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                 : isJavaFound
                   ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
                   : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {isJavaFound ? '✓' : '✗'} Java 21+{!isPortableJava && isJavaFound ? t('modals.androidPatch.systemTag') : ''}
+              {isJavaFound ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <XCircle className="w-3 h-3 text-slate-500 shrink-0" />}
+              <span>Java 21+{!isPortableJava && isJavaFound ? t('modals.androidPatch.systemTag') : ''}</span>
             </span>
 
             {/* LSPatch */}
-            <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+            <span className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
               isLspatchInstalled
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                 : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {isLspatchInstalled ? '✓' : '✗'} LSPatch
+              {isLspatchInstalled ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <XCircle className="w-3 h-3 text-slate-500 shrink-0" />}
+              <span>LSPatch</span>
             </span>
 
             {/* Builtin Module */}
-            <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+            <span className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
               isModuleInstalled
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                 : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {isModuleInstalled ? '✓' : '✗'} {t('modals.androidPatch.builtinModule')}
+              {isModuleInstalled ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <XCircle className="w-3 h-3 text-slate-500 shrink-0" />}
+              <span>{t('modals.androidPatch.builtinModule')}</span>
             </span>
 
             {/* ADB */}
-            <span className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+            <span className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
               isInternalAdb
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
                 : isAdbFound
                   ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
                   : 'bg-white/5 border-white/10 text-slate-400'
             }`}>
-              {isAdbFound ? '✓' : '✗'} ADB{!isInternalAdb && isAdbFound ? t('modals.androidPatch.systemTag') : ''}
+              {isAdbFound ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <XCircle className="w-3 h-3 text-slate-500 shrink-0" />}
+              <span>ADB{!isInternalAdb && isAdbFound ? t('modals.androidPatch.systemTag') : ''}</span>
             </span>
           </div>
         </div>
@@ -1259,7 +1264,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             <optgroup label={t('modals.androidPatch.groupInstalledWebView')}>
                               {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview !== false).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
-                                  {b.is_skyleap ? '⭐ ' : '🌐 '}{formatDeviceBrowserOption(b, t)}
+                                  {b.is_skyleap ? '[SkyLeap] ' : ''}{formatDeviceBrowserOption(b, t)}
                                 </option>
                               ))}
                             </optgroup>
@@ -1268,7 +1273,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             <optgroup label={t('modals.androidPatch.groupInstalledStandalone')}>
                               {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview === false).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
-                                  🚫 {formatDeviceBrowserOption(b, t)}
+                                  {formatDeviceBrowserOption(b, t)}
                                 </option>
                               ))}
                             </optgroup>
@@ -1277,7 +1282,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                             <optgroup label={t('modals.androidPatch.groupOther')}>
                               {deviceBrowsers.filter(b => !b.is_installed).map(b => (
                                 <option key={b.package_name} value={b.package_name}>
-                                  {b.is_system_webview !== false ? '🌐 ' : '🚫 '}{formatDeviceBrowserOption(b, t)}
+                                  {formatDeviceBrowserOption(b, t)}
                                 </option>
                               ))}
                             </optgroup>

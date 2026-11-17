@@ -55,7 +55,21 @@ import {
   Power,
   Network,
   Smartphone,
+  HardDrive,
+  Globe,
+  ShieldCheck,
+  Gauge,
+  Download,
+  ArrowLeftRight,
+  PackageCheck,
+  QrCode,
+  AlertOctagon,
+  ArrowUpCircle,
+  Activity,
+  Trash2,
+  Wifi,
 } from 'lucide-react'
+import { Sidebar } from './components/navigation/Sidebar'
 
 const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ baseSeconds, running }) => {
   const [displaySeconds, setDisplaySeconds] = useState(() => Math.max(0, Math.floor(baseSeconds)))
@@ -127,7 +141,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">⚡</span> {t('hud.totalHits')}
+            <Zap className="w-4 h-4 text-emerald-500 shrink-0" /> {t('hud.totalHits')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
             <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 font-mono tnum leading-tight">
@@ -145,7 +159,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">📥</span> {t('hud.remoteDownloads')}
+            <Download className="w-4 h-4 text-sky-500 shrink-0" /> {t('hud.remoteDownloads')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
             <span className="text-2xl sm:text-3xl font-extrabold text-sky-600 font-mono tnum leading-tight">
@@ -158,7 +172,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">🔄</span> {t('hud.apiForwarding')}
+            <ArrowLeftRight className="w-4 h-4 text-slate-500 shrink-0" /> {t('hud.apiForwarding')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
             <span className="text-2xl sm:text-3xl font-extrabold text-slate-800 font-mono tnum leading-tight">
@@ -1268,56 +1282,75 @@ export const App: React.FC = () => {
   const prefetchReusedCount = status?.requests?.prefetch_reused ?? 0
 
   return (
-    <div className="min-h-screen w-full flex flex-col bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-sky-100">
-      {/* Toast Notification */}
-      {toast && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[60] animate-in fade-in slide-in-from-top-3 duration-200">
-          <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
-            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
-            {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
-            {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />}
-            {toast.type === 'info' && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
-            <span className="font-medium tracking-tight">{toast.msg}</span>
+    <div className="min-h-screen w-full flex bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-sky-100">
+      {/* Clash Verge-style Left Navigation Rail */}
+      <Sidebar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        showAndroidPatch={Boolean(showAndroidPatch)}
+        isRunning={isRunning}
+        hasUpdate={Boolean(updateInfo?.available)}
+        loadingOpenFolder={loadingOpenFolder}
+        onOpenLogs={openLogsWindow}
+        onOpenHealth={() => setIsHealthModalOpen(true)}
+        onOpenLatency={() => setIsLatencyModalOpen(true)}
+        onOpenFolder={handleOpenCacheFolder}
+        onOpenClearCache={() => setIsClearModalOpen(true)}
+        onOpenRoutingGuide={() => setIsRoutingModalOpen(true)}
+        onCheckUpdate={() => setIsUpdateModalOpen(true)}
+        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
+      />
+
+      <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+        {/* Toast Notification */}
+        {toast && (
+          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[60] animate-in fade-in slide-in-from-top-3 duration-200">
+            <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
+              {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+              {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
+              {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />}
+              {toast.type === 'info' && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
+              <span className="font-medium tracking-tight">{toast.msg}</span>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Termination Notice Banner when user explicitly quits backend */}
-      {isTerminated && (
-        <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200">
-          <span>🛑</span>
-          <span>{t('header.terminatedNotice')}</span>
-        </div>
-      )}
+        {/* Termination Notice Banner when user explicitly quits backend */}
+        {isTerminated && (
+          <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200">
+            <AlertOctagon className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{t('header.terminatedNotice')}</span>
+          </div>
+        )}
 
-      {/* 1. Header & Live Telemetry HUD (Fixed top panel) */}
-      <header className="shrink-0 bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 sm:py-4 shadow-2xs z-20">
-        <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5">
-          {/* Top Row: Logo, Title, Running State & Master Switch */}
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
-                <Zap className="w-5.5 h-5.5 fill-current" />
-              </div>
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
-                    {t('header.title')}
-                  </span>
-                  <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                    v{status?.version || '2.5.1'}
-                  </span>
-                  {updateInfo?.available && (
-                    <button
-                      type="button"
-                      onClick={() => setIsUpdateModalOpen(true)}
-                      className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
-                    >
-                      <span className="text-sm">🔥</span>
-                      <span>{t('header.updateFound', { version: updateInfo.version })}</span>
-                    </button>
-                  )}
+        {/* 1. Header & Live Telemetry HUD (Fixed top panel) */}
+        <header className="shrink-0 bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 sm:py-4 shadow-2xs z-20">
+          <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5">
+            {/* Top Row: Logo, Title, Running State & Master Switch */}
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
+                  <Zap className="w-5.5 h-5.5 fill-current" />
                 </div>
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
+                      {t('header.title')}
+                    </span>
+                    <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
+                      v{status?.version || '2.5.1'}
+                    </span>
+                    {updateInfo?.available && (
+                      <button
+                        type="button"
+                        onClick={() => setIsUpdateModalOpen(true)}
+                        className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
+                      >
+                        <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        <span>{t('header.updateFound', { version: updateInfo.version })}</span>
+                      </button>
+                    )}
+                  </div>
                 <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                   <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
                     <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
@@ -1442,7 +1475,7 @@ export const App: React.FC = () => {
       </div>
 
       {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
-      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-20 sm:pb-24 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
+      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-8 sm:pb-10 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
         {activeTab === 'core' ? (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
@@ -1451,7 +1484,7 @@ export const App: React.FC = () => {
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">📁</span>
+                  <HardDrive className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
                     {t('cards.cache.title')}
                   </h2>
@@ -1530,7 +1563,7 @@ export const App: React.FC = () => {
                             className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 hover:text-amber-800 border border-amber-200 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs flex items-center gap-1.5"
                             title={t('cards.cache.migrateStandardTooltip')}
                           >
-                            <span>📦</span>
+                            <PackageCheck className="w-3.5 h-3.5 shrink-0" />
                             <span>{isActionLoading('migrate-standard') ? t('cards.cache.migrating') : t('cards.cache.migrateStandard')}</span>
                           </button>
                         )}
@@ -1608,7 +1641,7 @@ export const App: React.FC = () => {
                         }`}
                         title={t('cards.cache.boostTooltip')}
                       >
-                        <span>⚡</span>
+                        <Zap className="w-3.5 h-3.5 shrink-0" />
                         <span>
                           {cacheStats?.boost_state === 'loading'
                             ? t('cards.cache.boostLoading')
@@ -1658,7 +1691,7 @@ export const App: React.FC = () => {
                     onClick={() => setIsAuditModalOpen(true)}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
-                    <span>🩺</span>
+                    <Activity className="w-3.5 h-3.5 shrink-0" />
                     <span>{t('cards.cache.auditCache')}</span>
                   </button>
                   <button
@@ -1666,7 +1699,7 @@ export const App: React.FC = () => {
                     onClick={() => setIsClearModalOpen(true)}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
-                    <span>🧹</span>
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
                     <span>{t('cards.cache.clearCache')}</span>
                   </button>
                 </div>
@@ -1680,7 +1713,7 @@ export const App: React.FC = () => {
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">🌐</span>
+                  <Globe className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
                     {t('cards.upstream.title')}
                   </h2>
@@ -2033,9 +2066,9 @@ export const App: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => setIsMobileModalOpen(true)}
-                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs shrink-0 whitespace-nowrap"
+                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
                     >
-                      <span>📱</span>
+                      <QrCode className="w-3.5 h-3.5 shrink-0" />
                       <span>{t('cards.network.mobileGuide')}</span>
                     </button>
                   </div>
@@ -2056,7 +2089,7 @@ export const App: React.FC = () => {
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">🛡️</span>
+                  <ShieldCheck className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
                     {t('cards.network.certTitle')}
                   </h2>
@@ -2163,7 +2196,7 @@ export const App: React.FC = () => {
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">⚡</span>
+                  <Gauge className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
                     {t('cards.optim.title')}
                   </h2>
@@ -2206,7 +2239,7 @@ export const App: React.FC = () => {
 
                 <div className="p-3 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 leading-relaxed shadow-2xs space-y-1">
                   <div className="font-semibold flex items-center gap-1.5 text-amber-800">
-                    <span>🛡️</span>
+                    <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
                     <span>{t('cards.optim.subhead')}</span>
                   </div>
                   <p className="text-amber-800/90 text-[11px] sm:text-xs">
@@ -2237,7 +2270,7 @@ export const App: React.FC = () => {
             <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <span className="text-emerald-500 text-base">⚡</span>
+                  <Zap className="w-4 h-4 text-emerald-500 shrink-0" />
                   <span>{t('telemetry.ratioTitle')}</span>
                 </span>
                 <span className="text-sm sm:text-base font-bold font-mono text-emerald-600">
@@ -2290,7 +2323,7 @@ export const App: React.FC = () => {
             <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <span className="text-sky-500 text-base">🌐</span>
+                  <Globe className="w-4 h-4 text-sky-500 shrink-0" />
                   <span>{t('telemetry.h2Title')}</span>
                 </span>
                 <span className="text-sm sm:text-base font-bold font-mono text-sky-600">
@@ -2325,7 +2358,7 @@ export const App: React.FC = () => {
             <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <span className="text-indigo-500 text-base">📶</span>
+                  <Wifi className="w-4 h-4 text-indigo-500 shrink-0" />
                   <span>{t('telemetry.upstreamLatencyTitle')}</span>
                 </span>
                 <span className="text-xs font-mono text-slate-500">
@@ -2374,93 +2407,7 @@ export const App: React.FC = () => {
       <AndroidPatchPanel showToast={showToast} />
     ) : null}
   </main>
-
-      {/* 3. Fixed Bottom Action Dock (Footer) */}
-      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-2.5 sm:px-3 py-2 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
-        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[480px]:grid-cols-4 min-[768px]:grid-cols-8 gap-1 sm:gap-1.5">
-          <button
-            type="button"
-            onClick={handleOpenCacheFolder}
-            disabled={loadingOpenFolder}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('common.openFolder')}
-          >
-            <span className="text-sm leading-none shrink-0">📁</span>
-            <span className="truncate">{loadingOpenFolder ? t('common.loading') : t('footer.openFolder')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsClearModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('cards.cache.clearCache')}
-          >
-            <span className="text-sm leading-none shrink-0">🗑</span>
-            <span className="truncate">{t('footer.clearCache')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsRoutingModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('footer.routingTips')}
-          >
-            <span className="text-sm leading-none shrink-0">🌐</span>
-            <span className="truncate">{t('footer.routingTips')}</span>
-          </button>
-
-          <a
-            href="https://github.com/Sagisawa/GBF-Accelerator"
-            target="_blank"
-            rel="noreferrer"
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title="GitHub"
-          >
-            <span className="text-sm leading-none shrink-0">⭐</span>
-            <span className="truncate">GitHub</span>
-          </a>
-
-          <button
-            type="button"
-            onClick={() => setIsUpdateModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('footer.checkUpdate')}
-          >
-            <span className="text-sm leading-none shrink-0">🔄</span>
-            <span className="truncate">{t('footer.checkUpdate')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsLatencyModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('cards.upstream.latencyTest')}
-          >
-            <span className="text-sm leading-none shrink-0">📶</span>
-            <span className="truncate">{t('footer.latencyTest')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsHealthModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('footer.diagnostics')}
-          >
-            <span className="text-sm leading-none shrink-0">🩺</span>
-            <span className="truncate">{t('footer.diagnostics')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={openLogsWindow}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('footer.liveLogs')}
-          >
-            <span className="text-sm leading-none shrink-0">📜</span>
-            <span className="truncate">{t('footer.liveLogs')}</span>
-          </button>
-        </div>
-      </footer>
+</div>
 
       {/* Floating Modal Windows */}
       <ClearCacheModal

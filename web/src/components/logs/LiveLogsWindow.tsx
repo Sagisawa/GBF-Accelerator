@@ -7,6 +7,14 @@ import {
   Terminal,
   ChevronUp,
   ChevronDown,
+  Zap,
+  Copy,
+  FileText,
+  Link2,
+  Search,
+  Download,
+  Trash2,
+  ExternalLink,
 } from 'lucide-react'
 import { parseSearchTokens, matchesAllTokens, highlightText } from './highlight'
 import { useI18n } from '../../i18n'
@@ -955,7 +963,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
                 className="h-9 px-2 hover:bg-white/10 text-slate-300 hover:text-white flex items-center justify-center transition-colors text-xs gap-1"
                 title={t('liveLogs.popoutTip')}
               >
-                <span>↗</span>
+                <ExternalLink className="w-3.5 h-3.5" />
                 <span className="text-[11px] hidden sm:inline">{t('liveLogs.popout')}</span>
               </button>
 
@@ -1255,7 +1263,7 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           {/* Left: Metrics & Counter */}
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5 text-slate-300">
-              <span className="text-amber-400">⚡</span>
+              <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
               <span>
                 API P50:{' '}
                 <strong className="text-emerald-400 font-semibold">
@@ -1332,7 +1340,8 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>📋</span> {t('liveLogs.copyRow')}
+          <Copy className="w-3.5 h-3.5 shrink-0" />
+          <span>{t('liveLogs.copyRow')}</span>
         </button>
 
         <button
@@ -1342,7 +1351,8 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>📜</span> {t('liveLogs.copyRaw')}
+          <FileText className="w-3.5 h-3.5 shrink-0" />
+          <span>{t('liveLogs.copyRaw')}</span>
         </button>
 
         <button
@@ -1355,7 +1365,8 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>🔗</span> {t('liveLogs.copyUrl')}
+          <Link2 className="w-3.5 h-3.5 shrink-0" />
+          <span>{t('liveLogs.copyUrl')}</span>
         </button>
 
         <button
@@ -1367,7 +1378,8 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>🔍</span> {t('liveLogs.filterPath')}
+          <Search className="w-3.5 h-3.5 shrink-0" />
+          <span>{t('liveLogs.filterPath')}</span>
         </button>
 
         <div className="h-px bg-slate-700 my-1" />
@@ -1379,7 +1391,8 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-blue-600 hover:text-white flex items-center gap-2 transition-colors"
         >
-          <span>💾</span> {t('liveLogs.exportDiag')}
+          <Download className="w-3.5 h-3.5 shrink-0" />
+          <span>{t('liveLogs.exportDiag')}</span>
         </button>
 
         <button
@@ -1389,7 +1402,8 @@ export const LiveLogsWindow: React.FC<LiveLogsWindowProps> = ({
           }}
           className="w-full px-3 py-1.5 text-left hover:bg-red-600 hover:text-white flex items-center gap-2 text-red-400 transition-colors"
         >
-          <span>🧹</span> {t('liveLogs.clearCurrent')}
+          <Trash2 className="w-3.5 h-3.5 shrink-0" />
+          <span>{t('liveLogs.clearCurrent')}</span>
         </button>
       </div>
     )
