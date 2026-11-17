@@ -20,7 +20,7 @@ export interface SidebarProps {
   showAndroidPatch: boolean
   isRunning: boolean
   hasUpdate: boolean
-  loadingOpenFolder?: boolean
+  loadingOpenFolder: boolean
   onOpenLogs: () => void
   onOpenHealth: () => void
   onOpenLatency: () => void
@@ -50,7 +50,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   return (
     <aside
-      className="w-14 sm:w-38 md:w-42 bg-white border-r border-slate-200/90 flex flex-col py-3 select-none shrink-0 z-30 transition-all overflow-y-auto"
+      className="w-40 bg-white border-r border-slate-200/90 flex flex-col py-3 select-none shrink-0 z-30 transition-all overflow-y-auto"
       aria-label="Navigation Sidebar"
     >
       <div className="flex flex-col gap-1 w-full px-2">
@@ -58,7 +58,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={() => onTabChange('core')}
-          className={`flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold transition-all cursor-pointer w-full text-left ${
+          className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold transition-all cursor-pointer w-full text-left ${
             activeTab === 'core'
               ? 'bg-sky-100/90 text-sky-800 font-bold shadow-2xs'
               : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100/80'
@@ -67,7 +67,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           aria-label={t('sidebar.overview') || t('tabs.core')}
         >
           <Home className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.overview')}</span>
+          <span className="truncate leading-tight">{t('sidebar.overview')}</span>
         </button>
 
         {/* Tab 2: Android Companion (Conditionally displayed) */}
@@ -75,7 +75,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             type="button"
             onClick={() => onTabChange('android')}
-            className={`flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold transition-all cursor-pointer w-full text-left ${
+            className={`flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold transition-all cursor-pointer w-full text-left ${
               activeTab === 'android'
                 ? 'bg-indigo-100/90 text-indigo-800 font-bold shadow-2xs'
                 : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100/80'
@@ -84,7 +84,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             aria-label={t('sidebar.android') || t('tabs.android')}
           >
             <Smartphone className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-            <span className="truncate hidden sm:inline leading-tight">{t('sidebar.android')}</span>
+            <span className="truncate leading-tight">{t('sidebar.android')}</span>
           </button>
         )}
 
@@ -96,68 +96,68 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={onOpenLogs}
-          className="flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
           title={`${t('footer.liveLogs')} (L)`}
           aria-label={t('sidebar.liveLogs') || t('footer.liveLogs')}
         >
           <Terminal className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.liveLogs')}</span>
+          <span className="truncate leading-tight">{t('sidebar.liveLogs')}</span>
         </button>
 
         <button
           type="button"
           onClick={onOpenHealth}
-          className="flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
           title={t('footer.diagnostics')}
           aria-label={t('sidebar.diagnostics') || t('footer.diagnostics')}
         >
           <Activity className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.diagnostics')}</span>
+          <span className="truncate leading-tight">{t('sidebar.diagnostics')}</span>
         </button>
 
         <button
           type="button"
           onClick={onOpenLatency}
-          className="flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
           title={t('footer.latencyTest')}
           aria-label={t('sidebar.latencyTest') || t('footer.latencyTest')}
         >
           <Wifi className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.latencyTest')}</span>
+          <span className="truncate leading-tight">{t('sidebar.latencyTest')}</span>
         </button>
 
         <button
           type="button"
           onClick={onOpenFolder}
           disabled={loadingOpenFolder}
-          className="flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left disabled:opacity-50"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left disabled:opacity-50"
           title={loadingOpenFolder ? t('common.loading') : t('footer.openFolder')}
           aria-label={t('sidebar.openFolder') || t('footer.openFolder')}
         >
           <FolderOpen className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.openFolder')}</span>
+          <span className="truncate leading-tight">{t('sidebar.openFolder')}</span>
         </button>
 
         <button
           type="button"
           onClick={onOpenClearCache}
-          className="flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-rose-600 hover:bg-rose-50 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-rose-600 hover:bg-rose-50 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
           title={t('footer.clearCache')}
           aria-label={t('sidebar.clearCache') || t('footer.clearCache')}
         >
           <Trash2 className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.clearCache')}</span>
+          <span className="truncate leading-tight">{t('sidebar.clearCache')}</span>
         </button>
 
         <button
           type="button"
           onClick={onOpenRoutingGuide}
-          className="flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
           title={t('footer.routingTips')}
           aria-label={t('sidebar.routingTips') || t('footer.routingTips')}
         >
           <Compass className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.routingTips')}</span>
+          <span className="truncate leading-tight">{t('sidebar.routingTips')}</span>
         </button>
 
         {/* 移动到“分流说明”的下面，稍微空一点点 */}
@@ -168,7 +168,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <button
           type="button"
           onClick={onCheckUpdate}
-          className="relative flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
+          className="relative flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
           title={t('footer.checkUpdate')}
           aria-label={t('sidebar.checkUpdate') || t('footer.checkUpdate')}
         >
@@ -178,33 +178,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-500 ring-2 ring-white animate-pulse" />
             )}
           </div>
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.checkUpdate')}</span>
+          <span className="truncate leading-tight">{t('sidebar.checkUpdate')}</span>
           {hasUpdate && (
-            <span className="ml-auto hidden sm:inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
+            <span className="ml-auto inline-block w-1.5 h-1.5 rounded-full bg-amber-500" />
           )}
         </button>
 
         <button
           type="button"
           onClick={onOpenShortcuts}
-          className="flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
           title={`${t('header.shortcuts')} (?)`}
           aria-label={t('sidebar.shortcuts') || t('header.shortcuts')}
         >
           <HelpCircle className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.shortcuts')}</span>
+          <span className="truncate leading-tight">{t('sidebar.shortcuts')}</span>
         </button>
 
         <a
           href="https://github.com/Sagisawa/GBF-Accelerator"
           target="_blank"
           rel="noreferrer"
-          className="flex items-center justify-center sm:justify-start gap-2.5 px-2.5 sm:px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer w-full text-left"
           title="GitHub Repository"
           aria-label="GitHub Repository"
         >
           <Github className="w-5 h-5 shrink-0" strokeWidth={1.8} />
-          <span className="truncate hidden sm:inline leading-tight">{t('sidebar.github')}</span>
+          <span className="truncate leading-tight">{t('sidebar.github')}</span>
         </a>
       </div>
     </aside>
