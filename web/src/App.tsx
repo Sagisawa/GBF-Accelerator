@@ -26,6 +26,7 @@ import {
 } from './api'
 
 import { Modal } from './components/common/Modal'
+import { ToggleSwitch, SettingToggleRow } from './components/common/ToggleSwitch'
 import { LiveLogsWindow } from './components/logs/LiveLogsWindow'
 import { MobileGuideModal } from './components/modals/MobileGuideModal'
 import { ClearCacheModal } from './components/modals/ClearCacheModal'
@@ -54,8 +55,21 @@ import {
   Zap,
   Power,
   Network,
-  Smartphone,
+  HardDrive,
+  Globe,
+  ShieldCheck,
+  Gauge,
+  Download,
+  ArrowLeftRight,
+  PackageCheck,
+  QrCode,
+  AlertOctagon,
+  ArrowUpCircle,
+  Activity,
+  Trash2,
+  Wifi,
 } from 'lucide-react'
+import { Sidebar } from './components/navigation/Sidebar'
 
 const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ baseSeconds, running }) => {
   const [displaySeconds, setDisplaySeconds] = useState(() => Math.max(0, Math.floor(baseSeconds)))
@@ -127,7 +141,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">⚡</span> {t('hud.totalHits')}
+            <Zap className="w-4 h-4 text-emerald-500 shrink-0" /> {t('hud.totalHits')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
             <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 font-mono tnum leading-tight">
@@ -145,7 +159,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">📥</span> {t('hud.remoteDownloads')}
+            <Download className="w-4 h-4 text-sky-500 shrink-0" /> {t('hud.remoteDownloads')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
             <span className="text-2xl sm:text-3xl font-extrabold text-sky-600 font-mono tnum leading-tight">
@@ -158,7 +172,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
         <div className="flex flex-col">
           <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <span className="text-sm sm:text-base">🔄</span> {t('hud.apiForwarding')}
+            <ArrowLeftRight className="w-4 h-4 text-slate-500 shrink-0" /> {t('hud.apiForwarding')}
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
             <span className="text-2xl sm:text-3xl font-extrabold text-slate-800 font-mono tnum leading-tight">
@@ -777,10 +791,11 @@ export const App: React.FC = () => {
     })
   }
   // Toggle Failover Enabled
-  const handleToggleFailoverEnabled = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const checked = e.target.checked
-    setFailoverEnabledInput(checked)
-    if (!checked) {
+  const handleToggleFailoverEnabled = async () => {
+    if (isDirect || Boolean(loadingAction)) return
+    const next = !failoverEnabledInput
+    setFailoverEnabledInput(next)
+    if (!next) {
       await runConfigAction('disable-failover', async () => {
         try {
           await applyConfig({ enable_upstream_failover: false })
@@ -1268,182 +1283,137 @@ export const App: React.FC = () => {
   const prefetchReusedCount = status?.requests?.prefetch_reused ?? 0
 
   return (
-    <div className="min-h-screen w-full flex flex-col bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-sky-100">
-      {/* Toast Notification */}
-      {toast && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[60] animate-in fade-in slide-in-from-top-3 duration-200">
-          <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
-            {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
-            {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
-            {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />}
-            {toast.type === 'info' && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
-            <span className="font-medium tracking-tight">{toast.msg}</span>
+    <div className="min-h-screen w-full flex bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-sky-100">
+      {/* Clash Verge-style Left Navigation Rail */}
+      <Sidebar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        showAndroidPatch={Boolean(showAndroidPatch)}
+        isRunning={isRunning}
+        hasUpdate={Boolean(updateInfo?.available)}
+        loadingOpenFolder={loadingOpenFolder}
+        language={language}
+        onLanguageSelect={setLanguage}
+        onOpenLogs={openLogsWindow}
+        onOpenHealth={() => setIsHealthModalOpen(true)}
+        onOpenLatency={() => setIsLatencyModalOpen(true)}
+        onOpenFolder={handleOpenCacheFolder}
+        onOpenClearCache={() => setIsClearModalOpen(true)}
+        onOpenRoutingGuide={() => setIsRoutingModalOpen(true)}
+        onCheckUpdate={() => setIsUpdateModalOpen(true)}
+        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
+      />
+
+      <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
+        {/* Toast Notification */}
+        {toast && (
+          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[60] animate-in fade-in slide-in-from-top-3 duration-200">
+            <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
+              {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+              {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
+              {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />}
+              {toast.type === 'info' && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
+              <span className="font-medium tracking-tight">{toast.msg}</span>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Termination Notice Banner when user explicitly quits backend */}
-      {isTerminated && (
-        <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200">
-          <span>🛑</span>
-          <span>{t('header.terminatedNotice')}</span>
-        </div>
-      )}
+        {/* Termination Notice Banner when user explicitly quits backend */}
+        {isTerminated && (
+          <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200 shrink-0">
+            <AlertOctagon className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{t('header.terminatedNotice')}</span>
+          </div>
+        )}
 
-      {/* 1. Header & Live Telemetry HUD (Fixed top panel) */}
-      <header className="shrink-0 bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 sm:py-4 shadow-2xs z-20">
-        <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5">
-          {/* Top Row: Logo, Title, Running State & Master Switch */}
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
-                <Zap className="w-5.5 h-5.5 fill-current" />
-              </div>
-              <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-2.5 flex-wrap">
-                  <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
-                    {t('header.title')}
-                  </span>
-                  <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                    v{status?.version || '2.5.1'}
-                  </span>
-                  {updateInfo?.available && (
-                    <button
-                      type="button"
-                      onClick={() => setIsUpdateModalOpen(true)}
-                      className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
-                    >
-                      <span className="text-sm">🔥</span>
-                      <span>{t('header.updateFound', { version: updateInfo.version })}</span>
-                    </button>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                  <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
-                    <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                    <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
-                      {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
-                    </span>
-                  </span>
-                  {isRunning && (
-                    <>
-                      <span className="text-slate-300">·</span>
-                      <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
-                        <span className="text-slate-400">{t('header.uptime')}</span>
-                        <span className="font-semibold text-slate-700">
-                          <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
-                        </span>
+        {/* 1. Header & Live Telemetry HUD: Pinned to top, strictly for 'core' tab */}
+        {activeTab === 'core' && (
+          <header className="shrink-0 bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 sm:py-4 shadow-2xs z-20">
+            <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5">
+              {/* Top Row: Logo, Title, Running State & Master Switch */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
+                    <Zap className="w-5.5 h-5.5 fill-current" />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
+                        {t('header.title')}
                       </span>
-                    </>
-                  )}
+                      <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
+                        v{status?.version || '2.5.1'}
+                      </span>
+                      {updateInfo?.available && (
+                        <button
+                          type="button"
+                          onClick={() => setIsUpdateModalOpen(true)}
+                          className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
+                        >
+                          <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>{t('header.updateFound', { version: updateInfo.version })}</span>
+                        </button>
+                      )}
+                    </div>
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
+                      <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                      <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
+                        {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
+                      </span>
+                    </span>
+                    {isRunning && (
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
+                          <span className="text-slate-400">{t('header.uptime')}</span>
+                          <span className="font-semibold text-slate-700">
+                            <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
+                          </span>
+                        </span>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* Top Right Master Start / Stop Action Button, Quit Button & Language Switcher */}
-            <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
-              {/* Language Switcher Capsule */}
-              <div className="inline-flex items-center rounded-xl bg-slate-100 p-0.5 border border-slate-200/90 text-xs font-semibold shadow-2xs">
+              {/* Top Right Master Start / Stop Action Button & Quit Button */}
+              <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
                 <button
                   type="button"
-                  onClick={() => setLanguage('zh')}
-                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
-                    language === 'zh'
-                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
+                  disabled={loadingProxy || isTerminated}
+                  onClick={handleToggleProxy}
+                  className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
+                    isRunning
+                      ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
+                      : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
                   }`}
                 >
-                  简中
+                  {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setLanguage('en')}
-                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
-                    language === 'en'
-                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
+                  disabled={isTerminated}
+                  onClick={() => setIsQuitModalOpen(true)}
+                  className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
+                  title={t('header.quitAppTip')}
                 >
-                  EN
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLanguage('ja')}
-                  className={`px-2 py-1 rounded-lg transition-all cursor-pointer ${
-                    language === 'ja'
-                      ? 'bg-white text-sky-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  日本語
+                  <Power className="w-4 h-4 text-rose-500" />
+                  <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
                 </button>
               </div>
-
-              <button
-                type="button"
-                disabled={loadingProxy || isTerminated}
-                onClick={handleToggleProxy}
-                className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
-                  isRunning
-                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
-                    : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
-                }`}
-              >
-                {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
-              </button>
-              <button
-                type="button"
-                disabled={isTerminated}
-                onClick={() => setIsQuitModalOpen(true)}
-                className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
-                title={t('header.quitAppTip')}
-              >
-                <Power className="w-4 h-4 text-rose-500" />
-                <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
-              </button>
             </div>
+
+            {/* Realtime request counters: isolated from the root App render loop */}
+            <RealtimeRequestHud status={status} running={isRunning} />
           </div>
+        </header>
+        )}
 
-          {/* Realtime request counters: isolated from the root App render loop */}
-          <RealtimeRequestHud status={status} running={isRunning} />
-        </div>
-      </header>
-
-      {/* Navigation Tabs */}
-      <div className="bg-white border-b border-slate-200/90 px-4 sm:px-6 shrink-0 shadow-2xs">
-        <div className="max-w-5xl mx-auto flex items-center gap-1.5 pt-1.5">
-          <button
-            type="button"
-            onClick={() => setActiveTab('core')}
-            className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
-              activeTab === 'core'
-                ? 'border-sky-600 text-sky-700 bg-sky-50/60 rounded-t-lg'
-                : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
-            }`}
-          >
-            <Zap className="w-4 h-4" />
-            <span>{t('tabs.core')}</span>
-          </button>
-          {showAndroidPatch && (
-            <button
-              type="button"
-              onClick={() => setActiveTab('android')}
-              className={`px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 transition-all flex items-center gap-2 cursor-pointer select-none ${
-                activeTab === 'android'
-                  ? 'border-indigo-600 text-indigo-700 bg-indigo-50/60 rounded-t-lg'
-                  : 'border-transparent text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-t-lg'
-              }`}
-            >
-              <Smartphone className="w-4 h-4" />
-              <span>{t('tabs.android')}</span>
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
-      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-20 sm:pb-24 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
-        {activeTab === 'core' ? (
+        {/* 2. Scrollable Main Work Area: Natural Content-Fit, 2-Column Responsive Card Grid */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-8 sm:pb-10 flex flex-col justify-start gap-4 sm:gap-5">
+            {activeTab === 'core' ? (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
           {/* Card 1: Local Cache & Storage */}
@@ -1451,7 +1421,7 @@ export const App: React.FC = () => {
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">📁</span>
+                  <HardDrive className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
                     {t('cards.cache.title')}
                   </h2>
@@ -1530,7 +1500,7 @@ export const App: React.FC = () => {
                             className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 hover:text-amber-800 border border-amber-200 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs flex items-center gap-1.5"
                             title={t('cards.cache.migrateStandardTooltip')}
                           >
-                            <span>📦</span>
+                            <PackageCheck className="w-3.5 h-3.5 shrink-0" />
                             <span>{isActionLoading('migrate-standard') ? t('cards.cache.migrating') : t('cards.cache.migrateStandard')}</span>
                           </button>
                         )}
@@ -1540,117 +1510,110 @@ export const App: React.FC = () => {
               </div>
 
               {/* RAM Cache Setting */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
-                  <input
-                    type="checkbox"
-                    checked={isRamCache}
-                    onChange={handleToggleRamCache}
-                    disabled={Boolean(loadingAction)}
-                    className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                  />
-                  <span>
-                    {t('cards.cache.ramCacheLabel', {
-                      maxMb: ramMaxMb,
-                      gbText: ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : '',
-                    })}
-                  </span>
-                </label>
-
-                {isRamCache && (
-                  <div className="ml-6 space-y-2">
-                    <div className="flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
-                      <span>{t('cards.cache.limitMbLabel')}</span>
-                      <input
-                        type="text"
-                        disabled={Boolean(loadingAction)}
-                        value={ramMbInput}
-                        onChange={(e) => setRamMbInput(e.target.value)}
-                        className="w-24 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleApplyRamMb}
-                        disabled={Boolean(loadingAction)}
-                        aria-busy={isActionLoading('ram-mb')}
-                        className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
-                      >
-                        {isActionLoading('ram-mb') ? t('cards.cache.applying') : t('cards.cache.apply')}
-                      </button>
-                      {(cacheStats?.resident_bytes ?? 0) > 0 ? (
-                        <div className="flex items-center gap-2.5 text-xs font-mono text-slate-600 flex-wrap">
-                          <span>{t('cards.cache.regularLabel', { mb: ramUsageMb })}</span>
-                          <span className="text-amber-700 font-medium">{t('cards.cache.residentLabel', { mb: cacheStats?.resident_mb ?? 0 })}</span>
-                          <span className="font-semibold text-slate-800">{t('cards.cache.usedLabel', { used: cacheStats?.total_ram_mb ?? (ramUsageMb + (cacheStats?.resident_mb ?? 0)), max: ramMaxMb })}</span>
+              <div className="pt-2 border-t border-slate-100">
+                <SettingToggleRow
+                  label={t('cards.cache.ramCacheLabel', {
+                    maxMb: ramMaxMb,
+                    gbText: ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : '',
+                  })}
+                  checked={isRamCache}
+                  onChange={handleToggleRamCache}
+                  disabled={Boolean(loadingAction)}
+                >
+                  {isRamCache && (
+                    <div className="pt-2 space-y-3">
+                      <div className="flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
+                        <span>{t('cards.cache.limitMbLabel')}</span>
+                        <input
+                          type="text"
+                          disabled={Boolean(loadingAction)}
+                          value={ramMbInput}
+                          onChange={(e) => setRamMbInput(e.target.value)}
+                          className="w-24 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleApplyRamMb}
+                          disabled={Boolean(loadingAction)}
+                          aria-busy={isActionLoading('ram-mb')}
+                          className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
+                        >
+                          {isActionLoading('ram-mb') ? t('cards.cache.applying') : t('cards.cache.apply')}
+                        </button>
+                        {(cacheStats?.resident_bytes ?? 0) > 0 ? (
+                          <div className="flex items-center gap-2.5 text-xs font-mono text-slate-600 flex-wrap">
+                            <span>{t('cards.cache.regularLabel', { mb: ramUsageMb })}</span>
+                            <span className="text-amber-700 font-medium">{t('cards.cache.residentLabel', { mb: cacheStats?.resident_mb ?? 0 })}</span>
+                            <span className="font-semibold text-slate-800">{t('cards.cache.usedLabel', { used: cacheStats?.total_ram_mb ?? (ramUsageMb + (cacheStats?.resident_mb ?? 0)), max: ramMaxMb })}</span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 font-mono text-xs">
+                            {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
+                          </span>
+                        )}
+                        <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
+                          <div
+                            className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                            style={{
+                              width: `${Math.min(100, Math.round(((cacheStats?.total_ram_mb ?? ramUsageMb) / Math.max(1, ramMaxMb)) * 100))}%`
+                            }}
+                          />
                         </div>
-                      ) : (
-                        <span className="text-slate-500 font-mono text-xs">
-                          {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
-                        </span>
-                      )}
-                      <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setIsBoostModalOpen(true)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium border active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0 ${
+                            (cacheStats?.resident_bytes ?? 0) > 0
+                              ? 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-300'
+                              : cacheStats?.boost_state === 'loading'
+                              ? 'text-sky-800 bg-sky-50 hover:bg-sky-100 border-sky-300 animate-pulse'
+                              : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-300'
+                          }`}
+                          title={t('cards.cache.boostTooltip')}
+                        >
+                          <Zap className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            {cacheStats?.boost_state === 'loading'
+                              ? t('cards.cache.boostLoading')
+                              : (cacheStats?.resident_bytes ?? 0) > 0
+                              ? t('cards.cache.boostActiveWithMb', { mb: cacheStats?.resident_mb ?? 0 })
+                              : t('cards.cache.boostBtn')}
+                          </span>
+                        </button>
+                        {(cacheStats?.system_total_mb ?? 0) > 0 && (
+                          <span className="text-slate-400 text-xs font-mono ml-auto sm:ml-0">
+                            {t('cards.cache.hostRam', { gb: Math.round((cacheStats?.system_total_mb ?? 0) / 1024) })}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-100/80 flex items-center justify-between gap-4">
                         <div
-                          className="h-full bg-emerald-500 rounded-full transition-all duration-300"
-                          style={{
-                            width: `${Math.min(100, Math.round(((cacheStats?.total_ram_mb ?? ramUsageMb) / Math.max(1, ramMaxMb)) * 100))}%`
-                          }}
+                          className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none leading-snug"
+                          onClick={!loadingAction ? handleToggleRamWarmup : undefined}
+                        >
+                          {t('cards.cache.ramWarmupLabel')}
+                        </div>
+                        <ToggleSwitch
+                          checked={isRamWarmup}
+                          onChange={handleToggleRamWarmup}
+                          disabled={Boolean(loadingAction)}
+                          ariaLabel={t('cards.cache.ramWarmupLabel')}
                         />
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setIsBoostModalOpen(true)}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-medium border active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0 ${
-                          (cacheStats?.resident_bytes ?? 0) > 0
-                            ? 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-300'
-                            : cacheStats?.boost_state === 'loading'
-                            ? 'text-sky-800 bg-sky-50 hover:bg-sky-100 border-sky-300 animate-pulse'
-                            : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-300'
-                        }`}
-                        title={t('cards.cache.boostTooltip')}
-                      >
-                        <span>⚡</span>
-                        <span>
-                          {cacheStats?.boost_state === 'loading'
-                            ? t('cards.cache.boostLoading')
-                            : (cacheStats?.resident_bytes ?? 0) > 0
-                            ? t('cards.cache.boostActiveWithMb', { mb: cacheStats?.resident_mb ?? 0 })
-                            : t('cards.cache.boostBtn')}
-                        </span>
-                      </button>
-                      {(cacheStats?.system_total_mb ?? 0) > 0 && (
-                        <span className="text-slate-400 text-xs font-mono ml-auto sm:ml-0">
-                          {t('cards.cache.hostRam', { gb: Math.round((cacheStats?.system_total_mb ?? 0) / 1024) })}
-                        </span>
-                      )}
                     </div>
-
-                    <label className="inline-flex items-start gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none leading-snug">
-                      <input
-                        type="checkbox"
-                        checked={isRamWarmup}
-                        onChange={handleToggleRamWarmup}
-                        disabled={Boolean(loadingAction)}
-                        className="w-3.5 h-3.5 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                      />
-                      <span>{t('cards.cache.ramWarmupLabel')}</span>
-                    </label>
-                  </div>
-                )}
+                  )}
+                </SettingToggleRow>
               </div>
 
-
               {/* Cache Maintenance & Integrity */}
-              <div className="space-y-2 pt-1.5 border-t border-slate-100">
-                <label className="inline-flex items-start gap-2 text-xs sm:text-[13px] text-slate-800 cursor-pointer select-none leading-snug">
-                  <input
-                    type="checkbox"
-                    checked={isAutoRepair}
-                    onChange={handleToggleAutoRepair}
-                    disabled={Boolean(loadingAction)}
-                    className="w-3.5 h-3.5 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                  />
-                  <span>{t('cards.cache.cleanZombiesLabel')}</span>
-                </label>
+              <div className="pt-2 border-t border-slate-100 space-y-2.5">
+                <SettingToggleRow
+                  label={t('cards.cache.cleanZombiesLabel')}
+                  checked={isAutoRepair}
+                  onChange={handleToggleAutoRepair}
+                  disabled={Boolean(loadingAction)}
+                />
 
                 <div className="flex items-center gap-2 pt-0.5 flex-wrap">
                   <button
@@ -1658,7 +1621,7 @@ export const App: React.FC = () => {
                     onClick={() => setIsAuditModalOpen(true)}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
-                    <span>🩺</span>
+                    <Activity className="w-3.5 h-3.5 shrink-0" />
                     <span>{t('cards.cache.auditCache')}</span>
                   </button>
                   <button
@@ -1666,7 +1629,7 @@ export const App: React.FC = () => {
                     onClick={() => setIsClearModalOpen(true)}
                     className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
                   >
-                    <span>🧹</span>
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
                     <span>{t('cards.cache.clearCache')}</span>
                   </button>
                 </div>
@@ -1680,7 +1643,7 @@ export const App: React.FC = () => {
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">🌐</span>
+                  <Globe className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
                     {t('cards.upstream.title')}
                   </h2>
@@ -1753,23 +1716,23 @@ export const App: React.FC = () => {
                   </span>
                 </div>
 
-                <label
-                  className={`inline-flex items-start gap-2 text-[13px] sm:text-sm ${
-                    isDirect ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 cursor-pointer'
-                  } select-none leading-snug`}
-                >
-                  <input
-                    type="checkbox"
+                <div className="flex items-center justify-between gap-3 py-1">
+                  <div
+                    className={`text-[13px] sm:text-sm font-semibold ${
+                      isDirect ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 cursor-pointer select-none'
+                    } leading-snug`}
+                    onClick={!isDirect && !loadingAction ? handleToggleFailoverEnabled : undefined}
+                  >
+                    <span>{t('cards.upstream.enableFailover')}</span>
+                    {isDirect && <span className="text-xs text-slate-400 ml-1.5 font-normal">{t('cards.upstream.failoverDirectNote')}</span>}
+                  </div>
+                  <ToggleSwitch
                     checked={!isDirect && failoverEnabledInput}
                     onChange={handleToggleFailoverEnabled}
                     disabled={isDirect || Boolean(loadingAction)}
-                    className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
+                    ariaLabel={t('cards.upstream.enableFailover')}
                   />
-                  <span>
-                    {t('cards.upstream.enableFailover')}
-                    {isDirect && <span className="text-xs text-slate-400 ml-1">{t('cards.upstream.failoverDirectNote')}</span>}
-                  </span>
-                </label>
+                </div>
 
                 {!isDirect && failoverEnabledInput && (
                   <div className="space-y-2.5 pt-0.5">
@@ -1867,29 +1830,37 @@ export const App: React.FC = () => {
                     </div>
 
                     <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
-                      <div className="flex flex-col gap-1.5">
-                        <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
+                      <div className="flex flex-col gap-2 min-w-[220px]">
+                        <div className="flex items-center justify-between gap-3">
+                          <span
+                            className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none"
+                            onClick={!loadingAction ? () => setFailoverAutoRecoverInput(!failoverAutoRecoverInput) : undefined}
+                          >
+                            {t('cards.upstream.autoRecoverCheckbox')}
+                          </span>
+                          <ToggleSwitch
                             checked={failoverAutoRecoverInput}
-                            onChange={(e) => setFailoverAutoRecoverInput(e.target.checked)}
+                            onChange={() => setFailoverAutoRecoverInput(!failoverAutoRecoverInput)}
                             disabled={Boolean(loadingAction)}
-                            className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                            ariaLabel={t('cards.upstream.autoRecoverCheckbox')}
                           />
-                          <span>{t('cards.upstream.autoRecoverCheckbox')}</span>
-                        </label>
+                        </div>
 
                         {status?.platform === 'windows' && (
-                          <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
+                          <div className="flex items-center justify-between gap-3">
+                            <span
+                              className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none"
+                              onClick={!loadingAction ? () => setFailoverNotificationInput(!failoverNotificationInput) : undefined}
+                            >
+                              {t('cards.upstream.notificationCheckbox')}
+                            </span>
+                            <ToggleSwitch
                               checked={failoverNotificationInput}
-                              onChange={(e) => setFailoverNotificationInput(e.target.checked)}
+                              onChange={() => setFailoverNotificationInput(!failoverNotificationInput)}
                               disabled={Boolean(loadingAction)}
-                              className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                              ariaLabel={t('cards.upstream.notificationCheckbox')}
                             />
-                            <span>{t('cards.upstream.notificationCheckbox')}</span>
-                          </label>
+                          </div>
                         )}
                       </div>
 
@@ -1948,32 +1919,20 @@ export const App: React.FC = () => {
               </div>
 
               {/* Mode Toggles */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={isDirect}
-                    onChange={handleToggleDirect}
-                    disabled={Boolean(loadingAction)}
-                    className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                  />
-                  <span>{t('cards.upstream.directModeCheckbox')}</span>
-                </label>
+              <div className="pt-2 border-t border-slate-100">
+                <SettingToggleRow
+                  label={t('cards.upstream.directModeCheckbox')}
+                  checked={isDirect}
+                  onChange={handleToggleDirect}
+                  disabled={Boolean(loadingAction)}
+                />
 
-                <div>
-                  <label className="inline-flex items-start gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none leading-snug">
-                    <input
-                      type="checkbox"
-                      disabled={Boolean(loadingAction)}
-                      checked={isShimakaze}
-                      onChange={handleToggleShimakaze}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
-                    />
-                    <span className="text-slate-800">
-                      {t('cards.upstream.shimakazeCheckbox')}
-                    </span>
-                  </label>
-
+                <SettingToggleRow
+                  label={t('cards.upstream.shimakazeCheckbox')}
+                  checked={isShimakaze}
+                  onChange={handleToggleShimakaze}
+                  disabled={Boolean(loadingAction)}
+                >
                   {isShimakaze && (
                     <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs space-y-1">
                       <div>
@@ -1984,11 +1943,11 @@ export const App: React.FC = () => {
                       </div>
                     </div>
                   )}
-                </div>
+                </SettingToggleRow>
               </div>
 
               {/* Listen Port & Allow LAN */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
+              <div className="space-y-2.5 pt-2 border-t border-slate-100">
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   <label className="text-[13px] sm:text-sm text-slate-700 font-medium">{t('cards.network.portLabel')}</label>
                   <input
@@ -2018,32 +1977,33 @@ export const App: React.FC = () => {
                   </button>
                 </div>
 
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={isAllowLan}
-                        onChange={handleToggleAllowLan}
-                        disabled={Boolean(loadingAction)}
-                        className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                      />
-                      <span>{t('cards.network.allowLan')}</span>
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setIsMobileModalOpen(true)}
-                      className="px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs shrink-0 whitespace-nowrap"
-                    >
-                      <span>📱</span>
-                      <span>{t('cards.network.mobileGuide')}</span>
-                    </button>
-                  </div>
-                  {isAllowLan && (
-                    <div className="text-xs text-sky-700 font-medium pl-6">
-                      {t('cards.network.lanIpDesc', { ip: status?.lan_ip || '192.168.x.x', port: currentListenPort })}
-                    </div>
-                  )}
+                <div className="pt-1">
+                  <SettingToggleRow
+                    label={
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span>{t('cards.network.allowLan')}</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setIsMobileModalOpen(true)
+                          }}
+                          className="px-2 py-0.5 rounded-lg text-xs font-normal text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs shrink-0"
+                        >
+                          <QrCode className="w-3.5 h-3.5 shrink-0" />
+                          <span>{t('cards.network.mobileGuide')}</span>
+                        </button>
+                      </div>
+                    }
+                    description={
+                      isAllowLan
+                        ? t('cards.network.lanIpDesc', { ip: status?.lan_ip || '192.168.x.x', port: currentListenPort })
+                        : undefined
+                    }
+                    checked={isAllowLan}
+                    onChange={handleToggleAllowLan}
+                    disabled={Boolean(loadingAction)}
+                  />
                 </div>
               </div>
             </div>
@@ -2056,7 +2016,7 @@ export const App: React.FC = () => {
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">🛡️</span>
+                  <ShieldCheck className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
                     {t('cards.network.certTitle')}
                   </h2>
@@ -2105,54 +2065,35 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* System Checkboxes */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <div>
-                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={isAutoPac}
-                      onChange={handleToggleAutoPac}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                    />
-                    <span>
-                      {t('cards.network.autoPacCheckbox')}
-                    </span>
-                  </label>
+              {/* System Integration Toggles */}
+              <div className="pt-2 border-t border-slate-100">
+                <SettingToggleRow
+                  label={t('cards.network.autoPacCheckbox')}
+                  checked={isAutoPac}
+                  onChange={handleToggleAutoPac}
+                  disabled={Boolean(loadingAction)}
+                >
                   {isAutoPac && status?.system_proxy_conflict && (
-                    <div className="mt-2 ml-6 p-2.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 leading-relaxed shadow-2xs">
+                    <div className="mt-2 p-2.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 leading-relaxed shadow-2xs">
                       <span className="font-semibold">{t('cards.network.conflictNotice')}</span>
                       <span className="ml-1 break-all">{status.system_proxy_conflict}</span>
                     </div>
                   )}
-                </div>
+                </SettingToggleRow>
 
-                <div>
-                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={isAutoStart}
-                      onChange={handleToggleAutoStart}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                    />
-                    <span>{t('cards.network.autoStartCheckbox')}</span>
-                  </label>
-                </div>
+                <SettingToggleRow
+                  label={t('cards.network.autoStartCheckbox')}
+                  checked={isAutoStart}
+                  onChange={handleToggleAutoStart}
+                  disabled={Boolean(loadingAction)}
+                />
 
-                <div>
-                  <label className="inline-flex items-center gap-2 text-[13px] sm:text-sm text-slate-800 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={isAutoUpdate}
-                      onChange={handleToggleAutoUpdate}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
-                    />
-                    <span>{t('cards.network.autoUpdateCheckbox')}</span>
-                  </label>
-                </div>
+                <SettingToggleRow
+                  label={t('cards.network.autoUpdateCheckbox')}
+                  checked={isAutoUpdate}
+                  onChange={handleToggleAutoUpdate}
+                  disabled={Boolean(loadingAction)}
+                />
               </div>
             </div>
           </div>
@@ -2163,7 +2104,7 @@ export const App: React.FC = () => {
             <div className="space-y-3.5">
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <div className="flex items-center gap-2">
-                  <span className="text-lg">⚡</span>
+                  <Gauge className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
                   <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
                     {t('cards.optim.title')}
                   </h2>
@@ -2173,40 +2114,24 @@ export const App: React.FC = () => {
                 </span>
               </div>
 
-              <div className="space-y-3 text-[13px] sm:text-sm text-slate-800">
-                <div>
-                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
-                    <input
-                      type="checkbox"
-                      checked={isPrefetch}
-                      onChange={handleTogglePrefetch}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                    />
-                    <span>
-                      {t('cards.optim.prefetch')}
-                    </span>
-                  </label>
-                </div>
+              <div>
+                <SettingToggleRow
+                  label={t('cards.optim.prefetch')}
+                  checked={isPrefetch}
+                  onChange={handleTogglePrefetch}
+                  disabled={Boolean(loadingAction)}
+                />
 
-                <div>
-                  <label className="inline-flex items-start gap-2 cursor-pointer select-none leading-snug">
-                    <input
-                      type="checkbox"
-                      checked={isBrowserCache}
-                      onChange={handleToggleBrowserCache}
-                      disabled={Boolean(loadingAction)}
-                      className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 accent-sky-600"
-                    />
-                    <span>
-                      {t('cards.optim.browserCache')}
-                    </span>
-                  </label>
-                </div>
+                <SettingToggleRow
+                  label={t('cards.optim.browserCache')}
+                  checked={isBrowserCache}
+                  onChange={handleToggleBrowserCache}
+                  disabled={Boolean(loadingAction)}
+                />
 
-                <div className="p-3 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 leading-relaxed shadow-2xs space-y-1">
+                <div className="mt-3.5 p-3 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 leading-relaxed shadow-2xs space-y-1">
                   <div className="font-semibold flex items-center gap-1.5 text-amber-800">
-                    <span>🛡️</span>
+                    <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
                     <span>{t('cards.optim.subhead')}</span>
                   </div>
                   <p className="text-amber-800/90 text-[11px] sm:text-xs">
@@ -2237,7 +2162,7 @@ export const App: React.FC = () => {
             <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <span className="text-emerald-500 text-base">⚡</span>
+                  <Zap className="w-4 h-4 text-emerald-500 shrink-0" />
                   <span>{t('telemetry.ratioTitle')}</span>
                 </span>
                 <span className="text-sm sm:text-base font-bold font-mono text-emerald-600">
@@ -2290,7 +2215,7 @@ export const App: React.FC = () => {
             <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <span className="text-sky-500 text-base">🌐</span>
+                  <Globe className="w-4 h-4 text-sky-500 shrink-0" />
                   <span>{t('telemetry.h2Title')}</span>
                 </span>
                 <span className="text-sm sm:text-base font-bold font-mono text-sky-600">
@@ -2325,7 +2250,7 @@ export const App: React.FC = () => {
             <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
               <div className="flex items-center justify-between">
                 <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <span className="text-indigo-500 text-base">📶</span>
+                  <Wifi className="w-4 h-4 text-indigo-500 shrink-0" />
                   <span>{t('telemetry.upstreamLatencyTitle')}</span>
                 </span>
                 <span className="text-xs font-mono text-slate-500">
@@ -2373,94 +2298,9 @@ export const App: React.FC = () => {
     ) : showAndroidPatch ? (
       <AndroidPatchPanel showToast={showToast} />
     ) : null}
-  </main>
-
-      {/* 3. Fixed Bottom Action Dock (Footer) */}
-      <footer className="sticky bottom-0 shrink-0 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-2.5 sm:px-3 py-2 shadow-[0_-2px_10px_rgba(0,0,0,0.03)] z-20">
-        <div className="max-w-5xl mx-auto grid grid-cols-2 min-[480px]:grid-cols-4 min-[768px]:grid-cols-8 gap-1 sm:gap-1.5">
-          <button
-            type="button"
-            onClick={handleOpenCacheFolder}
-            disabled={loadingOpenFolder}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('common.openFolder')}
-          >
-            <span className="text-sm leading-none shrink-0">📁</span>
-            <span className="truncate">{loadingOpenFolder ? t('common.loading') : t('footer.openFolder')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsClearModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('cards.cache.clearCache')}
-          >
-            <span className="text-sm leading-none shrink-0">🗑</span>
-            <span className="truncate">{t('footer.clearCache')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsRoutingModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('footer.routingTips')}
-          >
-            <span className="text-sm leading-none shrink-0">🌐</span>
-            <span className="truncate">{t('footer.routingTips')}</span>
-          </button>
-
-          <a
-            href="https://github.com/Sagisawa/GBF-Accelerator"
-            target="_blank"
-            rel="noreferrer"
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title="GitHub"
-          >
-            <span className="text-sm leading-none shrink-0">⭐</span>
-            <span className="truncate">GitHub</span>
-          </a>
-
-          <button
-            type="button"
-            onClick={() => setIsUpdateModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('footer.checkUpdate')}
-          >
-            <span className="text-sm leading-none shrink-0">🔄</span>
-            <span className="truncate">{t('footer.checkUpdate')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsLatencyModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('cards.upstream.latencyTest')}
-          >
-            <span className="text-sm leading-none shrink-0">📶</span>
-            <span className="truncate">{t('footer.latencyTest')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsHealthModalOpen(true)}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('footer.diagnostics')}
-          >
-            <span className="text-sm leading-none shrink-0">🩺</span>
-            <span className="truncate">{t('footer.diagnostics')}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={openLogsWindow}
-            className="min-w-0 px-1 sm:px-1.5 py-1.5 sm:py-2 rounded-xl text-[11px] font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200 active:scale-[0.98] transition-all cursor-pointer flex items-center justify-center gap-1 shadow-2xs whitespace-nowrap overflow-hidden"
-            title={t('footer.liveLogs')}
-          >
-            <span className="text-sm leading-none shrink-0">📜</span>
-            <span className="truncate">{t('footer.liveLogs')}</span>
-          </button>
+          </main>
         </div>
-      </footer>
+      </div>
 
       {/* Floating Modal Windows */}
       <ClearCacheModal
