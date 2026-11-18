@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Sidebar, SidebarProps } from './Sidebar'
+import { LanguageSwitcher } from '../common/LanguageSwitcher'
 import { translate } from '../../i18n'
 
 function t(key: string): string {
@@ -40,6 +41,8 @@ describe('Sidebar Navigation Component', () => {
     isRunning: true,
     hasUpdate: false,
     loadingOpenFolder: false,
+    language: 'zh',
+    onLanguageSelect: vi.fn(),
     onOpenLogs: vi.fn(),
     onOpenHealth: vi.fn(),
     onOpenLatency: vi.fn(),
@@ -175,5 +178,21 @@ describe('Sidebar Navigation Component', () => {
       typeof n.props?.className === 'string' && n.props.className.includes('bg-amber-500')
     )
     expect(dotsNoUpdate.length).toBe(0)
+  })
+
+  it('renders language switcher in the bottom group and triggers language selection', () => {
+    const onLanguageSelect = vi.fn()
+    const el = Sidebar({
+      ...defaultProps,
+      language: 'zh',
+      onLanguageSelect,
+    }) as any
+
+    const switcher = findNodes(el, (n) => n.type === LanguageSwitcher)[0]
+    expect(switcher).toBeDefined()
+    expect(switcher.props.language).toBe('zh')
+
+    switcher.props.onSelect('ja')
+    expect(onLanguageSelect).toHaveBeenCalledWith('ja')
   })
 })

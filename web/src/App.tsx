@@ -27,7 +27,6 @@ import {
 
 import { Modal } from './components/common/Modal'
 import { ToggleSwitch, SettingToggleRow } from './components/common/ToggleSwitch'
-import { LanguageSwitcher } from './components/common/LanguageSwitcher'
 import { LiveLogsWindow } from './components/logs/LiveLogsWindow'
 import { MobileGuideModal } from './components/modals/MobileGuideModal'
 import { ClearCacheModal } from './components/modals/ClearCacheModal'
@@ -1293,6 +1292,8 @@ export const App: React.FC = () => {
         isRunning={isRunning}
         hasUpdate={Boolean(updateInfo?.available)}
         loadingOpenFolder={loadingOpenFolder}
+        language={language}
+        onLanguageSelect={setLanguage}
         onOpenLogs={openLogsWindow}
         onOpenHealth={() => setIsHealthModalOpen(true)}
         onOpenLatency={() => setIsLatencyModalOpen(true)}
@@ -1375,11 +1376,8 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Top Right Master Start / Stop Action Button, Quit Button & Language Switcher */}
+            {/* Top Right Master Start / Stop Action Button & Quit Button */}
             <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
-              {/* Language Switcher Capsule */}
-              <LanguageSwitcher language={language} onSelect={setLanguage} />
-
               <button
                 type="button"
                 disabled={loadingProxy || isTerminated}

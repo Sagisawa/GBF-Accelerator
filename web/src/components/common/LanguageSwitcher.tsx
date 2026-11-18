@@ -3,13 +3,18 @@ import React from 'react'
 export interface LanguageSwitcherProps {
   language: 'zh' | 'en' | 'ja'
   onSelect: (lang: 'zh' | 'en' | 'ja') => void
+  className?: string
 }
 
 /**
  * Segmented Language Switcher capsule with smooth sliding pill indicator
  * Inspired by smooth-option-switcher
  */
-export const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({ language, onSelect }) => {
+export const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
+  language,
+  onSelect,
+  className = '',
+}) => {
   const options: Array<{ code: 'zh' | 'en' | 'ja'; label: string }> = [
     { code: 'zh', label: '简中' },
     { code: 'en', label: 'EN' },
@@ -23,7 +28,7 @@ export const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({ language, on
     <div
       role="radiogroup"
       aria-label="Language selection"
-      className="relative inline-flex items-center rounded-full bg-slate-100 p-1 border border-slate-200/90 text-xs font-semibold shadow-2xs select-none"
+      className={`relative inline-flex items-center rounded-full bg-slate-100 p-1 border border-slate-200/90 text-xs font-semibold shadow-2xs select-none ${className}`}
     >
       {/* Smooth Sliding Pill Indicator */}
       <div
@@ -43,7 +48,7 @@ export const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({ language, on
             role="radio"
             aria-checked={isSelected}
             onClick={() => onSelect(opt.code)}
-            className={`relative z-10 px-2.5 py-1 rounded-full transition-colors duration-150 cursor-pointer text-center min-w-[50px] focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40 ${
+            className={`relative z-10 flex-1 px-2 py-1 rounded-full transition-colors duration-150 cursor-pointer text-center min-w-[46px] focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40 ${
               isSelected
                 ? 'text-sky-700 font-bold'
                 : 'text-slate-600 hover:text-slate-900'

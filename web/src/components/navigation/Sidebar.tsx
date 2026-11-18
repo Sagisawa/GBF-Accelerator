@@ -13,6 +13,7 @@ import {
   Github,
 } from 'lucide-react'
 import { useI18n } from '../../i18n'
+import { LanguageSwitcher } from '../common/LanguageSwitcher'
 
 export interface SidebarProps {
   activeTab: 'core' | 'android'
@@ -21,6 +22,8 @@ export interface SidebarProps {
   isRunning: boolean
   hasUpdate: boolean
   loadingOpenFolder: boolean
+  language: 'zh' | 'en' | 'ja'
+  onLanguageSelect: (lang: 'zh' | 'en' | 'ja') => void
   onOpenLogs: () => void
   onOpenHealth: () => void
   onOpenLatency: () => void
@@ -37,6 +40,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   showAndroidPatch,
   hasUpdate,
   loadingOpenFolder,
+  language,
+  onLanguageSelect,
   onOpenLogs,
   onOpenHealth,
   onOpenLatency,
@@ -184,6 +189,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Bottom Group: Always pinned to bottom, independent of right content scroll */}
       <div className="flex flex-col gap-2 w-full px-3 pt-3 shrink-0 border-t border-slate-200/80">
+        {/* Language Switcher Capsule */}
+        <LanguageSwitcher
+          language={language}
+          onSelect={onLanguageSelect}
+          className="w-full mb-0.5"
+        />
+
         <button
           type="button"
           onClick={onCheckUpdate}
