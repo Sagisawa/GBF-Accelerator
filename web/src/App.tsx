@@ -792,10 +792,11 @@ export const App: React.FC = () => {
     })
   }
   // Toggle Failover Enabled
-  const handleToggleFailoverEnabled = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const checked = e.target.checked
-    setFailoverEnabledInput(checked)
-    if (!checked) {
+  const handleToggleFailoverEnabled = async () => {
+    if (isDirect || Boolean(loadingAction)) return
+    const next = !failoverEnabledInput
+    setFailoverEnabledInput(next)
+    if (!next) {
       await runConfigAction('disable-failover', async () => {
         try {
           await applyConfig({ enable_upstream_failover: false })
@@ -1714,23 +1715,23 @@ export const App: React.FC = () => {
                   </span>
                 </div>
 
-                <label
-                  className={`inline-flex items-start gap-2 text-[13px] sm:text-sm ${
-                    isDirect ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 cursor-pointer'
-                  } select-none leading-snug`}
-                >
-                  <input
-                    type="checkbox"
+                <div className="flex items-center justify-between gap-3 py-1">
+                  <div
+                    className={`text-[13px] sm:text-sm font-semibold ${
+                      isDirect ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 cursor-pointer select-none'
+                    } leading-snug`}
+                    onClick={!isDirect && !loadingAction ? handleToggleFailoverEnabled : undefined}
+                  >
+                    <span>{t('cards.upstream.enableFailover')}</span>
+                    {isDirect && <span className="text-xs text-slate-400 ml-1.5 font-normal">{t('cards.upstream.failoverDirectNote')}</span>}
+                  </div>
+                  <ToggleSwitch
                     checked={!isDirect && failoverEnabledInput}
                     onChange={handleToggleFailoverEnabled}
                     disabled={isDirect || Boolean(loadingAction)}
-                    className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer mt-0.5 shrink-0 disabled:opacity-50 accent-sky-600"
+                    ariaLabel={t('cards.upstream.enableFailover')}
                   />
-                  <span>
-                    {t('cards.upstream.enableFailover')}
-                    {isDirect && <span className="text-xs text-slate-400 ml-1">{t('cards.upstream.failoverDirectNote')}</span>}
-                  </span>
-                </label>
+                </div>
 
                 {!isDirect && failoverEnabledInput && (
                   <div className="space-y-2.5 pt-0.5">
@@ -1828,29 +1829,37 @@ export const App: React.FC = () => {
                     </div>
 
                     <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
-                      <div className="flex flex-col gap-1.5">
-                        <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
-                          <input
-                            type="checkbox"
+                      <div className="flex flex-col gap-2 min-w-[220px]">
+                        <div className="flex items-center justify-between gap-3">
+                          <span
+                            className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none"
+                            onClick={!loadingAction ? () => setFailoverAutoRecoverInput(!failoverAutoRecoverInput) : undefined}
+                          >
+                            {t('cards.upstream.autoRecoverCheckbox')}
+                          </span>
+                          <ToggleSwitch
                             checked={failoverAutoRecoverInput}
-                            onChange={(e) => setFailoverAutoRecoverInput(e.target.checked)}
+                            onChange={() => setFailoverAutoRecoverInput(!failoverAutoRecoverInput)}
                             disabled={Boolean(loadingAction)}
-                            className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                            ariaLabel={t('cards.upstream.autoRecoverCheckbox')}
                           />
-                          <span>{t('cards.upstream.autoRecoverCheckbox')}</span>
-                        </label>
+                        </div>
 
                         {status?.platform === 'windows' && (
-                          <label className="inline-flex items-center gap-2 text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
+                          <div className="flex items-center justify-between gap-3">
+                            <span
+                              className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none"
+                              onClick={!loadingAction ? () => setFailoverNotificationInput(!failoverNotificationInput) : undefined}
+                            >
+                              {t('cards.upstream.notificationCheckbox')}
+                            </span>
+                            <ToggleSwitch
                               checked={failoverNotificationInput}
-                              onChange={(e) => setFailoverNotificationInput(e.target.checked)}
+                              onChange={() => setFailoverNotificationInput(!failoverNotificationInput)}
                               disabled={Boolean(loadingAction)}
-                              className="w-4 h-4 rounded text-sky-600 border-slate-300 focus:ring-sky-500/20 cursor-pointer accent-sky-600"
+                              ariaLabel={t('cards.upstream.notificationCheckbox')}
                             />
-                            <span>{t('cards.upstream.notificationCheckbox')}</span>
-                          </label>
+                          </div>
                         )}
                       </div>
 
