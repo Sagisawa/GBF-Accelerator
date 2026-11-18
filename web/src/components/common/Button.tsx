@@ -26,17 +26,17 @@ export const Button: React.FC<ButtonProps> = ({
 
   const variantClasses = {
     desktop:
-      'bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] text-slate-700 border border-slate-300 shadow-xs',
+      'bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] text-slate-700 border border-slate-300 shadow-xs dark:bg-slate-800 dark:hover:bg-slate-700 dark:active:bg-slate-900 dark:text-slate-100 dark:border-slate-600',
     primary:
       'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-xs',
     secondary:
-      'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 border border-slate-300 shadow-xs',
+      'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 border border-slate-300 shadow-xs dark:bg-slate-800 dark:hover:bg-slate-700 dark:active:bg-slate-900 dark:text-slate-100 dark:border-slate-600',
     danger:
       'bg-[#dc3545] hover:bg-[#c82333] active:bg-[#bd2130] text-white font-bold shadow-xs',
     success:
       'bg-[#28a745] hover:bg-[#218838] active:bg-[#1e7e34] text-white font-bold shadow-xs',
     ghost:
-      'bg-transparent hover:bg-slate-100 active:bg-slate-200 text-slate-600',
+      'bg-transparent hover:bg-slate-100 active:bg-slate-200 text-slate-600 dark:hover:bg-slate-800 dark:active:bg-slate-700 dark:text-slate-200',
     apple:
       'bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs',
   }[variant]

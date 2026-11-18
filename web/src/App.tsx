@@ -44,6 +44,7 @@ import { HealthCheckModal } from './components/modals/HealthCheckModal'
 import { AndroidPatchPanel } from './components/AndroidPatchPanel'
 import { useI18n } from './i18n'
 
+import { useTheme } from './hooks/useTheme'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { isNewerVersion } from './utils/version'
 import { shouldAutoOpenCaGuide } from './utils/caGuide'
@@ -100,23 +101,36 @@ const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ ba
   return <>{hours}h {minutes}m {seconds}s</>
 }
 
-const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: boolean }> = ({ status, running }) => {
+let lastKnownMetrics = {
+  totalHits: 0,
+  ramHits: 0,
+  downloads: 0,
+  apis: 0,
+}
+
+export const RealtimeRequestHud: React.FC<{
+  status: RuntimeStatus | null
+  running: boolean
+  compact?: boolean
+}> = ({ status, running, compact = false }) => {
   const { t } = useI18n()
   const [counts, setCounts] = useState(() => ({
-    totalHits: running ? (status?.requests?.total_hits ?? 0) : 0,
-    ramHits: running ? (status?.requests?.ram_hits ?? 0) : 0,
-    downloads: running ? (status?.requests?.cache_misses ?? 0) : 0,
-    apis: running ? (status?.requests?.total_apis ?? 0) : 0,
+    totalHits: running ? (lastKnownMetrics.totalHits || (status?.requests?.total_hits ?? 0)) : 0,
+    ramHits: running ? (lastKnownMetrics.ramHits || (status?.requests?.ram_hits ?? 0)) : 0,
+    downloads: running ? (lastKnownMetrics.downloads || (status?.requests?.cache_misses ?? 0)) : 0,
+    apis: running ? (lastKnownMetrics.apis || (status?.requests?.total_apis ?? 0)) : 0,
   }))
 
   useEffect(() => {
     if (!running) return
-    setCounts({
+    const next = {
       totalHits: status?.requests?.total_hits ?? 0,
       ramHits: status?.requests?.ram_hits ?? 0,
       downloads: status?.requests?.cache_misses ?? 0,
       apis: status?.requests?.total_apis ?? 0,
-    })
+    }
+    lastKnownMetrics = next
+    setCounts(next)
   }, [running, status?.requests?.total_hits, status?.requests?.ram_hits, status?.requests?.cache_misses, status?.requests?.total_apis])
 
   useEffect(() => {
@@ -124,17 +138,59 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
       const data = (event as CustomEvent).detail
       const requests = data?.requests
       if (!requests || !running) return
-      setCounts((prev) => ({
-        totalHits: typeof requests.total_hits === 'number' ? requests.total_hits : prev.totalHits,
-        ramHits: typeof requests.ram_hits === 'number' ? requests.ram_hits : prev.ramHits,
-        downloads: typeof requests.cache_misses === 'number' ? requests.cache_misses : prev.downloads,
-        apis: typeof requests.total_apis === 'number' ? requests.total_apis : prev.apis,
-      }))
+      setCounts((prev) => {
+        const next = {
+          totalHits: typeof requests.total_hits === 'number' ? requests.total_hits : prev.totalHits,
+          ramHits: typeof requests.ram_hits === 'number' ? requests.ram_hits : prev.ramHits,
+          downloads: typeof requests.cache_misses === 'number' ? requests.cache_misses : prev.downloads,
+          apis: typeof requests.total_apis === 'number' ? requests.total_apis : prev.apis,
+        }
+        lastKnownMetrics = next
+        return next
+      })
     }
 
     window.addEventListener('gbf-metrics', onMetrics)
     return () => window.removeEventListener('gbf-metrics', onMetrics)
   }, [running])
+
+  if (compact) {
+    return (
+      <div className="flex items-center gap-1.5 sm:gap-2">
+        <span
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70 text-xs font-mono font-bold shadow-2xs"
+          title={`${t('hud.totalHits')}: ${counts.totalHits.toLocaleString()}${counts.ramHits > 0 ? ` (${t('hud.ramHits', { count: counts.ramHits.toLocaleString() })})` : ''}`}
+        >
+          <Zap className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+          <span className="hidden md:inline font-sans font-medium text-slate-600 text-[11px]">{t('hud.totalHitsShort') || '命中'}:</span>
+          <span>{counts.totalHits.toLocaleString()}</span>
+          {counts.ramHits > 0 && (
+            <span className="hidden lg:inline text-[10px] font-sans text-emerald-600/80">
+              (RAM {counts.ramHits.toLocaleString()})
+            </span>
+          )}
+        </span>
+
+        <span
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/70 text-xs font-mono font-bold shadow-2xs"
+          title={`${t('hud.remoteDownloads')}: ${counts.downloads.toLocaleString()}`}
+        >
+          <Download className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+          <span className="hidden md:inline font-sans font-medium text-slate-600 text-[11px]">{t('hud.remoteDownloadsShort') || '下载'}:</span>
+          <span>{counts.downloads.toLocaleString()}</span>
+        </span>
+
+        <span
+          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200/80 text-xs font-mono font-bold shadow-2xs"
+          title={`${t('hud.apiForwarding')}: ${counts.apis.toLocaleString()}`}
+        >
+          <ArrowLeftRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+          <span className="hidden md:inline font-sans font-medium text-slate-600 text-[11px]">{t('hud.apiForwardingShort') || '转发'}:</span>
+          <span>{counts.apis.toLocaleString()}</span>
+        </span>
+      </div>
+    )
+  }
 
   return (
     <div className="grid grid-cols-3 gap-2.5 sm:gap-4 pt-1">
@@ -187,6 +243,7 @@ const RealtimeRequestHud: React.FC<{ status: RuntimeStatus | null; running: bool
 
 export const App: React.FC = () => {
   const { language, setLanguage, t } = useI18n()
+  const { theme, toggleTheme, setTheme } = useTheme()
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [cacheStats, setCacheStats] = useState<CacheStats | null>(null)
   const [upstreamRuntime, setUpstreamRuntime] = useState<UpstreamRuntimeStatus | null>(null)
@@ -254,6 +311,35 @@ export const App: React.FC = () => {
   const [quitting, setQuitting] = useState<boolean>(false)
   const [isTerminated, setIsTerminated] = useState<boolean>(false)
   const [activeTab, setActiveTab] = useState<'core' | 'android'>('core')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('gbf_sidebar_collapsed') === 'true'
+    } catch {
+      return false
+    }
+  })
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem('gbf_sidebar_collapsed', String(next))
+      } catch {}
+      return next
+    })
+  }, [])
+
+  // Header auto-shrink state when user scrolls down
+  const [isHeaderScrolled, setIsHeaderScrolled] = useState(false)
+
+  const handleMainScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const top = e.currentTarget.scrollTop
+    if (top > 28) {
+      setIsHeaderScrolled(true)
+    } else if (top <= 14) {
+      setIsHeaderScrolled(false)
+    }
+  }, [])
 
   const isAndroid =
     status?.platform === 'android' ||
@@ -379,6 +465,7 @@ export const App: React.FC = () => {
         if (c.value.listen_port) setPortInput(String(c.value.listen_port))
         if (c.value.ram_cache_max_mb) setRamMbInput(String(c.value.ram_cache_max_mb))
         if (c.value.language) setLanguage(c.value.language, false)
+        if (c.value.theme) setTheme(c.value.theme, false)
       }
       if (cs.status === 'fulfilled') setCacheStats(cs.value)
       if (us.status === 'fulfilled') setUpstreamRuntime(us.value)
@@ -386,7 +473,7 @@ export const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to fetch initial state', e)
     }
-  }, [setLanguage])
+  }, [setLanguage, setTheme])
 
   useEffect(() => {
     loadState()
@@ -1205,6 +1292,8 @@ export const App: React.FC = () => {
   // Keyboard Shortcuts
   useKeyboardShortcuts({
     onToggleProxy: handleToggleProxy,
+    onToggleTheme: toggleTheme,
+    onToggleSidebar: handleToggleSidebar,
     onToggleLogs: () => {
       if (isLogDrawerOpen) {
         setIsLogDrawerOpen(false)
@@ -1294,6 +1383,8 @@ export const App: React.FC = () => {
         loadingOpenFolder={loadingOpenFolder}
         language={language}
         onLanguageSelect={setLanguage}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onOpenLogs={openLogsWindow}
         onOpenHealth={() => setIsHealthModalOpen(true)}
         onOpenLatency={() => setIsLatencyModalOpen(true)}
@@ -1302,6 +1393,8 @@ export const App: React.FC = () => {
         onOpenRoutingGuide={() => setIsRoutingModalOpen(true)}
         onCheckUpdate={() => setIsUpdateModalOpen(true)}
         onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={handleToggleSidebar}
       />
 
       <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
@@ -1326,92 +1419,150 @@ export const App: React.FC = () => {
           </div>
         )}
 
-        {/* 1. Header & Live Telemetry HUD: Pinned to top, strictly for 'core' tab */}
+        {/* 1. Header & Live Telemetry HUD: Pinned to top, smoothly shrinks on scroll */}
         {activeTab === 'core' && (
-          <header className="shrink-0 bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 sm:py-4 shadow-2xs z-20">
-            <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5">
-              {/* Top Row: Logo, Title, Running State & Master Switch */}
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
-                    <Zap className="w-5.5 h-5.5 fill-current" />
-                  </div>
-                  <div className="flex flex-col min-w-0">
-                    <div className="flex items-center gap-2.5 flex-wrap">
-                      <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
-                        {t('header.title')}
-                      </span>
-                      <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                        v{status?.version || '2.5.1'}
-                      </span>
-                      {updateInfo?.available && (
-                        <button
-                          type="button"
-                          onClick={() => setIsUpdateModalOpen(true)}
-                          className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
-                        >
-                          <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                          <span>{t('header.updateFound', { version: updateInfo.version })}</span>
-                        </button>
-                      )}
+          <header
+            className={`shrink-0 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-2xs z-20 transition-all duration-200 ease-in-out ${
+              isHeaderScrolled ? 'py-2 px-4 sm:px-6' : 'py-3.5 sm:py-4 px-4 sm:px-6'
+            }`}
+          >
+            {!isHeaderScrolled ? (
+              <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5 animate-in fade-in duration-150">
+                {/* Top Row: Logo, Title, Running State & Master Switch */}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
+                      <Zap className="w-5.5 h-5.5 fill-current" />
                     </div>
-                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                    <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
-                      <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                      <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
-                        {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
-                      </span>
-                    </span>
-                    {isRunning && (
-                      <>
-                        <span className="text-slate-300">·</span>
-                        <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
-                          <span className="text-slate-400">{t('header.uptime')}</span>
-                          <span className="font-semibold text-slate-700">
-                            <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
+                    <div className="flex flex-col min-w-0">
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
+                          {t('header.title')}
+                        </span>
+                        <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
+                          v{status?.version || '2.5.1'}
+                        </span>
+                        {updateInfo?.available && (
+                          <button
+                            type="button"
+                            onClick={() => setIsUpdateModalOpen(true)}
+                            className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
+                          >
+                            <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            <span>{t('header.updateFound', { version: updateInfo.version })}</span>
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                        <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
+                          <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                          <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
+                            {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
                           </span>
                         </span>
-                      </>
-                    )}
+                        {isRunning && (
+                          <>
+                            <span className="text-slate-300">·</span>
+                            <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
+                              <span className="text-slate-400">{t('header.uptime')}</span>
+                              <span className="font-semibold text-slate-700">
+                                <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
+                              </span>
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Top Right Master Start / Stop Action Button & Quit Button */}
+                  <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
+                    <button
+                      type="button"
+                      disabled={loadingProxy || isTerminated}
+                      onClick={handleToggleProxy}
+                      className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
+                        isRunning
+                          ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
+                          : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
+                      }`}
+                    >
+                      {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isTerminated}
+                      onClick={() => setIsQuitModalOpen(true)}
+                      className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
+                      title={t('header.quitAppTip')}
+                    >
+                      <Power className="w-4 h-4 text-rose-500" />
+                      <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
+                    </button>
                   </div>
                 </div>
-              </div>
 
-              {/* Top Right Master Start / Stop Action Button & Quit Button */}
-              <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
-                <button
-                  type="button"
-                  disabled={loadingProxy || isTerminated}
-                  onClick={handleToggleProxy}
-                  className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
-                    isRunning
-                      ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
-                      : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
-                  }`}
-                >
-                  {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
-                </button>
-                <button
-                  type="button"
-                  disabled={isTerminated}
-                  onClick={() => setIsQuitModalOpen(true)}
-                  className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
-                  title={t('header.quitAppTip')}
-                >
-                  <Power className="w-4 h-4 text-rose-500" />
-                  <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
-                </button>
+                {/* Realtime request counters: isolated from the root App render loop */}
+                <RealtimeRequestHud status={status} running={isRunning} />
               </div>
-            </div>
+            ) : (
+              /* Collapsed Compact State: Single slim line with critical info */
+              <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 animate-in fade-in duration-150">
+                {/* Left: Compact Logo, Title & Status */}
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
+                    <Zap className="w-4 h-4 fill-current" />
+                  </div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight whitespace-nowrap truncate">
+                      {t('header.title')}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap shrink-0">
+                      <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                      <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
+                        {isRunning ? `${currentListenPort}` : t('header.stopped')}
+                      </span>
+                    </span>
+                  </div>
+                </div>
 
-            {/* Realtime request counters: isolated from the root App render loop */}
-            <RealtimeRequestHud status={status} running={isRunning} />
-          </div>
-        </header>
+                {/* Middle: Key Telemetry Metrics Pills */}
+                <div className="hidden sm:flex items-center justify-center flex-1 max-w-md">
+                  <RealtimeRequestHud status={status} running={isRunning} compact={true} />
+                </div>
+
+                {/* Right: Master Start / Stop Button & Compact Quit */}
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    disabled={loadingProxy || isTerminated}
+                    onClick={handleToggleProxy}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold text-white shadow-2xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
+                      isRunning
+                        ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
+                        : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
+                    }`}
+                  >
+                    {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isTerminated}
+                    onClick={() => setIsQuitModalOpen(true)}
+                    className="p-1.5 rounded-lg text-slate-600 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer active:scale-[0.98] flex items-center justify-center shadow-2xs"
+                    title={t('header.quitAppTip')}
+                    aria-label={t('header.quitApp')}
+                  >
+                    <Power className="w-4 h-4 text-rose-500" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </header>
         )}
 
         {/* 2. Scrollable Main Work Area: Natural Content-Fit, 2-Column Responsive Card Grid */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div className="flex-1 overflow-y-auto min-h-0" onScroll={handleMainScroll}>
           <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-8 sm:pb-10 flex flex-col justify-start gap-4 sm:gap-5">
             {activeTab === 'core' ? (
           <>

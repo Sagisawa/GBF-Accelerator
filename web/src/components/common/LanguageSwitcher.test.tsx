@@ -68,4 +68,21 @@ describe('LanguageSwitcher Component', () => {
     expect(indicator).toBeDefined()
     expect(indicator.props.style.transform).toBe('translateX(200%)')
   })
+
+  it('renders compact single button switcher when compact is true and cycles language on click', () => {
+    const onSelect = vi.fn()
+    const el = LanguageSwitcher({
+      language: 'zh',
+      onSelect,
+      compact: true,
+    }) as any
+
+    const btn = findNodes(el, (n) => n.type === 'button')[0]
+    expect(btn).toBeDefined()
+    expect(collectText(btn)).toBe('中')
+
+    // Click cycles zh -> en
+    btn.props.onClick()
+    expect(onSelect).toHaveBeenCalledWith('en')
+  })
 })

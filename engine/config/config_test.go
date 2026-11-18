@@ -436,3 +436,81 @@ func TestConfig_Language(t *testing.T) {
 	}
 }
 
+func TestConfig_Theme(t *testing.T) {
+	if got := DefaultConfig().Theme; got != "light" {
+		t.Fatalf("expected default Theme to be 'light', got %q", got)
+	}
+
+	testCases := []struct {
+		input string
+		want  string
+	}{
+		{"light", "light"},
+		{"LIGHT", "light"},
+		{"dark", "dark"},
+		{"DARK", "dark"},
+		{"   dark  ", "dark"},
+		{"", "light"},
+		{"auto", "light"},
+		{"invalid", "light"},
+	}
+
+	for _, tc := range testCases {
+		if got := NormalizeTheme(tc.input); got != tc.want {
+			t.Errorf("NormalizeTheme(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+
+	// 1. Backward compatibility test: load old JSON without "theme" field
+	oldJSON := []byte(`{"listen_host":"127.0.0.1","listen_port":8124,"control_port":8125,"language":"zh"}`)
+	tmpOld, err := os.CreateTemp("", "gbf_old_config_*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	if _, err := tmpOld.Write(oldJSON); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	_ = tmpOld.Close()
+	defer os.Remove(tmpOld.Name())
+
+	oldMgr := NewManager(tmpOld.Name())
+	if got := oldMgr.Get().Theme; got != "light" {
+		t.Fatalf("expected backward-compatible theme to default to 'light', got %q", got)
+	}
+
+	// 2. Persistence and reload test
+	tmpFile, err := os.CreateTemp("", "gbf_theme_test_*.json")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	_ = tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	mgr := NewManager(tmpFile.Name())
+	cand := mgr.Candidate()
+	cand.Theme = "dark"
+	if err := mgr.Commit(cand); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	if mgr.Get().Theme != "dark" {
+		t.Fatalf("expected Theme to be 'dark', got %q", mgr.Get().Theme)
+	}
+
+	// Verify reload from disk
+	mgr2 := NewManager(tmpFile.Name())
+	if mgr2.Get().Theme != "dark" {
+		t.Fatalf("expected reloaded Theme to be 'dark', got %q", mgr2.Get().Theme)
+	}
+
+	// 3. Commit invalid theme -> normalizes to "light"
+	cand2 := mgr2.Candidate()
+	cand2.Theme = "unknown-value"
+	if err := mgr2.Commit(cand2); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+	if mgr2.Get().Theme != "light" {
+		t.Fatalf("expected invalid Theme to normalize to 'light', got %q", mgr2.Get().Theme)
+	}
+}
+

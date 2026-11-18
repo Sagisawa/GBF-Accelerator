@@ -189,4 +189,26 @@ describe('useKeyboardShortcuts', () => {
     expect(onOpenShortcutsModal).not.toHaveBeenCalled()
     expect(onCloseAll).not.toHaveBeenCalled()
   })
+
+  it('triggers onToggleSidebar when [ is pressed in normal mode', () => {
+    const onToggleSidebar = vi.fn()
+    useKeyboardShortcuts({ onToggleSidebar })
+
+    const event = dispatchKeydown({ key: '[' })
+    expect(onToggleSidebar).toHaveBeenCalledTimes(1)
+    expect(event.preventDefault).toHaveBeenCalled()
+  })
+
+  it('triggers onToggleTheme when t or T is pressed in normal mode', () => {
+    const onToggleTheme = vi.fn()
+    useKeyboardShortcuts({ onToggleTheme })
+
+    const event1 = dispatchKeydown({ key: 't' })
+    expect(onToggleTheme).toHaveBeenCalledTimes(1)
+    expect(event1.preventDefault).toHaveBeenCalled()
+
+    const event2 = dispatchKeydown({ key: 'T' })
+    expect(onToggleTheme).toHaveBeenCalledTimes(2)
+    expect(event2.preventDefault).toHaveBeenCalled()
+  })
 })

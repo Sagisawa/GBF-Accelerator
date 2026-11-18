@@ -66,9 +66,12 @@ export const en: TranslationSchema = {
   },
   "hud": {
     "totalHits": "Local Cache Hits",
+    "totalHitsShort": "Hits",
     "ramHits": "RAM {count}",
     "remoteDownloads": "Remote Downloads",
-    "apiForwarding": "Game API Forwarding"
+    "remoteDownloadsShort": "Downloads",
+    "apiForwarding": "Game API Forwarding",
+    "apiForwardingShort": "APIs"
   },
   "sidebar": {
     "overview": "Dashboard",
@@ -81,7 +84,11 @@ export const en: TranslationSchema = {
     "routingTips": "Routing",
     "checkUpdate": "Check Update",
     "shortcuts": "Shortcuts",
-    "github": "Repository"
+    "github": "Repository",
+    "themeDark": "Dark Mode",
+    "themeLight": "Light Mode",
+    "collapse": "Collapse Sidebar",
+    "expand": "Expand Sidebar"
   },
   "tabs": {
     "core": "Core Acceleration & Control",
@@ -990,6 +997,8 @@ export const en: TranslationSchema = {
       "subtitle": "Global single-key controls (auto-suppressed while typing)",
       "toggleProxy": "Start / Stop Proxy Service",
       "toggleLogs": "Expand / Collapse Live Logs",
+      "toggleTheme": "Toggle Dark / Light Mode",
+      "toggleSidebar": "Expand / Collapse Sidebar",
       "toggleDirect": "Toggle Direct Mode",
       "clearCache": "Open Clear Cache Modal",
       "shortcuts": "Open Shortcuts Help",

@@ -13,6 +13,8 @@ export const ShortcutsModal: React.FC<ShortcutsModalProps> = ({ isOpen, onClose 
   const { t } = useI18n()
   const shortcuts = [
     { key: 'Space', desc: t('modals.shortcuts.toggleProxy') },
+    { key: '[', desc: t('modals.shortcuts.toggleSidebar') || '折叠 / 展开侧边栏' },
+    { key: 'T', desc: t('modals.shortcuts.toggleTheme') || '切换深色 / 浅色模式' },
     { key: 'L', desc: t('modals.shortcuts.toggleLogs') },
     { key: 'D', desc: t('modals.shortcuts.toggleDirect') },
     { key: 'C', desc: t('modals.shortcuts.clearCache') },

@@ -318,7 +318,8 @@ func TestControlApplyConfigAllFields(t *testing.T) {
 		"asset_keepalive_expiry": 75.0,
 		"ram_warmup_max_items": 2000,
 		"enable_api_telemetry": false,
-		"clean_zombies": false
+		"clean_zombies": false,
+		"theme": "dark"
 	}`
 
 	req := httptest.NewRequest(http.MethodPost, "/api/config/apply", strings.NewReader(patchJSON))
@@ -361,6 +362,9 @@ func TestControlApplyConfigAllFields(t *testing.T) {
 	}
 	if cfg.CleanZombies != false {
 		t.Errorf("expected CleanZombies false, got true")
+	}
+	if cfg.Theme != "dark" {
+		t.Errorf("expected Theme dark, got %q", cfg.Theme)
 	}
 }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { Sidebar, SidebarProps } from './Sidebar'
 import { LanguageSwitcher } from '../common/LanguageSwitcher'
+import { ThemeToggle } from '../common/ThemeToggle'
 import { translate } from '../../i18n'
 
 function t(key: string): string {
@@ -194,5 +195,77 @@ describe('Sidebar Navigation Component', () => {
 
     switcher.props.onSelect('ja')
     expect(onLanguageSelect).toHaveBeenCalledWith('ja')
+  })
+
+  it('renders theme toggle in the bottom group and triggers theme toggle', () => {
+    const onToggleTheme = vi.fn()
+    const el = Sidebar({
+      ...defaultProps,
+      theme: 'light',
+      onToggleTheme,
+    }) as any
+
+    const toggle = findNodes(el, (n) => n.type === ThemeToggle)[0]
+    expect(toggle).toBeDefined()
+    expect(toggle.props.theme).toBe('light')
+
+    toggle.props.onToggle()
+    expect(onToggleTheme).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders collapsed compact layout when collapsed is true and toggles collapse callback', () => {
+    const onToggleCollapse = vi.fn()
+    const el = Sidebar({
+      ...defaultProps,
+      collapsed: true,
+      onToggleCollapse,
+    }) as any
+
+    expect(el.props.className).toContain('w-[68px]')
+
+    const buttons = findNodes(el, (n) => n.type === 'button')
+    const expandBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.expand'))
+    expect(expandBtn).toBeDefined()
+    expandBtn?.props.onClick()
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders collapse toggle button in expanded mode and triggers callback', () => {
+    const onToggleCollapse = vi.fn()
+    const el = Sidebar({
+      ...defaultProps,
+      collapsed: false,
+      onToggleCollapse,
+    }) as any
+
+    expect(el.props.className).toContain('w-52')
+
+    const buttons = findNodes(el, (n) => n.type === 'button')
+    const collapseBtn = buttons.find((b) => b.props['aria-label'] === t('sidebar.collapse'))
+    expect(collapseBtn).toBeDefined()
+    collapseBtn?.props.onClick()
+    expect(onToggleCollapse).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders live running indicator when isRunning is true and hides when false', () => {
+    const elRunning = Sidebar({
+      ...defaultProps,
+      isRunning: true,
+    }) as any
+
+    const runningDots = findNodes(elRunning, (n) =>
+      typeof n.props?.className === 'string' && n.props.className.includes('bg-emerald-500')
+    )
+    expect(runningDots.length).toBeGreaterThanOrEqual(1)
+
+    const elStopped = Sidebar({
+      ...defaultProps,
+      isRunning: false,
+    }) as any
+
+    const stoppedDots = findNodes(elStopped, (n) =>
+      typeof n.props?.className === 'string' && n.props.className.includes('bg-emerald-500')
+    )
+    expect(stoppedDots.length).toBe(0)
   })
 })

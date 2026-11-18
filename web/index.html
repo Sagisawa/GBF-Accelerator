@@ -5,6 +5,18 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GBF-Accelerator 控制台</title>
+    <script>
+      (function() {
+        try {
+          var t = localStorage.getItem('gbf_theme');
+          if (t === 'dark') {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body class="bg-[#f1f5f9] text-slate-800 min-h-screen antialiased selection:bg-blue-200 selection:text-slate-900">
     <div id="root"></div>

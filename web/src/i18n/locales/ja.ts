@@ -66,9 +66,12 @@ export const ja: TranslationSchema = {
   },
   "hud": {
     "totalHits": "ローカルキャッシュヒット",
+    "totalHitsShort": "ヒット",
     "ramHits": "RAM {count}",
     "remoteDownloads": "リモート取得キャッシュ",
-    "apiForwarding": "ゲームAPI透過転送"
+    "remoteDownloadsShort": "DL",
+    "apiForwarding": "ゲームAPI透過転送",
+    "apiForwardingShort": "API"
   },
   "sidebar": {
     "overview": "操作ホーム",
@@ -81,7 +84,11 @@ export const ja: TranslationSchema = {
     "routingTips": "ルーティング",
     "checkUpdate": "更新確認",
     "shortcuts": "ショートカット",
-    "github": "プロジェクト"
+    "github": "プロジェクト",
+    "themeDark": "ダークモード",
+    "themeLight": "ライトモード",
+    "collapse": "サイドバーを折りたたむ",
+    "expand": "サイドバーを展開"
   },
   "tabs": {
     "core": "コア加速・制御",
@@ -990,6 +997,8 @@ export const ja: TranslationSchema = {
       "subtitle": "グローバルショートカット操作 (入力中は誤動作防止のため無効化)",
       "toggleProxy": "プロキシの開始 / 停止",
       "toggleLogs": "リアルタイムログの表示 / 非表示",
+      "toggleTheme": "ダーク / ライトモード切替",
+      "toggleSidebar": "サイドバーの折りたたみ / 展開",
       "toggleDirect": "直結モードの切り替え",
       "clearCache": "キャッシュ削除画面を開く",
       "shortcuts": "ショートカット一覧を開く",

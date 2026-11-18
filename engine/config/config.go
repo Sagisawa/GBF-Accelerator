@@ -52,6 +52,7 @@ type Config struct {
 	AssetKeepaliveExpiry float64 `json:"asset_keepalive_expiry"`
 	EnableAPITelemetry   bool    `json:"enable_api_telemetry"`
 	Language             string  `json:"language"`
+	Theme                string  `json:"theme"`
 	WindowWidth          int     `json:"window_width"`
 	WindowHeight         int     `json:"window_height"`
 	WindowMaximized      bool    `json:"window_maximized"`
@@ -103,6 +104,7 @@ func DefaultConfig() Config {
 		AssetKeepaliveExpiry: 60.0,
 		EnableAPITelemetry:   true,
 		Language:             "zh",
+		Theme:                "light",
 		WindowWidth:          880,
 		WindowHeight:         640,
 		WindowMaximized:      false,
@@ -189,6 +191,15 @@ func NormalizeLanguage(v string) string {
 		return "ja"
 	default:
 		return "zh"
+	}
+}
+
+func NormalizeTheme(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "dark":
+		return "dark"
+	default:
+		return "light"
 	}
 }
 
@@ -298,6 +309,9 @@ func (m *Manager) Load(cfgPath string) error {
 	if _, ok := present["language"]; ok {
 		m.cfg.Language = NormalizeLanguage(loaded.Language)
 	}
+	if _, ok := present["theme"]; ok {
+		m.cfg.Theme = NormalizeTheme(loaded.Theme)
+	}
 	if _, ok := present["window_width"]; ok && loaded.WindowWidth >= 400 {
 		m.cfg.WindowWidth = loaded.WindowWidth
 	}
@@ -341,6 +355,7 @@ func (m *Manager) Commit(candidate Config) error {
 	candidate.UpstreamFailoverConsecutiveFailures = normalizeUpstreamFailoverConsecutiveFailures(candidate.UpstreamFailoverConsecutiveFailures)
 	candidate.UpstreamFailoverCooldownSeconds = normalizeUpstreamFailoverCooldownSeconds(candidate.UpstreamFailoverCooldownSeconds)
 	candidate.Language = NormalizeLanguage(candidate.Language)
+	candidate.Theme = NormalizeTheme(candidate.Theme)
 	m.commitMu.Lock()
 
 	m.mu.Lock()

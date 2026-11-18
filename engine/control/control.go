@@ -1216,6 +1216,9 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	if val, ok := patch["language"].(string); ok {
 		candidate.Language = config.NormalizeLanguage(val)
 	}
+	if val, ok := patch["theme"].(string); ok {
+		candidate.Theme = config.NormalizeTheme(val)
+	}
 
 	if candidate.CacheDir != oldCandidate.CacheDir {
 		if err := config.ValidateCacheDir(candidate.CacheDir); err != nil {

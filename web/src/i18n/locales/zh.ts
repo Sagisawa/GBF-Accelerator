@@ -64,9 +64,12 @@ export const zh = {
   },
   "hud": {
     "totalHits": "本地缓存命中",
+    "totalHitsShort": "命中",
     "ramHits": "RAM {count}",
     "remoteDownloads": "远程下载缓存",
-    "apiForwarding": "游戏 API 转发"
+    "remoteDownloadsShort": "下载",
+    "apiForwarding": "游戏 API 转发",
+    "apiForwardingShort": "转发"
   },
   "sidebar": {
     "overview": "控制首页",
@@ -79,7 +82,11 @@ export const zh = {
     "routingTips": "分流说明",
     "checkUpdate": "检查更新",
     "shortcuts": "快捷按键",
-    "github": "项目地址"
+    "github": "项目地址",
+    "themeDark": "深色模式",
+    "themeLight": "浅色模式",
+    "collapse": "折叠侧栏",
+    "expand": "展开侧栏"
   },
   "tabs": {
     "core": "核心加速与控制",
@@ -988,6 +995,8 @@ export const zh = {
       "subtitle": "全局单键快速中控操作 (打字时自动屏蔽防误触)",
       "toggleProxy": "启动 / 停止代理服务",
       "toggleLogs": "展开 / 收起实时日志终端",
+      "toggleTheme": "切换深色 / 浅色模式",
+      "toggleSidebar": "折叠 / 展开导航侧边栏",
       "toggleDirect": "切换直连模式 (Direct Mode)",
       "clearCache": "呼出清空缓存 (RAM / 磁盘) 窗口",
       "shortcuts": "打开此快捷键速查面板",

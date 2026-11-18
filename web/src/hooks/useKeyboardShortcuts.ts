@@ -2,7 +2,9 @@ import { useEffect, useRef } from 'react'
 
 export interface ShortcutHandlers {
   onToggleProxy?: () => void
+  onToggleTheme?: () => void
   onToggleLogs?: () => void
+  onToggleSidebar?: () => void
   onToggleDirect?: () => void
   onOpenClearModal?: () => void
   onOpenShortcutsModal?: () => void
@@ -80,6 +82,17 @@ export function useKeyboardShortcuts(handlers: ShortcutHandlers) {
         case 'L':
           e.preventDefault()
           handlersRef.current.onToggleLogs?.()
+          break
+
+        case 't':
+        case 'T':
+          e.preventDefault()
+          handlersRef.current.onToggleTheme?.()
+          break
+
+        case '[':
+          e.preventDefault()
+          handlersRef.current.onToggleSidebar?.()
           break
 
         case 'd':
