@@ -1304,7 +1304,7 @@ export const App: React.FC = () => {
         onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
       />
 
-      <div className="flex-1 min-w-0 flex flex-col min-h-screen">
+      <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
         {/* Toast Notification */}
         {toast && (
           <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[60] animate-in fade-in slide-in-from-top-3 duration-200">
@@ -1320,97 +1320,100 @@ export const App: React.FC = () => {
 
         {/* Termination Notice Banner when user explicitly quits backend */}
         {isTerminated && (
-          <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200">
+          <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200 shrink-0">
             <AlertOctagon className="w-4 h-4 text-rose-600 shrink-0" />
             <span>{t('header.terminatedNotice')}</span>
           </div>
         )}
 
-        {/* 1. Header & Live Telemetry HUD (Fixed top panel) */}
-        <header className="shrink-0 bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 sm:py-4 shadow-2xs z-20">
-          <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5">
-            {/* Top Row: Logo, Title, Running State & Master Switch */}
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
-                  <Zap className="w-5.5 h-5.5 fill-current" />
-                </div>
-                <div className="flex flex-col min-w-0">
-                  <div className="flex items-center gap-2.5 flex-wrap">
-                    <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
-                      {t('header.title')}
+        {/* 1. Header & Live Telemetry HUD: Pinned to top, strictly for 'core' tab */}
+        {activeTab === 'core' && (
+          <header className="shrink-0 bg-white border-b border-slate-200/90 px-4 sm:px-6 py-3.5 sm:py-4 shadow-2xs z-20">
+            <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5">
+              {/* Top Row: Logo, Title, Running State & Master Switch */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
+                    <Zap className="w-5.5 h-5.5 fill-current" />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
+                        {t('header.title')}
+                      </span>
+                      <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
+                        v{status?.version || '2.5.1'}
+                      </span>
+                      {updateInfo?.available && (
+                        <button
+                          type="button"
+                          onClick={() => setIsUpdateModalOpen(true)}
+                          className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
+                        >
+                          <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>{t('header.updateFound', { version: updateInfo.version })}</span>
+                        </button>
+                      )}
+                    </div>
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
+                      <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                      <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
+                        {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
+                      </span>
                     </span>
-                    <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                      v{status?.version || '2.5.1'}
-                    </span>
-                    {updateInfo?.available && (
-                      <button
-                        type="button"
-                        onClick={() => setIsUpdateModalOpen(true)}
-                        className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
-                      >
-                        <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        <span>{t('header.updateFound', { version: updateInfo.version })}</span>
-                      </button>
+                    {isRunning && (
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
+                          <span className="text-slate-400">{t('header.uptime')}</span>
+                          <span className="font-semibold text-slate-700">
+                            <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
+                          </span>
+                        </span>
+                      </>
                     )}
                   </div>
-                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                  <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
-                    <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                    <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
-                      {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
-                    </span>
-                  </span>
-                  {isRunning && (
-                    <>
-                      <span className="text-slate-300">·</span>
-                      <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
-                        <span className="text-slate-400">{t('header.uptime')}</span>
-                        <span className="font-semibold text-slate-700">
-                          <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
-                        </span>
-                      </span>
-                    </>
-                  )}
                 </div>
+              </div>
+
+              {/* Top Right Master Start / Stop Action Button & Quit Button */}
+              <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
+                <button
+                  type="button"
+                  disabled={loadingProxy || isTerminated}
+                  onClick={handleToggleProxy}
+                  className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
+                    isRunning
+                      ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
+                      : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
+                  }`}
+                >
+                  {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
+                </button>
+                <button
+                  type="button"
+                  disabled={isTerminated}
+                  onClick={() => setIsQuitModalOpen(true)}
+                  className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
+                  title={t('header.quitAppTip')}
+                >
+                  <Power className="w-4 h-4 text-rose-500" />
+                  <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
+                </button>
               </div>
             </div>
 
-            {/* Top Right Master Start / Stop Action Button & Quit Button */}
-            <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
-              <button
-                type="button"
-                disabled={loadingProxy || isTerminated}
-                onClick={handleToggleProxy}
-                className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
-                  isRunning
-                    ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
-                    : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
-                }`}
-              >
-                {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
-              </button>
-              <button
-                type="button"
-                disabled={isTerminated}
-                onClick={() => setIsQuitModalOpen(true)}
-                className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
-                title={t('header.quitAppTip')}
-              >
-                <Power className="w-4 h-4 text-rose-500" />
-                <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
-              </button>
-            </div>
+            {/* Realtime request counters: isolated from the root App render loop */}
+            <RealtimeRequestHud status={status} running={isRunning} />
           </div>
+        </header>
+        )}
 
-          {/* Realtime request counters: isolated from the root App render loop */}
-          <RealtimeRequestHud status={status} running={isRunning} />
-        </div>
-      </header>
-
-      {/* 2. Main Work Area (Natural Content-Fit, 2-Column Responsive Card Grid) */}
-      <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-8 sm:pb-10 flex flex-col justify-start gap-4 sm:gap-5 flex-1">
-        {activeTab === 'core' ? (
+        {/* 2. Scrollable Main Work Area: Natural Content-Fit, 2-Column Responsive Card Grid */}
+        <div className="flex-1 overflow-y-auto min-h-0">
+          <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-8 sm:pb-10 flex flex-col justify-start gap-4 sm:gap-5">
+            {activeTab === 'core' ? (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
           {/* Card 1: Local Cache & Storage */}
@@ -2295,8 +2298,9 @@ export const App: React.FC = () => {
     ) : showAndroidPatch ? (
       <AndroidPatchPanel showToast={showToast} />
     ) : null}
-  </main>
-</div>
+          </main>
+        </div>
+      </div>
 
       {/* Floating Modal Windows */}
       <ClearCacheModal
