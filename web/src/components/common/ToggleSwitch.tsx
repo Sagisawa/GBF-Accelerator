@@ -1,4 +1,5 @@
 import React from 'react'
+import { InfoTip } from './InfoTip'
 
 export interface ToggleSwitchProps {
   checked: boolean
@@ -47,6 +48,8 @@ export const ToggleSwitch: React.FC<ToggleSwitchProps> = ({
 
 export interface SettingToggleRowProps {
   label: React.ReactNode
+  tooltip?: string
+  meta?: React.ReactNode
   description?: React.ReactNode
   checked: boolean
   onChange: () => void
@@ -57,10 +60,12 @@ export interface SettingToggleRowProps {
 }
 
 /**
- * Full row layout: Left label + description, right switch, hairline divider
+ * Full row layout: Left label + optional InfoTip/meta + description, right switch, hairline divider
  */
 export const SettingToggleRow: React.FC<SettingToggleRowProps> = ({
   label,
+  tooltip,
+  meta,
   description,
   checked,
   onChange,
@@ -82,8 +87,10 @@ export const SettingToggleRow: React.FC<SettingToggleRowProps> = ({
           className={`space-y-0.5 min-w-0 pr-2 ${disabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer select-none'}`}
           onClick={handleRowClick}
         >
-          <div className="text-[13px] sm:text-sm font-medium text-label-primary leading-snug">
-            {label}
+          <div className="text-[13px] sm:text-sm font-medium text-label-primary leading-snug flex items-center gap-1.5 flex-wrap">
+            <span>{label}</span>
+            {meta && <span className="shrink-0">{meta}</span>}
+            {tooltip && <InfoTip text={tooltip} />}
           </div>
           {description && (
             <div className="text-xs text-label-tertiary leading-relaxed">

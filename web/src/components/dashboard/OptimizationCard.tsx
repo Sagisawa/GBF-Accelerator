@@ -34,6 +34,7 @@ export const OptimizationCard: React.FC<OptimizationCardProps> = ({
         <div>
           <SettingToggleRow
             label={t('cards.optim.prefetch')}
+            tooltip={t('cards.optim.prefetchDesc')}
             checked={isPrefetch}
             onChange={onTogglePrefetch}
             disabled={Boolean(loadingAction)}
@@ -41,6 +42,7 @@ export const OptimizationCard: React.FC<OptimizationCardProps> = ({
 
           <SettingToggleRow
             label={t('cards.optim.browserCache')}
+            tooltip={t('cards.optim.browserCacheDesc')}
             checked={isBrowserCache}
             onChange={onToggleBrowserCache}
             disabled={Boolean(loadingAction)}

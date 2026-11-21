@@ -81,7 +81,7 @@ export const RealtimeRequestHud: React.FC<{
           </span>
           <span>{counts.totalHits.toLocaleString()}</span>
           {counts.ramHits > 0 && (
-            <span className="hidden lg:inline text-[10px] font-sans opacity-80 whitespace-nowrap">
+            <span className="hidden xl:inline text-[10px] font-sans opacity-80 whitespace-nowrap">
               (RAM {counts.ramHits.toLocaleString()})
             </span>
           )}

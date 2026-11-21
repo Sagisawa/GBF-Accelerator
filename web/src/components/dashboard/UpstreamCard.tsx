@@ -6,6 +6,7 @@ import { Card, CardHeader, InsetPanel, CompoundInputGroup } from '../common/Card
 import { Badge } from '../common/Badge'
 import { Button } from '../common/Button'
 import { SettingToggleRow, ToggleSwitch } from '../common/ToggleSwitch'
+import { InfoTip } from '../common/InfoTip'
 
 export interface UpstreamCardProps {
   status: RuntimeStatus | null
@@ -149,13 +150,9 @@ export const UpstreamCard: React.FC<UpstreamCardProps> = ({
         {/* Upstream Failover */}
         <div className="space-y-2.5 pt-2 hairline-t">
           <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div>
-              <div className="text-[13px] sm:text-sm text-label-primary font-medium">
-                {t('cards.upstream.failoverTitle')}
-              </div>
-              <div className="text-xs text-label-tertiary mt-0.5">
-                {t('cards.upstream.failoverSubtitle')}
-              </div>
+            <div className="text-[13px] sm:text-sm text-label-primary font-medium flex items-center gap-1.5">
+              <span>{t('cards.upstream.failoverTitle')}</span>
+              <InfoTip text={t('cards.upstream.failoverSubtitle')} />
             </div>
             <Badge variant={failoverBadgeVariant}>{failoverBadgeText}</Badge>
           </div>
@@ -383,14 +380,16 @@ export const UpstreamCard: React.FC<UpstreamCardProps> = ({
         {/* Mode Toggles */}
         <div className="pt-2 hairline-t">
           <SettingToggleRow
-            label={t('cards.upstream.directModeCheckbox')}
+            label={t('cards.upstream.directModeShort')}
+            tooltip={t('cards.upstream.directModeTip')}
             checked={isDirect}
             onChange={onToggleDirect}
             disabled={Boolean(loadingAction)}
           />
 
           <SettingToggleRow
-            label={t('cards.upstream.shimakazeCheckbox')}
+            label={t('cards.upstream.shimakazeShort')}
+            tooltip={t('cards.upstream.shimakazeTip')}
             checked={isShimakaze}
             onChange={onToggleShimakaze}
             disabled={Boolean(loadingAction)}
@@ -446,6 +445,7 @@ export const UpstreamCard: React.FC<UpstreamCardProps> = ({
               label={
                 <div className="flex items-center gap-2 flex-wrap">
                   <span>{t('cards.network.allowLan')}</span>
+                  <InfoTip text={t('cards.network.allowLanDesc')} />
                   <Button
                     type="button"
                     variant="desktop"

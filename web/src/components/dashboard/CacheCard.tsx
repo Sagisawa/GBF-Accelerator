@@ -6,6 +6,7 @@ import { Card, CardHeader, InsetPanel, CompoundInputGroup } from '../common/Card
 import { Badge } from '../common/Badge'
 import { Button } from '../common/Button'
 import { SettingToggleRow, ToggleSwitch } from '../common/ToggleSwitch'
+import { InfoTip } from '../common/InfoTip'
 
 export interface CacheCardProps {
   isAndroid: boolean
@@ -84,8 +85,9 @@ export const CacheCard: React.FC<CacheCardProps> = ({
 
         {/* Local Cache Dir */}
         <div className="space-y-2">
-          <label className="text-[13px] sm:text-sm text-label-secondary font-medium block">
-            {isAndroid ? t('cards.cache.dirLabelAndroid') : t('cards.cache.dirLabel')}
+          <label className="text-[13px] sm:text-sm text-label-secondary font-medium flex items-center gap-1.5">
+            <span>{isAndroid ? t('cards.cache.dirLabelAndroid') : t('cards.cache.dirLabelShort')}</span>
+            {!isAndroid && <InfoTip text={t('cards.cache.dirLabelTip')} />}
           </label>
           <div className="space-y-2">
             <CompoundInputGroup>
@@ -170,7 +172,13 @@ export const CacheCard: React.FC<CacheCardProps> = ({
         {/* RAM Cache Setting */}
         <div className="pt-2 hairline-t">
           <SettingToggleRow
-            label={t('cards.cache.ramCacheLabel', {
+            label={t('cards.cache.ramCacheShort')}
+            meta={
+              <span className="text-[11px] font-mono tnum text-label-tertiary bg-surface-active px-1.5 py-0.5 rounded-full border border-hairline">
+                {ramMaxMb}MB{ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : ''}
+              </span>
+            }
+            tooltip={t('cards.cache.ramCacheTip', {
               maxMb: ramMaxMb,
               gbText: ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : '',
             })}
@@ -259,16 +267,17 @@ export const CacheCard: React.FC<CacheCardProps> = ({
 
                 <div className="pt-2 hairline-t flex items-center justify-between gap-4">
                   <div
-                    className="text-xs sm:text-[13px] text-label-secondary cursor-pointer select-none leading-snug"
+                    className="text-xs sm:text-[13px] text-label-secondary cursor-pointer select-none leading-snug flex items-center gap-1.5 flex-wrap"
                     onClick={!loadingAction ? onToggleRamWarmup : undefined}
                   >
-                    {t('cards.cache.ramWarmupLabel')}
+                    <span>{t('cards.cache.ramWarmupShort')}</span>
+                    <InfoTip text={t('cards.cache.ramWarmupTip')} />
                   </div>
                   <ToggleSwitch
                     checked={isRamWarmup}
                     onChange={onToggleRamWarmup}
                     disabled={Boolean(loadingAction)}
-                    ariaLabel={t('cards.cache.ramWarmupLabel')}
+                    ariaLabel={t('cards.cache.ramWarmupShort')}
                   />
                 </div>
               </InsetPanel>
@@ -279,7 +288,8 @@ export const CacheCard: React.FC<CacheCardProps> = ({
         {/* Cache Maintenance & Integrity */}
         <div className="pt-2 hairline-t space-y-2.5">
           <SettingToggleRow
-            label={t('cards.cache.cleanZombiesLabel')}
+            label={t('cards.cache.cleanZombiesShort')}
+            tooltip={t('cards.cache.cleanZombiesTip')}
             checked={isAutoRepair}
             onChange={onToggleAutoRepair}
             disabled={Boolean(loadingAction)}

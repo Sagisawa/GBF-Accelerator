@@ -91,7 +91,8 @@ export const NetworkCertCard: React.FC<NetworkCertCardProps> = ({
         {/* System Integration Toggles */}
         <div className="pt-1 hairline-t">
           <SettingToggleRow
-            label={t('cards.network.autoPacCheckbox')}
+            label={t('cards.network.autoPacShort')}
+            tooltip={t('cards.network.autoPacTip')}
             checked={isAutoPac}
             onChange={onToggleAutoPac}
             disabled={Boolean(loadingAction)}
@@ -105,14 +106,16 @@ export const NetworkCertCard: React.FC<NetworkCertCardProps> = ({
           </SettingToggleRow>
 
           <SettingToggleRow
-            label={t('cards.network.autoStartCheckbox')}
+            label={t('cards.network.autoStartShort')}
+            tooltip={t('cards.network.autoStartTip')}
             checked={isAutoStart}
             onChange={onToggleAutoStart}
             disabled={Boolean(loadingAction)}
           />
 
           <SettingToggleRow
-            label={t('cards.network.autoUpdateCheckbox')}
+            label={t('cards.network.autoUpdateShort')}
+            tooltip={t('cards.network.autoUpdateTip')}
             checked={isAutoUpdate}
             onChange={onToggleAutoUpdate}
             disabled={Boolean(loadingAction)}
