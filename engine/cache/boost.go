@@ -131,7 +131,7 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 			return nil
 		}
 		baseName := d.Name()
-		if baseName == RootMarkerFileName || config.IsSystemJunk(baseName) {
+		if baseName == RootMarkerFileName || baseName == MetaIndexFileName || config.IsSystemJunk(baseName) {
 			return nil
 		}
 		// Rule VII: Strictly exclude .ext, .tmp.*, .quarantine

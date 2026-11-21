@@ -173,7 +173,7 @@ func VerifyTier1Meta(slashRel string, metaBytes []byte) (diskMeta, bool) {
 }
 
 func isIgnoredCachePath(slashRel, fileName string) bool {
-	return slashRel == RootMarkerFileName || config.IsSystemJunk(fileName) ||
+	return slashRel == RootMarkerFileName || slashRel == MetaIndexFileName || config.IsSystemJunk(fileName) ||
 		strings.HasSuffix(slashRel, ".ext") || strings.Contains(slashRel, ".tmp.") || IsAcceleratorQuarantineFile(slashRel)
 }
 

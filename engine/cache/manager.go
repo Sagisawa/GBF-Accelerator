@@ -82,8 +82,15 @@ type Manager struct {
 	generation         uint64
 	ramEnabled         atomic.Bool
 	autoRepair         atomic.Bool
-	beforeClearHook    func(relPath string)
-	beforeUnlinkHook   func(targetPath string)
+	beforeClearHook           func(relPath string)
+	beforeUnlinkHook          func(targetPath string)
+	metaIndexLoadMu           sync.Mutex
+	metaIndexLoadDone         chan struct{}
+	metaIndexSaveMu           sync.Mutex
+	metaIndexDirty            atomic.Bool
+	metaIndexLoaded           atomic.Bool
+	metaWritesSinceFlush      atomic.Int64
+	metaPeriodicFlushInFlight atomic.Bool
 }
 
 func (m *Manager) SetBeforeClearAllRemoveHookForTest(hook func(relPath string)) {
@@ -133,12 +140,14 @@ const (
 	defaultPersistWorkers  = 4
 	missingCacheShardCount = 16
 	diskMetaShardCount     = 16
+	diskMetaShardMaxItems  = 16384
 )
 
 type diskMetaEntry struct {
 	namespace       string
 	mtimeNano       int64
 	size            int64
+	accessTime      int64
 	contentType     string
 	contentEncoding string
 	etag            string
@@ -215,12 +224,12 @@ func (m *Manager) recordDiskPresence(key string, mtimeNano int64, size int64) {
 			hasMeta:   false,
 			verified:  false,
 		}
-		if len(shard.items) > 4096 {
+		if len(shard.items) > diskMetaShardMaxItems {
 			count := 0
 			for k := range shard.items {
 				delete(shard.items, k)
 				count++
-				if count >= 1024 {
+				if count >= 2048 {
 					break
 				}
 			}
@@ -230,28 +239,38 @@ func (m *Manager) recordDiskPresence(key string, mtimeNano int64, size int64) {
 }
 
 func (m *Manager) setDiskMeta(key string, entry diskMetaEntry) {
+	if entry.accessTime == 0 && entry.hasMeta {
+		entry.accessTime = time.Now().Unix()
+	}
 	shard := m.diskMetaShard(key)
 	shard.mu.Lock()
 	entry.exists = true
 	shard.items[key] = entry
-	if len(shard.items) > 4096 {
+	if len(shard.items) > diskMetaShardMaxItems {
 		count := 0
 		for k := range shard.items {
 			delete(shard.items, k)
 			count++
-			if count >= 1024 {
+			if count >= 2048 {
 				break
 			}
 		}
 	}
 	shard.mu.Unlock()
+	if entry.hasMeta {
+		m.markMetaIndexDirty()
+	}
 }
 
 func (m *Manager) deleteDiskMeta(key string) {
 	shard := m.diskMetaShard(key)
 	shard.mu.Lock()
+	_, existed := shard.items[key]
 	delete(shard.items, key)
 	shard.mu.Unlock()
+	if existed {
+		m.metaIndexDirty.Store(true)
+	}
 }
 
 func (m *Manager) clearConflictingPhysicalPathState(ns, cleanKey string) {
@@ -388,6 +407,7 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 		_ = os.MkdirAll(cacheBase, 0755)
 		_ = EnsureRootMarker(cacheBase)
 	}
+	m.startAsyncMetaIndexLoad()
 	return m
 }
 
@@ -397,6 +417,10 @@ func (m *Manager) Close() {
 		select {
 		case <-m.persistDone:
 		case <-time.After(3 * time.Second):
+		}
+		m.waitMetaIndexLoad(500 * time.Millisecond)
+		if m.metaIndexDirty.Load() {
+			_ = m.SaveMetaIndex()
 		}
 	})
 }
@@ -436,6 +460,7 @@ func (m *Manager) SetCacheBase(base string) {
 		_ = os.MkdirAll(base, 0755)
 		_ = EnsureRootMarker(base)
 	}
+	m.startAsyncMetaIndexLoadWithBase(base, m.generation)
 }
 
 func (m *Manager) resetVolatileState(reason string) {
@@ -444,6 +469,8 @@ func (m *Manager) resetVolatileState(reason string) {
 	m.clearTokenShards()
 	m.clearTempTokens()
 	m.invalidateSnapshots(reason)
+	m.metaIndexLoaded.Store(false)
+	m.metaIndexDirty.Store(false)
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {
@@ -2516,7 +2543,7 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 			return nil
 		}
 		slashRel := filepath.ToSlash(rel)
-		if slashRel == RootMarkerFileName || config.IsSystemJunk(filepath.Base(p)) {
+		if slashRel == RootMarkerFileName || slashRel == MetaIndexFileName || config.IsSystemJunk(filepath.Base(p)) {
 			return nil
 		}
 		entryFi, lstatErr := root.Lstat(rel)
@@ -2562,6 +2589,7 @@ func (m *Manager) ClearAllWithError() (int, int64, int, error) {
 		_, _, _ = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, nil, filepath.Join(base, relDir), m.beforeUnlinkHook)
 	}
 
+	_ = root.Remove(MetaIndexFileName)
 	m.resetVolatileState("已执行全盘清空")
 
 	return deletedFiles, freedBytes, skippedFiles, nil
@@ -2643,7 +2671,7 @@ func (m *Manager) AuditAndRepairWithProgress(progressCb func(p AuditProgress), c
 			return nil
 		}
 		slashRel := filepath.ToSlash(rel)
-		if slashRel == RootMarkerFileName || config.IsSystemJunk(filepath.Base(p)) ||
+		if slashRel == RootMarkerFileName || slashRel == MetaIndexFileName || config.IsSystemJunk(filepath.Base(p)) ||
 			strings.Contains(slashRel, ".quarantine") || strings.HasSuffix(slashRel, ".ext") {
 			return nil
 		}
@@ -2778,58 +2806,200 @@ func (m *Manager) PruneStaleVersions(keepCount int) (int, int, int64) {
 }
 
 type warmupCandidate struct {
-	path    string
-	modTime time.Time
+	ns       string
+	cleanKey string
+	size     int64
+	recency  int64
+	version  int64
+	tier     int
+}
+
+func extractWarmupVersion(cleanLower string) int64 {
+	var rest string
+	if strings.HasPrefix(cleanLower, "assets/") {
+		rest = cleanLower[7:]
+	} else if strings.HasPrefix(cleanLower, "assets_en/") {
+		rest = cleanLower[10:]
+	} else if strings.HasPrefix(cleanLower, "assets_jp/") {
+		rest = cleanLower[10:]
+	} else {
+		return 0
+	}
+	slashIdx := strings.IndexByte(rest, '/')
+	if slashIdx <= 0 || slashIdx > 18 {
+		return 0
+	}
+	vStr := rest[:slashIdx]
+	for i := 0; i < len(vStr); i++ {
+		if vStr[i] < '0' || vStr[i] > '9' {
+			return 0
+		}
+	}
+	v, err := strconv.ParseInt(vStr, 10, 64)
+	if err != nil || v <= 0 {
+		return 0
+	}
+	return v
+}
+
+func classifyWarmupTier(cleanLower string, version int64, topVersions map[int64]bool) int {
+	isCoreExt := strings.HasSuffix(cleanLower, ".js") ||
+		strings.HasSuffix(cleanLower, ".css") ||
+		strings.HasSuffix(cleanLower, ".json") ||
+		strings.HasSuffix(cleanLower, ".woff2") ||
+		strings.HasSuffix(cleanLower, ".woff")
+
+	isAnimScript := strings.Contains(cleanLower, "/cjs/") || strings.Contains(cleanLower, "/model/manifest/")
+	isCoreUI := strings.Contains(cleanLower, "/img/sp/ui/") ||
+		strings.Contains(cleanLower, "/img/sp/assets/") ||
+		strings.Contains(cleanLower, "/img/sp/css_img/")
+
+	score := 100
+	if isCoreExt && !isAnimScript {
+		score = 300
+		if version == 0 || topVersions[version] {
+			score += 100
+		}
+	} else if isAnimScript || isCoreUI {
+		score = 200
+		if version == 0 || topVersions[version] {
+			score += 50
+		}
+	} else if version == 0 || topVersions[version] {
+		score += 20
+	}
+	return score
 }
 
 func (m *Manager) Warmup(maxItems int) int {
 	if maxItems <= 0 {
 		maxItems = 1500
 	}
+	m.waitMetaIndexLoad(1500 * time.Millisecond)
+
 	m.mu.RLock()
 	base := m.cacheBase
 	m.mu.RUnlock()
 
 	var candidates []warmupCandidate
+	versionSet := make(map[int64]struct{}, 32)
 
-	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
+	if m.metaIndexLoaded.Load() && m.diskMetaCount() > 0 {
+		for i := range m.diskMetaShards {
+			shard := &m.diskMetaShards[i]
+			shard.mu.RLock()
+			for ramKey, meta := range shard.items {
+				if !meta.exists || !meta.hasMeta || meta.size <= 0 || meta.size > MaxDiskDirectReadSize {
+					continue
+				}
+				ns := sanitizeNamespace(meta.namespace)
+				cleanKey := ramKey
+				if ns != "gbf" {
+					prefix := ns + "\x00"
+					if strings.HasPrefix(ramKey, prefix) {
+						cleanKey = ramKey[len(prefix):]
+					}
+				}
+				cleanLower := strings.ToLower(cleanKey)
+				ver := extractWarmupVersion(cleanLower)
+				if ver > 0 {
+					versionSet[ver] = struct{}{}
+				}
+				recency := meta.mtimeNano
+				if atNano := meta.accessTime * int64(time.Second); atNano > recency {
+					recency = atNano
+				}
+				candidates = append(candidates, warmupCandidate{
+					ns:       ns,
+					cleanKey: cleanKey,
+					size:     meta.size,
+					recency:  recency,
+					version:  ver,
+				})
+			}
+			shard.mu.RUnlock()
 		}
-		baseName := d.Name()
-		if baseName == RootMarkerFileName || config.IsSystemJunk(baseName) {
+	} else {
+		_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			baseName := d.Name()
+			if baseName == RootMarkerFileName || baseName == MetaIndexFileName || config.IsSystemJunk(baseName) {
+				return nil
+			}
+			if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || IsAcceleratorQuarantineFile(p) {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil || info.Size() == 0 || info.Size() > MaxDiskDirectReadSize {
+				return nil
+			}
+			ns, cleanKey, _, ok := resolveDiskFileOwner(base, p)
+			if !ok {
+				return nil
+			}
+			ver := extractWarmupVersion(strings.ToLower(cleanKey))
+			if ver > 0 {
+				versionSet[ver] = struct{}{}
+			}
+			candidates = append(candidates, warmupCandidate{
+				ns:       ns,
+				cleanKey: cleanKey,
+				size:     info.Size(),
+				recency:  info.ModTime().UnixNano(),
+				version:  ver,
+			})
 			return nil
-		}
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || IsAcceleratorQuarantineFile(p) {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil || info.Size() == 0 || info.Size() > MaxDiskDirectReadSize {
-			return nil
-		}
-		candidates = append(candidates, warmupCandidate{
-			path:    p,
-			modTime: info.ModTime(),
 		})
-		return nil
-	})
+	}
+
+	if len(candidates) == 0 {
+		return 0
+	}
+
+	topVersions := make(map[int64]bool, 3)
+	if len(versionSet) > 0 {
+		vers := make([]int64, 0, len(versionSet))
+		for v := range versionSet {
+			vers = append(vers, v)
+		}
+		sort.Slice(vers, func(i, j int) bool { return vers[i] > vers[j] })
+		for i := 0; i < len(vers) && i < 3; i++ {
+			topVersions[vers[i]] = true
+		}
+	}
+
+	for i := range candidates {
+		candidates[i].tier = classifyWarmupTier(strings.ToLower(candidates[i].cleanKey), candidates[i].version, topVersions)
+	}
 
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].modTime.After(candidates[j].modTime)
+		if candidates[i].tier != candidates[j].tier {
+			return candidates[i].tier > candidates[j].tier
+		}
+		return candidates[i].recency > candidates[j].recency
 	})
 
-	if len(candidates) > maxItems {
-		candidates = candidates[:maxItems]
+	var budgetLimit int64
+	if m.ramCache != nil {
+		if maxBytes := m.ramCache.MaxBytes(); maxBytes > 0 {
+			budgetLimit = (maxBytes * 4) / 5
+		}
 	}
 
 	loaded := 0
+	var loadedBytes int64
 	for _, c := range candidates {
-		ns, cleanKey, _, ok := resolveDiskFileOwner(base, c.path)
-		if !ok {
+		if loaded >= maxItems {
+			break
+		}
+		if budgetLimit > 0 && loadedBytes+c.size > budgetLimit {
 			continue
 		}
-		if item, _ := m.GetWithNamespace(ns, cleanKey); item != nil {
+		if item, _ := m.GetWithNamespace(c.ns, c.cleanKey); item != nil {
 			loaded++
+			loadedBytes += c.size
 		}
 	}
 	return loaded
