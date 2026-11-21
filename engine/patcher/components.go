@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	CanonicalModuleSHA256               = "aa9bd4ac2d6836ef646e56de787240bdc39fcde6d38c44c7151ba7a1d9c237ab"
+	CanonicalModuleSHA256               = "d10a87ad31444ac424632be46ab38c7dc4986ef8d6357191ead37b9f66b0b90c"
 	CanonicalLicensesSHA256             = "07ebff9961f23ed45efad65eedc8359ece9345fe212a943fdd82353b8b0a2f9f"
 	CanonicalPlatformToolsWindowsSHA256 = "e79e5d613cda3912f8dbf77a1ec1b2eaf5de96d93b7fca0a88d9b97c4253ee25"
 	CanonicalPlatformToolsDarwinSHA256  = "ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d"
