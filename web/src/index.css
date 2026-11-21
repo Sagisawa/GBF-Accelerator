@@ -2,13 +2,123 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ==========================================================================
+   Design Tokens
+   Semantic surfaces for the three-layer material model:
+     1. Canvas      — tinted ambient background (gives glass something to refract)
+     2. Glass       — floating / navigation chrome (header, sidebar, pills, modal, toast)
+     3. Card/Inset  — semi-solid content surfaces that keep dense data legible
+   Radius scale (concentric): 20px container -> 12px inset -> 8px control -> pill
+   ========================================================================== */
 @layer base {
   :root {
     color-scheme: light;
+
+    --bg-canvas: #eef2f7;
+    --mesh-1: rgba(56, 189, 248, 0.16);
+    --mesh-2: rgba(129, 140, 248, 0.13);
+    --mesh-3: rgba(52, 211, 153, 0.08);
+
+    --glass-bg: rgba(255, 255, 255, 0.58);
+    --glass-bg-solid: rgba(250, 252, 255, 0.97);
+    --glass-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0) 46%);
+    --glass-border: rgba(255, 255, 255, 0.78);
+    --glass-edge: rgba(15, 23, 42, 0.07);
+    --glass-highlight: rgba(255, 255, 255, 0.95);
+    --glass-shadow: 0 12px 32px -14px rgba(15, 23, 42, 0.22), 0 2px 6px -2px rgba(15, 23, 42, 0.06);
+
+    --pill-bg: rgba(255, 255, 255, 0.92);
+    --pill-border: rgba(255, 255, 255, 1);
+    --pill-shadow: 0 1px 2px rgba(15, 23, 42, 0.08), 0 4px 12px -4px rgba(15, 23, 42, 0.14);
+
+    --card-bg: rgba(255, 255, 255, 0.84);
+    --card-border: rgba(15, 23, 42, 0.07);
+    --card-highlight: rgba(255, 255, 255, 0.9);
+    --card-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px -16px rgba(15, 23, 42, 0.16);
+
+    --inset-bg: rgba(241, 245, 249, 0.72);
+    --inset-border: rgba(15, 23, 42, 0.06);
+
+    --control-bg: rgba(255, 255, 255, 0.9);
+    --control-bg-hover: rgba(241, 245, 249, 1);
+    --control-border: rgba(15, 23, 42, 0.11);
+    --input-bg: rgba(255, 255, 255, 0.78);
+    --input-bg-focus: rgba(255, 255, 255, 1);
+
+    --hairline: rgba(15, 23, 42, 0.08);
+    --text-primary: #0f172a;
+    --text-secondary: #334155;
+    --text-muted: #64748b;
+
+    --sys-green: #047857;
+    --sys-green-bg: rgba(16, 185, 129, 0.1);
+    --sys-blue: #0369a1;
+    --sys-blue-bg: rgba(14, 165, 233, 0.1);
+    --sys-amber: #b45309;
+    --sys-amber-bg: rgba(245, 158, 11, 0.12);
+    --sys-red: #be123c;
+    --sys-red-bg: rgba(244, 63, 94, 0.1);
+
+    --spark-stroke: #0ea5e9;
+    --spark-fill: rgba(14, 165, 233, 0.16);
+  }
+
+  html.dark {
+    color-scheme: dark;
+
+    --bg-canvas: #0a101c;
+    --mesh-1: rgba(14, 165, 233, 0.17);
+    --mesh-2: rgba(99, 102, 241, 0.16);
+    --mesh-3: rgba(16, 185, 129, 0.07);
+
+    --glass-bg: rgba(17, 25, 42, 0.56);
+    --glass-bg-solid: rgba(17, 25, 42, 0.97);
+    --glass-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0) 42%);
+    --glass-border: rgba(255, 255, 255, 0.09);
+    --glass-edge: rgba(0, 0, 0, 0.35);
+    --glass-highlight: rgba(255, 255, 255, 0.12);
+    --glass-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.6), 0 2px 8px -2px rgba(0, 0, 0, 0.35);
+
+    --pill-bg: rgba(255, 255, 255, 0.1);
+    --pill-border: rgba(255, 255, 255, 0.14);
+    --pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 16px -6px rgba(0, 0, 0, 0.5);
+
+    --card-bg: rgba(22, 32, 51, 0.8);
+    --card-border: rgba(255, 255, 255, 0.07);
+    --card-highlight: rgba(255, 255, 255, 0.05);
+    --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 28px -18px rgba(0, 0, 0, 0.7);
+
+    --inset-bg: rgba(10, 16, 28, 0.5);
+    --inset-border: rgba(255, 255, 255, 0.06);
+
+    --control-bg: rgba(255, 255, 255, 0.09);
+    --control-bg-hover: rgba(255, 255, 255, 0.15);
+    --control-border: rgba(255, 255, 255, 0.17);
+    --control-text: #f1f5f9;
+    --input-bg: rgba(8, 13, 24, 0.6);
+    --input-bg-focus: rgba(8, 13, 24, 0.85);
+
+    --hairline: rgba(255, 255, 255, 0.08);
+    --text-primary: #f8fafc;
+    --text-secondary: #cbd5e1;
+    --text-muted: #94a3b8;
+
+    --sys-green: #6ee7b7;
+    --sys-green-bg: rgba(16, 185, 129, 0.16);
+    --sys-blue: #7dd3fc;
+    --sys-blue-bg: rgba(14, 165, 233, 0.16);
+    --sys-amber: #fcd34d;
+    --sys-amber-bg: rgba(245, 158, 11, 0.16);
+    --sys-red: #fda4af;
+    --sys-red-bg: rgba(244, 63, 94, 0.16);
+
+    --spark-stroke: #38bdf8;
+    --spark-fill: rgba(56, 189, 248, 0.18);
   }
 
   body {
-    @apply bg-[#f1f5f9] text-slate-800 font-sans antialiased selection:bg-blue-200 selection:text-slate-900;
+    background-color: var(--bg-canvas);
+    @apply text-slate-800 font-sans antialiased selection:bg-sky-200 selection:text-slate-900;
   }
 
   html {
@@ -22,23 +132,221 @@
   }
 }
 
+/* ==========================================================================
+   Materials & Shared Surfaces
+   ========================================================================== */
+@layer components {
+  /* Tinted ambient canvas: soft radial light so glass layers have color to refract */
+  .app-canvas {
+    background-color: var(--bg-canvas);
+    background-image:
+      radial-gradient(60rem 40rem at -10% -15%, var(--mesh-1), transparent 60%),
+      radial-gradient(50rem 36rem at 110% 115%, var(--mesh-2), transparent 62%),
+      radial-gradient(36rem 28rem at 70% -20%, var(--mesh-3), transparent 65%);
+    background-attachment: fixed;
+  }
+
+  /* Liquid glass: floating chrome only (header, sidebar, modal, toast) */
+  .liquid-glass {
+    background: var(--glass-sheen), var(--glass-bg);
+    -webkit-backdrop-filter: blur(22px) saturate(180%);
+    backdrop-filter: blur(22px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    box-shadow:
+      inset 0 1px 0 var(--glass-highlight),
+      0 0 0 0.5px var(--glass-edge),
+      var(--glass-shadow);
+  }
+
+  /* Brighter glass chip used for active indicators and segmented thumbs */
+  .liquid-pill {
+    background: var(--glass-sheen), var(--pill-bg);
+    border: 1px solid var(--pill-border);
+    box-shadow: inset 0 1px 0 var(--glass-highlight), var(--pill-shadow);
+  }
+
+  /* Semi-solid content card: legible first, glass second */
+  .frosted-card {
+    background: var(--card-bg);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    backdrop-filter: blur(12px) saturate(140%);
+    border: 1px solid var(--card-border);
+    box-shadow: inset 0 1px 0 var(--card-highlight), var(--card-shadow);
+  }
+
+  /* Concentric inset panel nested within a card */
+  .inset-panel {
+    background: var(--inset-bg);
+    border: 1px solid var(--inset-border);
+  }
+
+  .hairline-b {
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .hairline-t {
+    border-top: 1px solid var(--hairline);
+  }
+
+  /* Neutral control (secondary buttons) */
+  .ui-control {
+    background: var(--control-bg);
+    border: 1px solid var(--control-border);
+    color: var(--control-text, var(--text-secondary));
+    box-shadow: 0 1px 1px rgba(15, 23, 42, 0.03);
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform 120ms ease;
+  }
+
+  .ui-control:hover:not(:disabled) {
+    background: var(--control-bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* Text input */
+  .ui-input {
+    background: var(--input-bg);
+    border: 1px solid var(--control-border);
+    color: var(--text-primary);
+    transition: background-color 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  }
+
+  .ui-input:focus {
+    outline: none;
+    background: var(--input-bg-focus);
+    border-color: rgba(14, 165, 233, 0.7);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18);
+  }
+
+  .ui-input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .ui-input::placeholder {
+    color: var(--text-muted);
+  }
+
+  /* Compound input group: input + trailing actions share one rounded shell */
+  .ui-field {
+    background: var(--input-bg);
+    border: 1px solid var(--control-border);
+    transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+  }
+
+  .ui-field:focus-within {
+    background: var(--input-bg-focus);
+    border-color: rgba(14, 165, 233, 0.7);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.18);
+  }
+
+  .ui-field > input {
+    background: transparent;
+    border: 0;
+    outline: none;
+    color: var(--text-primary);
+    min-width: 0;
+  }
+
+  .ui-field > input:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .ui-field > input::placeholder {
+    color: var(--text-muted);
+  }
+}
+
+/* Graceful fallbacks: no backdrop support or user prefers less transparency */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .liquid-glass {
+    background: var(--glass-bg-solid);
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .liquid-glass {
+    background: var(--glass-bg-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .frosted-card {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+/* ==========================================================================
+   Enter animation compatibility layer
+   Supports the existing `animate-in fade-in zoom-in-95 slide-in-from-*` class
+   vocabulary without pulling in an extra plugin dependency.
+   ========================================================================== */
+@keyframes ui-enter {
+  from {
+    opacity: var(--tw-enter-opacity, 1);
+    transform: translate3d(var(--tw-enter-translate-x, 0), var(--tw-enter-translate-y, 0), 0)
+      scale3d(var(--tw-enter-scale, 1), var(--tw-enter-scale, 1), var(--tw-enter-scale, 1));
+  }
+}
+
+@layer utilities {
+  .animate-in {
+    animation: ui-enter 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    --tw-enter-opacity: initial;
+    --tw-enter-scale: initial;
+    --tw-enter-translate-x: initial;
+    --tw-enter-translate-y: initial;
+  }
+
+  .fade-in {
+    --tw-enter-opacity: 0;
+  }
+
+  .zoom-in-95 {
+    --tw-enter-scale: 0.95;
+  }
+
+  .slide-in-from-top-3 {
+    --tw-enter-translate-y: -0.75rem;
+  }
+
+  .slide-in-from-bottom {
+    --tw-enter-translate-y: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-in,
+  .animate-modal-in,
+  .animate-toast-in,
+  .animate-drawer-in,
+  .animate-fade-soft {
+    animation: none !important;
+  }
+}
+
 /* Clean Desktop Scrollbars */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.32);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: rgba(100, 116, 139, 0.55);
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
 
 /* Clean Form Controls */
@@ -47,15 +355,12 @@ input[type="checkbox"] {
 }
 
 /* ==========================================================================
-   Dark Mode Semantic Style Overrides (High-Contrast & Comprehensive)
-   Strictly scoped to html.dark — Daytime mode (light) remains 100% untouched
+   Dark Mode Compatibility Overrides
+   Legacy utility-class remapping kept for modals and panels that still use
+   slate/amber/sky utility classes. New surfaces use the semantic tokens above.
    ========================================================================== */
-html.dark {
-  color-scheme: dark;
-}
-
 html.dark body {
-  background-color: #0f172a;
+  background-color: var(--bg-canvas);
   color: #f1f5f9;
 }
 
@@ -350,8 +655,8 @@ html.dark .text-indigo-700 {
 }
 
 /* Form Controls & Code / Shortcuts */
-html.dark input[type="text"],
-html.dark input[type="number"],
+html.dark input[type="text"]:not(.ui-input),
+html.dark input[type="number"]:not(.ui-input),
 html.dark select,
 html.dark textarea {
   background-color: #0f172a !important;
@@ -388,15 +693,14 @@ html.dark kbd {
 }
 
 /* Dark Mode Desktop Scrollbars */
-html.dark ::-webkit-scrollbar-track {
-  background: #0f172a;
-}
-
 html.dark ::-webkit-scrollbar-thumb {
-  background: #334155;
+  background: rgba(148, 163, 184, 0.28);
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
 
 html.dark ::-webkit-scrollbar-thumb:hover {
-  background: #475569;
+  background: rgba(148, 163, 184, 0.45);
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
-

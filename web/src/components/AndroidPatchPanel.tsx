@@ -794,7 +794,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   return (
     <div className="w-full flex flex-col gap-4 sm:gap-5">
       {/* 1. Unified All-in-One Header & Environment Card */}
-      <div className="bg-gradient-to-r from-sky-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-5 sm:p-6 shadow-md border border-sky-800/40 relative overflow-hidden">
+      <div className="bg-gradient-to-r from-sky-900 via-indigo-950 to-slate-900 text-white rounded-[20px] p-5 sm:p-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_12px_32px_-14px_rgba(15,23,42,0.45)] border border-sky-700/40 relative overflow-hidden">
         <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-radial from-sky-400/10 to-transparent pointer-events-none" />
         
         {/* Top: Title & Badges & Quick Actions */}
@@ -991,7 +991,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       {/* Conditional: If Environment is NOT ready, display error alert or clean onboarding card */}
       {!isEnvironmentReady ? (
         activeErrorMsg ? (
-          <div className="bg-white rounded-xl border border-rose-200 shadow-2xs p-6 sm:p-8 space-y-5 text-left">
+          <div className="frosted-card rounded-[20px] border-rose-300/60 p-6 sm:p-8 space-y-5 text-left">
             {/* Error Banner */}
             <div className="rounded-xl bg-rose-50 border border-rose-200/80 p-4 sm:p-5 text-rose-900 space-y-3">
               <div className="flex items-start gap-3">
@@ -1086,7 +1086,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
             </div>
           </div>
         ) : (
-          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-8 sm:p-10 text-center space-y-4">
+          <div className="frosted-card rounded-[20px] p-8 sm:p-10 text-center space-y-4">
             <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto shadow-2xs">
               <Layers className="w-7 h-7" />
             </div>
@@ -1115,7 +1115,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
         <>
 
       {/* 5. Input & Package Selection */}
-      <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-5">
+      <div className="frosted-card rounded-[20px] p-4 sm:p-5">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
           <div className="flex items-center gap-2">
             <FileBox className="w-4 h-4 text-indigo-600" />
@@ -1692,7 +1692,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
 
       {/* 6. Patch Progress & Terminal Card */}
       {(isRunning || patchStatus?.done) && (
-        <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-5">
+        <div className="frosted-card rounded-[20px] p-4 sm:p-5">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3.5">
             <div className="flex items-center gap-2">
               <Terminal className="w-4 h-4 text-slate-700" />

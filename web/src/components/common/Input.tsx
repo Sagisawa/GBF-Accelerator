@@ -20,10 +20,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           ref={ref}
           disabled={disabled}
           className={cn(
-            'w-full bg-black/30 text-label-primary placeholder-label-tertiary rounded-xl border border-white/[0.08] px-3.5 py-2 text-sm transition-all duration-150 ease-out',
-            'focus:outline-none focus:border-apple-red/60 focus:ring-2 focus:ring-apple-red/20 focus:bg-black/50',
-            'hover:border-white/[0.14]',
-            'disabled:opacity-40 disabled:cursor-not-allowed',
+            'ui-input w-full rounded-lg px-3 py-1.5 text-sm',
             mono && 'font-mono text-[13px]',
             leftIcon && 'pl-9',
             rightElement && 'pr-20',
@@ -32,7 +29,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           {...props}
         />
         {rightElement && (
-          <div className="absolute right-2 flex items-center gap-1.5">
+          <div className="absolute right-1.5 flex items-center gap-1.5">
             {rightElement}
           </div>
         )}

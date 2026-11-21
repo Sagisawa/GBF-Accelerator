@@ -45,14 +45,14 @@ export const Drawer: React.FC<DrawerProps> = ({
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm transition-opacity duration-150 animate-in fade-in"
+        className="fixed inset-0 bg-slate-950/45 backdrop-blur-sm animate-fade-soft"
         onClick={onClose}
       />
 
       {/* Drawer Card */}
       <div
         className={cn(
-          'relative w-full max-w-5xl mx-auto bg-[#1e1e1e] border-t border-x border-slate-700 rounded-t-2xl shadow-2xl flex flex-col overflow-hidden transition-transform duration-200 ease-out animate-in slide-in-from-bottom',
+          'relative w-full max-w-5xl mx-auto bg-[#1b2029]/95 backdrop-blur-xl border-t border-x border-white/10 rounded-t-[20px] shadow-2xl flex flex-col overflow-hidden animate-drawer-in',
           height,
           className
         )}
@@ -63,7 +63,7 @@ export const Drawer: React.FC<DrawerProps> = ({
         </div>
 
         {/* Drawer Header */}
-        <div className="px-5 py-2.5 border-b border-slate-700/80 bg-[#252526] flex items-center justify-between shrink-0">
+        <div className="px-5 py-2.5 border-b border-white/10 bg-[#222833]/85 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <div>
               <div className="text-sm font-semibold text-slate-100 flex items-center gap-2 tracking-tight">
@@ -78,8 +78,9 @@ export const Drawer: React.FC<DrawerProps> = ({
           <div className="flex items-center gap-3">
             {headerRight}
             <button
+              type="button"
               onClick={onClose}
-              className="w-7 h-7 rounded-lg bg-slate-700/60 hover:bg-slate-600 flex items-center justify-center text-slate-300 hover:text-white transition-colors"
+              className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 flex items-center justify-center text-slate-300 hover:text-white transition-colors cursor-pointer"
               title={t('common.closeEsc')}
             >
               <X className="w-4 h-4" />
@@ -88,9 +89,8 @@ export const Drawer: React.FC<DrawerProps> = ({
         </div>
 
         {/* Drawer Content */}
-        <div className="flex-1 overflow-hidden p-4 flex flex-col bg-[#181818]">{children}</div>
+        <div className="flex-1 overflow-hidden p-4 flex flex-col bg-[#141820]">{children}</div>
       </div>
     </div>
   )
 }
-

@@ -20,33 +20,33 @@ export const Badge: React.FC<BadgeProps> = ({
 }) => {
   const variantStyles = {
     green: {
-      bg: 'bg-sys-greenBg text-sys-green border-sys-green/20',
-      dot: 'bg-sys-green',
+      bg: 'bg-sys-greenBg text-sys-green border-emerald-500/20',
+      dot: 'bg-emerald-500',
     },
     blue: {
-      bg: 'bg-sys-blueBg text-sys-blue border-sys-blue/20',
-      dot: 'bg-sys-blue',
+      bg: 'bg-sys-blueBg text-sys-blue border-sky-500/20',
+      dot: 'bg-sky-500',
     },
     amber: {
-      bg: 'bg-sys-amberBg text-sys-amber border-sys-amber/20',
-      dot: 'bg-sys-amber',
+      bg: 'bg-sys-amberBg text-sys-amber border-amber-500/25',
+      dot: 'bg-amber-500',
     },
     red: {
-      bg: 'bg-sys-redBg text-sys-red border-sys-red/20',
-      dot: 'bg-sys-red',
+      bg: 'bg-sys-redBg text-sys-red border-rose-500/20',
+      dot: 'bg-rose-500',
     },
     neutral: {
       bg: 'bg-surface-active text-label-secondary border-hairline',
-      dot: 'bg-label-tertiary',
+      dot: 'bg-slate-400',
     },
   }[variant]
 
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium border leading-none select-none',
+        'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold border leading-none select-none whitespace-nowrap',
         variantStyles.bg,
-        mono && 'font-mono text-[11px]',
+        mono && 'font-mono',
         className
       )}
     >

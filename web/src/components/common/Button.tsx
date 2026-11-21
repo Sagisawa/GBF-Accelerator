@@ -22,23 +22,21 @@ export const Button: React.FC<ButtonProps> = ({
   ...props
 }) => {
   const baseClasses =
-    'inline-flex items-center justify-center font-medium rounded select-none transition-colors duration-150 ease-out focus:outline-none disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]'
+    'inline-flex items-center justify-center font-medium rounded-lg select-none transition-[background-color,border-color,color,transform] duration-150 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40 focus-visible:ring-offset-1 disabled:opacity-50 disabled:pointer-events-none active:scale-[0.98]'
 
   const variantClasses = {
-    desktop:
-      'bg-[#f8f9fa] hover:bg-[#e2e6ea] active:bg-[#dae0e5] text-slate-700 border border-slate-300 shadow-xs dark:bg-slate-800 dark:hover:bg-slate-700 dark:active:bg-slate-900 dark:text-slate-100 dark:border-slate-600',
+    desktop: 'ui-control',
+    secondary: 'ui-control',
     primary:
-      'bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-xs',
-    secondary:
-      'bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 border border-slate-300 shadow-xs dark:bg-slate-800 dark:hover:bg-slate-700 dark:active:bg-slate-900 dark:text-slate-100 dark:border-slate-600',
+      'bg-sky-600 hover:bg-sky-700 active:bg-sky-800 text-white border border-sky-700/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]',
     danger:
-      'bg-[#dc3545] hover:bg-[#c82333] active:bg-[#bd2130] text-white font-bold shadow-xs',
+      'bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white font-semibold border border-rose-700/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]',
     success:
-      'bg-[#28a745] hover:bg-[#218838] active:bg-[#1e7e34] text-white font-bold shadow-xs',
+      'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-semibold border border-emerald-700/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]',
     ghost:
-      'bg-transparent hover:bg-slate-100 active:bg-slate-200 text-slate-600 dark:hover:bg-slate-800 dark:active:bg-slate-700 dark:text-slate-200',
+      'bg-transparent hover:bg-slate-500/10 active:bg-slate-500/15 text-slate-600 dark:text-slate-200',
     apple:
-      'bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-xs',
+      'bg-sky-600 hover:bg-sky-700 text-white font-medium border border-sky-700/20 shadow-[inset_0_1px_0_rgba(255,255,255,0.18)]',
   }[variant]
 
   const sizeClasses = {
@@ -61,11 +59,10 @@ export const Button: React.FC<ButtonProps> = ({
       )}
       <span>{children}</span>
       {shortcut && (
-        <kbd className="ml-1 px-1 py-0.2 text-[10px] uppercase font-mono rounded bg-slate-200/80 text-slate-600 border border-slate-300 leading-none">
+        <kbd className="ml-1 px-1 py-px text-[10px] uppercase font-mono rounded bg-slate-200/80 text-slate-600 border border-slate-300 leading-none">
           {shortcut}
         </kbd>
       )}
     </button>
   )
 }
-

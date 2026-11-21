@@ -8,8 +8,7 @@ export interface LanguageSwitcherProps {
 }
 
 /**
- * Segmented Language Switcher capsule with smooth sliding pill indicator
- * Inspired by smooth-option-switcher
+ * Segmented Language Switcher capsule with smooth sliding Liquid Pill indicator
  */
 export const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
   language,
@@ -36,7 +35,7 @@ export const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
         <button
           type="button"
           onClick={() => onSelect(nextLang)}
-          className="flex items-center justify-center w-10 h-10 rounded-full bg-slate-100/90 hover:bg-slate-200/90 border border-slate-200/90 text-xs font-bold text-slate-700 hover:text-slate-900 transition-all cursor-pointer shadow-2xs active:scale-95 mx-auto p-0"
+          className="ui-control flex items-center justify-center w-10 h-10 rounded-full text-xs font-bold transition-all cursor-pointer active:scale-95 mx-auto p-0"
           title={`语言 / Language: ${currentOption.label} (点击切换)`}
           aria-label={`Current language: ${currentOption.label}. Click to switch language`}
         >
@@ -50,11 +49,11 @@ export const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
     <div
       role="radiogroup"
       aria-label="Language selection"
-      className={`relative inline-flex items-center rounded-full bg-slate-100 p-1 border border-slate-200/90 text-xs font-semibold shadow-2xs select-none w-full ${className}`}
+      className={`relative inline-flex items-center rounded-full inset-panel p-1 text-xs font-semibold select-none w-full ${className}`}
     >
-      {/* Smooth Sliding Pill Indicator */}
+      {/* Smooth Sliding Liquid Pill Indicator */}
       <div
-        className="absolute top-1 bottom-1 left-1 w-[calc((100%-8px)/3)] bg-white rounded-full shadow-xs transition-transform duration-[220ms] ease-[cubic-bezier(.32,.72,0,1)] pointer-events-none"
+        className="liquid-pill absolute top-1 bottom-1 left-1 w-[calc((100%-8px)/3)] rounded-full transition-transform duration-[240ms] ease-fluid pointer-events-none"
         style={{
           transform: `translateX(${safeIndex * 100}%)`,
         }}
@@ -72,8 +71,8 @@ export const LanguageSwitcher: React.FC<LanguageSwitcherProps> = ({
             onClick={() => onSelect(opt.code)}
             className={`relative z-10 flex-1 flex items-center justify-center py-1 px-1 rounded-full transition-colors duration-150 cursor-pointer text-center whitespace-nowrap text-xs tracking-tight focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/40 ${
               isSelected
-                ? 'text-sky-700 font-bold'
-                : 'text-slate-600 hover:text-slate-900'
+                ? 'text-sky-700 dark:text-sky-300 font-bold'
+                : 'text-label-tertiary hover:text-label-primary'
             }`}
           >
             {opt.label}

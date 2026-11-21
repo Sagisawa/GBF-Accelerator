@@ -45,33 +45,35 @@ export const Modal: React.FC<ModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 overflow-hidden">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity"
+        className="fixed inset-0 bg-slate-950/35 backdrop-blur-sm animate-fade-soft"
         onClick={onClose}
       />
 
-      {/* Modal Dialog */}
+      {/* Liquid Glass Modal Dialog (20px outer radius) */}
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         className={cn(
-          'relative w-full max-h-[calc(100vh-2rem)] flex flex-col bg-white border border-slate-300 rounded-xl shadow-2xl overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150',
+          'relative w-full max-h-[calc(100vh-2rem)] flex flex-col liquid-glass rounded-[20px] overflow-hidden z-10 animate-modal-in',
           maxWidth,
           className
         )}
       >
         {/* Header */}
-        <div className="px-5 py-3.5 border-b border-slate-200 bg-[#f8fafc] flex items-center justify-between">
-          <div>
-            <h3 id={titleId} className="text-sm font-bold text-slate-900 tracking-tight">{title}</h3>
+        <div className="px-5 py-3.5 hairline-b bg-white/40 dark:bg-white/[0.03] flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h3 id={titleId} className="text-sm font-bold text-label-primary tracking-tight">
+              {title}
+            </h3>
             {subtitle && (
-              <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>
+              <p className="text-xs text-label-tertiary mt-0.5">{subtitle}</p>
             )}
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="w-7 h-7 rounded-lg hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-700 transition-colors"
+            className="w-7 h-7 rounded-lg hover:bg-slate-500/15 flex items-center justify-center text-label-tertiary hover:text-label-primary transition-colors shrink-0 cursor-pointer"
             title={t('common.closeEsc')}
             aria-label={t('common.closeDialog')}
           >
@@ -79,10 +81,11 @@ export const Modal: React.FC<ModalProps> = ({
           </button>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 min-h-0 overflow-y-auto p-5 text-slate-800">{children}</div>
+        {/* Body (semi-solid inner surface for high legibility) */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 bg-white/85 dark:bg-slate-900/70 text-label-primary">
+          {children}
+        </div>
       </div>
     </div>
   )
 }
-

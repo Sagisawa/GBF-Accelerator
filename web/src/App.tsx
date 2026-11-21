@@ -26,7 +26,8 @@ import {
 } from './api'
 
 import { Modal } from './components/common/Modal'
-import { ToggleSwitch, SettingToggleRow } from './components/common/ToggleSwitch'
+import { Button } from './components/common/Button'
+import { InsetPanel } from './components/common/Card'
 import { LiveLogsWindow } from './components/logs/LiveLogsWindow'
 import { MobileGuideModal } from './components/modals/MobileGuideModal'
 import { ClearCacheModal } from './components/modals/ClearCacheModal'
@@ -42,6 +43,12 @@ import { UpstreamSelectModal } from './components/modals/UpstreamSelectModal'
 import { ShimakazeSuggestModal } from './components/modals/ShimakazeSuggestModal'
 import { HealthCheckModal } from './components/modals/HealthCheckModal'
 import { AndroidPatchPanel } from './components/AndroidPatchPanel'
+import { HeaderCockpit } from './components/layout/HeaderCockpit'
+import { CacheCard } from './components/dashboard/CacheCard'
+import { UpstreamCard } from './components/dashboard/UpstreamCard'
+import { NetworkCertCard } from './components/dashboard/NetworkCertCard'
+import { OptimizationCard } from './components/dashboard/OptimizationCard'
+import { TelemetryPanel } from './components/dashboard/TelemetryPanel'
 import { useI18n } from './i18n'
 
 import { useTheme } from './hooks/useTheme'
@@ -53,193 +60,13 @@ import {
   Info,
   XCircle,
   AlertTriangle,
-  Zap,
   Power,
   Network,
-  HardDrive,
-  Globe,
-  ShieldCheck,
-  Gauge,
-  Download,
-  ArrowLeftRight,
-  PackageCheck,
-  QrCode,
   AlertOctagon,
-  ArrowUpCircle,
-  Activity,
-  Trash2,
-  Wifi,
 } from 'lucide-react'
 import { Sidebar } from './components/navigation/Sidebar'
 
-const RuntimeUptime: React.FC<{ baseSeconds: number; running: boolean }> = ({ baseSeconds, running }) => {
-  const [displaySeconds, setDisplaySeconds] = useState(() => Math.max(0, Math.floor(baseSeconds)))
-
-  useEffect(() => {
-    const base = Math.max(0, Math.floor(baseSeconds))
-    const startedAt = Date.now()
-
-    const refresh = () => {
-      if (!running) {
-        setDisplaySeconds(base)
-        return
-      }
-      setDisplaySeconds(base + Math.max(0, Math.floor((Date.now() - startedAt) / 1000)))
-    }
-
-    refresh()
-    if (!running) return
-
-    const timer = window.setInterval(refresh, 1000)
-    return () => window.clearInterval(timer)
-  }, [baseSeconds, running])
-
-  const hours = Math.floor(displaySeconds / 3600)
-  const minutes = Math.floor((displaySeconds % 3600) / 60)
-  const seconds = displaySeconds % 60
-
-  return <>{hours}h {minutes}m {seconds}s</>
-}
-
-let lastKnownMetrics = {
-  totalHits: 0,
-  ramHits: 0,
-  downloads: 0,
-  apis: 0,
-}
-
-export const RealtimeRequestHud: React.FC<{
-  status: RuntimeStatus | null
-  running: boolean
-  compact?: boolean
-}> = ({ status, running, compact = false }) => {
-  const { t } = useI18n()
-  const [counts, setCounts] = useState(() => ({
-    totalHits: running ? (lastKnownMetrics.totalHits || (status?.requests?.total_hits ?? 0)) : 0,
-    ramHits: running ? (lastKnownMetrics.ramHits || (status?.requests?.ram_hits ?? 0)) : 0,
-    downloads: running ? (lastKnownMetrics.downloads || (status?.requests?.cache_misses ?? 0)) : 0,
-    apis: running ? (lastKnownMetrics.apis || (status?.requests?.total_apis ?? 0)) : 0,
-  }))
-
-  useEffect(() => {
-    if (!running) return
-    const next = {
-      totalHits: status?.requests?.total_hits ?? 0,
-      ramHits: status?.requests?.ram_hits ?? 0,
-      downloads: status?.requests?.cache_misses ?? 0,
-      apis: status?.requests?.total_apis ?? 0,
-    }
-    lastKnownMetrics = next
-    setCounts(next)
-  }, [running, status?.requests?.total_hits, status?.requests?.ram_hits, status?.requests?.cache_misses, status?.requests?.total_apis])
-
-  useEffect(() => {
-    const onMetrics = (event: Event) => {
-      const data = (event as CustomEvent).detail
-      const requests = data?.requests
-      if (!requests || !running) return
-      setCounts((prev) => {
-        const next = {
-          totalHits: typeof requests.total_hits === 'number' ? requests.total_hits : prev.totalHits,
-          ramHits: typeof requests.ram_hits === 'number' ? requests.ram_hits : prev.ramHits,
-          downloads: typeof requests.cache_misses === 'number' ? requests.cache_misses : prev.downloads,
-          apis: typeof requests.total_apis === 'number' ? requests.total_apis : prev.apis,
-        }
-        lastKnownMetrics = next
-        return next
-      })
-    }
-
-    window.addEventListener('gbf-metrics', onMetrics)
-    return () => window.removeEventListener('gbf-metrics', onMetrics)
-  }, [running])
-
-  if (compact) {
-    return (
-      <div className="flex items-center gap-1.5 sm:gap-2">
-        <span
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70 text-xs font-mono font-bold shadow-2xs"
-          title={`${t('hud.totalHits')}: ${counts.totalHits.toLocaleString()}${counts.ramHits > 0 ? ` (${t('hud.ramHits', { count: counts.ramHits.toLocaleString() })})` : ''}`}
-        >
-          <Zap className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-          <span className="hidden md:inline font-sans font-medium text-slate-600 text-[11px]">{t('hud.totalHitsShort') || '命中'}:</span>
-          <span>{counts.totalHits.toLocaleString()}</span>
-          {counts.ramHits > 0 && (
-            <span className="hidden lg:inline text-[10px] font-sans text-emerald-600/80">
-              (RAM {counts.ramHits.toLocaleString()})
-            </span>
-          )}
-        </span>
-
-        <span
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 border border-sky-200/70 text-xs font-mono font-bold shadow-2xs"
-          title={`${t('hud.remoteDownloads')}: ${counts.downloads.toLocaleString()}`}
-        >
-          <Download className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-          <span className="hidden md:inline font-sans font-medium text-slate-600 text-[11px]">{t('hud.remoteDownloadsShort') || '下载'}:</span>
-          <span>{counts.downloads.toLocaleString()}</span>
-        </span>
-
-        <span
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 border border-slate-200/80 text-xs font-mono font-bold shadow-2xs"
-          title={`${t('hud.apiForwarding')}: ${counts.apis.toLocaleString()}`}
-        >
-          <ArrowLeftRight className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-          <span className="hidden md:inline font-sans font-medium text-slate-600 text-[11px]">{t('hud.apiForwardingShort') || '转发'}:</span>
-          <span>{counts.apis.toLocaleString()}</span>
-        </span>
-      </div>
-    )
-  }
-
-  return (
-    <div className="grid grid-cols-3 gap-2.5 sm:gap-4 pt-1">
-      <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
-        <div className="flex flex-col">
-          <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <Zap className="w-4 h-4 text-emerald-500 shrink-0" /> {t('hud.totalHits')}
-          </span>
-          <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
-            <span className="text-2xl sm:text-3xl font-extrabold text-emerald-600 font-mono tnum leading-tight">
-              {counts.totalHits.toLocaleString()}
-            </span>
-            {counts.ramHits > 0 && (
-              <span className="text-xs font-mono font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200/60">
-                {t('hud.ramHits', { count: counts.ramHits.toLocaleString() })}
-              </span>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
-        <div className="flex flex-col">
-          <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <Download className="w-4 h-4 text-sky-500 shrink-0" /> {t('hud.remoteDownloads')}
-          </span>
-          <div className="flex items-baseline gap-1.5 mt-1">
-            <span className="text-2xl sm:text-3xl font-extrabold text-sky-600 font-mono tnum leading-tight">
-              {counts.downloads.toLocaleString()}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-slate-50/80 border border-slate-200/90 rounded-xl px-4 sm:px-5 py-3 sm:py-3.5 flex items-center justify-between shadow-2xs hover:bg-slate-50 transition-colors">
-        <div className="flex flex-col">
-          <span className="text-xs sm:text-[13px] font-semibold text-slate-600 flex items-center gap-1.5">
-            <ArrowLeftRight className="w-4 h-4 text-slate-500 shrink-0" /> {t('hud.apiForwarding')}
-          </span>
-          <div className="flex items-baseline gap-1.5 mt-1">
-            <span className="text-2xl sm:text-3xl font-extrabold text-slate-800 font-mono tnum leading-tight">
-              {counts.apis.toLocaleString()}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
+export { RealtimeRequestHud } from './components/layout/RealtimeRequestHud'
 
 export const App: React.FC = () => {
   const { language, setLanguage, t } = useI18n()
@@ -700,8 +527,6 @@ export const App: React.FC = () => {
       setLoadingAction(null)
     }
   }, [])
-
-  const isActionLoading = (id: string) => loadingAction === id
 
   // Toggle Direct Mode
   const handleToggleDirect = async () => {
@@ -1372,8 +1197,8 @@ export const App: React.FC = () => {
   const prefetchReusedCount = status?.requests?.prefetch_reused ?? 0
 
   return (
-    <div className="min-h-screen w-full flex bg-[#f8fafc] text-slate-800 font-sans antialiased selection:bg-sky-100">
-      {/* Clash Verge-style Left Navigation Rail */}
+    <div className="min-h-screen w-full flex app-canvas text-label-primary font-sans antialiased selection:bg-sky-200 selection:text-slate-900">
+      {/* Left Navigation Rail */}
       <Sidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -1398,14 +1223,14 @@ export const App: React.FC = () => {
       />
 
       <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
-        {/* Toast Notification */}
+        {/* Liquid Glass Toast Notification */}
         {toast && (
-          <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[60] animate-in fade-in slide-in-from-top-3 duration-200">
-            <div className="px-4 py-2 rounded-lg bg-slate-900/90 text-white shadow-xl border border-slate-700/60 flex items-center gap-2 text-xs backdrop-blur-md">
-              {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
-              {toast.type === 'error' && <XCircle className="w-4 h-4 text-red-400 shrink-0" />}
-              {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />}
-              {toast.type === 'info' && <Info className="w-4 h-4 text-sky-400 shrink-0" />}
+          <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] animate-toast-in pointer-events-none">
+            <div className="liquid-glass px-4 py-2 rounded-full flex items-center gap-2 text-xs text-label-primary">
+              {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />}
+              {toast.type === 'error' && <XCircle className="w-4 h-4 text-rose-500 shrink-0" />}
+              {toast.type === 'warning' && <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />}
+              {toast.type === 'info' && <Info className="w-4 h-4 text-sky-500 shrink-0" />}
               <span className="font-medium tracking-tight">{toast.msg}</span>
             </div>
           </div>
@@ -1413,1042 +1238,158 @@ export const App: React.FC = () => {
 
         {/* Termination Notice Banner when user explicitly quits backend */}
         {isTerminated && (
-          <div className="bg-rose-50 border-b border-rose-200 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-in fade-in duration-200 shrink-0">
+          <div className="bg-rose-50/90 border-b border-rose-200/80 px-4 py-2.5 text-center text-xs sm:text-sm text-rose-800 font-semibold flex items-center justify-center gap-2 select-none animate-fade-soft shrink-0">
             <AlertOctagon className="w-4 h-4 text-rose-600 shrink-0" />
             <span>{t('header.terminatedNotice')}</span>
           </div>
         )}
 
-        {/* 1. Header & Live Telemetry HUD: Pinned to top, smoothly shrinks on scroll */}
-        {activeTab === 'core' && (
-          <header
-            className={`shrink-0 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-2xs z-20 transition-all duration-200 ease-in-out ${
-              isHeaderScrolled ? 'py-2 px-4 sm:px-6' : 'py-3.5 sm:py-4 px-4 sm:px-6'
-            }`}
-          >
-            {!isHeaderScrolled ? (
-              <div className="max-w-5xl mx-auto flex flex-col gap-3 sm:gap-3.5 animate-in fade-in duration-150">
-                {/* Top Row: Logo, Title, Running State & Master Switch */}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
-                      <Zap className="w-5.5 h-5.5 fill-current" />
-                    </div>
-                    <div className="flex flex-col min-w-0">
-                      <div className="flex items-center gap-2.5 flex-wrap">
-                        <span className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight leading-none">
-                          {t('header.title')}
-                        </span>
-                        <span className="text-xs sm:text-[13px] font-mono font-bold px-2.5 py-1 rounded-lg bg-slate-100/90 text-slate-700 border border-slate-200/90 shadow-2xs">
-                          v{status?.version || '2.5.1'}
-                        </span>
-                        {updateInfo?.available && (
-                          <button
-                            type="button"
-                            onClick={() => setIsUpdateModalOpen(true)}
-                            className="px-3 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-[13px] font-bold inline-flex items-center gap-1.5 cursor-pointer active:scale-[0.98] transition-all shadow-2xs"
-                          >
-                            <ArrowUpCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                            <span>{t('header.updateFound', { version: updateInfo.version })}</span>
-                          </button>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                        <span className="inline-flex items-center gap-1.5 text-xs sm:text-[13px]">
-                          <span className={`w-2.5 h-2.5 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                          <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
-                            {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
-                          </span>
-                        </span>
-                        {isRunning && (
-                          <>
-                            <span className="text-slate-300">·</span>
-                            <span className="inline-flex items-center gap-1 text-xs sm:text-[13px] text-slate-500 font-mono">
-                              <span className="text-slate-400">{t('header.uptime')}</span>
-                              <span className="font-semibold text-slate-700">
-                                <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
-                              </span>
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Top Right Master Start / Stop Action Button & Quit Button */}
-                  <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap justify-end">
-                    <button
-                      type="button"
-                      disabled={loadingProxy || isTerminated}
-                      onClick={handleToggleProxy}
-                      className={`min-w-[85px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-white shadow-xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
-                        isRunning
-                          ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
-                          : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
-                      }`}
-                    >
-                      {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isTerminated}
-                      onClick={() => setIsQuitModalOpen(true)}
-                      className="px-3 py-2 rounded-xl text-xs sm:text-sm font-semibold text-slate-600 hover:text-rose-600 bg-slate-100/90 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center gap-1.5 shadow-2xs shrink-0 whitespace-nowrap"
-                      title={t('header.quitAppTip')}
-                    >
-                      <Power className="w-4 h-4 text-rose-500" />
-                      <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Realtime request counters: isolated from the root App render loop */}
-                <RealtimeRequestHud status={status} running={isRunning} />
-              </div>
-            ) : (
-              /* Collapsed Compact State: Single slim line with critical info */
-              <div className="max-w-5xl mx-auto flex items-center justify-between gap-3 animate-in fade-in duration-150">
-                {/* Left: Compact Logo, Title & Status */}
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 shadow-2xs ${isRunning ? 'bg-emerald-600 text-white shadow-emerald-500/20' : 'bg-slate-700 text-slate-300'}`}>
-                    <Zap className="w-4 h-4 fill-current" />
-                  </div>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight whitespace-nowrap truncate">
-                      {t('header.title')}
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap shrink-0">
-                      <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                      <span className={isRunning ? 'font-semibold text-emerald-700' : 'text-slate-500 font-medium'}>
-                        {isRunning ? `${currentListenPort}` : t('header.stopped')}
-                      </span>
-                    </span>
-                  </div>
-                </div>
-
-                {/* Middle: Key Telemetry Metrics Pills */}
-                <div className="hidden sm:flex items-center justify-center flex-1 max-w-md">
-                  <RealtimeRequestHud status={status} running={isRunning} compact={true} />
-                </div>
-
-                {/* Right: Master Start / Stop Button & Compact Quit */}
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    type="button"
-                    disabled={loadingProxy || isTerminated}
-                    onClick={handleToggleProxy}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold text-white shadow-2xs transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap ${
-                      isRunning
-                        ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800'
-                        : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800'
-                    }`}
-                  >
-                    {loadingProxy ? t('header.processing') : isRunning ? t('header.stopProxy') : t('header.startProxy')}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isTerminated}
-                    onClick={() => setIsQuitModalOpen(true)}
-                    className="p-1.5 rounded-lg text-slate-600 hover:text-rose-600 bg-slate-100 hover:bg-rose-50 border border-slate-200/90 hover:border-rose-300 transition-all cursor-pointer active:scale-[0.98] flex items-center justify-center shadow-2xs"
-                    title={t('header.quitAppTip')}
-                    aria-label={t('header.quitApp')}
-                  >
-                    <Power className="w-4 h-4 text-rose-500" />
-                  </button>
-                </div>
-              </div>
-            )}
-          </header>
-        )}
-
-        {/* 2. Scrollable Main Work Area: Natural Content-Fit, 2-Column Responsive Card Grid */}
+        {/* Scrollable Main Work Area (contains sticky floating HeaderCockpit for live glass refraction) */}
         <div className="flex-1 overflow-y-auto min-h-0" onScroll={handleMainScroll}>
-          <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5 pb-8 sm:pb-10 flex flex-col justify-start gap-4 sm:gap-5">
+          {activeTab === 'core' && (
+            <HeaderCockpit
+              status={status}
+              isRunning={isRunning}
+              isScrolled={isHeaderScrolled}
+              isTerminated={isTerminated}
+              loadingProxy={loadingProxy}
+              currentListenPort={currentListenPort}
+              uptimeSec={uptimeSec}
+              updateInfo={updateInfo}
+              onToggleProxy={handleToggleProxy}
+              onOpenUpdate={() => setIsUpdateModalOpen(true)}
+              onOpenQuit={() => setIsQuitModalOpen(true)}
+            />
+          )}
+
+          <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 pt-3 sm:pt-4 pb-8 sm:pb-10 flex flex-col justify-start gap-4">
             {activeTab === 'core' ? (
-          <>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-4.5">
-          {/* Card 1: Local Cache & Storage */}
-          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
-            <div className="space-y-3.5">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <HardDrive className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
-                  <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    {t('cards.cache.title')}
-                  </h2>
-                </div>
-                <span className="text-xs text-emerald-700 font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 border border-emerald-200/60">
-                  {t('cards.cache.badge')}
-                </span>
-              </div>
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <CacheCard
+                    isAndroid={isAndroid}
+                    status={status}
+                    cacheStats={cacheStats}
+                    loadingAction={loadingAction}
+                    loadingBrowse={loadingBrowse}
+                    loadingOpenFolder={loadingOpenFolder}
+                    cacheDirInput={cacheDirInput}
+                    setCacheDirInput={setCacheDirInput}
+                    ramMbInput={ramMbInput}
+                    setRamMbInput={setRamMbInput}
+                    ramUsageMb={ramUsageMb}
+                    ramMaxMb={ramMaxMb}
+                    isRamCache={isRamCache}
+                    isRamWarmup={isRamWarmup}
+                    isAutoRepair={isAutoRepair}
+                    onSaveCacheDir={handleSaveCacheDir}
+                    onBrowseDir={handleBrowseDir}
+                    onOpenCacheFolder={handleOpenCacheFolder}
+                    onDetectAcgp={handleDetectAcgp}
+                    onOpenMigrateStandard={() => setIsMigrateStandardModalOpen(true)}
+                    onToggleRamCache={handleToggleRamCache}
+                    onApplyRamMb={handleApplyRamMb}
+                    onOpenBoost={() => setIsBoostModalOpen(true)}
+                    onToggleRamWarmup={handleToggleRamWarmup}
+                    onToggleAutoRepair={handleToggleAutoRepair}
+                    onOpenAudit={() => setIsAuditModalOpen(true)}
+                    onOpenClearCache={() => setIsClearModalOpen(true)}
+                  />
 
-              {/* Local Cache Dir */}
-              <div className="space-y-2">
-                <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
-                  {isAndroid ? t('cards.cache.dirLabelAndroid') : t('cards.cache.dirLabel')}
-                </label>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      disabled={Boolean(loadingAction) || loadingBrowse}
-                      value={cacheDirInput}
-                      onChange={(e) => setCacheDirInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          handleSaveCacheDir()
-                        }
-                      }}
-                      className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleSaveCacheDir}
-                      disabled={Boolean(loadingAction) || loadingBrowse}
-                      aria-busy={isActionLoading('save-cache-dir')}
-                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
-                    >
-                      {isActionLoading('save-cache-dir') ? t('common.saving') : t('common.save')}
-                    </button>
-                    {!isAndroid && (
-                      <button
-                        type="button"
-                        onClick={handleBrowseDir}
-                        disabled={loadingBrowse}
-                        aria-busy={loadingBrowse}
-                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60 disabled:cursor-wait disabled:hover:bg-slate-50"
-                      >
-                        {loadingBrowse ? t('common.loading') : t('common.browse')}
-                      </button>
-                    )}
-                  </div>
                   {!isAndroid && (
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={handleOpenCacheFolder}
-                          disabled={loadingOpenFolder}
-                          className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs disabled:opacity-60"
-                        >
-                          {loadingOpenFolder ? t('common.loading') : t('common.openFolder')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleDetectAcgp}
-                          disabled={Boolean(loadingAction)}
-                          aria-busy={isActionLoading('detect-acgp')}
-                          className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs"
-                        >
-                          {isActionLoading('detect-acgp') ? t('common.loading') : t('cards.cache.detectAcgpower')}
-                        </button>
-                        {status?.platform === 'darwin' && !status?.cache?.is_standard_dir && (
-                          <button
-                            type="button"
-                            onClick={() => setIsMigrateStandardModalOpen(true)}
-                            disabled={Boolean(loadingAction)}
-                            aria-busy={isActionLoading('migrate-standard')}
-                            className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 hover:text-amber-800 border border-amber-200 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs flex items-center gap-1.5"
-                            title={t('cards.cache.migrateStandardTooltip')}
-                          >
-                            <PackageCheck className="w-3.5 h-3.5 shrink-0" />
-                            <span>{isActionLoading('migrate-standard') ? t('cards.cache.migrating') : t('cards.cache.migrateStandard')}</span>
-                          </button>
-                        )}
-                      </div>
+                    <UpstreamCard
+                      status={status}
+                      upstreamRuntime={upstreamRuntime}
+                      language={language}
+                      loadingAction={loadingAction}
+                      isDirect={isDirect}
+                      isShimakaze={isShimakaze}
+                      isAllowLan={isAllowLan}
+                      currentListenPort={currentListenPort}
+                      upstreamInput={upstreamInput}
+                      setUpstreamInput={setUpstreamInput}
+                      backupUpstreamInput={backupUpstreamInput}
+                      setBackupUpstreamInput={setBackupUpstreamInput}
+                      failoverEnabledInput={failoverEnabledInput}
+                      failoverThresholdInput={failoverThresholdInput}
+                      setFailoverThresholdInput={setFailoverThresholdInput}
+                      failoverConsecutiveInput={failoverConsecutiveInput}
+                      setFailoverConsecutiveInput={setFailoverConsecutiveInput}
+                      failoverCooldownInput={failoverCooldownInput}
+                      setFailoverCooldownInput={setFailoverCooldownInput}
+                      failoverAutoRecoverInput={failoverAutoRecoverInput}
+                      setFailoverAutoRecoverInput={setFailoverAutoRecoverInput}
+                      failoverNotificationInput={failoverNotificationInput}
+                      setFailoverNotificationInput={setFailoverNotificationInput}
+                      portInput={portInput}
+                      setPortInput={setPortInput}
+                      onSaveUpstream={handleSaveUpstream}
+                      onProbeUpstream={handleProbeUpstream}
+                      onToggleFailoverEnabled={handleToggleFailoverEnabled}
+                      onProbeBackupUpstream={handleProbeBackupUpstream}
+                      onSaveFailover={handleSaveFailover}
+                      onToggleDirect={handleToggleDirect}
+                      onToggleShimakaze={handleToggleShimakaze}
+                      onSavePort={handleSavePort}
+                      onResetPort={handleResetPort}
+                      onToggleAllowLan={handleToggleAllowLan}
+                      onOpenMobileGuide={() => setIsMobileModalOpen(true)}
+                    />
                   )}
-                </div>
-              </div>
 
-              {/* RAM Cache Setting */}
-              <div className="pt-2 border-t border-slate-100">
-                <SettingToggleRow
-                  label={t('cards.cache.ramCacheLabel', {
-                    maxMb: ramMaxMb,
-                    gbText: ramMaxMb >= 1024 ? ` (${Math.round((ramMaxMb / 1024) * 10) / 10}GB)` : '',
-                  })}
-                  checked={isRamCache}
-                  onChange={handleToggleRamCache}
-                  disabled={Boolean(loadingAction)}
-                >
-                  {isRamCache && (
-                    <div className="pt-2 space-y-3">
-                      <div className="flex items-center gap-2.5 flex-wrap text-xs sm:text-sm text-slate-700">
-                        <span>{t('cards.cache.limitMbLabel')}</span>
-                        <input
-                          type="text"
-                          disabled={Boolean(loadingAction)}
-                          value={ramMbInput}
-                          onChange={(e) => setRamMbInput(e.target.value)}
-                          className="w-24 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
-                        />
-                        <button
-                          type="button"
-                          onClick={handleApplyRamMb}
-                          disabled={Boolean(loadingAction)}
-                          aria-busy={isActionLoading('ram-mb')}
-                          className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
-                        >
-                          {isActionLoading('ram-mb') ? t('cards.cache.applying') : t('cards.cache.apply')}
-                        </button>
-                        {(cacheStats?.resident_bytes ?? 0) > 0 ? (
-                          <div className="flex items-center gap-2.5 text-xs font-mono text-slate-600 flex-wrap">
-                            <span>{t('cards.cache.regularLabel', { mb: ramUsageMb })}</span>
-                            <span className="text-amber-700 font-medium">{t('cards.cache.residentLabel', { mb: cacheStats?.resident_mb ?? 0 })}</span>
-                            <span className="font-semibold text-slate-800">{t('cards.cache.usedLabel', { used: cacheStats?.total_ram_mb ?? (ramUsageMb + (cacheStats?.resident_mb ?? 0)), max: ramMaxMb })}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500 font-mono text-xs">
-                            {ramUsageMb} / {ramMaxMb} MB ({Math.min(100, Math.round((ramUsageMb / Math.max(1, ramMaxMb)) * 100))}%)
-                          </span>
-                        )}
-                        <div className="w-28 h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200/80 shrink-0">
-                          <div
-                            className="h-full bg-emerald-500 rounded-full transition-all duration-300"
-                            style={{
-                              width: `${Math.min(100, Math.round(((cacheStats?.total_ram_mb ?? ramUsageMb) / Math.max(1, ramMaxMb)) * 100))}%`
-                            }}
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setIsBoostModalOpen(true)}
-                          className={`px-2.5 py-1 rounded-lg text-xs font-medium border active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0 ${
-                            (cacheStats?.resident_bytes ?? 0) > 0
-                              ? 'text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border-emerald-300'
-                              : cacheStats?.boost_state === 'loading'
-                              ? 'text-sky-800 bg-sky-50 hover:bg-sky-100 border-sky-300 animate-pulse'
-                              : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-300'
-                          }`}
-                          title={t('cards.cache.boostTooltip')}
-                        >
-                          <Zap className="w-3.5 h-3.5 shrink-0" />
-                          <span>
-                            {cacheStats?.boost_state === 'loading'
-                              ? t('cards.cache.boostLoading')
-                              : (cacheStats?.resident_bytes ?? 0) > 0
-                              ? t('cards.cache.boostActiveWithMb', { mb: cacheStats?.resident_mb ?? 0 })
-                              : t('cards.cache.boostBtn')}
-                          </span>
-                        </button>
-                        {(cacheStats?.system_total_mb ?? 0) > 0 && (
-                          <span className="text-slate-400 text-xs font-mono ml-auto sm:ml-0">
-                            {t('cards.cache.hostRam', { gb: Math.round((cacheStats?.system_total_mb ?? 0) / 1024) })}
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="pt-2 border-t border-slate-100/80 flex items-center justify-between gap-4">
-                        <div
-                          className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none leading-snug"
-                          onClick={!loadingAction ? handleToggleRamWarmup : undefined}
-                        >
-                          {t('cards.cache.ramWarmupLabel')}
-                        </div>
-                        <ToggleSwitch
-                          checked={isRamWarmup}
-                          onChange={handleToggleRamWarmup}
-                          disabled={Boolean(loadingAction)}
-                          ariaLabel={t('cards.cache.ramWarmupLabel')}
-                        />
-                      </div>
-                    </div>
+                  {!isAndroid && (
+                    <NetworkCertCard
+                      status={status}
+                      loadingAction={loadingAction}
+                      caStatusKnown={caStatusKnown}
+                      isCaInstalled={isCaInstalled}
+                      caFingerprint={caFingerprint}
+                      isAutoPac={isAutoPac}
+                      isAutoStart={isAutoStart}
+                      isAutoUpdate={isAutoUpdate}
+                      onOpenCaInstall={() => setCaModalAction('install')}
+                      onOpenCaUninstall={() => setCaModalAction('uninstall')}
+                      onToggleAutoPac={handleToggleAutoPac}
+                      onToggleAutoStart={handleToggleAutoStart}
+                      onToggleAutoUpdate={handleToggleAutoUpdate}
+                    />
                   )}
-                </SettingToggleRow>
-              </div>
 
-              {/* Cache Maintenance & Integrity */}
-              <div className="pt-2 border-t border-slate-100 space-y-2.5">
-                <SettingToggleRow
-                  label={t('cards.cache.cleanZombiesLabel')}
-                  checked={isAutoRepair}
-                  onChange={handleToggleAutoRepair}
-                  disabled={Boolean(loadingAction)}
+                  <OptimizationCard
+                    loadingAction={loadingAction}
+                    isPrefetch={isPrefetch}
+                    isBrowserCache={isBrowserCache}
+                    onTogglePrefetch={handleTogglePrefetch}
+                    onToggleBrowserCache={handleToggleBrowserCache}
+                  />
+                </div>
+
+                <TelemetryPanel
+                  totalHitRate={totalHitRate}
+                  ramHitPct={ramHitPct}
+                  diskHitPct={diskHitPct}
+                  missHitPct={missHitPct}
+                  ramHitsCount={ramHitsCount}
+                  diskHitsCount={diskHitsCount}
+                  downloadsCount={downloadsCount}
+                  hitsCount={hitsCount}
+                  connReusePercent={connReusePercent}
+                  reusedConnections={reusedConnections}
+                  newConnections={newConnections}
+                  activeForeground={activeForeground}
+                  h2Count={h2Count}
+                  h1Count={h1Count}
+                  latencySamples={latencySamples}
+                  p50Latency={p50Latency}
+                  p95Latency={p95Latency}
+                  activeApiCount={activeApiCount}
+                  isPrefetch={isPrefetch}
+                  prefetchReusedCount={prefetchReusedCount}
                 />
-
-                <div className="flex items-center gap-2 pt-0.5 flex-wrap">
-                  <button
-                    type="button"
-                    onClick={() => setIsAuditModalOpen(true)}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                  >
-                    <Activity className="w-3.5 h-3.5 shrink-0" />
-                    <span>{t('cards.cache.auditCache')}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsClearModalOpen(true)}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>{t('cards.cache.clearCache')}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Card 2: Upstream Proxy & Network Routing */}
-          {!isAndroid && (
-            <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
-            <div className="space-y-3.5">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <Globe className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
-                  <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    {t('cards.upstream.title')}
-                  </h2>
-                </div>
-                <span className="text-xs text-sky-700 font-semibold px-2.5 py-0.5 rounded-full bg-sky-50 border border-sky-200/60">
-                  {t('cards.upstream.badge')}
-                </span>
-              </div>
-
-              {/* Upstream Proxy */}
-              <div className="space-y-1.5">
-                <label className="text-[13px] sm:text-sm text-slate-700 font-medium block">
-                  {t('cards.upstream.upstreamLabel')}
-                </label>
-                <div className="flex items-center gap-1.5 sm:gap-2">
-                  <input
-                    type="text"
-                    disabled={isDirect || Boolean(loadingAction)}
-                    value={upstreamInput}
-                    onChange={(e) => setUpstreamInput(e.target.value)}
-                    className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all disabled:bg-slate-100 disabled:text-slate-400"
-                  />
-                  <button
-                    type="button"
-                    disabled={isDirect || Boolean(loadingAction)}
-                    onClick={handleSaveUpstream}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
-                  >
-                    {isActionLoading('save-upstream') ? t('common.saving') : t('common.save')}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isDirect || Boolean(loadingAction)}
-                    aria-busy={isActionLoading('probe-upstream')}
-                    onClick={handleProbeUpstream}
-                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
-                  >
-                    {isActionLoading('probe-upstream') ? t('common.loading') : t('cards.upstream.autoDetect')}
-                  </button>
-                </div>
-              </div>
-
-              {/* Upstream Failover */}
-              <div className="space-y-2.5 pt-1.5 border-t border-slate-100">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <div>
-                    <div className="text-[13px] sm:text-sm text-slate-700 font-medium">
-                      {t('cards.upstream.failoverTitle')}
-                    </div>
-                    <div className="text-xs text-slate-400 mt-0.5">
-                      {t('cards.upstream.failoverSubtitle')}
-                    </div>
-                  </div>
-                  <span
-                    className={
-                      isDirect || !failoverEnabledInput || !backupUpstreamInput.trim()
-                        ? 'text-xs font-semibold px-2.5 py-0.5 rounded-full bg-slate-50 text-slate-500 border border-slate-200/60'
-                        : upstreamRuntime?.active === 'backup'
-                          ? 'text-xs font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200/70'
-                          : 'text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/70'
-                    }
-                  >
-                    {isDirect
-                      ? t('cards.upstream.failoverDisabledDirect')
-                      : !failoverEnabledInput || !backupUpstreamInput.trim()
-                        ? t('cards.upstream.failoverNotEnabled')
-                        : upstreamRuntime?.active === 'backup'
-                          ? t('cards.upstream.activeBackup')
-                          : t('cards.upstream.activePrimary')}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between gap-3 py-1">
-                  <div
-                    className={`text-[13px] sm:text-sm font-semibold ${
-                      isDirect ? 'text-slate-400 cursor-not-allowed' : 'text-slate-800 cursor-pointer select-none'
-                    } leading-snug`}
-                    onClick={!isDirect && !loadingAction ? handleToggleFailoverEnabled : undefined}
-                  >
-                    <span>{t('cards.upstream.enableFailover')}</span>
-                    {isDirect && <span className="text-xs text-slate-400 ml-1.5 font-normal">{t('cards.upstream.failoverDirectNote')}</span>}
-                  </div>
-                  <ToggleSwitch
-                    checked={!isDirect && failoverEnabledInput}
-                    onChange={handleToggleFailoverEnabled}
-                    disabled={isDirect || Boolean(loadingAction)}
-                    ariaLabel={t('cards.upstream.enableFailover')}
-                  />
-                </div>
-
-                {!isDirect && failoverEnabledInput && (
-                  <div className="space-y-2.5 pt-0.5">
-                    {/* Backup upstream input + probe button */}
-                    <div className="space-y-1.5">
-                      <div className="flex items-center gap-1.5 sm:gap-2">
-                        <label className="text-xs sm:text-[13px] text-slate-600 shrink-0">
-                          {t('cards.upstream.backupAddress')}
-                        </label>
-                        <input
-                          type="text"
-                          value={backupUpstreamInput}
-                          onChange={(e) => setBackupUpstreamInput(e.target.value)}
-                          disabled={Boolean(loadingAction)}
-                          placeholder={t('cards.upstream.backupPlaceholder')}
-                          className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all"
-                        />
-                        <button
-                          type="button"
-                          disabled={Boolean(loadingAction)}
-                          aria-busy={isActionLoading('probe-backup-upstream')}
-                          onClick={handleProbeBackupUpstream}
-                          className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
-                        >
-                          {isActionLoading('probe-backup-upstream') ? t('cards.upstream.backupProbing') : t('cards.upstream.backupAutoDetect')}
-                        </button>
-                      </div>
-                      <div className="text-[11px] sm:text-xs text-slate-500 leading-relaxed">
-                        {t('cards.upstream.backupTip')}
-                      </div>
-                    </div>
-
-                    {/* 3 Parameter Inputs: Redesigned with label on top, input on bottom, NEVER vertical wrapping */}
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                      <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
-                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap" title={t('cards.upstream.thresholdTip')}>
-                          {t('cards.upstream.thresholdLabel')}
-                        </span>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <input
-                            type="number"
-                            min={0}
-                            max={60000}
-                            step={100}
-                            value={failoverThresholdInput}
-                            onChange={(e) => setFailoverThresholdInput(e.target.value)}
-                            disabled={Boolean(loadingAction)}
-                            className="w-full min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-xs text-slate-800 focus:ring-1 focus:ring-sky-500 focus:outline-none"
-                          />
-                          <span className="text-xs text-slate-400 shrink-0 font-mono">ms</span>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
-                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap" title={t('cards.upstream.failuresTip')}>
-                          {t('cards.upstream.failuresLabel')}
-                        </span>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <input
-                            type="number"
-                            min={1}
-                            max={10}
-                            step={1}
-                            value={failoverConsecutiveInput}
-                            onChange={(e) => setFailoverConsecutiveInput(e.target.value)}
-                            disabled={Boolean(loadingAction)}
-                            className="w-full min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-xs text-slate-800 focus:ring-1 focus:ring-sky-500 focus:outline-none"
-                          />
-                          <span className="text-xs text-slate-400 shrink-0">{t('cards.upstream.times')}</span>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col gap-1 p-2 sm:p-2.5 rounded-lg bg-slate-50/70 border border-slate-200/70">
-                        <span className="text-[11px] font-medium text-slate-500 whitespace-nowrap">
-                          {t('cards.upstream.cooldownLabel')}
-                        </span>
-                        <div className="flex items-center gap-1.5 mt-0.5">
-                          <input
-                            type="number"
-                            min={1}
-                            max={3600}
-                            step={10}
-                            value={failoverCooldownInput}
-                            onChange={(e) => setFailoverCooldownInput(e.target.value)}
-                            disabled={Boolean(loadingAction)}
-                            className="w-full min-w-0 bg-white border border-slate-200 rounded-md px-2 py-1 text-right font-mono text-xs text-slate-800 focus:ring-1 focus:ring-sky-500 focus:outline-none"
-                          />
-                          <span className="text-xs text-slate-400 shrink-0">{t('cards.upstream.seconds')}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="text-[11px] text-slate-400 leading-relaxed px-0.5">
-                      {t('cards.upstream.failoverMechanismNotice')}
-                    </div>
-
-                    <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
-                      <div className="flex flex-col gap-2 min-w-[220px]">
-                        <div className="flex items-center justify-between gap-3">
-                          <span
-                            className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none"
-                            onClick={!loadingAction ? () => setFailoverAutoRecoverInput(!failoverAutoRecoverInput) : undefined}
-                          >
-                            {t('cards.upstream.autoRecoverCheckbox')}
-                          </span>
-                          <ToggleSwitch
-                            checked={failoverAutoRecoverInput}
-                            onChange={() => setFailoverAutoRecoverInput(!failoverAutoRecoverInput)}
-                            disabled={Boolean(loadingAction)}
-                            ariaLabel={t('cards.upstream.autoRecoverCheckbox')}
-                          />
-                        </div>
-
-                        {status?.platform === 'windows' && (
-                          <div className="flex items-center justify-between gap-3">
-                            <span
-                              className="text-xs sm:text-[13px] text-slate-700 cursor-pointer select-none"
-                              onClick={!loadingAction ? () => setFailoverNotificationInput(!failoverNotificationInput) : undefined}
-                            >
-                              {t('cards.upstream.notificationCheckbox')}
-                            </span>
-                            <ToggleSwitch
-                              checked={failoverNotificationInput}
-                              onChange={() => setFailoverNotificationInput(!failoverNotificationInput)}
-                              disabled={Boolean(loadingAction)}
-                              ariaLabel={t('cards.upstream.notificationCheckbox')}
-                            />
-                          </div>
-                        )}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={handleSaveFailover}
-                        disabled={Boolean(loadingAction)}
-                        aria-busy={isActionLoading('save-failover')}
-                        className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 active:bg-sky-800 border border-sky-600 active:scale-[0.98] transition-all cursor-pointer shadow-2xs disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {isActionLoading('save-failover') ? t('common.saving') : t('cards.upstream.saveFailoverBtn')}
-                      </button>
-                    </div>
-
-                    {backupUpstreamInput.trim() && !isDirect && (
-                      <div className="p-2.5 rounded-lg bg-slate-50/80 border border-slate-200/70 text-xs text-slate-600">
-                        <div className="flex items-center justify-between gap-2 flex-wrap">
-                          <span>
-                            {t('cards.upstream.currentRoute')}
-                            <strong className={upstreamRuntime?.active === 'backup' ? 'text-amber-700' : 'text-emerald-700'}>
-                              {upstreamRuntime?.active === 'backup' ? t('cards.upstream.backupRoute') : t('cards.upstream.primaryRoute')}
-                            </strong>
-                          </span>
-                          <span className="font-mono text-slate-500">
-                            {t('cards.upstream.consecutiveAbnormal')} {upstreamRuntime?.failure_count ?? 0} / {upstreamRuntime?.consecutive_failures ?? (Number(failoverConsecutiveInput) || 3)}
-                          </span>
-                        </div>
-                        <div className="mt-1.5 flex items-center justify-between gap-2 flex-wrap">
-                          <span className="text-slate-500">
-                            {upstreamRuntime?.reason
-                              ? ({
-                                  timeout: t('cards.upstream.reasonTimeout'),
-                                  connection_error: t('cards.upstream.reasonConnError'),
-                                  latency_threshold: t('cards.upstream.reasonLatency'),
-                                  primary_recovered: t('cards.upstream.reasonRecovered'),
-                                  primary_recovery_failed: t('cards.upstream.reasonRecoveryFailed'),
-                                } as Record<string, string>)[upstreamRuntime.reason] || upstreamRuntime.reason
-                              : t('cards.upstream.waitingTelemetry')}
-                          </span>
-                          <span className="font-mono text-slate-400">
-                            {upstreamRuntime?.last_switch_at
-                              ? t('cards.upstream.lastSwitch', { time: new Date(upstreamRuntime.last_switch_at).toLocaleTimeString(language === 'zh' ? 'zh-CN' : language === 'ja' ? 'ja-JP' : 'en-US', { hour12: false }) })
-                              : t('cards.upstream.neverSwitched')}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-
-                    {!backupUpstreamInput.trim() && (
-                      <div className="text-xs text-amber-700 bg-amber-50/80 border border-amber-200/70 rounded-lg px-3 py-2">
-                        {t('cards.upstream.missingBackupWarning')}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Mode Toggles */}
-              <div className="pt-2 border-t border-slate-100">
-                <SettingToggleRow
-                  label={t('cards.upstream.directModeCheckbox')}
-                  checked={isDirect}
-                  onChange={handleToggleDirect}
-                  disabled={Boolean(loadingAction)}
-                />
-
-                <SettingToggleRow
-                  label={t('cards.upstream.shimakazeCheckbox')}
-                  checked={isShimakaze}
-                  onChange={handleToggleShimakaze}
-                  disabled={Boolean(loadingAction)}
-                >
-                  {isShimakaze && (
-                    <div className="mt-2 p-3 bg-sky-50/80 border border-sky-200/70 rounded-lg text-xs text-sky-900 leading-relaxed shadow-2xs space-y-1">
-                      <div>
-                        {t('cards.upstream.shimakazeNotice')}
-                      </div>
-                      <div className="text-sky-800/95">
-                        {t('cards.upstream.shimakazeRemoteCacheNotice')}
-                      </div>
-                    </div>
-                  )}
-                </SettingToggleRow>
-              </div>
-
-              {/* Listen Port & Allow LAN */}
-              <div className="space-y-2.5 pt-2 border-t border-slate-100">
-                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                  <label className="text-[13px] sm:text-sm text-slate-700 font-medium">{t('cards.network.portLabel')}</label>
-                  <input
-                    type="text"
-                    disabled={Boolean(loadingAction)}
-                    value={portInput}
-                    onChange={(e) => setPortInput(e.target.value)}
-                    className="w-16 sm:w-18 bg-slate-50/70 border border-slate-200 rounded-lg px-2.5 py-1 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSavePort}
-                    disabled={Boolean(loadingAction)}
-                    aria-busy={isActionLoading('save-port')}
-                    className="px-2.5 sm:px-3 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
-                  >
-                    {isActionLoading('save-port') ? t('common.saving') : t('cards.network.savePort')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleResetPort}
-                    disabled={Boolean(loadingAction)}
-                    aria-busy={isActionLoading('reset-port')}
-                    className="px-2 sm:px-2.5 py-1 rounded-lg text-xs sm:text-sm font-medium text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-slate-200/80 active:scale-[0.98] transition-all shrink-0 cursor-pointer shadow-2xs whitespace-nowrap"
-                  >
-                    {isActionLoading('reset-port') ? t('common.loading') : t('cards.network.resetDefault')}
-                  </button>
-                </div>
-
-                <div className="pt-1">
-                  <SettingToggleRow
-                    label={
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span>{t('cards.network.allowLan')}</span>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            setIsMobileModalOpen(true)
-                          }}
-                          className="px-2 py-0.5 rounded-lg text-xs font-normal text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer flex items-center gap-1 shadow-2xs shrink-0"
-                        >
-                          <QrCode className="w-3.5 h-3.5 shrink-0" />
-                          <span>{t('cards.network.mobileGuide')}</span>
-                        </button>
-                      </div>
-                    }
-                    description={
-                      isAllowLan
-                        ? t('cards.network.lanIpDesc', { ip: status?.lan_ip || '192.168.x.x', port: currentListenPort })
-                        : undefined
-                    }
-                    checked={isAllowLan}
-                    onChange={handleToggleAllowLan}
-                    disabled={Boolean(loadingAction)}
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-          )}
-
-          {/* Card 3: HTTPS Root CA & System Integration */}
-          {!isAndroid && (
-            <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
-            <div className="space-y-3.5">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
-                  <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    {t('cards.network.certTitle')}
-                  </h2>
-                </div>
-                <span
-                  className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
-                    !caStatusKnown
-                      ? 'bg-slate-50 text-slate-500 border-slate-200/60'
-                      : isCaInstalled
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
-                        : 'bg-rose-50 text-rose-700 border-rose-200/60'
-                  }`}
-                >
-                  {!caStatusKnown ? t('common.loading') : isCaInstalled ? t('cards.network.certInstalled') : t('cards.network.certNotInstalled')}
-                </span>
-              </div>
-
-              {/* CA Status & Action Buttons */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className="text-[13px] sm:text-sm text-slate-700 font-medium">
-                    {t('cards.network.certStatusLabel')}
-                    <strong className={!caStatusKnown ? 'text-slate-500 ml-1' : isCaInstalled ? 'text-emerald-700 ml-1' : 'text-rose-600 ml-1'}>
-                      {!caStatusKnown ? t('common.loading') : isCaInstalled ? t('cards.network.certInstalled') : t('cards.network.certNotInstalled')}
-                    </strong>
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setCaModalAction('install')}
-                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
-                    >
-                      {t('cards.network.certInstallBtn')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setCaModalAction('uninstall')}
-                      className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all cursor-pointer shadow-2xs"
-                    >
-                      {t('cards.network.certUninstallBtn')}
-                    </button>
-                  </div>
-                </div>
-                <div className="text-xs font-mono text-slate-500 pt-0.5 select-all break-all leading-normal">
-                  {t('cards.network.certFingerprintLabel')} {caFingerprint || t('common.loading')}
-                </div>
-              </div>
-
-              {/* System Integration Toggles */}
-              <div className="pt-2 border-t border-slate-100">
-                <SettingToggleRow
-                  label={t('cards.network.autoPacCheckbox')}
-                  checked={isAutoPac}
-                  onChange={handleToggleAutoPac}
-                  disabled={Boolean(loadingAction)}
-                >
-                  {isAutoPac && status?.system_proxy_conflict && (
-                    <div className="mt-2 p-2.5 rounded-lg bg-amber-50/90 border border-amber-200/80 text-xs text-amber-900 leading-relaxed shadow-2xs">
-                      <span className="font-semibold">{t('cards.network.conflictNotice')}</span>
-                      <span className="ml-1 break-all">{status.system_proxy_conflict}</span>
-                    </div>
-                  )}
-                </SettingToggleRow>
-
-                <SettingToggleRow
-                  label={t('cards.network.autoStartCheckbox')}
-                  checked={isAutoStart}
-                  onChange={handleToggleAutoStart}
-                  disabled={Boolean(loadingAction)}
-                />
-
-                <SettingToggleRow
-                  label={t('cards.network.autoUpdateCheckbox')}
-                  checked={isAutoUpdate}
-                  onChange={handleToggleAutoUpdate}
-                  disabled={Boolean(loadingAction)}
-                />
-              </div>
-            </div>
-          </div>
-          )}
-
-          {/* Card 4: Performance Acceleration & Asset Scheduling */}
-          <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-4.5 flex flex-col justify-between gap-3.5 hover:border-slate-300/80 transition-colors">
-            <div className="space-y-3.5">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <Gauge className="w-4.5 h-4.5 text-slate-700 shrink-0" strokeWidth={1.75} />
-                  <h2 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                    {t('cards.optim.title')}
-                  </h2>
-                </div>
-                <span className="text-xs text-amber-800 font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 border border-amber-200/60">
-                  {t('cards.optim.badge')}
-                </span>
-              </div>
-
-              <div>
-                <SettingToggleRow
-                  label={t('cards.optim.prefetch')}
-                  checked={isPrefetch}
-                  onChange={handleTogglePrefetch}
-                  disabled={Boolean(loadingAction)}
-                />
-
-                <SettingToggleRow
-                  label={t('cards.optim.browserCache')}
-                  checked={isBrowserCache}
-                  onChange={handleToggleBrowserCache}
-                  disabled={Boolean(loadingAction)}
-                />
-
-                <div className="mt-3.5 p-3 bg-amber-50/70 border border-amber-200/60 rounded-lg text-xs text-amber-900 leading-relaxed shadow-2xs space-y-1">
-                  <div className="font-semibold flex items-center gap-1.5 text-amber-800">
-                    <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
-                    <span>{t('cards.optim.subhead')}</span>
-                  </div>
-                  <p className="text-amber-800/90 text-[11px] sm:text-xs">
-                    {t('cards.optim.pacingNotice')}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* 5. Accelerating Engine Telemetry Dashboard */}
-        <div className="bg-white rounded-xl border border-slate-200/90 shadow-2xs p-4 sm:p-5 transition-colors">
-          <div className="flex items-center justify-between pb-2.5 mb-3.5 border-b border-slate-100">
-            <div className="flex items-center gap-2.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-sky-500 animate-pulse shrink-0" />
-              <h3 className="text-sm sm:text-base font-bold text-slate-800 tracking-tight">
-                {t('telemetry.title')}
-              </h3>
-              <span className="text-xs text-slate-400 font-mono hidden sm:inline">
-                ENGINE TELEMETRY
-              </span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 sm:gap-4">
-            {/* Col 1: Asset Routing & Cache Ratio */}
-            <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <Zap className="w-4 h-4 text-emerald-500 shrink-0" />
-                  <span>{t('telemetry.ratioTitle')}</span>
-                </span>
-                <span className="text-sm sm:text-base font-bold font-mono text-emerald-600">
-                  {totalHitRate > 0 ? `${totalHitRate}%` : '--'}
-                </span>
-              </div>
-
-              {/* Multi-segment visual bar */}
-              <div className="space-y-1.5">
-                <div className="w-full h-2.5 bg-slate-200/80 rounded-full overflow-hidden flex shadow-inner">
-                  <div
-                    className="h-full bg-emerald-500 transition-all duration-300"
-                    style={{ width: `${ramHitPct}%` }}
-                    title={t('telemetry.ramHitsTip', { count: ramHitsCount, pct: ramHitPct })}
-                  />
-                  <div
-                    className="h-full bg-sky-500 transition-all duration-300"
-                    style={{ width: `${diskHitPct}%` }}
-                    title={t('telemetry.diskHitsTip', { count: diskHitsCount, pct: diskHitPct })}
-                  />
-                  <div
-                    className="h-full bg-amber-400/90 transition-all duration-300"
-                    style={{ width: `${missHitPct}%` }}
-                    title={t('telemetry.downloadsTip', { count: downloadsCount, pct: missHitPct })}
-                  />
-                </div>
-                <div className="flex items-center justify-between text-xs text-slate-500 font-mono">
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-                    RAM: {ramHitsCount}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
-                    {t('telemetry.diskCount', { count: diskHitsCount })}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
-                    {t('telemetry.downloadsCount', { count: downloadsCount })}
-                  </span>
-                </div>
-              </div>
-
-              <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
-                <span>{t('telemetry.savedRequests')}</span>
-                <span className="font-mono font-semibold text-slate-800">{t('telemetry.savedTimes', { count: hitsCount })}</span>
-              </div>
-            </div>
-
-            {/* Col 2: HTTP/2 Multiplexing & Handshake Savings */}
-            <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <Globe className="w-4 h-4 text-sky-500 shrink-0" />
-                  <span>{t('telemetry.h2Title')}</span>
-                </span>
-                <span className="text-sm sm:text-base font-bold font-mono text-sky-600">
-                  {connReusePercent > 0 ? `${connReusePercent}%` : '--'}
-                </span>
-              </div>
-
-              <div className="space-y-2 text-xs sm:text-[13px] text-slate-600">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">{t('telemetry.avoidHandshakes')}</span>
-                  <span className="font-mono font-semibold text-emerald-600">
-                    {t('telemetry.timesPlus', { count: reusedConnections })}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">{t('telemetry.newVsActive')}</span>
-                  <span className="font-mono text-slate-700">
-                    {newConnections} / {activeForeground}
-                  </span>
-                </div>
-              </div>
-
-              <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
-                <span>{t('telemetry.protocolMultiplex')}</span>
-                <span className="font-mono font-medium text-sky-700">
-                  H2: {h2Count} | H1: {h1Count}
-                </span>
-              </div>
-            </div>
-
-            {/* Col 3: Upstream Latency & Yielding Guardrail */}
-            <div className="bg-slate-50/70 rounded-xl p-3.5 sm:p-4 border border-slate-200/70 flex flex-col justify-between gap-3">
-              <div className="flex items-center justify-between">
-                <span className="text-[13px] sm:text-sm font-semibold text-slate-700 flex items-center gap-1.5">
-                  <Wifi className="w-4 h-4 text-indigo-500 shrink-0" />
-                  <span>{t('telemetry.upstreamLatencyTitle')}</span>
-                </span>
-                <span className="text-xs font-mono text-slate-500">
-                  {t('telemetry.sampleCount', { count: latencySamples })}
-                </span>
-              </div>
-
-              <div className="space-y-2 text-xs sm:text-[13px] text-slate-600">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">{t('telemetry.latencyMetrics')}</span>
-                  <span className="font-mono font-semibold text-slate-800">
-                    {p50Latency > 0 ? `${p50Latency}ms` : '--'} / {p95Latency > 0 ? `${p95Latency}ms` : '--'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">{t('telemetry.apiAvoidance')}</span>
-                  <span className={`font-medium ${activeApiCount > 0 ? 'text-amber-600 font-semibold' : 'text-emerald-600'}`}>
-                    {activeApiCount > 0 ? t('telemetry.avoidingActive', { count: activeApiCount }) : t('telemetry.avoidingReady')}
-                  </span>
-                </div>
-              </div>
-
-              <div className="text-xs sm:text-[13px] text-slate-500 flex items-center justify-between pt-1.5 border-t border-slate-200/60">
-                <span>{t('telemetry.prefetchHitsTitle')}</span>
-                {!isPrefetch ? (
-                  <span className="text-slate-400 font-medium">{t('cards.upstream.failoverNotEnabled')}</span>
-                ) : prefetchReusedCount > 0 ? (
-                  <span className="font-mono font-semibold text-indigo-600">
-                    {t('telemetry.prefetchHitItems', { count: prefetchReusedCount })}
-                  </span>
-                ) : diskHitsCount + ramHitsCount > 0 ? (
-                  <span className="font-medium text-emerald-600">
-                    {t('telemetry.prefetchReady')}
-                  </span>
-                ) : (
-                  <span className="font-medium text-slate-400">
-                    {t('telemetry.prefetchPending')}
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </>
-    ) : showAndroidPatch ? (
-      <AndroidPatchPanel showToast={showToast} />
-    ) : null}
+              </>
+            ) : showAndroidPatch ? (
+              <AndroidPatchPanel showToast={showToast} />
+            ) : null}
           </main>
         </div>
       </div>
@@ -2589,8 +1530,8 @@ export const App: React.FC = () => {
         subtitle={t('quitModal.desc')}
         maxWidth="max-w-md"
       >
-        <div className="space-y-4 text-xs sm:text-sm text-slate-600">
-          <div className="p-3.5 bg-rose-50/80 border border-rose-200/80 rounded-xl space-y-2 text-rose-900 leading-relaxed">
+        <div className="space-y-4 text-xs sm:text-sm text-label-secondary">
+          <InsetPanel tone="rose" className="p-3.5 space-y-2 leading-relaxed">
             <p className="text-xs sm:text-sm">
               {t('quitModal.warning')}
             </p>
@@ -2605,25 +1546,27 @@ export const App: React.FC = () => {
             <p className="text-[11px] text-rose-700/80 pt-1">
               {t('quitModal.restartTip')}
             </p>
-          </div>
-          <div className="pt-2 flex justify-end gap-2.5 border-t border-slate-100">
-            <button
+          </InsetPanel>
+          <div className="pt-2.5 flex justify-end gap-2.5 hairline-t">
+            <Button
               type="button"
+              variant="desktop"
+              size="md"
               disabled={quitting}
               onClick={() => setIsQuitModalOpen(false)}
-              className="px-4 py-2 rounded-xl text-xs sm:text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 transition-all cursor-pointer"
             >
               {t('quitModal.cancel')}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              disabled={quitting}
+              variant="danger"
+              size="md"
+              icon={<Power className="w-4 h-4" />}
+              loading={quitting}
               onClick={handleQuitApp}
-              className="px-5 py-2 rounded-xl text-xs sm:text-sm font-bold text-white bg-rose-600 hover:bg-rose-700 active:bg-rose-800 transition-all cursor-pointer shadow-xs flex items-center gap-1.5"
             >
-              <Power className="w-4 h-4" />
-              <span>{quitting ? t('common.quitting') : t('quitModal.confirm')}</span>
-            </button>
+              {quitting ? t('common.quitting') : t('quitModal.confirm')}
+            </Button>
           </div>
         </div>
       </Modal>

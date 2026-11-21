@@ -32,19 +32,19 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
         <button
           type="button"
           onClick={onToggle}
-          className="w-10 h-10 rounded-full bg-slate-50 hover:bg-slate-100 border border-slate-200/70 flex items-center justify-center text-slate-700 hover:text-slate-900 transition-all cursor-pointer shadow-2xs group mx-auto p-0 active:scale-95"
+          className="ui-control w-10 h-10 rounded-full flex items-center justify-center transition-all cursor-pointer group mx-auto p-0 active:scale-95"
           title={titleText}
           aria-label={titleText}
         >
-          <div className="relative shrink-0 flex items-center justify-center transition-transform duration-300 ease-[cubic-bezier(.32,.72,0,1)]">
+          <div className="relative shrink-0 flex items-center justify-center transition-transform duration-300 ease-fluid">
             {isDark ? (
               <Sun
-                className="w-5 h-5 text-amber-400 group-hover:scale-110 transition-transform"
+                className="w-[18px] h-[18px] text-amber-400 group-hover:scale-110 transition-transform"
                 strokeWidth={2}
               />
             ) : (
               <Moon
-                className="w-5 h-5 text-slate-700 group-hover:scale-110 transition-transform"
+                className="w-[18px] h-[18px] text-label-secondary group-hover:scale-110 transition-transform"
                 strokeWidth={1.85}
               />
             )}
@@ -58,24 +58,24 @@ export const ThemeToggle: React.FC<ThemeToggleProps> = ({
     <button
       type="button"
       onClick={onToggle}
-      className={`flex items-center justify-center h-10 w-full gap-3 px-3 rounded-full text-base font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100/80 active:scale-[0.98] transition-all cursor-pointer group ${className}`}
+      className={`flex items-center justify-start h-9 w-full gap-2.5 px-2.5 rounded-xl text-[13px] font-medium text-label-secondary hover:text-label-primary hover:bg-slate-500/10 active:scale-[0.98] transition-all cursor-pointer group ${className}`}
       title={titleText}
       aria-label={titleText}
     >
-      <div className="relative shrink-0 flex items-center justify-center transition-transform duration-300 ease-[cubic-bezier(.32,.72,0,1)]">
+      <div className="relative shrink-0 flex items-center justify-center transition-transform duration-300 ease-fluid">
         {isDark ? (
           <Sun
-            className="w-5 h-5 text-amber-400 group-hover:scale-110 group-hover:rotate-45 transition-transform"
+            className="w-[18px] h-[18px] text-amber-400 group-hover:scale-110 group-hover:rotate-45 transition-transform"
             strokeWidth={2}
           />
         ) : (
           <Moon
-            className="w-5 h-5 text-slate-700 group-hover:scale-110 group-hover:-rotate-12 transition-transform"
+            className="w-[18px] h-[18px] text-label-secondary group-hover:scale-110 group-hover:-rotate-12 transition-transform"
             strokeWidth={1.85}
           />
         )}
       </div>
-      <span className="whitespace-nowrap leading-tight">
+      <span className="whitespace-nowrap leading-tight truncate">
         {labelText}
       </span>
     </button>
