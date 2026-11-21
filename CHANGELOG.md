@@ -41,7 +41,6 @@ GBF Accelerator 各版本的更新记录与 Release 说明。
 - 下游 HTTP/2 握手支持：数据面在 TLS ALPN 协商中增加 h2 支持，现代浏览器与 WebView 在保持单 TCP 连接下发起多路并发素材流，显著减少握手 RTT 与连接调度开销；
 - ECDSA P-256 叶子证书：根证书颁发动态叶子证书时优先生成 ECDSA P-256 密钥，相比 RSA-2048 握手计算开销降低 70% 以上，移动端冷启动握手大幅加速；
 - 全链路 TLS 会话复用与 DNS TTL 缓存：上游代理客户端与直连通道启用 TLS Session Cache 复用与带 TTL 的内存 DNS 缓存，削减跨海握手耗时；
-- 独立 CDN 上游分流：支持对 Akamai 静态 CDN 域名配置独立的 asset_upstream_proxy 快速通道。
 
 ### 🎨 Web 控制台流体玻璃（Liquid Glass）重构与移动端响应式抽屉
 - 全新流体玻璃视觉体系：采用同心圆角、浅色/深色双主题流线质感、InfoTip 浮层气泡与沉浸式毛玻璃卡片排版；
