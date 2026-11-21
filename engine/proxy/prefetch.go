@@ -40,6 +40,7 @@ type prefetchCandidate struct {
 	reqMethod  string
 	xVersion   string
 	langPrefix string
+	depth      uint8
 }
 
 type discoveredRef struct {
@@ -49,9 +50,10 @@ type discoveredRef struct {
 }
 
 type prefetchItem struct {
-	prio int
-	host string
-	path string
+	prio  int
+	host  string
+	path  string
+	depth uint8
 }
 
 const (
@@ -187,16 +189,22 @@ func (f *prefetchDeadFilter) Len() int {
 	return len(f.items)
 }
 
+const defaultPrefetchWorkers = 3
+
 type PrefetchEngine struct {
 	srv               *ProxyServer
 	discoveryCh       chan prefetchCandidate
 	prio1Queue        chan prefetchItem // High: JS / JSON
 	prio2Queue        chan prefetchItem // Medium: Images / Textures
 	prio3Queue        chan prefetchItem // Low: Audio / Other
+	execCh            chan prefetchItem
+	execSlots         chan struct{}
 	inflightMu        sync.Mutex
 	inflight          map[string]struct{}
 	discoverySeen     map[string]struct{}
 	discoverySeenPrev map[string]struct{}
+	pacerMu           sync.Mutex
+	nextPaceAt        time.Time
 	stopChan          chan struct{}
 	stopOnce          sync.Once
 	deadFilter        *prefetchDeadFilter
@@ -212,15 +220,20 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 		prio1Queue:        make(chan prefetchItem, 256),
 		prio2Queue:        make(chan prefetchItem, 256),
 		prio3Queue:        make(chan prefetchItem, 256),
+		execCh:            make(chan prefetchItem, defaultPrefetchWorkers),
+		execSlots:         make(chan struct{}, defaultPrefetchWorkers),
 		inflight:          make(map[string]struct{}),
 		discoverySeen:     make(map[string]struct{}),
 		discoverySeenPrev: make(map[string]struct{}),
 		stopChan:          make(chan struct{}),
 		deadFilter:        newPrefetchDeadFilter(defaultDeadFilterCap, defaultDeadFilterTTL),
 	}
+	for i := 0; i < defaultPrefetchWorkers; i++ {
+		pe.execSlots <- struct{}{}
+	}
 	defaultHost := defaultGBFHost
 	pe.activeGBFHost.Store(&defaultHost)
-	pe.workersWg.Add(2)
+	pe.workersWg.Add(2 + defaultPrefetchWorkers)
 	go func() {
 		defer pe.workersWg.Done()
 		pe.discoveryWorker()
@@ -229,6 +242,12 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 		defer pe.workersWg.Done()
 		pe.fetchWorker()
 	}()
+	for i := 0; i < defaultPrefetchWorkers; i++ {
+		go func() {
+			defer pe.workersWg.Done()
+			pe.fetchExecutor()
+		}()
+	}
 	return pe
 }
 
@@ -376,6 +395,13 @@ func (pe *PrefetchEngine) getNextTask() (prefetchItem, bool) {
 }
 
 func (pe *PrefetchEngine) MaybeEnqueueDiscovery(host, path string, data []byte) {
+	pe.maybeEnqueueDiscoveryWithDepth(host, path, data, 0)
+}
+
+func (pe *PrefetchEngine) maybeEnqueueDiscoveryWithDepth(host, path string, data []byte, depth uint8) {
+	if depth > 1 {
+		return
+	}
 	cfg := pe.srv.cfgMgr.Get()
 	if !cfg.EnablePrefetch {
 		return
@@ -407,7 +433,7 @@ func (pe *PrefetchEngine) MaybeEnqueueDiscovery(host, path string, data []byte) 
 	pe.inflightMu.Unlock()
 
 	select {
-	case pe.discoveryCh <- prefetchCandidate{host: host, path: path, data: data}:
+	case pe.discoveryCh <- prefetchCandidate{host: host, path: path, data: data, depth: depth}:
 	default:
 		// Queue full, drop without delaying foreground path
 	}
@@ -613,6 +639,10 @@ func prefetchInflightKey(host, path string) string {
 }
 
 func (pe *PrefetchEngine) dispatchDiscoveredRefs(refs []discoveredRef) {
+	pe.dispatchDiscoveredRefsWithDepth(refs, 0)
+}
+
+func (pe *PrefetchEngine) dispatchDiscoveredRefsWithDepth(refs []discoveredRef, depth uint8) {
 	if pe == nil || pe.srv == nil || pe.srv.cacheMgr == nil {
 		return
 	}
@@ -638,7 +668,7 @@ func (pe *PrefetchEngine) dispatchDiscoveredRefs(refs []discoveredRef) {
 		pe.inflight[key] = struct{}{}
 		pe.inflightMu.Unlock()
 
-		if !pe.enqueueTask(prefetchItem{prio: prio, host: h, path: p}) {
+		if !pe.enqueueTask(prefetchItem{prio: prio, host: h, path: p, depth: depth}) {
 			// Queue full, drop and release inflight key
 			pe.removeInflight(key)
 		}
@@ -664,7 +694,7 @@ func (pe *PrefetchEngine) discoveryWorker() {
 			if cand.isGameData {
 				cand.data = raw
 				refs := pe.extractGameDataRefs(cand)
-				pe.dispatchDiscoveredRefs(refs)
+				pe.dispatchDiscoveredRefsWithDepth(refs, cand.depth)
 				continue
 			}
 
@@ -675,20 +705,84 @@ func (pe *PrefetchEngine) discoveryWorker() {
 				prio := getPrefetchPriorityLower(p)
 				discRefs = append(discRefs, discoveredRef{host: h, path: p, prio: prio})
 			}
-			pe.dispatchDiscoveredRefs(discRefs)
+			pe.dispatchDiscoveredRefsWithDepth(discRefs, cand.depth)
 		}
+	}
+}
+
+func (pe *PrefetchEngine) waitPacer() bool {
+	if pe.QueueLen() == 0 {
+		return true
+	}
+	jitter := time.Duration(15+rand.IntN(21)) * time.Millisecond
+	pe.pacerMu.Lock()
+	now := time.Now()
+	slot := pe.nextPaceAt
+	if slot.Before(now) {
+		slot = now
+	}
+	pe.nextPaceAt = slot.Add(jitter)
+	pe.pacerMu.Unlock()
+
+	wait := time.Until(slot)
+	if wait <= 0 {
+		return true
+	}
+	select {
+	case <-pe.stopChan:
+		return false
+	case <-time.After(wait):
+		return true
 	}
 }
 
 func (pe *PrefetchEngine) fetchWorker() {
 	for {
-		item, ok := pe.getNextTask()
-		if !ok {
+		if !pe.srv.stats.WaitForegroundIdle(pe.stopChan) {
 			return
 		}
-		key := prefetchInflightKey(item.host, item.path)
-		pe.processFetchItem(item)
-		pe.removeInflight(key)
+		select {
+		case <-pe.stopChan:
+			return
+		case <-pe.execSlots:
+		}
+
+		item, ok := pe.getNextTask()
+		if !ok {
+			pe.execSlots <- struct{}{}
+			return
+		}
+
+		select {
+		case pe.execCh <- item:
+		case <-pe.stopChan:
+			key := prefetchInflightKey(item.host, item.path)
+			pe.removeInflight(key)
+			pe.execSlots <- struct{}{}
+			return
+		}
+
+		if !pe.waitPacer() {
+			return
+		}
+	}
+}
+
+func (pe *PrefetchEngine) fetchExecutor() {
+	for {
+		select {
+		case <-pe.stopChan:
+			return
+		case item := <-pe.execCh:
+			key := prefetchInflightKey(item.host, item.path)
+			pe.processFetchItem(item)
+			pe.removeInflight(key)
+			select {
+			case pe.execSlots <- struct{}{}:
+			case <-pe.stopChan:
+				return
+			}
+		}
 	}
 }
 
@@ -703,6 +797,9 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 	waitMs := time.Since(waitStart).Milliseconds()
 
 	if !pe.srv.cfgMgr.Get().EnablePrefetch {
+		return
+	}
+	if !pe.srv.stats.WaitForegroundIdle(pe.stopChan) {
 		return
 	}
 	ns, _ := NormalizeAssetNamespace(item.host)
@@ -870,20 +967,13 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 		dataLen := 0
 		if ci, ok := res.(*cache.CacheItem); ok && ci != nil {
 			dataLen = len(ci.Data)
+			if item.depth < 1 && item.prio == 1 && len(ci.Data) > 0 {
+				pe.maybeEnqueueDiscoveryWithDepth(item.host, item.path, ci.Data, item.depth+1)
+			}
 		}
 		pe.srv.stats.IncPrefetchSuccess()
 		pe.srv.stats.MarkPrefetchSaved(cleanPath)
 		pe.srv.stats.Log("INFO", fmt.Sprintf("[PREFETCH] P%d wait=%dms fetch=%dms -> %s%s (%d B)", item.prio, waitMs, fetchMs, item.host, cleanPath, dataLen))
-	}
-
-	// Pacing jitter (15~35ms)
-	if pe.QueueLen() > 0 {
-		jitter := 15 + rand.IntN(21)
-		select {
-		case <-pe.stopChan:
-			return
-		case <-time.After(time.Duration(jitter) * time.Millisecond):
-		}
 	}
 }
 
