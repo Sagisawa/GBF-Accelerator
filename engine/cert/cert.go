@@ -1,6 +1,8 @@
 package cert
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -17,13 +19,14 @@ import (
 )
 
 type Manager struct {
-	mu        sync.RWMutex
-	caCert    *x509.Certificate
-	caKey     *rsa.PrivateKey
-	caPEM     []byte
-	serverKey *rsa.PrivateKey
-	certCache map[string]*tls.Certificate
-	certsDir  string
+	mu            sync.RWMutex
+	caCert        *x509.Certificate
+	caKey         *rsa.PrivateKey
+	caPEM         []byte
+	serverKey     *ecdsa.PrivateKey
+	certCache     map[string]*tls.Certificate
+	baseTLSConfig *tls.Config
+	certsDir      string
 }
 
 
@@ -63,20 +66,22 @@ func NewManager(certsDir string) (*Manager, error) {
 		}
 	}
 
-	// Generate a reusable server private key for fast leaf cert signing
-	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	// Generate a reusable ECDSA P-256 server private key for fast leaf cert signing and handshakes
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate server key: %w", err)
 	}
 
-	return &Manager{
+	m := &Manager{
 		caCert:    caCert,
 		caKey:     caKey,
 		caPEM:     caPEM,
 		serverKey: serverKey,
 		certCache: make(map[string]*tls.Certificate),
 		certsDir:  certsDir,
-	}, nil
+	}
+	m.initBaseTLSConfigLocked()
+	return m, nil
 }
 
 func parseCA(certPEM, keyPEM []byte) (*x509.Certificate, *rsa.PrivateKey, error) {
@@ -193,6 +198,7 @@ func (m *Manager) RegenerateCA() error {
 	m.caKey = caKey
 	m.caPEM = caPEM
 	m.certCache = make(map[string]*tls.Certificate)
+	m.initBaseTLSConfigLocked()
 	return nil
 }
 
@@ -229,7 +235,7 @@ func (m *Manager) GetOrCreateCert(host string) (*tls.Certificate, error) {
 		},
 		NotBefore:   time.Now().Add(-24 * time.Hour),
 		NotAfter:    time.Now().Add(365 * 24 * time.Hour),
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 
@@ -261,8 +267,12 @@ func (m *Manager) GetOrCreateCert(host string) (*tls.Certificate, error) {
 	return tlsCert, nil
 }
 
-func (m *Manager) GetTLSConfig() *tls.Config {
-	return &tls.Config{
+func (m *Manager) initBaseTLSConfigLocked() {
+	var ticketKey [32]byte
+	_, _ = rand.Read(ticketKey[:])
+	cfg := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			host := hello.ServerName
 			if host == "" {
@@ -271,4 +281,24 @@ func (m *Manager) GetTLSConfig() *tls.Config {
 			return m.GetOrCreateCert(host)
 		},
 	}
+	cfg.SetSessionTicketKeys([][32]byte{ticketKey})
+	m.baseTLSConfig = cfg
+}
+
+// GetTLSConfig returns a clone of the shared MITM TLS configuration so all
+// accepted CONNECT tunnels share session ticket keys for TLS resumption and
+// advertise HTTP/2 ("h2") alongside HTTP/1.1 via ALPN.
+func (m *Manager) GetTLSConfig() *tls.Config {
+	m.mu.RLock()
+	base := m.baseTLSConfig
+	m.mu.RUnlock()
+	if base != nil {
+		return base.Clone()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.baseTLSConfig == nil {
+		m.initBaseTLSConfigLocked()
+	}
+	return m.baseTLSConfig.Clone()
 }

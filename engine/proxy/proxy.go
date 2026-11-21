@@ -72,15 +72,24 @@ type ProxyServer struct {
 	activeConns   map[net.Conn]struct{}
 	apiClient     atomic.Pointer[http.Client]
 	assetClient   atomic.Pointer[http.Client]
-	primaryClient atomic.Pointer[upstreamClients]
-	backupClient  atomic.Pointer[upstreamClients]
-	upstreamProxy atomic.Pointer[string]
+	primaryClient       atomic.Pointer[upstreamClients]
+	backupClient        atomic.Pointer[upstreamClients]
+	assetOverrideClient atomic.Pointer[http.Client]
+	assetOverrideProxy  atomic.Pointer[string]
+	upstreamProxy       atomic.Pointer[string]
+	dnsCache            *dnsCache
+	passthroughTLSCache tls.ClientSessionCache
 	failover      *failoverManager
 	failoverNotifyFn func(title, message string)
 	notifyMu         sync.Mutex
 	lastNotifyAt     time.Time
 	running          bool
 	closedChan       chan struct{}
+
+	h2Mu       sync.Mutex
+	h2Listener *connFeedListener
+	h2Server   *http.Server
+	h2Meta     sync.Map
 
 	// Test synchronization hooks (nil in production)
 	beforeSingleFlightDoContext func(key string, isHead bool)
@@ -110,8 +119,7 @@ func (s *ProxyServer) dialTarget(ctx context.Context, network, addr string) (net
 	if s.dialContextFn != nil {
 		return s.dialContextFn(ctx, network, addr)
 	}
-	var d net.Dialer
-	return d.DialContext(ctx, network, addr)
+	return s.directDialContext(ctx, network, addr)
 }
 
 const (
@@ -123,6 +131,8 @@ func NewProxyServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cac
 	s := &ProxyServer{
 		cfgMgr: cfgMgr, certMgr: certMgr, cacheMgr: cacheMgr, stats: stats,
 		closedChan: make(chan struct{}), activeConns: make(map[net.Conn]struct{}), failover: newFailoverManager(),
+		dnsCache: newDNSCache(defaultDNSCacheTTL, defaultDNSCacheMaxEntries),
+		passthroughTLSCache: tls.NewLRUClientSessionCache(64),
 	}
 	s.prefetch = newPrefetchEngine(s)
 	initialCfg := cfgMgr.Get()
@@ -132,6 +142,10 @@ func NewProxyServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cac
 }
 
 func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
+	return buildUpstreamClientsWithDialer(c, proxyURL, nil)
+}
+
+func buildUpstreamClientsWithDialer(c *config.Config, proxyURL string, directDial func(context.Context, string, string) (net.Conn, error)) *upstreamClients {
 	var proxyFunc func(*http.Request) (*url.URL, error)
 	var dialFunc func(context.Context, string, string) (net.Conn, error)
 	normalized := strings.TrimSpace(proxyURL)
@@ -186,7 +200,7 @@ func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
 		apiMaxConn = 16
 	}
 	if apiMaxIdle <= 0 {
-		apiMaxIdle = 4
+		apiMaxIdle = 6
 	}
 	assetMaxConn, assetMaxIdle := c.AssetMaxConnections, c.AssetMaxKeepalive
 	if assetMaxConn <= 0 {
@@ -196,17 +210,29 @@ func buildUpstreamClients(c *config.Config, proxyURL string) *upstreamClients {
 		assetMaxIdle = 16
 	}
 	dialer := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 15 * time.Second}
+	baseDial := dialer.DialContext
+	if directDial != nil {
+		baseDial = directDial
+	}
+	apiSessionCache := tls.NewLRUClientSessionCache(128)
+	assetSessionCache := tls.NewLRUClientSessionCache(128)
 
 	apiTr := &http.Transport{
-		Proxy: proxyFunc, DialContext: dialer.DialContext,
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode},
+		Proxy: proxyFunc, DialContext: baseDial,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode,
+			ClientSessionCache: apiSessionCache,
+		},
 		MaxConnsPerHost: apiMaxConn, MaxIdleConns: apiMaxConn, MaxIdleConnsPerHost: apiMaxIdle,
 		IdleConnTimeout:   time.Duration(c.APIKeepaliveExpiry * float64(time.Second)),
 		ForceAttemptHTTP2: false, DisableCompression: true,
 	}
 	assetTr := &http.Transport{
-		Proxy: proxyFunc, DialContext: dialer.DialContext,
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode},
+		Proxy: proxyFunc, DialContext: baseDial,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: !c.VerifyUpstreamTLS || c.ShimakazeMode,
+			ClientSessionCache: assetSessionCache,
+		},
 		MaxConnsPerHost: assetMaxConn, MaxIdleConns: assetMaxConn, MaxIdleConnsPerHost: assetMaxIdle,
 		IdleConnTimeout:   time.Duration(c.AssetKeepaliveExpiry * float64(time.Second)),
 		ForceAttemptHTTP2: true, DisableCompression: true,
@@ -236,6 +262,7 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	oldPrimary, oldBackup := s.primaryClient.Load(), s.backupClient.Load()
+	oldAssetOverride := s.assetOverrideClient.Load()
 
 	primaryProxy := c.GetEffectiveUpstreamProxy()
 	if c.DirectMode {
@@ -246,14 +273,33 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 		backupProxy = ""
 	}
 
-	newPrimary := buildUpstreamClients(c, primaryProxy)
+	newPrimary := buildUpstreamClientsWithDialer(c, primaryProxy, s.directDialContext)
 	var newBackup *upstreamClients
 	if backupProxy != "" {
-		newBackup = buildUpstreamClients(c, backupProxy)
+		newBackup = buildUpstreamClientsWithDialer(c, backupProxy, s.directDialContext)
+	}
+
+	var newAssetOverride *http.Client
+	assetOverrideProxyStr := ""
+	if !c.DirectMode {
+		rawAsset := strings.TrimSpace(c.AssetUpstreamProxy)
+		if rawAsset != "" && isSupportedFailoverProxy(rawAsset) {
+			overridePair := buildUpstreamClientsWithDialer(c, rawAsset, s.directDialContext)
+			newAssetOverride = overridePair.asset
+			assetOverrideProxyStr = overridePair.proxy
+			// Close unused api transport of the temporary pair
+			if overridePair.api != nil {
+				if tr, ok := overridePair.api.Transport.(*http.Transport); ok {
+					tr.CloseIdleConnections()
+				}
+			}
+		}
 	}
 
 	s.primaryClient.Store(newPrimary)
 	s.backupClient.Store(newBackup)
+	s.assetOverrideClient.Store(newAssetOverride)
+	s.assetOverrideProxy.Store(&assetOverrideProxyStr)
 	s.failover.configure(
 		c.EnableUpstreamFailover, newBackup != nil,
 		time.Duration(c.UpstreamFailoverThresholdMS)*time.Millisecond,
@@ -268,6 +314,11 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	}
 	if oldBackup != nil && oldBackup != newBackup {
 		oldBackup.closeIdle()
+	}
+	if oldAssetOverride != nil && oldAssetOverride != newAssetOverride {
+		if tr, ok := oldAssetOverride.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
 	}
 }
 
@@ -337,8 +388,13 @@ func (s *ProxyServer) getRouteForRequest(method string) (failoverRoute, bool) {
 	}
 	return s.failover.routeForRequest(method == http.MethodGet || method == http.MethodHead, time.Now())
 }
-func (s *ProxyServer) getAPIClient() *http.Client   { return s.apiClient.Load() }
-func (s *ProxyServer) getAssetClient() *http.Client { return s.assetClient.Load() }
+func (s *ProxyServer) getAPIClient() *http.Client { return s.apiClient.Load() }
+func (s *ProxyServer) getAssetClient() *http.Client {
+	if ov := s.assetOverrideClient.Load(); ov != nil {
+		return ov
+	}
+	return s.assetClient.Load()
+}
 
 func (s *ProxyServer) resolveAPIClientForRoute(r failoverRoute, trial bool) *http.Client {
 	if r == failoverRouteBackup {
@@ -378,6 +434,9 @@ func (s *ProxyServer) getAPIClientForRequest(method string) (*http.Client, failo
 }
 
 func (s *ProxyServer) getAssetClientForRequest(method string) (*http.Client, failoverRoute, bool) {
+	if ov := s.assetOverrideClient.Load(); ov != nil {
+		return ov, failoverRouteOverride, false
+	}
 	r, trial := s.getRouteForRequest(method)
 	return s.resolveAssetClientForRoute(r, trial), r, trial
 }
@@ -822,6 +881,11 @@ func (s *ProxyServer) Stop() {
 			tr.CloseIdleConnections()
 		}
 	}
+	if ov := s.assetOverrideClient.Load(); ov != nil {
+		if tr, ok := ov.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
 
 	// Stop must terminate already-accepted client connections too. Closing only
 	// the listener leaves existing HTTP Keep-Alive / CONNECT tunnels usable.
@@ -843,6 +907,7 @@ func (s *ProxyServer) Stop() {
 	for _, conn := range active {
 		_ = conn.Close()
 	}
+	s.stopH2Server()
 }
 
 func (s *ProxyServer) PrefetchQueueLen() int {
@@ -965,8 +1030,13 @@ func (s *ProxyServer) isClientAllowed(addr net.Addr) bool {
 }
 
 func (s *ProxyServer) handleConnection(conn net.Conn) {
-	defer s.untrackConn(conn)
-	defer conn.Close()
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			s.untrackConn(conn)
+			_ = conn.Close()
+		}
+	}()
 
 	br := bufio.NewReader(conn)
 	for {
@@ -977,7 +1047,7 @@ func (s *ProxyServer) handleConnection(conn net.Conn) {
 
 		// 1. CONNECT tunnel (HTTPS proxy request)
 		if req.Method == http.MethodConnect {
-			s.handleConnect(conn, br, req)
+			handedOff = s.handleConnectInternal(conn, br, req)
 			return
 		}
 
@@ -990,6 +1060,10 @@ func (s *ProxyServer) handleConnection(conn net.Conn) {
 }
 
 func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.Request) {
+	_ = s.handleConnectInternal(conn, br, req)
+}
+
+func (s *ProxyServer) handleConnectInternal(conn net.Conn, br *bufio.Reader, req *http.Request) bool {
 	target := req.RequestURI
 	if target == "" && req.URL != nil && req.URL.Host != "" {
 		target = req.URL.Host
@@ -1016,14 +1090,14 @@ func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.R
 	if isPassthroughHost(host) || !isGBFDomain(host) {
 		s.stats.Log("INFO", fmt.Sprintf("[CONNECT] [%s] %s -> TUNNEL", clientIP, target))
 		s.handlePassthroughTunnel(conn, br, target)
-		return
+		return false
 	}
 
 	s.stats.Log("INFO", fmt.Sprintf("[CONNECT] [%s] %s -> MITM", clientIP, target))
 
 	// Send 200 Connection Established for MITM
 	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		return
+		return false
 	}
 
 	// MITM TLS termination using bufferedConn to preserve any early data in br
@@ -1031,7 +1105,15 @@ func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.R
 	tlsConfig := s.certMgr.GetTLSConfig()
 	tlsConn := tls.Server(bConn, tlsConfig)
 	if err := tlsConn.Handshake(); err != nil {
-		return
+		return false
+	}
+
+	if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
+		if s.handoffH2Conn(tlsConn, conn, host) {
+			return true
+		}
+		_ = tlsConn.Close()
+		return false
 	}
 	defer tlsConn.Close()
 
@@ -1047,6 +1129,7 @@ func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.R
 			break
 		}
 	}
+	return false
 }
 
 func dialSOCKS5(proxyAddr, targetAddr, username, password string, timeout time.Duration) (net.Conn, error) {
@@ -1280,6 +1363,7 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 						tlsCfg := &tls.Config{
 							ServerName:         proxyHost,
 							InsecureSkipVerify: !cfg.VerifyUpstreamTLS || cfg.ShimakazeMode,
+							ClientSessionCache: s.passthroughTLSCache,
 						}
 						tlsConn := tls.Client(upConn, tlsCfg)
 						_ = upConn.SetDeadline(time.Now().Add(10 * time.Second))
@@ -4271,6 +4355,11 @@ var responseBufferPool = sync.Pool{
 // (zero proxy-fingerprint pollution, hop-by-hop stripping, Set-Cookie line-by-line
 // preservation), RFC 7230 content-length rules (omitted for 1xx, 204, 304), and HEAD body suppression.
 func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []byte, isHead bool, reqClose bool) {
+	if hw, ok := w.(*h2ResponseWriter); ok {
+		writeH2HTTPResponse(hw, statusCode, header, body, isHead)
+		return
+	}
+
 	buf := responseBufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer func() {
@@ -4298,8 +4387,7 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 	}
 	if !hasDate {
 		buf.WriteString("Date: ")
-		var dateBuf [32]byte
-		buf.Write(time.Now().UTC().AppendFormat(dateBuf[:0], http.TimeFormat))
+		buf.WriteString(fastHTTPDateString())
 		buf.WriteString("\r\n")
 	}
 
@@ -4389,6 +4477,14 @@ func (sc *streamClientWriter) WriteChunk(chunk []byte) error {
 	if sc.failed || len(chunk) == 0 {
 		return nil
 	}
+	if hw, ok := sc.w.(*h2ResponseWriter); ok {
+		if _, err := hw.Write(chunk); err != nil {
+			sc.failed = true
+			return err
+		}
+		hw.Flush()
+		return nil
+	}
 	var err error
 	if sc.isChunked {
 		var hexBuf [16]byte
@@ -4413,6 +4509,10 @@ func (sc *streamClientWriter) Finish() error {
 	if sc.failed {
 		return nil
 	}
+	if hw, ok := sc.w.(*h2ResponseWriter); ok {
+		hw.Flush()
+		return nil
+	}
 	if sc.isChunked {
 		_, err := sc.w.Write([]byte("0\r\n\r\n"))
 		if err != nil {
@@ -4424,6 +4524,34 @@ func (sc *streamClientWriter) Finish() error {
 }
 
 func (s *ProxyServer) writeStreamResponseHeader(w io.Writer, resp *http.Response, urlPath string, reqClose bool) error {
+	if hw, ok := w.(*h2ResponseWriter); ok {
+		dst := hw.rw.Header()
+		if ct := resp.Header.Get("Content-Type"); ct != "" {
+			dst.Set("Content-Type", ct)
+		}
+		etag := resp.Header.Get("ETag")
+		if etag == "" {
+			etag = resp.Header.Get("Etag")
+		}
+		if etag != "" {
+			dst.Set("ETag", etag)
+		}
+		if lm := resp.Header.Get("Last-Modified"); lm != "" {
+			dst.Set("Last-Modified", lm)
+		}
+		if ce := resp.Header.Get("Content-Encoding"); ce != "" {
+			dst.Set("Content-Encoding", ce)
+		}
+		dst.Set("Access-Control-Allow-Origin", "*")
+		dst.Set("Cache-Control", s.getCacheControlHeader(urlPath))
+		if resp.ContentLength >= 0 {
+			dst.Set("Content-Length", strconv.FormatInt(resp.ContentLength, 10))
+		}
+		hw.rw.WriteHeader(http.StatusOK)
+		hw.Flush()
+		return nil
+	}
+
 	buf := responseBufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer func() {
@@ -4433,8 +4561,7 @@ func (s *ProxyServer) writeStreamResponseHeader(w io.Writer, resp *http.Response
 	}()
 
 	buf.WriteString("HTTP/1.1 200 OK\r\nDate: ")
-	var dateBuf [32]byte
-	buf.Write(time.Now().UTC().AppendFormat(dateBuf[:0], http.TimeFormat))
+	buf.WriteString(fastHTTPDateString())
 	buf.WriteString("\r\n")
 
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -4529,6 +4656,35 @@ func (s *ProxyServer) sendCachedAssetResponseFast(w io.Writer, item *cache.Cache
 		return
 	}
 
+	contentLen := item.Size
+	if len(item.Data) > 0 {
+		contentLen = int64(len(item.Data))
+	}
+
+	if hw, ok := w.(*h2ResponseWriter); ok {
+		dst := hw.rw.Header()
+		if item.ContentType != "" {
+			dst.Set("Content-Type", item.ContentType)
+		}
+		if item.ETag != "" {
+			dst.Set("ETag", item.ETag)
+		}
+		if item.LastModified != "" {
+			dst.Set("Last-Modified", item.LastModified)
+		}
+		if item.ContentEncoding != "" {
+			dst.Set("Content-Encoding", item.ContentEncoding)
+		}
+		dst.Set("Access-Control-Allow-Origin", "*")
+		dst.Set("Cache-Control", s.getCacheControlHeader(urlPath))
+		dst.Set("Content-Length", strconv.FormatInt(contentLen, 10))
+		hw.rw.WriteHeader(http.StatusOK)
+		if !isHead && len(item.Data) > 0 {
+			_, _ = hw.rw.Write(item.Data)
+		}
+		return
+	}
+
 	buf := responseBufferPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	defer func() {
@@ -4538,8 +4694,7 @@ func (s *ProxyServer) sendCachedAssetResponseFast(w io.Writer, item *cache.Cache
 	}()
 
 	buf.WriteString("HTTP/1.1 200 OK\r\nDate: ")
-	var dateBuf [32]byte
-	buf.Write(time.Now().UTC().AppendFormat(dateBuf[:0], http.TimeFormat))
+	buf.WriteString(fastHTTPDateString())
 	buf.WriteString("\r\n")
 
 	if item.ContentType != "" {
@@ -4569,10 +4724,6 @@ func (s *ProxyServer) sendCachedAssetResponseFast(w io.Writer, item *cache.Cache
 	buf.WriteString(s.getCacheControlHeader(urlPath))
 	buf.WriteString("\r\n")
 
-	contentLen := item.Size
-	if len(item.Data) > 0 {
-		contentLen = int64(len(item.Data))
-	}
 	var numBuf [32]byte
 	buf.WriteString("Content-Length: ")
 	buf.Write(strconv.AppendInt(numBuf[:0], contentLen, 10))

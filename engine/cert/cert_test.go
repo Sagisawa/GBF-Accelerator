@@ -1,8 +1,12 @@
 package cert
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"net"
 	"os"
 	"sync"
 	"testing"
@@ -138,5 +142,78 @@ func TestCertManager_ConcurrentRegenerateAndRead(t *testing.T) {
 	}()
 
 	wg.Wait()
+}
+
+func TestCertManager_ECDSALeafAndSessionResumptionAndALPN(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create cert manager: %v", err)
+	}
+
+	leaf, err := mgr.GetOrCreateCert("prd-game-a-granbluefantasy.akamaized.net")
+	if err != nil {
+		t.Fatalf("GetOrCreateCert failed: %v", err)
+	}
+	ecKey, ok := leaf.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		t.Fatalf("expected *ecdsa.PrivateKey leaf key, got %T", leaf.PrivateKey)
+	}
+	if ecKey.Curve != elliptic.P256() {
+		t.Fatalf("expected P-256 curve, got %v", ecKey.Curve.Params().Name)
+	}
+
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(mgr.GetCAPEM()) {
+		t.Fatal("failed to append CA PEM")
+	}
+	sessionCache := tls.NewLRUClientSessionCache(16)
+
+	handshakeOnce := func() tls.ConnectionState {
+		cConn, sConn := net.Pipe()
+		srvErrCh := make(chan error, 1)
+		go func() {
+			defer sConn.Close()
+			srvTLS := tls.Server(sConn, mgr.GetTLSConfig())
+			err := srvTLS.Handshake()
+			if err == nil {
+				_, _ = srvTLS.Write([]byte("ok"))
+				var buf [8]byte
+				_, _ = srvTLS.Read(buf[:])
+			}
+			srvErrCh <- err
+		}()
+
+		cliTLS := tls.Client(cConn, &tls.Config{
+			ServerName:         "prd-game-a-granbluefantasy.akamaized.net",
+			RootCAs:            pool,
+			NextProtos:         []string{"h2", "http/1.1"},
+			ClientSessionCache: sessionCache,
+		})
+		if err := cliTLS.Handshake(); err != nil {
+			_ = cConn.Close()
+			t.Fatalf("client handshake failed: %v", err)
+		}
+		var rbuf [8]byte
+		_, _ = cliTLS.Read(rbuf[:])
+		state := cliTLS.ConnectionState()
+		_ = cliTLS.Close()
+		if srvErr := <-srvErrCh; srvErr != nil {
+			t.Fatalf("server handshake failed: %v", srvErr)
+		}
+		return state
+	}
+
+	st1 := handshakeOnce()
+	if st1.NegotiatedProtocol != "h2" {
+		t.Fatalf("expected ALPN 'h2', got %q", st1.NegotiatedProtocol)
+	}
+
+	st2 := handshakeOnce()
+	if !st2.DidResume {
+		t.Fatalf("expected second handshake across separate GetTLSConfig() calls to resume TLS session (DidResume=false)")
+	}
+	if st2.NegotiatedProtocol != "h2" {
+		t.Fatalf("expected ALPN 'h2' on resumed handshake, got %q", st2.NegotiatedProtocol)
+	}
 }
 
