@@ -29,9 +29,9 @@ GBF-Accelerator は、ローカルの RAM / SSD 階層化キャッシュと HTTP
 | :---: | :---: |
 | ![Web コンソールダッシュボード](docs/images/ja/dashboard.png) | ![Android ブラウザ非Root 内蔵パッチツール](docs/images/ja/android_patch.png) |
 
-| リアルタイムログ＆通信テレメトリ |
-| :---: |
-| ![リアルタイムログ＆通信テレメトリ](docs/images/ja/live_logs.png) |
+| リアルタイムログ＆通信テレメトリ | モバイル内蔵コンソール (SkyLeap / Via) |
+| :---: | :---: |
+| ![リアルタイムログ＆通信テレメトリ](docs/images/ja/live_logs.png) | ![モバイル内蔵コンソール](docs/images/ja/mobile_dashboard.jpg) |
 
 | モバイル端末接続ガイド | キャッシュ診断＆安全スリム化 |
 | :---: | :---: |

@@ -29,9 +29,9 @@
 | :---: | :---: |
 | ![Web 控制台主面板](docs/images/zh/dashboard.png) | ![Android 浏览器免 Root 全内置补丁](docs/images/zh/android_patch.png) |
 
-| 实时网络与转发日志 |
-| :---: |
-| ![实时网络与转发日志](docs/images/zh/live_logs.png) |
+| 实时网络与转发日志 | 移动端内嵌控制台 (SkyLeap / Via) |
+| :---: | :---: |
+| ![实时网络与转发日志](docs/images/zh/live_logs.png) | ![移动端内嵌控制台](docs/images/zh/mobile_dashboard.jpg) |
 
 | 移动端跨设备连接指引 | 智能缓存体检与安全瘦身 |
 | :---: | :---: |
