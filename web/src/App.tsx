@@ -258,6 +258,7 @@ export const App: React.FC = () => {
   // Editable Form Inputs
   const [cacheDirInput, setCacheDirInput] = useState<string>('cache/gbf/https')
   const [upstreamInput, setUpstreamInput] = useState<string>('auto')
+  const [assetUpstreamInput, setAssetUpstreamInput] = useState<string>('')
   const [backupUpstreamInput, setBackupUpstreamInput] = useState<string>('')
   const [failoverEnabledInput, setFailoverEnabledInput] = useState<boolean>(false)
   const [failoverThresholdInput, setFailoverThresholdInput] = useState<string>('2000')
@@ -455,6 +456,7 @@ export const App: React.FC = () => {
         setConfig(c.value)
         if (c.value.cache_dir) setCacheDirInput(c.value.cache_dir)
         if (c.value.upstream_proxy) setUpstreamInput(c.value.upstream_proxy)
+        setAssetUpstreamInput(String(c.value.asset_upstream_proxy ?? ''))
         setBackupUpstreamInput(String(c.value.backup_upstream_proxy ?? ''))
         setFailoverEnabledInput(Boolean(c.value.enable_upstream_failover ?? false))
         setFailoverThresholdInput(String(c.value.upstream_failover_threshold_ms ?? 2000))
@@ -874,6 +876,21 @@ export const App: React.FC = () => {
         checkShimakazeSuggest(trimmed)
       } catch (e: any) {
         showToast(t('toasts.upstreamSaveFailed', { error: e.message }), 'error')
+      }
+    })
+  }
+  const handleSaveAssetUpstream = async (overrideValue?: string) => {
+    const trimmed = (overrideValue !== undefined ? overrideValue : assetUpstreamInput).trim()
+    setAssetUpstreamInput(trimmed)
+    await runConfigAction('save-asset-upstream', async () => {
+      try {
+        await applyConfig({ asset_upstream_proxy: trimmed })
+        setConfig((prev) => ({ ...prev, asset_upstream_proxy: trimmed }))
+        const displayUrl = trimmed || t('cards.upstream.assetUpstreamFollowBtn')
+        showToast(t('cards.upstream.assetUpstreamSaved', { url: displayUrl }), 'success')
+        loadState()
+      } catch (e: any) {
+        showToast(t('cards.upstream.assetUpstreamSaveFailed', { error: e.message }), 'error')
       }
     })
   }
@@ -1834,6 +1851,63 @@ export const App: React.FC = () => {
                   >
                     {isActionLoading('probe-upstream') ? t('common.loading') : t('cards.upstream.autoDetect')}
                   </button>
+                </div>
+              </div>
+
+              {/* Static CDN Upstream Override */}
+              <div className="space-y-1.5 pt-1 border-t border-slate-100">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <label className="text-xs sm:text-[13px] text-slate-700 font-medium">
+                    {t('cards.upstream.assetUpstreamLabel')}
+                  </label>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={isDirect || Boolean(loadingAction)}
+                      onClick={() => handleSaveAssetUpstream('direct')}
+                      className={`px-2 py-0.5 rounded-md text-[11px] font-medium border transition-all cursor-pointer disabled:opacity-50 ${
+                        assetUpstreamInput.trim().toLowerCase() === 'direct'
+                          ? 'bg-sky-50 text-sky-700 border-sky-200'
+                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {t('cards.upstream.assetUpstreamDirectBtn')}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDirect || Boolean(loadingAction)}
+                      onClick={() => handleSaveAssetUpstream('')}
+                      className={`px-2 py-0.5 rounded-md text-[11px] font-medium border transition-all cursor-pointer disabled:opacity-50 ${
+                        assetUpstreamInput.trim() === ''
+                          ? 'bg-sky-50 text-sky-700 border-sky-200'
+                          : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      {t('cards.upstream.assetUpstreamFollowBtn')}
+                    </button>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 sm:gap-2">
+                  <input
+                    type="text"
+                    disabled={isDirect || Boolean(loadingAction)}
+                    value={assetUpstreamInput}
+                    onChange={(e) => setAssetUpstreamInput(e.target.value)}
+                    placeholder={t('cards.upstream.assetUpstreamPlaceholder')}
+                    className="flex-1 min-w-0 bg-slate-50/70 border border-slate-200 rounded-lg px-3 py-1.5 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 shadow-2xs transition-all disabled:bg-slate-100 disabled:text-slate-400"
+                  />
+                  <button
+                    type="button"
+                    disabled={isDirect || Boolean(loadingAction)}
+                    aria-busy={isActionLoading('save-asset-upstream')}
+                    onClick={() => handleSaveAssetUpstream()}
+                    className="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium text-slate-700 bg-slate-50 hover:bg-slate-100 hover:text-slate-900 border border-slate-200/90 active:scale-[0.98] transition-all shrink-0 cursor-pointer disabled:opacity-50 shadow-2xs"
+                  >
+                    {isActionLoading('save-asset-upstream') ? t('common.saving') : t('common.save')}
+                  </button>
+                </div>
+                <div className="text-[11px] sm:text-xs text-slate-400 leading-relaxed">
+                  {t('cards.upstream.assetUpstreamTip')}
                 </div>
               </div>
 

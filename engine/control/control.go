@@ -942,8 +942,10 @@ func (c *ControlServer) getRuntimeStatus() map[string]interface{} {
 		"listen_host":                c.cfgMgr.GetEffectiveListenHost(),
 		"listen_port":                cfg.ListenPort,
 		"control_port":               cfg.ControlPort,
-		"upstream_proxy":             effectiveUpstreamProxy,
-		"direct_mode":                cfg.DirectMode,
+		"upstream_proxy":                 effectiveUpstreamProxy,
+		"asset_upstream_proxy":           cfg.AssetUpstreamProxy,
+		"effective_asset_upstream_proxy": cfg.GetEffectiveAssetUpstreamProxy(),
+		"direct_mode":                    cfg.DirectMode,
 		"allow_lan":                  cfg.AllowLAN,
 		"lan_ip":                     lanIP,
 		"system_proxy_enabled":       sysproxy.IsPACProxyEnabled(cfg.ListenPort),
@@ -1100,6 +1102,14 @@ func (c *ControlServer) handleApplyConfig(w http.ResponseWriter, req *http.Reque
 	}
 	if val, ok := patch["upstream_proxy"].(string); ok {
 		candidate.UpstreamProxy = strings.TrimSpace(val)
+	}
+	if val, ok := patch["asset_upstream_proxy"].(string); ok {
+		assetProxy := strings.TrimSpace(val)
+		if assetProxy != "" && !isSupportedBackupProxyURL(assetProxy) {
+			c.sendJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid asset_upstream_proxy"})
+			return
+		}
+		candidate.AssetUpstreamProxy = assetProxy
 	}
 
 	if val, ok := patch["backup_upstream_proxy"].(string); ok {

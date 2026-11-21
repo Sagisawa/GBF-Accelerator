@@ -12,11 +12,18 @@ type failoverRoute uint8
 const (
 	failoverRoutePrimary failoverRoute = iota
 	failoverRouteBackup
+	failoverRouteOverride
 )
 
 func (r failoverRoute) String() string {
-	if r == failoverRouteBackup { return "backup" }
-	return "primary"
+	switch r {
+	case failoverRouteBackup:
+		return "backup"
+	case failoverRouteOverride:
+		return "override"
+	default:
+		return "primary"
+	}
 }
 
 type failoverTransition struct {

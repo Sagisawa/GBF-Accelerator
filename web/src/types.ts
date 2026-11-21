@@ -8,6 +8,8 @@ export interface RuntimeStatus {
   listen_port: number;
   control_port: number;
   upstream_proxy: string;
+  asset_upstream_proxy?: string;
+  effective_asset_upstream_proxy?: string;
   direct_mode: boolean;
   allow_lan: boolean;
   lan_ip?: string | null;

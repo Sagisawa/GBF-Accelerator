@@ -22,6 +22,7 @@ type Config struct {
 	ControlPort          int     `json:"control_port"`
 	AllowLAN             bool    `json:"allow_lan"`
 	UpstreamProxy        string  `json:"upstream_proxy"`
+	AssetUpstreamProxy   string  `json:"asset_upstream_proxy"`
 	BackupUpstreamProxy  string  `json:"backup_upstream_proxy"`
 	EnableUpstreamFailover bool    `json:"enable_upstream_failover"`
 	UpstreamFailoverThresholdMS int `json:"upstream_failover_threshold_ms"`
@@ -74,6 +75,7 @@ func DefaultConfig() Config {
 		ControlPort:          8125,
 		AllowLAN:             false,
 		UpstreamProxy:        "auto",
+		AssetUpstreamProxy:   "",
 		BackupUpstreamProxy:  "",
 		EnableUpstreamFailover: false,
 		UpstreamFailoverThresholdMS: 2000,
@@ -97,8 +99,8 @@ func DefaultConfig() Config {
 		AutoStart:            false,
 		AutoCheckUpdate:      true,
 		APIMaxConnections:    16,
-		APIMaxKeepalive:      4,
-		APIKeepaliveExpiry:   20.0,
+		APIMaxKeepalive:      6,
+		APIKeepaliveExpiry:   45.0,
 		AssetMaxConnections:  32,
 		AssetMaxKeepalive:    16,
 		AssetKeepaliveExpiry: 60.0,
@@ -238,6 +240,9 @@ func (m *Manager) Load(cfgPath string) error {
 	}
 	if _, ok := present["upstream_proxy"]; ok {
 		m.cfg.UpstreamProxy = loaded.UpstreamProxy
+	}
+	if _, ok := present["asset_upstream_proxy"]; ok {
+		m.cfg.AssetUpstreamProxy = strings.TrimSpace(loaded.AssetUpstreamProxy)
 	}
 	if _, ok := present["backup_upstream_proxy"]; ok { m.cfg.BackupUpstreamProxy = strings.TrimSpace(loaded.BackupUpstreamProxy) }
 	if _, ok := present["enable_upstream_failover"]; ok { m.cfg.EnableUpstreamFailover = loaded.EnableUpstreamFailover }
@@ -480,6 +485,20 @@ func (c Config) GetEffectiveUpstreamProxy() string {
 		return AutoDetectUpstreamProxy()
 	}
 	return c.UpstreamProxy
+}
+
+func (c Config) GetEffectiveAssetUpstreamProxy() string {
+	if c.DirectMode {
+		return ""
+	}
+	asset := strings.TrimSpace(c.AssetUpstreamProxy)
+	if asset == "" {
+		return c.GetEffectiveUpstreamProxy()
+	}
+	if strings.EqualFold(asset, "direct") {
+		return ""
+	}
+	return asset
 }
 
 func (m *Manager) GetEffectiveListenHost() string {
