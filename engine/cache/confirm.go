@@ -207,6 +207,9 @@ func IsAcceleratorTempFile(slashRel string) bool {
 	if len(parts) != 2 { return false }
 	np := strings.Split(parts[1], ".")
 	if len(np) != 3 || !isAllDigits(np[0]) || !isAllDigits(np[1]) || !isAllDigits(np[2]) { return false }
+	if parts[0] == MetaIndexFileName {
+		return true
+	}
 	base := strings.ToLower(strings.TrimSuffix(parts[0], ".ext"))
 	_, cleanKey, _, ok := parseCachePathTopLevelShape(base)
 	return ok && isAssetExtension(strings.ToLower(cleanKey))

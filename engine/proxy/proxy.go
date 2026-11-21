@@ -75,7 +75,6 @@ type ProxyServer struct {
 	primaryClient       atomic.Pointer[upstreamClients]
 	backupClient        atomic.Pointer[upstreamClients]
 	assetOverrideClient atomic.Pointer[http.Client]
-	assetOverrideProxy  atomic.Pointer[string]
 	upstreamProxy       atomic.Pointer[string]
 	dnsCache            *dnsCache
 	passthroughTLSCache tls.ClientSessionCache
@@ -84,6 +83,7 @@ type ProxyServer struct {
 	notifyMu         sync.Mutex
 	lastNotifyAt     time.Time
 	running          bool
+	h2Stopped        atomic.Bool
 	closedChan       chan struct{}
 
 	h2Mu       sync.Mutex
@@ -280,13 +280,11 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	}
 
 	var newAssetOverride *http.Client
-	assetOverrideProxyStr := ""
 	if !c.DirectMode {
 		rawAsset := strings.TrimSpace(c.AssetUpstreamProxy)
 		if rawAsset != "" && isSupportedFailoverProxy(rawAsset) {
 			overridePair := buildUpstreamClientsWithDialer(c, rawAsset, s.directDialContext)
 			newAssetOverride = overridePair.asset
-			assetOverrideProxyStr = overridePair.proxy
 			// Close unused api transport of the temporary pair
 			if overridePair.api != nil {
 				if tr, ok := overridePair.api.Transport.(*http.Transport); ok {
@@ -299,7 +297,6 @@ func (s *ProxyServer) updateClients(c *config.Config) {
 	s.primaryClient.Store(newPrimary)
 	s.backupClient.Store(newBackup)
 	s.assetOverrideClient.Store(newAssetOverride)
-	s.assetOverrideProxy.Store(&assetOverrideProxyStr)
 	s.failover.configure(
 		c.EnableUpstreamFailover, newBackup != nil,
 		time.Duration(c.UpstreamFailoverThresholdMS)*time.Millisecond,
@@ -753,6 +750,7 @@ func (s *ProxyServer) Start() error {
 	s.listener = ln
 	s.listenerGen++
 	s.running = true
+	s.h2Stopped.Store(false)
 	s.closedChan = make(chan struct{})
 	s.connMu.Lock()
 	if s.activeConns == nil {
@@ -866,6 +864,7 @@ func (s *ProxyServer) Stop() {
 		return
 	}
 	s.running = false
+	s.h2Stopped.Store(true)
 	s.listenerGen++
 	if s.listener != nil {
 		_ = s.listener.Close()

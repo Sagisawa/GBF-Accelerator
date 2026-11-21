@@ -231,6 +231,40 @@ func TestDownstreamHTTP2_MultiplexedAssetsAndDynamicAPI(t *testing.T) {
 	}
 }
 
+func TestDownstreamHTTP2_EmptyDateHeaderAndRejectHandoffAfterStop(t *testing.T) {
+	srv, _, _ := setupH2TestProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 1. Empty "Date": [""] in upstream headers must not emit blank Date header over H2.
+	rec := httptest.NewRecorder()
+	hw := &h2ResponseWriter{rw: rec, flusher: rec}
+	hdr := make(http.Header)
+	hdr["Date"] = []string{""}
+	hdr.Set("Content-Type", "application/json")
+	writeH2HTTPResponse(hw, http.StatusOK, hdr, []byte(`{"ok":true}`), false)
+	dates := rec.Result().Header.Values("Date")
+	if len(dates) != 1 || dates[0] == "" {
+		t.Fatalf("expected single non-empty RFC Date header on H2 response, got %v", dates)
+	}
+
+	// 2. Late handoffH2Conn after ProxyServer.Stop() must fail and must not spawn an orphaned h2Server.
+	srv.Stop()
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	tlsDummy := tls.Server(c1, &tls.Config{})
+	if srv.handoffH2Conn(tlsDummy, c1, "game.granbluefantasy.jp") {
+		t.Fatal("expected handoffH2Conn after Stop() to return false")
+	}
+	srv.h2Mu.Lock()
+	srvNil := srv.h2Server == nil && srv.h2Listener == nil
+	srv.h2Mu.Unlock()
+	if !srvNil {
+		t.Fatal("expected Stop() + rejected handoff to leave h2Server and h2Listener nil")
+	}
+}
+
 func BenchmarkDownstreamH1vsH2_RAMCacheBurst(b *testing.B) {
 	payload := append([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"), bytes.Repeat([]byte("B"), 16*1024)...)
 	srv, certMgr, _ := setupH2TestProxy(b, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

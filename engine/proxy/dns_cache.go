@@ -140,6 +140,20 @@ func dialHappyEyeballs(ctx context.Context, d *net.Dialer, network, port string,
 		err  error
 	}
 	resCh := make(chan dialResult, 2)
+	pending := 1
+	drainRemaining := func(count int) {
+		if count <= 0 {
+			return
+		}
+		go func() {
+			for k := 0; k < count; k++ {
+				r := <-resCh
+				if r.err == nil && r.conn != nil {
+					_ = r.conn.Close()
+				}
+			}
+		}()
+	}
 
 	go func() {
 		conn, err := dialSequentialIPs(raceCtx, d, network, port, primaries)
@@ -158,6 +172,7 @@ func dialHappyEyeballs(ctx context.Context, d *net.Dialer, network, port string,
 			return
 		}
 		fallbackStarted = true
+		pending++
 		go func() {
 			conn, err := dialSequentialIPs(raceCtx, d, network, port, fallbacks)
 			resCh <- dialResult{conn: conn, err: err}
@@ -166,6 +181,7 @@ func dialHappyEyeballs(ctx context.Context, d *net.Dialer, network, port string,
 
 	select {
 	case r := <-resCh:
+		pending--
 		if r.err == nil {
 			return r.conn, nil
 		}
@@ -175,6 +191,8 @@ func dialHappyEyeballs(ctx context.Context, d *net.Dialer, network, port string,
 	case <-timer.C:
 		startFallback()
 	case <-ctx.Done():
+		cancelRace()
+		drainRemaining(pending)
 		return nil, ctx.Err()
 	}
 
@@ -186,21 +204,16 @@ func dialHappyEyeballs(ctx context.Context, d *net.Dialer, network, port string,
 	for i := 0; i < remaining; i++ {
 		select {
 		case r := <-resCh:
+			pending--
 			if r.err == nil {
 				cancelRace()
-				// Drain the other racer cleanly if it also succeeded concurrently.
-				if i == 0 && remaining == 2 {
-					go func() {
-						r2 := <-resCh
-						if r2.err == nil && r2.conn != nil {
-							_ = r2.conn.Close()
-						}
-					}()
-				}
+				drainRemaining(pending)
 				return r.conn, nil
 			}
 			lastErr = r.err
 		case <-ctx.Done():
+			cancelRace()
+			drainRemaining(pending)
 			return nil, ctx.Err()
 		}
 	}

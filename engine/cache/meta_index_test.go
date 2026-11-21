@@ -100,3 +100,68 @@ func TestMetaIndex_CorruptFallbackAndClearAllRemoval(t *testing.T) {
 		t.Fatalf("expected ClearAllWithError to remove %s", MetaIndexFileName)
 	}
 }
+
+func TestMetaIndex_OrphanTempCleanedAndConcurrentFlushClose(t *testing.T) {
+	base := t.TempDir()
+	m := NewManager(base, 16)
+
+	orphanTmp := filepath.Join(base, MetaIndexFileName+".tmp.99999.123456.1")
+	if err := os.WriteFile(orphanTmp, []byte("stale-tmp"), 0644); err != nil {
+		t.Fatalf("write orphanTmp: %v", err)
+	}
+	activeTmp := filepath.Join(base, MetaIndexFileName+".tmp.99999.123456.2")
+	if err := os.WriteFile(activeTmp, []byte("active-tmp"), 0644); err != nil {
+		t.Fatalf("write activeTmp: %v", err)
+	}
+	m.persistMu.RLock()
+	tokOK := m.registerTempFileTokenLocked(activeTmp, opToken{gen: m.generation})
+	m.persistMu.RUnlock()
+	if !tokOK {
+		t.Fatal("failed to register active meta index temp token")
+	}
+
+	res := m.AuditAndRepairWithProgress(nil, nil)
+	if removed, _ := res["temp_files_removed"].(int); removed != 1 {
+		t.Fatalf("expected 1 orphaned meta index temp file removed, got %v (full=%+v)", res["temp_files_removed"], res)
+	}
+	if _, err := os.Stat(orphanTmp); !os.IsNotExist(err) {
+		t.Fatalf("expected orphanTmp %s to be deleted by audit", orphanTmp)
+	}
+	if _, err := os.Stat(activeTmp); err != nil {
+		t.Fatalf("expected activeTmp %s to remain protected while registered: %v", activeTmp, err)
+	}
+	m.DiscardDiskTempFile(activeTmp)
+
+	// Simulate in-flight periodic flush holding metaIndexSaveMu while a subsequent dirty write
+	// arrives, verifying Close() waits for the flush and commits the latest dirty write.
+	pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89close")
+	if !m.Save("/assets/1795000000/img/final_item.png", map[string]string{"content-type": "image/png", "etag": `"final1"`}, pngData) {
+		t.Fatal("save final_item.png failed")
+	}
+
+	m.metaIndexSaveMu.Lock()
+	m.metaIndexDirty.Store(true)
+	closeDone := make(chan struct{})
+	go func() {
+		m.Close()
+		close(closeDone)
+	}()
+
+	// Close() must block until the in-flight periodic save releases metaIndexSaveMu.
+	select {
+	case <-closeDone:
+		m.metaIndexSaveMu.Unlock()
+		t.Fatal("Close() returned before in-flight metaIndexSaveMu lock was released")
+	default:
+	}
+	m.metaIndexSaveMu.Unlock()
+	<-closeDone
+
+	m2 := NewManager(base, 16)
+	defer m2.Close()
+	m2.waitMetaIndexLoad(0)
+	metaItem, src := m2.GetMetadataWithNamespace("gbf", "/assets/1795000000/img/final_item.png")
+	if metaItem == nil || src != "DISK" || metaItem.ETag != `"final1"` {
+		t.Fatalf("expected meta index flushed cleanly on Close(), got item=%v src=%q", metaItem, src)
+	}
+}

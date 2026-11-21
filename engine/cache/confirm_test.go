@@ -83,6 +83,7 @@ func TestIsAcceleratorTempFile(t *testing.T) {
 		{"personal_data/photo.png.tmp.123.456.789", false}, {"user_workspace/app.js.tmp.1.2.3", false},
 		{"assets/12345/img/sp/btn.png.tmp.123.456", false}, {"assets/12345/img/sp/btn.png.tmp.1.2.3.4", false},
 		{"assets/12345/img/sp/btn.png.tmp.bad_suffix", false}, {"temp.tmp.123.456.1", false}, {"assets/12345/img/sp/btn.csv.tmp.1.2.3", false},
+		{".gbf_meta_index.v1.tmp.1234.5678.1", true}, {"personal_data/.gbf_meta_index.v1.tmp.1234.5678.1", false},
 	} {
 		if got := IsAcceleratorTempFile(tc.rel); got != tc.want {
 			t.Errorf("IsAcceleratorTempFile(%q) = %v; want %v", tc.rel, got, tc.want)

@@ -98,3 +98,29 @@ func TestPrefetch_SecondaryCascade_ManifestToCJSToSprite(t *testing.T) {
 		t.Fatalf("expected depth>1 hop not to cascade to too_deep.png, got %d hits", deepImgHits.Load())
 	}
 }
+
+func TestPrefetch_WaitPacerEnforcesJitterAfterFirstItem(t *testing.T) {
+	pe := &PrefetchEngine{
+		stopChan: make(chan struct{}),
+	}
+	defer close(pe.stopChan)
+
+	// Even with empty queues (QueueLen() == 0), waitPacer() must let the first item
+	// go immediately (0ms delay) while advancing nextPaceAt so rapid follow-ups are
+	// spaced by at least 15ms.
+	t0 := time.Now()
+	if !pe.waitPacer() {
+		t.Fatal("first waitPacer call returned false")
+	}
+	if firstDur := time.Since(t0); firstDur > 12*time.Millisecond {
+		t.Fatalf("expected first waitPacer call to have ~0ms delay, got %v", firstDur)
+	}
+
+	t1 := time.Now()
+	if !pe.waitPacer() {
+		t.Fatal("second waitPacer call returned false")
+	}
+	if secondDur := time.Since(t1); secondDur < 12*time.Millisecond {
+		t.Fatalf("expected second waitPacer call to enforce jittered pacing (>=15ms target), got %v", secondDur)
+	}
+}

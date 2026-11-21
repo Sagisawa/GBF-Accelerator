@@ -419,9 +419,7 @@ func (m *Manager) Close() {
 		case <-time.After(3 * time.Second):
 		}
 		m.waitMetaIndexLoad(500 * time.Millisecond)
-		if m.metaIndexDirty.Load() {
-			_ = m.SaveMetaIndex()
-		}
+		m.flushMetaIndexOnClose()
 	})
 }
 

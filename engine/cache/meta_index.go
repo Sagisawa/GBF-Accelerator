@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"time"
 )
 
@@ -191,7 +190,13 @@ func (m *Manager) waitMetaIndexLoad(timeout time.Duration) {
 // SaveMetaIndex persists an atomic binary snapshot of in-memory disk metadata
 // shards to MetaIndexFileName inside cacheBase.
 func (m *Manager) SaveMetaIndex() error {
-	if !m.metaIndexSaveMu.TryLock() {
+	return m.saveMetaIndex(true)
+}
+
+func (m *Manager) saveMetaIndex(blocking bool) error {
+	if blocking {
+		m.metaIndexSaveMu.Lock()
+	} else if !m.metaIndexSaveMu.TryLock() {
 		return nil
 	}
 	defer m.metaIndexSaveMu.Unlock()
@@ -205,6 +210,10 @@ func (m *Manager) SaveMetaIndex() error {
 	if _, err := os.Stat(base); err != nil {
 		return nil
 	}
+
+	// Clear dirty flag before snapshotting shards so any concurrent write or delete
+	// occurring after our snapshot loop re-marks metaIndexDirty = true.
+	m.metaIndexDirty.Store(false)
 
 	type kvEntry struct {
 		key string
@@ -268,16 +277,48 @@ func (m *Manager) SaveMetaIndex() error {
 
 	indexPath := filepath.Join(base, MetaIndexFileName)
 	tmpPath := fmt.Sprintf("%s.tmp.%d.%d.%d", indexPath, os.Getpid(), time.Now().UnixNano(), tmpFileSeq.Add(1))
+
+	m.persistMu.RLock()
+	defer m.persistMu.RUnlock()
+	m.mu.RLock()
+	curBase := m.cacheBase
+	m.mu.RUnlock()
+	if curBase != base {
+		return nil
+	}
+
+	tok := opToken{gen: m.generation}
+	registered := m.registerTempFileTokenLocked(tmpPath, tok)
+
 	if err := os.WriteFile(tmpPath, buf.Bytes(), 0644); err != nil {
+		m.metaIndexDirty.Store(true)
 		_ = os.Remove(tmpPath)
+		if registered {
+			m.popTempFileToken(tmpPath)
+		}
 		return err
 	}
 	if err := renameWithRetry(tmpPath, indexPath, 3); err != nil {
+		m.metaIndexDirty.Store(true)
 		_ = os.Remove(tmpPath)
+		if registered {
+			m.popTempFileToken(tmpPath)
+		}
 		return err
 	}
-	m.metaIndexDirty.Store(false)
+	if registered {
+		m.popTempFileToken(tmpPath)
+	}
 	return nil
+}
+
+func (m *Manager) flushMetaIndexOnClose() {
+	m.metaIndexSaveMu.Lock()
+	dirty := m.metaIndexDirty.Load()
+	m.metaIndexSaveMu.Unlock()
+	if dirty {
+		_ = m.SaveMetaIndex()
+	}
 }
 
 func (m *Manager) markMetaIndexDirty() {
@@ -291,7 +332,7 @@ func (m *Manager) markMetaIndexDirty() {
 		if m.metaPeriodicFlushInFlight.CompareAndSwap(false, true) {
 			go func() {
 				defer m.metaPeriodicFlushInFlight.Store(false)
-				_ = m.SaveMetaIndex()
+				_ = m.saveMetaIndex(false)
 			}()
 		}
 	}
@@ -307,6 +348,3 @@ func (m *Manager) diskMetaCount() int {
 	}
 	return total
 }
-
-// Keep unused atomic import check satisfied across builds.
-var _ = atomic.Bool{}

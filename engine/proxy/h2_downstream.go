@@ -116,6 +116,10 @@ func (h *h2ResponseWriter) Flush() {
 
 func writeH2HTTPResponse(hw *h2ResponseWriter, statusCode int, header http.Header, body []byte, isHead bool) {
 	dst := hw.rw.Header()
+	hasDate := header != nil && header.Get("Date") != ""
+	if !hasDate {
+		dst.Set("Date", fastHTTPDateString())
+	}
 	if header != nil {
 		for k, vv := range header {
 			if strings.EqualFold(k, "set-cookie") {
@@ -126,6 +130,9 @@ func writeH2HTTPResponse(hw *h2ResponseWriter, statusCode int, header http.Heade
 				continue
 			}
 			if isHopByHop(k) || strings.EqualFold(k, "content-length") || strings.EqualFold(k, "connection") {
+				continue
+			}
+			if !hasDate && strings.EqualFold(k, "date") {
 				continue
 			}
 			// P0: Zero header pollution.
@@ -159,12 +166,16 @@ func (s *ProxyServer) ensureH2Server() (*connFeedListener, *http.Server) {
 	s.h2Mu.Lock()
 	defer s.h2Mu.Unlock()
 
+	if s.h2Stopped.Load() {
+		return nil, nil
+	}
 	if s.h2Listener != nil && s.h2Server != nil {
 		return s.h2Listener, s.h2Server
 	}
 
 	ln := newConnFeedListener()
 	srv := &http.Server{
+		IdleTimeout: 5 * time.Minute,
 		Handler: http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 			targetHost := ""
 			if meta, ok := r.Context().Value(h2ConnMetaKey{}).(h2ConnMeta); ok {
@@ -241,6 +252,9 @@ func (s *ProxyServer) stopH2Server() {
 
 func (s *ProxyServer) handoffH2Conn(tlsConn *tls.Conn, rawConn net.Conn, targetHost string) bool {
 	ln, _ := s.ensureH2Server()
+	if ln == nil {
+		return false
+	}
 	s.h2Meta.Store(tlsConn, h2ConnMeta{
 		rawConn:    rawConn,
 		targetHost: targetHost,

@@ -711,9 +711,6 @@ func (pe *PrefetchEngine) discoveryWorker() {
 }
 
 func (pe *PrefetchEngine) waitPacer() bool {
-	if pe.QueueLen() == 0 {
-		return true
-	}
 	jitter := time.Duration(15+rand.IntN(21)) * time.Millisecond
 	pe.pacerMu.Lock()
 	now := time.Now()
@@ -753,16 +750,19 @@ func (pe *PrefetchEngine) fetchWorker() {
 			return
 		}
 
-		select {
-		case pe.execCh <- item:
-		case <-pe.stopChan:
+		if !pe.waitPacer() {
 			key := prefetchInflightKey(item.host, item.path)
 			pe.removeInflight(key)
 			pe.execSlots <- struct{}{}
 			return
 		}
 
-		if !pe.waitPacer() {
+		select {
+		case pe.execCh <- item:
+		case <-pe.stopChan:
+			key := prefetchInflightKey(item.host, item.path)
+			pe.removeInflight(key)
+			pe.execSlots <- struct{}{}
 			return
 		}
 	}
