@@ -102,7 +102,7 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
 
                   {!isScrolled && (
                     <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-full inset-panel text-label-secondary leading-tight">
-                      v{status?.version || '2.5.1'}
+                      v{status?.version || '2.6.0'}
                     </span>
                   )}
 

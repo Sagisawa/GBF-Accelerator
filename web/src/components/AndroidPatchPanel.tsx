@@ -53,6 +53,10 @@ import {
   downloadAdbPlatformTools,
 } from '../api'
 import { useI18n } from '../i18n'
+import { Card, CardHeader, InsetPanel, CompoundInputGroup } from './common/Card'
+import { Badge } from './common/Badge'
+import { Button } from './common/Button'
+import { InfoTip } from './common/InfoTip'
 
 interface AndroidPatchPanelProps {
   showToast: (msg: string, type: 'success' | 'error' | 'info') => void
@@ -200,6 +204,7 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
   const [patchStatus, setPatchStatus] = useState<AndroidPatchProgress | null>(null)
   const [isPatchStarting, setIsPatchStarting] = useState<boolean>(false)
   const [showLogs, setShowLogs] = useState<boolean>(true)
+  const [showCompliance, setShowCompliance] = useState<boolean>(false)
   const logTerminalRef = useRef<HTMLDivElement>(null)
 
   // Load Environment on mount
@@ -791,183 +796,207 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
     !(patchStatus?.done && !patchStatus?.error && patchResult)
   const isPatchDoneStage = Boolean(patchStatus?.done && !patchStatus?.error && patchResult)
 
+  const modeOrder: Array<'device' | 'upload' | 'path'> = ['device', 'upload', 'path']
+  const modeIndex = Math.max(0, modeOrder.indexOf(inputMode))
+  const onlineAdbCount = adbDevices.filter((d) => d.state === 'device').length
+
   return (
-    <div className="w-full flex flex-col gap-4 sm:gap-5">
-      {/* 1. Unified All-in-One Header & Environment Card */}
-      <div className="bg-gradient-to-r from-sky-900 via-indigo-950 to-slate-900 text-white rounded-[20px] p-5 sm:p-6 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_12px_32px_-14px_rgba(15,23,42,0.45)] border border-sky-700/40 relative overflow-hidden">
-        <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-radial from-sky-400/10 to-transparent pointer-events-none" />
-        
-        {/* Top: Title & Badges & Quick Actions */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-white/10">
-          <div className="space-y-1.5 max-w-2xl">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="p-1.5 rounded-lg bg-sky-500/20 text-sky-300 border border-sky-400/30">
-                <Smartphone className="w-5 h-5" />
-              </span>
-              <h1 className="text-lg sm:text-xl font-bold tracking-tight">
-                {t('modals.androidPatch.title')}
-              </h1>
-              <span className="text-xs font-mono font-semibold px-2 py-0.5 rounded-full bg-sky-500/20 text-sky-200 border border-sky-400/30">
-                All-in-One v2.0
-              </span>
-              <span
-                className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
-                  isEnvironmentReady
-                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/30'
-                    : activeErrorMsg
-                    ? 'bg-rose-500/20 text-rose-200 border-rose-400/30'
-                    : 'bg-amber-500/20 text-amber-200 border-amber-400/30'
-                }`}
-              >
-                {isEnvironmentReady
-                  ? t('modals.androidPatch.envReady')
-                  : activeErrorMsg
-                  ? t('modals.androidPatch.envFailed')
-                  : t('modals.androidPatch.envMissing')}
-              </span>
+    <div className="w-full flex flex-col gap-4">
+      {/* 1. Liquid Glass Android Cockpit (consistent with HeaderCockpit & Sidebar y=12px) */}
+      <section className="liquid-glass rounded-[20px] p-4 sm:p-5">
+        {/* Top Row: Identity, Status Badge, InfoTip & Quick Actions */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3.5 hairline-b">
+          <div className="flex items-start sm:items-center gap-3 min-w-0">
+            <div
+              className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                isEnvironmentReady
+                  ? 'bg-emerald-600 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_4px_14px_-4px_rgba(16,185,129,0.5)]'
+                  : 'bg-sky-600 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.25),0_4px_14px_-4px_rgba(2,132,199,0.45)]'
+              }`}
+            >
+              <Smartphone className="w-5 h-5" />
             </div>
-            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-              {t('modals.androidPatch.desc')}
-            </p>
+
+            <div className="flex flex-col min-w-0 gap-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h1 className="text-base sm:text-lg font-bold text-label-primary tracking-tight leading-snug inline-flex items-center gap-1.5">
+                  <span>{t('modals.androidPatch.title')}</span>
+                  <InfoTip text={t('modals.androidPatch.desc')} />
+                </h1>
+                <Badge variant={isEnvironmentReady ? 'green' : activeErrorMsg ? 'red' : 'amber'}>
+                  {isEnvironmentReady
+                    ? t('modals.androidPatch.envReady')
+                    : activeErrorMsg
+                    ? t('modals.androidPatch.envFailed')
+                    : t('modals.androidPatch.envMissing')}
+                </Badge>
+              </div>
+              <div className="flex items-center gap-x-3 gap-y-1 text-xs text-label-tertiary flex-wrap">
+                {envStatus?.tools_disk_bytes ? (
+                  <span className="inline-flex items-center gap-1 font-mono tnum whitespace-nowrap">
+                    <HardDrive className="w-3.5 h-3.5 text-sky-500 shrink-0" />
+                    <span>{t('modals.androidPatch.toolchainSize')}</span>
+                    <strong className="text-label-secondary font-semibold">
+                      {formatBytes(envStatus.tools_disk_bytes)}
+                    </strong>
+                  </span>
+                ) : null}
+                {onlineAdbCount > 0 ? (
+                  <span className="inline-flex items-center gap-1.5 text-sys-green font-medium whitespace-nowrap">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                    <span>{t('modals.androidPatch.devicesConnected', { count: onlineAdbCount })}</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                    <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                    <span>{t('modals.androidPatch.devicesNotConnected')}</span>
+                  </span>
+                )}
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 self-end sm:self-center shrink-0 flex-wrap">
-            <button
+          {/* Right Quick Actions */}
+          <div className="flex items-center gap-2 self-end lg:self-center shrink-0 flex-wrap">
+            <Button
               type="button"
+              variant="desktop"
+              size="sm"
+              icon={<Archive className="w-3.5 h-3.5" />}
               onClick={handleOpenBackup}
-              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs font-semibold border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer"
               title={t('modals.androidPatch.backupTooltip')}
             >
-              <Archive className="w-3.5 h-3.5" />
-              <span>{t('modals.androidPatch.backupBtn')}</span>
-            </button>
-            <button
+              {t('modals.androidPatch.backupBtn')}
+            </Button>
+            <Button
               type="button"
+              variant="desktop"
+              size="sm"
+              icon={<RefreshCw className={`w-3.5 h-3.5 ${loadingEnv ? 'animate-spin' : ''}`} />}
               onClick={checkEnv}
               disabled={loadingEnv}
-              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs font-semibold border border-white/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               title={t('modals.androidPatch.checkDepsTooltip')}
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingEnv ? 'animate-spin' : ''}`} />
-              <span>{t('modals.androidPatch.checkDepsBtn')}</span>
-            </button>
+              {t('modals.androidPatch.checkDepsBtn')}
+            </Button>
             {isEnvironmentReady ? (
-              <button
+              <Button
                 type="button"
+                variant="desktop"
+                size="sm"
+                icon={<Trash2 className="w-3.5 h-3.5 text-rose-500" />}
                 onClick={handleUninstallAllEnv}
                 disabled={isUninstallingAll || isDownloadActive}
-                className="px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-200 text-xs font-semibold border border-rose-400/30 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
                 title={t('modals.androidPatch.uninstallEnvTooltip')}
+                className="hover:!text-rose-600 dark:hover:!text-rose-400 hover:!border-rose-500/30"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>{t('modals.androidPatch.uninstallEnvBtn')}</span>
-              </button>
+                {t('modals.androidPatch.uninstallEnvBtn')}
+              </Button>
             ) : (
-              <button
+              <Button
                 type="button"
+                variant="primary"
+                size="sm"
+                icon={<Zap className="w-3.5 h-3.5 fill-current" />}
                 onClick={handleInstallAllEnv}
                 disabled={isInstallingAll || isDownloadActive}
-                className="px-3.5 py-1.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 text-white text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 select-none"
               >
-                <Zap className="w-3.5 h-3.5 fill-current" />
-                <span>{t('modals.androidPatch.installEnvBtn')}</span>
-              </button>
+                {t('modals.androidPatch.installEnvBtn')}
+              </Button>
             )}
           </div>
         </div>
 
-        {/* Bottom Bar: Environment summary info & component pill status */}
-        <div className="pt-3.5 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
-          <div className="flex items-center gap-4 flex-wrap text-slate-300">
-            {envStatus?.tools_disk_bytes ? (
-              <div className="flex items-center gap-1.5">
-                <HardDrive className="w-3.5 h-3.5 text-sky-400" />
-                <span>{t('modals.androidPatch.toolchainSize')}</span>
-                <span className="font-mono text-white font-semibold">
-                  {formatBytes(envStatus?.tools_disk_bytes)}
-                </span>
-              </div>
-            ) : null}
-            {adbDevices.filter(d => d.state === 'device').length > 0 ? (
-              <div className="flex items-center gap-1.5 text-emerald-300 font-medium">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>{t('modals.androidPatch.devicesConnected', { count: adbDevices.filter(d => d.state === 'device').length })}</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 text-slate-400">
-                <Smartphone className="w-3.5 h-3.5" />
-                <span>{t('modals.androidPatch.devicesNotConnected')}</span>
-              </div>
-            )}
-          </div>
-
-          {/* Quick status pills for components */}
-          <div className="flex items-center gap-2 flex-wrap text-[11px] font-mono">
-            {/* Java 21+ */}
-            <span className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
-              isPortableJava
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : isJavaFound
-                  ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
-                  : 'bg-white/5 border-white/10 text-slate-400'
-            }`}>
-              {isJavaFound ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <XCircle className="w-3 h-3 text-slate-500 shrink-0" />}
+        {/* Bottom Inset Status Strip: Compact Single-Row Dependency Pills */}
+        <InsetPanel className="mt-3 px-3 py-2 flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 flex-wrap text-[11px] font-mono">
+            <span
+              className={`px-2 py-0.5 rounded-full border inline-flex items-center gap-1 whitespace-nowrap ${
+                isPortableJava
+                  ? 'bg-sys-greenBg border-emerald-500/20 text-sys-green'
+                  : isJavaFound
+                  ? 'bg-sys-blueBg border-sky-500/20 text-sys-blue'
+                  : 'bg-surface-active border-hairline text-label-tertiary'
+              }`}
+            >
+              {isJavaFound ? (
+                <CheckCircle2 className="w-3 h-3 shrink-0" />
+              ) : (
+                <XCircle className="w-3 h-3 shrink-0 opacity-60" />
+              )}
               <span>Java 21+{!isPortableJava && isJavaFound ? t('modals.androidPatch.systemTag') : ''}</span>
             </span>
 
-            {/* LSPatch */}
-            <span className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
-              isLspatchInstalled
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : 'bg-white/5 border-white/10 text-slate-400'
-            }`}>
-              {isLspatchInstalled ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <XCircle className="w-3 h-3 text-slate-500 shrink-0" />}
+            <span
+              className={`px-2 py-0.5 rounded-full border inline-flex items-center gap-1 whitespace-nowrap ${
+                isLspatchInstalled
+                  ? 'bg-sys-greenBg border-emerald-500/20 text-sys-green'
+                  : 'bg-surface-active border-hairline text-label-tertiary'
+              }`}
+            >
+              {isLspatchInstalled ? (
+                <CheckCircle2 className="w-3 h-3 shrink-0" />
+              ) : (
+                <XCircle className="w-3 h-3 shrink-0 opacity-60" />
+              )}
               <span>LSPatch</span>
             </span>
 
-            {/* Builtin Module */}
-            <span className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
-              isModuleInstalled
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : 'bg-white/5 border-white/10 text-slate-400'
-            }`}>
-              {isModuleInstalled ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <XCircle className="w-3 h-3 text-slate-500 shrink-0" />}
+            <span
+              className={`px-2 py-0.5 rounded-full border inline-flex items-center gap-1 whitespace-nowrap ${
+                isModuleInstalled
+                  ? 'bg-sys-greenBg border-emerald-500/20 text-sys-green'
+                  : 'bg-surface-active border-hairline text-label-tertiary'
+              }`}
+            >
+              {isModuleInstalled ? (
+                <CheckCircle2 className="w-3 h-3 shrink-0" />
+              ) : (
+                <XCircle className="w-3 h-3 shrink-0 opacity-60" />
+              )}
               <span>{t('modals.androidPatch.builtinModule')}</span>
             </span>
 
-            {/* ADB */}
-            <span className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
-              isInternalAdb
-                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                : isAdbFound
-                  ? 'bg-sky-500/10 border-sky-500/30 text-sky-300'
-                  : 'bg-white/5 border-white/10 text-slate-400'
-            }`}>
-              {isAdbFound ? <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" /> : <XCircle className="w-3 h-3 text-slate-500 shrink-0" />}
+            <span
+              className={`px-2 py-0.5 rounded-full border inline-flex items-center gap-1 whitespace-nowrap ${
+                isInternalAdb
+                  ? 'bg-sys-greenBg border-emerald-500/20 text-sys-green'
+                  : isAdbFound
+                  ? 'bg-sys-blueBg border-sky-500/20 text-sys-blue'
+                  : 'bg-surface-active border-hairline text-label-tertiary'
+              }`}
+            >
+              {isAdbFound ? (
+                <CheckCircle2 className="w-3 h-3 shrink-0" />
+              ) : (
+                <XCircle className="w-3 h-3 shrink-0 opacity-60" />
+              )}
               <span>ADB{!isInternalAdb && isAdbFound ? t('modals.androidPatch.systemTag') : ''}</span>
             </span>
           </div>
-        </div>
+        </InsetPanel>
 
         {/* Download Progress Bar if Active */}
         {isDownloadActive && (
-          <div className="mt-3.5 pt-3.5 border-t border-white/10 space-y-2">
-            <div className="flex items-center justify-between text-xs text-sky-200">
+          <InsetPanel className="mt-3 space-y-2">
+            <div className="flex items-center justify-between text-xs text-sys-blue">
               <span className="font-semibold">
-                {downloadProgress?.stage === 'verifying' ? t('modals.androidPatch.verifyingSha') : t('modals.androidPatch.transferring')}
+                {downloadProgress?.stage === 'verifying'
+                  ? t('modals.androidPatch.verifyingSha')
+                  : t('modals.androidPatch.transferring')}
                 {downloadProgress?.current_file ? ` (${downloadProgress.current_file})` : ''}
               </span>
-              <span className="font-mono font-bold text-white">
+              <span className="font-mono tnum font-bold">
                 {Math.round(downloadProgress?.percent || 0)}%
               </span>
             </div>
-            <div className="w-full bg-black/40 rounded-full h-2 overflow-hidden border border-white/10">
+            <div className="w-full bg-slate-500/15 rounded-full h-2 overflow-hidden">
               <div
-                className="bg-sky-400 h-2 rounded-full transition-all duration-200"
+                className="bg-sky-500 h-2 rounded-full transition-all duration-200"
                 style={{ width: `${Math.round(downloadProgress?.percent || 0)}%` }}
               />
             </div>
-            <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
+            <div className="flex items-center justify-between text-[11px] text-label-tertiary font-mono tnum">
               <span>
                 {formatBytes(downloadProgress?.downloaded_bytes)} / {formatBytes(downloadProgress?.total_bytes)}
               </span>
@@ -978,31 +1007,32 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 <button
                   type="button"
                   onClick={handleCancelDownload}
-                  className="text-rose-400 hover:text-rose-300 font-semibold cursor-pointer underline"
+                  className="text-sys-red hover:underline font-semibold cursor-pointer"
                 >
                   {t('modals.androidPatch.cancel')}
                 </button>
               </div>
             </div>
-          </div>
+          </InsetPanel>
         )}
-      </div>
+      </section>
 
-      {/* Conditional: If Environment is NOT ready, display error alert or clean onboarding card */}
+      {/* 2. Conditional: Environment NOT Ready — Error Alert or Onboarding */}
       {!isEnvironmentReady ? (
         activeErrorMsg ? (
-          <div className="frosted-card rounded-[20px] border-rose-300/60 p-6 sm:p-8 space-y-5 text-left">
-            {/* Error Banner */}
-            <div className="rounded-xl bg-rose-50 border border-rose-200/80 p-4 sm:p-5 text-rose-900 space-y-3">
+          <Card className="border-rose-500/30 p-5 sm:p-7 space-y-4">
+            <InsetPanel tone="rose" className="p-4 sm:p-5 space-y-3">
               <div className="flex items-start gap-3">
-                <span className="p-2 rounded-lg bg-rose-100 text-rose-600 shrink-0 mt-0.5">
+                <span className="p-2 rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5">
                   <AlertTriangle className="w-5 h-5" />
                 </span>
                 <div className="space-y-1 flex-1 min-w-0">
-                  <h3 className="text-sm sm:text-base font-bold text-rose-900">
-                    {isActivePermissionError ? t('modals.androidPatch.permissionErrorTitle') : t('modals.androidPatch.envConfigFailedTitle')}
+                  <h3 className="text-sm sm:text-base font-bold">
+                    {isActivePermissionError
+                      ? t('modals.androidPatch.permissionErrorTitle')
+                      : t('modals.androidPatch.envConfigFailedTitle')}
                   </h3>
-                  <p className="text-xs sm:text-sm text-rose-700 leading-relaxed">
+                  <p className="text-xs sm:text-sm opacity-90 leading-relaxed">
                     {isActivePermissionError
                       ? t('modals.androidPatch.permissionErrorDesc')
                       : activeErrorMsg}
@@ -1010,940 +1040,1064 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
                 </div>
               </div>
 
-              {/* If Permission error, show clear dual actionable solutions */}
               {isActivePermissionError && (
-                <div className="ml-11 bg-white/90 rounded-lg p-3 text-xs text-slate-700 border border-rose-200/60 space-y-2">
-                  <div className="font-semibold text-rose-800">{t('modals.androidPatch.solutionTitle')}</div>
-                  <div className="space-y-1.5 text-slate-600">
+                <InsetPanel className="ml-11 text-xs space-y-2">
+                  <div className="font-semibold text-sys-red">{t('modals.androidPatch.solutionTitle')}</div>
+                  <div className="space-y-1.5 text-label-secondary">
                     <div className="flex items-start gap-1.5">
-                      <span className="font-bold text-indigo-600 shrink-0">{t('modals.androidPatch.solution1Title')}</span>
+                      <span className="font-bold text-sys-blue shrink-0">{t('modals.androidPatch.solution1Title')}</span>
                       <span>{t('modals.androidPatch.solution1Desc')}</span>
                     </div>
                     <div className="flex items-start gap-1.5">
-                      <span className="font-bold text-indigo-600 shrink-0">{t('modals.androidPatch.solution2Title')}</span>
+                      <span className="font-bold text-sys-blue shrink-0">{t('modals.androidPatch.solution2Title')}</span>
                       <span>{t('modals.androidPatch.solution2Desc')}</span>
                     </div>
                   </div>
-                </div>
+                </InsetPanel>
               )}
 
-              {/* Technical error details if available */}
               {activeErrorDetails && (
-                <details className="ml-11 text-xs text-rose-700/80 cursor-pointer">
+                <details className="ml-11 text-xs cursor-pointer">
                   <summary className="font-medium hover:underline">{t('modals.androidPatch.viewErrorDetails')}</summary>
-                  <pre className="mt-1.5 p-2 bg-rose-100/60 rounded text-[11px] font-mono text-rose-900 whitespace-pre-wrap break-all">
+                  <pre className="mt-1.5 p-2.5 inset-panel rounded-lg text-[11px] font-mono whitespace-pre-wrap break-all">
                     {activeErrorDetails}
                   </pre>
                 </details>
               )}
-            </div>
+            </InsetPanel>
 
-            {/* Component status overview */}
-            <div className="bg-slate-50/70 border border-slate-200/60 rounded-xl p-4 space-y-3">
-              <div className="text-xs font-bold text-slate-700 flex items-center justify-between">
+            <InsetPanel className="p-4 space-y-3">
+              <div className="text-xs font-bold text-label-primary flex items-center justify-between">
                 <span>{t('modals.androidPatch.compStatusTitle')}</span>
-                <span className="text-[11px] font-normal text-slate-500">{t('modals.androidPatch.compStatusDesc')}</span>
+                <span className="text-[11px] font-normal text-label-tertiary">
+                  {t('modals.androidPatch.compStatusDesc')}
+                </span>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-                <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
-                  <span className="text-slate-600">{t('modals.androidPatch.compJava')}</span>
-                  <span className={`font-mono font-medium ${isJavaFound ? 'text-emerald-600' : 'text-rose-500'}`}>
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-surface-active border border-hairline">
+                  <span className="text-label-secondary">{t('modals.androidPatch.compJava')}</span>
+                  <span className={`font-mono font-medium ${isJavaFound ? 'text-sys-green' : 'text-sys-red'}`}>
                     {isJavaFound ? t('modals.androidPatch.readyTag') : t('modals.androidPatch.notReadyTag')}
                   </span>
                 </div>
-                <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
-                  <span className="text-slate-600">{t('modals.androidPatch.compLspatch')}</span>
-                  <span className={`font-mono font-medium ${isLspatchInstalled ? 'text-emerald-600' : 'text-rose-500'}`}>
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-surface-active border border-hairline">
+                  <span className="text-label-secondary">{t('modals.androidPatch.compLspatch')}</span>
+                  <span className={`font-mono font-medium ${isLspatchInstalled ? 'text-sys-green' : 'text-sys-red'}`}>
                     {isLspatchInstalled ? t('modals.androidPatch.readyTag') : t('modals.androidPatch.notReadyTag')}
                   </span>
                 </div>
-                <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
-                  <span className="text-slate-600">{t('modals.androidPatch.compModule')}</span>
-                  <span className={`font-mono font-medium ${isModuleInstalled ? 'text-emerald-600' : 'text-rose-500'}`}>
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-surface-active border border-hairline">
+                  <span className="text-label-secondary">{t('modals.androidPatch.compModule')}</span>
+                  <span className={`font-mono font-medium ${isModuleInstalled ? 'text-sys-green' : 'text-sys-red'}`}>
                     {isModuleInstalled ? t('modals.androidPatch.readyTag') : t('modals.androidPatch.notReadyTag')}
                   </span>
                 </div>
-                <div className="flex items-center justify-between p-2 rounded-lg bg-white border border-slate-200/80">
-                  <span className="text-slate-600">{t('modals.androidPatch.compAdb')}</span>
-                  <span className={`font-mono font-medium ${isAdbFound ? 'text-emerald-600' : 'text-rose-500'}`}>
+                <div className="flex items-center justify-between p-2.5 rounded-lg bg-surface-active border border-hairline">
+                  <span className="text-label-secondary">{t('modals.androidPatch.compAdb')}</span>
+                  <span className={`font-mono font-medium ${isAdbFound ? 'text-sys-green' : 'text-sys-red'}`}>
                     {isAdbFound ? t('modals.androidPatch.readyTag') : t('modals.androidPatch.notReadyTag')}
                   </span>
                 </div>
               </div>
-            </div>
+            </InsetPanel>
 
-            {/* Action button */}
             <div className="flex items-center justify-center pt-1">
-              <button
+              <Button
                 type="button"
+                variant="primary"
+                size="lg"
+                icon={<RefreshCw className={`w-4 h-4 ${isInstallingAll ? 'animate-spin' : ''}`} />}
                 onClick={handleInstallAllEnv}
                 disabled={isInstallingAll || isDownloadActive}
-                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-sm font-bold shadow-sm transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 select-none"
+                className="rounded-xl"
               >
-                <RefreshCw className={`w-4 h-4 ${isInstallingAll ? 'animate-spin' : ''}`} />
-                <span>{isDownloadActive ? t('modals.androidPatch.componentDownloading') : t('modals.androidPatch.retryInstallAll')}</span>
-              </button>
+                {isDownloadActive
+                  ? t('modals.androidPatch.componentDownloading')
+                  : t('modals.androidPatch.retryInstallAll')}
+              </Button>
             </div>
-          </div>
+          </Card>
         ) : (
-          <div className="frosted-card rounded-[20px] p-8 sm:p-10 text-center space-y-4">
-            <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto shadow-2xs">
+          <Card className="p-8 sm:p-10 text-center items-center">
+            <div className="w-14 h-14 rounded-2xl bg-sys-blueBg text-sys-blue border border-sky-500/20 flex items-center justify-center mx-auto">
               <Layers className="w-7 h-7" />
             </div>
             <div className="space-y-1.5 max-w-lg mx-auto">
-              <h3 className="text-base sm:text-lg font-bold text-slate-800">
+              <h3 className="text-base sm:text-lg font-bold text-label-primary">
                 {t('modals.androidPatch.onboardingTitle')}
               </h3>
-              <p className="text-xs sm:text-sm text-slate-500 leading-relaxed">
+              <p className="text-xs sm:text-sm text-label-tertiary leading-relaxed">
                 {t('modals.androidPatch.onboardingDesc')}
               </p>
             </div>
             <div className="pt-2">
-              <button
+              <Button
                 type="button"
+                variant="primary"
+                size="lg"
+                icon={<Zap className="w-4 h-4 fill-current" />}
                 onClick={handleInstallAllEnv}
                 disabled={isInstallingAll || isDownloadActive}
-                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-sm font-bold shadow-sm transition-all inline-flex items-center gap-2 cursor-pointer disabled:opacity-50 select-none"
+                className="rounded-xl"
               >
-                <Zap className="w-4 h-4 fill-current" />
-                <span>{isDownloadActive ? t('modals.androidPatch.componentDownloading') : t('modals.androidPatch.installAllEnvSize')}</span>
-              </button>
+                {isDownloadActive
+                  ? t('modals.androidPatch.componentDownloading')
+                  : t('modals.androidPatch.installAllEnvSize')}
+              </Button>
             </div>
-          </div>
+          </Card>
         )
       ) : (
         <>
-
-      {/* 5. Input & Package Selection */}
-      <div className="frosted-card rounded-[20px] p-4 sm:p-5">
-        <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-          <div className="flex items-center gap-2">
-            <FileBox className="w-4 h-4 text-indigo-600" />
-            <h2 className="text-sm sm:text-base font-bold text-slate-800">
-              {t('modals.androidPatch.selectOfficialPackage')}
-            </h2>
-          </div>
-          <div className="flex items-center gap-1 text-xs">
-            <button
-              type="button"
-              onClick={() => setInputMode('device')}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all flex items-center gap-1 ${
-                inputMode === 'device'
-                  ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Smartphone className="w-3.5 h-3.5" />
-              <span>{t('modals.androidPatch.tabDeviceShort')}</span>
-              {adbDevices.filter(d => d.state === 'device').length > 0 && (
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={() => setInputMode('upload')}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
-                inputMode === 'upload'
-                  ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              {t('modals.androidPatch.tabUploadShort')}
-            </button>
-            <button
-              type="button"
-              onClick={() => setInputMode('path')}
-              className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
-                inputMode === 'path'
-                  ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              {t('modals.androidPatch.tabPathShort')}
-            </button>
-          </div>
-        </div>
-
-        {/* Device Extract Mode */}
-        {inputMode === 'device' && (
-          <div className="border border-slate-200 bg-slate-50/60 rounded-xl p-4 sm:p-5 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200/80">
-              <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-lg bg-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
-                  <Smartphone className="w-5 h-5" />
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-slate-500">{t('modals.androidPatch.connectedDeviceTitle')}</div>
-                  {adbDevices.length === 0 ? (
-                    <div className="text-sm font-bold text-slate-700">{t('modals.androidPatch.noAdbDevice')}</div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={selectedDevice}
-                        onChange={(e) => setSelectedDevice(e.target.value)}
-                        className="text-sm font-bold text-slate-900 bg-white border border-slate-300 rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      >
-                        {adbDevices.map((d) => (
-                          <option key={d.serial} value={d.serial}>
-                            {d.model} ({d.serial}) {d.state !== 'device' ? `[${d.state}]` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="text-[11px] px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-800">
-                        {t('modals.androidPatch.onlineReady')}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={refreshDevices}
-                className="px-2.5 py-1 text-xs text-slate-600 hover:text-slate-900 border border-slate-200 rounded-lg bg-white flex items-center gap-1.5 self-start sm:self-center cursor-pointer shadow-2xs hover:bg-slate-50"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>{t('modals.androidPatch.refreshDevicesBtn')}</span>
-              </button>
-            </div>
-
-            {adbDevices.length === 0 ? (
-              <div className="py-4 text-center space-y-2">
-                <p className="text-xs text-slate-600 max-w-md mx-auto">
-                  {t('modals.androidPatch.adbUsbPrompt1')}
-                </p>
-                <div className="text-[11px] text-slate-400">
-                  {t('modals.androidPatch.adbUsbPrompt2')}
-                </div>
-                {!envStatus?.adb?.found && (
-                  <div className="pt-2">
-                    <button
-                      type="button"
-                      onClick={handleDownloadAdb}
-                      disabled={isDownloadingAdb}
-                      className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold inline-flex items-center gap-1.5 shadow-2xs"
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      <span>{isDownloadingAdb ? t('modals.androidPatch.downloadingTools') : t('modals.androidPatch.downloadAdbBtn')}</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {/* Target App Selector */}
-                <div className="bg-white border border-slate-200/90 rounded-lg p-3 space-y-2">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs">
-                    <span className="font-bold text-slate-800 flex items-center gap-1.5">
-                      <span>{t('modals.androidPatch.targetAppLabel')}</span>
-                      {isLoadingBrowsers && (
-                        <span className="text-[11px] text-indigo-600 font-normal animate-pulse">
-                          {t('modals.androidPatch.scanningApps')}
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-[11px] text-slate-500">
-                      {t('modals.androidPatch.detectTip')}
-                    </span>
-                  </div>
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                    <select
-                      value={isCustomExtractPackage ? '__custom__' : targetExtractPackage}
-                      onChange={(e) => {
-                        if (e.target.value === '__custom__') {
-                          setIsCustomExtractPackage(true)
-                        } else {
-                          setIsCustomExtractPackage(false)
-                          setTargetExtractPackage(e.target.value)
-                        }
-                      }}
-                      className="text-xs font-semibold text-slate-800 bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer flex-1"
-                    >
-                      {deviceBrowsers.length > 0 ? (
-                        <>
-                          {deviceBrowsers.some(b => b.is_installed && b.is_system_webview !== false) && (
-                            <optgroup label={t('modals.androidPatch.groupInstalledWebView')}>
-                              {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview !== false).map(b => (
-                                <option key={b.package_name} value={b.package_name}>
-                                  {b.is_skyleap ? '[SkyLeap] ' : ''}{formatDeviceBrowserOption(b, t)}
-                                </option>
-                              ))}
-                            </optgroup>
-                          )}
-                          {deviceBrowsers.some(b => b.is_installed && b.is_system_webview === false) && (
-                            <optgroup label={t('modals.androidPatch.groupInstalledStandalone')}>
-                              {deviceBrowsers.filter(b => b.is_installed && b.is_system_webview === false).map(b => (
-                                <option key={b.package_name} value={b.package_name}>
-                                  {formatDeviceBrowserOption(b, t)}
-                                </option>
-                              ))}
-                            </optgroup>
-                          )}
-                          {deviceBrowsers.some(b => !b.is_installed) && (
-                            <optgroup label={t('modals.androidPatch.groupOther')}>
-                              {deviceBrowsers.filter(b => !b.is_installed).map(b => (
-                                <option key={b.package_name} value={b.package_name}>
-                                  {formatDeviceBrowserOption(b, t)}
-                                </option>
-                              ))}
-                            </optgroup>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          <option value="com.dena.skyleap">{t('modals.androidPatch.optSkyleap')}</option>
-                          <option value="mark.via.gp">{t('modals.androidPatch.optVia')}</option>
-                          <option value="com.android.chrome">{t('modals.androidPatch.optChrome')}</option>
-                          <option value="com.kiwibrowser.browser">{t('modals.androidPatch.optKiwi')}</option>
-                          <option value="com.microsoft.emmx">{t('modals.androidPatch.optEdge')}</option>
-                          <option value="com.brave.browser">{t('modals.androidPatch.optBrave')}</option>
-                        </>
-                      )}
-                      <option value="__custom__">{t('modals.androidPatch.optCustom')}</option>
-                    </select>
-                    {isCustomExtractPackage && (
-                      <input
-                        type="text"
-                        value={targetExtractPackage}
-                        onChange={(e) => setTargetExtractPackage(e.target.value.trim())}
-                        placeholder={t('modals.androidPatch.customPackagePlaceholder')}
-                        className="text-xs font-mono text-slate-800 bg-white border border-indigo-300 rounded-lg px-2.5 py-1.5 flex-1 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      />
-                    )}
-                  </div>
-                  {(() => {
-                    const sel = deviceBrowsers.find(b => b.package_name === targetExtractPackage)
-                    if (sel && sel.is_system_webview === false) {
-                      return (
-                        <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-xs text-amber-900 flex items-start gap-2 mt-1">
-                          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                          <div className="text-[11px] leading-relaxed">
-                            <strong>{t('modals.androidPatch.unsupportedBrowserTitle')}</strong>
-                            <span>{t('modals.androidPatch.unsupportedBrowserDesc', { name: getDeviceBrowserName(sel, t) })}</span>
-                          </div>
-                        </div>
-                      )
-                    }
-                    return null
-                  })()}
-                </div>
-
-                {deviceApp?.installed ? (
-                  <div className="bg-white border border-emerald-200/90 rounded-lg p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900 text-sm">
-                          {deviceApp.package_name === 'com.dena.skyleap' ? t('modals.androidPatch.skyleapBrowser') : deviceApp.package_name}
-                        </span>
-                        <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold">
-                          v{deviceApp.version_name || t('modals.androidPatch.installedStatus')}
-                        </span>
-                        <span className="text-[11px] text-emerald-700 font-medium">
-                          {t('modals.androidPatch.splitComponentsCount', { count: deviceApp.total_apks ?? 1 })}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-500 font-mono">
-                        {t('modals.androidPatch.packageNameLabel', { name: deviceApp.package_name })}
-                      </div>
-                    </div>
-                    {isExtracting ? (
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 px-3 py-1.5 rounded-lg shrink-0">
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>{t('modals.androidPatch.extractingState')}</span>
-                      </div>
-                    ) : inspectedPkg && inspectedPkg.package_name === deviceApp.package_name ? (
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-lg shrink-0">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>{t('modals.androidPatch.extractedLoadedState')}</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg shrink-0">
-                        <span className="w-2 h-2 rounded-full bg-indigo-500" />
-                        <span>{t('modals.androidPatch.readyExtractState')}</span>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                    <div className="space-y-1">
-                      <div className="font-semibold">
-                        {t('modals.androidPatch.appNotFoundOnPhone', { pkg: targetExtractPackage || 'com.dena.skyleap' })}
-                      </div>
-                      <div className="text-amber-800 text-[11px]">
-                        {t('modals.androidPatch.appNotFoundTip')}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Upload Mode Dropzone */}
-        {inputMode === 'upload' && (
-          <div
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-xl p-8 sm:p-10 text-center cursor-pointer transition-all ${
-              isDragging
-                ? 'border-indigo-500 bg-indigo-50/60 scale-[1.01]'
-                : 'border-slate-300 hover:border-indigo-400 bg-slate-50/50 hover:bg-slate-50'
-            }`}
-          >
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".apk,.apks,.xapk,.zip"
-              className="hidden"
-              onChange={handleFileSelect}
-            />
-            <div className="flex flex-col items-center justify-center gap-2.5">
-              <div className="w-12 h-12 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center shadow-2xs">
-                <UploadCloud className="w-6 h-6" />
-              </div>
-              <div className="space-y-1">
-                <div className="text-sm font-bold text-slate-800">
-                  {isUploading
-                    ? t('modals.androidPatch.uploadingPercent', { percent: uploadPercent })
-                    : t('modals.androidPatch.dropOrBrowse')}
-                </div>
-                <div className="text-xs text-slate-500">
-                  {t('modals.androidPatch.dropTip')}
-                </div>
-              </div>
-              {isUploading && (
-                <div className="w-48 bg-slate-200 rounded-full h-1.5 overflow-hidden mt-2">
+          {/* 3. Input & Package Selection Card */}
+          <Card>
+            <CardHeader
+              icon={<FileBox className="w-[18px] h-[18px]" strokeWidth={1.85} />}
+              title={t('modals.androidPatch.selectOfficialPackage')}
+              badge={
+                <div
+                  role="tablist"
+                  aria-label={t('modals.androidPatch.selectOfficialPackage')}
+                  className="relative inline-grid grid-cols-3 items-center rounded-full inset-panel p-1 text-xs font-medium select-none"
+                >
                   <div
-                    className="bg-indigo-600 h-1.5 rounded-full transition-all duration-150"
-                    style={{ width: `${uploadPercent}%` }}
+                    className="liquid-pill absolute top-1 bottom-1 left-1 w-[calc((100%-8px)/3)] rounded-full transition-transform duration-[240ms] ease-fluid pointer-events-none"
+                    style={{ transform: `translateX(${modeIndex * 100}%)` }}
+                    aria-hidden="true"
                   />
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Path Input Mode */}
-        {inputMode === 'path' && (
-          <div className="space-y-3">
-            <label className="text-xs text-slate-600 font-medium block">
-              {t('modals.androidPatch.inputPathLabel')}
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                value={manualPath}
-                onChange={(e) => setManualPath(e.target.value)}
-                placeholder={t('modals.androidPatch.pathPlaceholder')}
-                className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs sm:text-sm font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all"
-              />
-              <button
-                type="button"
-                onClick={handleInspectManualPath}
-                disabled={isInspecting || !manualPath.trim()}
-                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-semibold transition-all shadow-2xs disabled:opacity-50 cursor-pointer shrink-0"
-              >
-                {isInspecting ? t('modals.androidPatch.inspectingBtn') : t('modals.androidPatch.inspectBtn')}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Inspected Package Card */}
-        {inspectedPkg && (
-          <div className="mt-4 p-4 rounded-xl border border-indigo-100 bg-indigo-50/40 flex flex-col gap-3 animate-in fade-in duration-200">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2 border-b border-indigo-100/70">
-              <div className="space-y-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs font-bold text-slate-900 font-mono">
-                    {inspectedPkg.package_name}
-                  </span>
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-200/80 text-slate-700">
-                    v{inspectedPkg.version_name}
-                  </span>
-                  {inspectedPkg.is_system_webview === false ? (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 border border-rose-200 inline-flex items-center gap-1">
-                      <AlertTriangle className="w-3 h-3 text-rose-600" />
-                      <span>{inspectedPkg.engine_desc || t('modals.androidPatch.standaloneEngine')}</span>
-                    </span>
-                  ) : inspectedPkg.is_official_skyleap ? (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 inline-flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      <span>{t('modals.androidPatch.officialSkyleap')}</span>
-                    </span>
-                  ) : (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 border border-sky-200 inline-flex items-center gap-1">
-                      <Globe className="w-3 h-3 text-sky-600" />
-                      <span>{t('modals.androidPatch.genericWebView')}</span>
-                    </span>
-                  )}
-                  {inspectedPkg.is_already_patched && (
-                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 inline-flex items-center gap-1">
-                      <Zap className="w-3 h-3 text-amber-600" />
-                      <span>{t('modals.androidPatch.lspatchEmbedded')}</span>
-                    </span>
-                  )}
-                </div>
-                <div className="text-xs text-slate-600 flex items-center gap-2 flex-wrap">
-                  <span>
-                    {t('modals.androidPatch.structureLabel', { structure: inspectedPkg.is_split ? t('modals.androidPatch.splitApkStructure', { count: inspectedPkg.total_apks }) : t('modals.androidPatch.singleApkStructure') })}
-                  </span>
-                  <span>·</span>
-                  <span className="truncate max-w-xs sm:max-w-md" title={inspectedPkg.file_path}>
-                    {t('modals.androidPatch.fileLabel', { file: inspectedPkg.base_input_name })}
-                  </span>
-                </div>
-              </div>
-
-              <div className="shrink-0 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setInspectedPkg(null)}
-                  className="text-xs text-slate-500 hover:text-slate-800 px-2 py-1 rounded transition-colors"
-                >
-                  {t('modals.androidPatch.clearBtn')}
-                </button>
-              </div>
-            </div>
-
-            {/* Already Patched Note */}
-            {inspectedPkg.is_already_patched && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2.5">
-                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <div className="font-bold">{t('modals.androidPatch.lspatchDetectedTitle')}</div>
-                  <div className="text-amber-800 text-[11px] leading-relaxed">
-                    {t('modals.androidPatch.lspatchDetectedDesc', { version: inspectedPkg.original_version_name ? ` (v${inspectedPkg.original_version_name})` : '' })}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Kernel Support Note */}
-            {inspectedPkg.is_system_webview === false && (
-              <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-900 flex items-start gap-2.5">
-                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <div className="font-bold">{t('modals.androidPatch.unsupportedEngineTitle')}</div>
-                  <div className="text-rose-800 text-[11px] leading-relaxed">
-                    {inspectedPkg.unsupported_reason || t('modals.androidPatch.unsupportedEngineDesc')}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Auto Backup Setting */}
-            <div className="bg-white/80 p-3 rounded-lg border border-slate-200 flex items-center justify-between">
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoBackup}
-                  onChange={(e) => setAutoBackup(e.target.checked)}
-                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-slate-300"
-                />
-                <span className="text-xs font-medium text-slate-700">
-                  {t('modals.androidPatch.autoBackupCheckbox')}
-                </span>
-              </label>
-              <button
-                type="button"
-                onClick={handleOpenBackup}
-                className="text-xs text-indigo-700 hover:text-indigo-900 underline font-medium cursor-pointer"
-              >
-                {t('modals.androidPatch.openBackupDir')}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Patch Options & Run Button */}
-        <div className="mt-5 pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-2 flex-1 max-w-md">
-            <label className="text-xs font-medium text-slate-600 shrink-0">{t('modals.androidPatch.outputDirLabel')}</label>
-            <input
-              type="text"
-              value={outputDir}
-              onChange={(e) => setOutputDir(e.target.value)}
-              disabled={isRunning}
-              className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-sky-500"
-            />
-          </div>
-
-          <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2">
-            {isModuleOutdated && (
-              <span className="text-[11px] text-sky-700 font-medium">
-                {t('modals.androidPatch.moduleNotLatestTip')}
-              </span>
-            )}
-            {!isComponentsVerified && !isModuleOutdated && (
-              <span className="text-[11px] text-amber-700 font-medium">
-                {isCorrupted ? t('modals.androidPatch.componentCorruptedTip') : t('modals.androidPatch.componentNeedDownloadTip')}
-              </span>
-            )}
-            {((inspectedPkg && inspectedPkg.is_system_webview === false) || isSelectedBrowserUnsupported) && (
-              <span className="text-[11px] text-rose-600 font-medium">
-                {t('modals.androidPatch.onlyWebViewTip')}
-              </span>
-            )}
-            {isExtractStage ? (
-              <button
-                type="button"
-                disabled={isExtracting || !selectedDevice || !deviceApp?.installed || isSelectedBrowserUnsupported || !isReady || !isComponentsVerified}
-                onClick={handleExtractFromDevice}
-                className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
-              >
-                {isExtracting ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>{t('modals.androidPatch.extractAndInspectState')}</span>
-                  </>
-                ) : (
-                  <>
-                    <Zap className="w-4 h-4 fill-current" />
-                    <span>{t('modals.androidPatch.extractFromPhoneBtn')}</span>
-                  </>
-                )}
-              </button>
-            ) : isPatchDoneStage ? (
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => setPatchStatus(null)}
-                  className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-semibold transition-all cursor-pointer"
-                  title={t('modals.androidPatch.repatchTooltip')}
-                >
-                  {t('modals.androidPatch.repatchBtn')}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleOpenOutput}
-                  className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs sm:text-sm font-semibold transition-all cursor-pointer"
-                  title={t('modals.androidPatch.openOutputDirTooltip')}
-                >
-                  {t('modals.androidPatch.openOutputDirBtn')}
-                </button>
-                <button
-                  type="button"
-                  disabled={isInstalling || adbDevices.filter(d => d.state === 'device').length === 0}
-                  onClick={() => handleInstallToDevice(false)}
-                  title={adbDevices.filter(d => d.state === 'device').length === 0 ? t('modals.androidPatch.installToPhoneTooltipNoDev') : t('modals.androidPatch.installToPhoneTooltip')}
-                  className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
-                >
-                  {isInstalling ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>{t('modals.androidPatch.installingToPhoneState')}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Zap className="w-4 h-4 fill-current" />
-                      <span>{t('modals.androidPatch.installToPhoneBtn')}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                {isRunning && (
                   <button
                     type="button"
-                    onClick={handleCancelPatch}
-                    className="px-4 py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs sm:text-sm font-semibold transition-all cursor-pointer select-none"
-                  >
-                    {t('modals.androidPatch.cancelPatchBtn')}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={!isReady || !isComponentsVerified || !inspectedPkg || inspectedPkg.is_system_webview === false || isRunning || isPatchStarting}
-                  onClick={handleStartPatch}
-                  className="px-6 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white text-xs sm:text-sm font-bold shadow-xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none"
-                >
-                  {isRunning ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>{t('modals.androidPatch.processingPercent', { percent: progressPercent })}</span>
-                    </>
-                  ) : !inspectedPkg ? (
-                    <>
-                      <Play className="w-4 h-4 fill-current opacity-60" />
-                      <span>{t('modals.androidPatch.pleaseSelectPackage')}</span>
-                    </>
-                  ) : inspectedPkg.is_already_patched ? (
-                    <>
-                      <RefreshCw className="w-4 h-4" />
-                      <span>{t('modals.androidPatch.repatchOrUpgrade')}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-4 h-4 fill-current" />
-                      <span>{t('modals.androidPatch.startPatchBtn')}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* 6. Patch Progress & Terminal Card */}
-      {(isRunning || patchStatus?.done) && (
-        <div className="frosted-card rounded-[20px] p-4 sm:p-5">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3.5">
-            <div className="flex items-center gap-2">
-              <Terminal className="w-4 h-4 text-slate-700" />
-              <h2 className="text-sm sm:text-base font-bold text-slate-800">
-                {t('modals.androidPatch.progressAndLogs')}
-              </h2>
-            </div>
-            <div className="flex items-center gap-2">
-              {patchStatus?.done && !patchStatus.error && (
-                <button
-                  type="button"
-                  onClick={handleOpenOutput}
-                  className="px-3 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  <span>{t('modals.androidPatch.openOutputFolderBtn')}</span>
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => setShowLogs(!showLogs)}
-                className="text-slate-500 hover:text-slate-800 p-1 rounded"
-              >
-                {showLogs ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          {/* Progress Bar & Stage Indicator */}
-          <div className="space-y-2 mb-4">
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-semibold text-slate-700">
-                {patchStatus?.stage_text || (isRunning ? t('modals.androidPatch.stageProcessing') : t('modals.androidPatch.stageReady'))}
-              </span>
-              <span className="font-mono font-bold text-indigo-700">{progressPercent}%</span>
-            </div>
-            <div className="w-full bg-slate-100 rounded-full h-2.5 overflow-hidden">
-              <div
-                className={`h-2.5 rounded-full transition-all duration-300 ${
-                  patchStatus?.error
-                    ? 'bg-rose-500'
-                    : patchStatus?.done
-                    ? 'bg-emerald-500'
-                    : 'bg-indigo-600'
-                }`}
-                style={{ width: `${progressPercent}%` }}
-              />
-            </div>
-
-            {/* Stages overview */}
-            <div className="grid grid-cols-5 gap-1.5 text-[11px] text-center pt-1 font-medium">
-              {[
-                t('modals.androidPatch.step1'),
-                t('modals.androidPatch.step2'),
-                t('modals.androidPatch.step3'),
-                t('modals.androidPatch.step4'),
-                t('modals.androidPatch.step5'),
-              ].map((name, i) => {
-                const stageNum = i + 1
-                const curStage = patchStatus?.stage ?? 0
-                const isPassed = curStage > stageNum || (curStage === 5 && patchStatus?.done)
-                const isCurrent = curStage === stageNum && isRunning
-
-                return (
-                  <div
-                    key={name}
-                    className={`py-1 px-1 rounded border text-[11px] truncate ${
-                      isPassed
-                        ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                        : isCurrent
-                        ? 'bg-indigo-50 text-indigo-800 border-indigo-300 font-bold animate-pulse'
-                        : 'bg-slate-50 text-slate-400 border-slate-200'
+                    role="tab"
+                    aria-selected={inputMode === 'device'}
+                    onClick={() => setInputMode('device')}
+                    className={`relative z-10 px-2.5 py-1 rounded-full transition-colors cursor-pointer inline-flex items-center justify-center gap-1 whitespace-nowrap ${
+                      inputMode === 'device'
+                        ? 'text-sky-700 dark:text-sky-300 font-semibold'
+                        : 'text-label-tertiary hover:text-label-primary'
                     }`}
                   >
-                    {name}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+                    <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                    <span>{t('modals.androidPatch.tabDeviceShort')}</span>
+                    {onlineAdbCount > 0 && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={inputMode === 'upload'}
+                    onClick={() => setInputMode('upload')}
+                    className={`relative z-10 px-2.5 py-1 rounded-full transition-colors cursor-pointer inline-flex items-center justify-center whitespace-nowrap ${
+                      inputMode === 'upload'
+                        ? 'text-sky-700 dark:text-sky-300 font-semibold'
+                        : 'text-label-tertiary hover:text-label-primary'
+                    }`}
+                  >
+                    {t('modals.androidPatch.tabUploadShort')}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={inputMode === 'path'}
+                    onClick={() => setInputMode('path')}
+                    className={`relative z-10 px-2.5 py-1 rounded-full transition-colors cursor-pointer inline-flex items-center justify-center whitespace-nowrap ${
+                      inputMode === 'path'
+                        ? 'text-sky-700 dark:text-sky-300 font-semibold'
+                        : 'text-label-tertiary hover:text-label-primary'
+                    }`}
+                  >
+                    {t('modals.androidPatch.tabPathShort')}
+                  </button>
+                </div>
+              }
+            />
 
-          {/* Result Output Card if Done */}
-          {patchStatus?.done && !patchStatus.error && patchResult && (
-            <div className="mb-4 p-4 rounded-xl bg-emerald-50/80 border border-emerald-200 text-xs text-emerald-950 space-y-2">
-              <div className="flex items-center gap-2 font-bold text-emerald-900 text-sm">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <span>{t('modals.androidPatch.successAllBuiltIn')}</span>
+            {/* Device Extract Mode */}
+            {inputMode === 'device' && (
+              <InsetPanel className="p-4 space-y-3.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 hairline-b">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-9 h-9 rounded-xl bg-sys-blueBg text-sys-blue border border-sky-500/20 flex items-center justify-center shrink-0">
+                      <Smartphone className="w-4.5 h-4.5" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-medium text-label-tertiary">
+                        {t('modals.androidPatch.connectedDeviceTitle')}
+                      </div>
+                      {adbDevices.length === 0 ? (
+                        <div className="text-sm font-semibold text-label-primary">
+                          {t('modals.androidPatch.noAdbDevice')}
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 flex-wrap mt-0.5">
+                          <select
+                            value={selectedDevice}
+                            onChange={(e) => setSelectedDevice(e.target.value)}
+                            className="ui-input text-xs sm:text-sm font-semibold rounded-lg px-2.5 py-1 cursor-pointer"
+                          >
+                            {adbDevices.map((d) => (
+                              <option key={d.serial} value={d.serial}>
+                                {d.model} ({d.serial}) {d.state !== 'device' ? `[${d.state}]` : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <Badge variant="green">{t('modals.androidPatch.onlineReady')}</Badge>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="desktop"
+                    size="sm"
+                    icon={<RefreshCw className="w-3.5 h-3.5" />}
+                    onClick={refreshDevices}
+                    className="self-start sm:self-center"
+                  >
+                    {t('modals.androidPatch.refreshDevicesBtn')}
+                  </Button>
+                </div>
+
+                {adbDevices.length === 0 ? (
+                  <div className="py-4 text-center space-y-2">
+                    <p className="text-xs text-label-secondary max-w-md mx-auto">
+                      {t('modals.androidPatch.adbUsbPrompt1')}
+                    </p>
+                    <div className="text-[11px] text-label-tertiary">
+                      {t('modals.androidPatch.adbUsbPrompt2')}
+                    </div>
+                    {!envStatus?.adb?.found && (
+                      <div className="pt-2">
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          icon={<Download className="w-3.5 h-3.5" />}
+                          onClick={handleDownloadAdb}
+                          disabled={isDownloadingAdb}
+                        >
+                          {isDownloadingAdb
+                            ? t('modals.androidPatch.downloadingTools')
+                            : t('modals.androidPatch.downloadAdbBtn')}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {/* Target App Selector */}
+                    <div className="rounded-xl border border-hairline bg-white/60 dark:bg-white/[0.03] p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="font-semibold text-label-primary flex items-center gap-1.5">
+                          <span>{t('modals.androidPatch.targetAppLabel')}</span>
+                          <InfoTip text={t('modals.androidPatch.detectTip')} />
+                          {isLoadingBrowsers && (
+                            <span className="text-[11px] text-sys-blue font-normal">
+                              {t('modals.androidPatch.scanningApps')}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <select
+                          value={isCustomExtractPackage ? '__custom__' : targetExtractPackage}
+                          onChange={(e) => {
+                            if (e.target.value === '__custom__') {
+                              setIsCustomExtractPackage(true)
+                            } else {
+                              setIsCustomExtractPackage(false)
+                              setTargetExtractPackage(e.target.value)
+                            }
+                          }}
+                          className="ui-input text-xs font-semibold rounded-lg px-2.5 py-1.5 cursor-pointer flex-1"
+                        >
+                          {deviceBrowsers.length > 0 ? (
+                            <>
+                              {deviceBrowsers.some((b) => b.is_installed && b.is_system_webview !== false) && (
+                                <optgroup label={t('modals.androidPatch.groupInstalledWebView')}>
+                                  {deviceBrowsers
+                                    .filter((b) => b.is_installed && b.is_system_webview !== false)
+                                    .map((b) => (
+                                      <option key={b.package_name} value={b.package_name}>
+                                        {b.is_skyleap ? '[SkyLeap] ' : ''}
+                                        {formatDeviceBrowserOption(b, t)}
+                                      </option>
+                                    ))}
+                                </optgroup>
+                              )}
+                              {deviceBrowsers.some((b) => b.is_installed && b.is_system_webview === false) && (
+                                <optgroup label={t('modals.androidPatch.groupInstalledStandalone')}>
+                                  {deviceBrowsers
+                                    .filter((b) => b.is_installed && b.is_system_webview === false)
+                                    .map((b) => (
+                                      <option key={b.package_name} value={b.package_name}>
+                                        {formatDeviceBrowserOption(b, t)}
+                                      </option>
+                                    ))}
+                                </optgroup>
+                              )}
+                              {deviceBrowsers.some((b) => !b.is_installed) && (
+                                <optgroup label={t('modals.androidPatch.groupOther')}>
+                                  {deviceBrowsers
+                                    .filter((b) => !b.is_installed)
+                                    .map((b) => (
+                                      <option key={b.package_name} value={b.package_name}>
+                                        {formatDeviceBrowserOption(b, t)}
+                                      </option>
+                                    ))}
+                                </optgroup>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <option value="com.dena.skyleap">{t('modals.androidPatch.optSkyleap')}</option>
+                              <option value="mark.via.gp">{t('modals.androidPatch.optVia')}</option>
+                              <option value="com.android.chrome">{t('modals.androidPatch.optChrome')}</option>
+                              <option value="com.kiwibrowser.browser">{t('modals.androidPatch.optKiwi')}</option>
+                              <option value="com.microsoft.emmx">{t('modals.androidPatch.optEdge')}</option>
+                              <option value="com.brave.browser">{t('modals.androidPatch.optBrave')}</option>
+                            </>
+                          )}
+                          <option value="__custom__">{t('modals.androidPatch.optCustom')}</option>
+                        </select>
+                        {isCustomExtractPackage && (
+                          <input
+                            type="text"
+                            value={targetExtractPackage}
+                            onChange={(e) => setTargetExtractPackage(e.target.value.trim())}
+                            placeholder={t('modals.androidPatch.customPackagePlaceholder')}
+                            className="ui-input text-xs font-mono rounded-lg px-2.5 py-1.5 flex-1"
+                          />
+                        )}
+                      </div>
+                      {(() => {
+                        const sel = deviceBrowsers.find((b) => b.package_name === targetExtractPackage)
+                        if (sel && sel.is_system_webview === false) {
+                          return (
+                            <InsetPanel tone="amber" className="p-2.5 text-xs flex items-start gap-2 mt-1">
+                              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                              <div className="text-[11px] leading-relaxed">
+                                <strong>{t('modals.androidPatch.unsupportedBrowserTitle')}</strong>
+                                <span>
+                                  {t('modals.androidPatch.unsupportedBrowserDesc', {
+                                    name: getDeviceBrowserName(sel, t),
+                                  })}
+                                </span>
+                              </div>
+                            </InsetPanel>
+                          )
+                        }
+                        return null
+                      })()}
+                    </div>
+
+                    {deviceApp?.installed ? (
+                      <div className="rounded-xl border border-emerald-500/25 bg-sys-greenBg/40 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-label-primary text-sm">
+                              {deviceApp.package_name === 'com.dena.skyleap'
+                                ? t('modals.androidPatch.skyleapBrowser')
+                                : deviceApp.package_name}
+                            </span>
+                            <Badge mono>
+                              v{deviceApp.version_name || t('modals.androidPatch.installedStatus')}
+                            </Badge>
+                            <span className="text-[11px] text-sys-green font-medium">
+                              {t('modals.androidPatch.splitComponentsCount', { count: deviceApp.total_apks ?? 1 })}
+                            </span>
+                          </div>
+                          <div className="text-xs text-label-tertiary font-mono">
+                            {t('modals.androidPatch.packageNameLabel', { name: deviceApp.package_name })}
+                          </div>
+                        </div>
+                        {isExtracting ? (
+                          <Badge variant="blue" className="px-3 py-1.5">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin mr-1 inline" />
+                            {t('modals.androidPatch.extractingState')}
+                          </Badge>
+                        ) : inspectedPkg && inspectedPkg.package_name === deviceApp.package_name ? (
+                          <Badge variant="green" className="px-3 py-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 mr-1 inline" />
+                            {t('modals.androidPatch.extractedLoadedState')}
+                          </Badge>
+                        ) : (
+                          <Badge variant="neutral" dot className="px-3 py-1.5">
+                            {t('modals.androidPatch.readyExtractState')}
+                          </Badge>
+                        )}
+                      </div>
+                    ) : (
+                      <InsetPanel tone="amber" className="p-3 text-xs flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <div className="space-y-1">
+                          <div className="font-semibold">
+                            {t('modals.androidPatch.appNotFoundOnPhone', {
+                              pkg: targetExtractPackage || 'com.dena.skyleap',
+                            })}
+                          </div>
+                          <div className="text-[11px] opacity-90">{t('modals.androidPatch.appNotFoundTip')}</div>
+                        </div>
+                      </InsetPanel>
+                    )}
+                  </div>
+                )}
+              </InsetPanel>
+            )}
+
+            {/* Upload Mode Dropzone */}
+            {inputMode === 'upload' && (
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-7 sm:p-9 text-center cursor-pointer transition-all ${
+                  isDragging
+                    ? 'border-sky-500 bg-sys-blueBg scale-[1.005]'
+                    : 'border-hairline hover:border-sky-500/50 inset-panel'
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".apk,.apks,.xapk,.zip"
+                  className="hidden"
+                  onChange={handleFileSelect}
+                />
+                <div className="flex flex-col items-center justify-center gap-2.5">
+                  <div className="w-11 h-11 rounded-full bg-sys-blueBg text-sys-blue border border-sky-500/20 flex items-center justify-center">
+                    <UploadCloud className="w-5.5 h-5.5" />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-sm font-semibold text-label-primary">
+                      {isUploading
+                        ? t('modals.androidPatch.uploadingPercent', { percent: uploadPercent })
+                        : t('modals.androidPatch.dropOrBrowse')}
+                    </div>
+                    <div className="text-xs text-label-tertiary">{t('modals.androidPatch.dropTip')}</div>
+                  </div>
+                  {isUploading && (
+                    <div className="w-48 bg-slate-500/15 rounded-full h-1.5 overflow-hidden mt-2">
+                      <div
+                        className="bg-sky-500 h-1.5 rounded-full transition-all duration-150"
+                        style={{ width: `${uploadPercent}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-slate-700 pt-1">
-                <div>
-                  <span className="font-semibold text-slate-900">{t('modals.androidPatch.outputTypeLabel')}</span>
-                  <span>{isResultSplit ? t('modals.androidPatch.splitApkSuite', { count: resultTotalApks > 0 ? t('modals.androidPatch.splitApkSubCount', { count: resultTotalApks }) : '' }) : t('modals.androidPatch.singleApkSuite')}</span>
+            )}
+
+            {/* Path Input Mode */}
+            {inputMode === 'path' && (
+              <div className="space-y-2">
+                <label className="text-xs text-label-secondary font-medium block">
+                  {t('modals.androidPatch.inputPathLabel')}
+                </label>
+                <CompoundInputGroup>
+                  <input
+                    type="text"
+                    value={manualPath}
+                    onChange={(e) => setManualPath(e.target.value)}
+                    placeholder={t('modals.androidPatch.pathPlaceholder')}
+                    className="flex-1 px-2.5 py-1 text-xs sm:text-[13px] font-mono"
+                  />
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="sm"
+                    onClick={handleInspectManualPath}
+                    disabled={isInspecting || !manualPath.trim()}
+                  >
+                    {isInspecting ? t('modals.androidPatch.inspectingBtn') : t('modals.androidPatch.inspectBtn')}
+                  </Button>
+                </CompoundInputGroup>
+              </div>
+            )}
+
+            {/* Inspected Package Card */}
+            {inspectedPkg && (
+              <InsetPanel className="mt-4 p-4 space-y-3 border-sky-500/25 bg-sys-blueBg/35 animate-fade-soft">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2.5 hairline-b">
+                  <div className="space-y-1.5 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs sm:text-[13px] font-bold text-label-primary font-mono">
+                        {inspectedPkg.package_name}
+                      </span>
+                      <Badge mono>v{inspectedPkg.version_name}</Badge>
+                      {inspectedPkg.is_system_webview === false ? (
+                        <Badge variant="red">
+                          <AlertTriangle className="w-3 h-3 mr-1 inline" />
+                          {inspectedPkg.engine_desc || t('modals.androidPatch.standaloneEngine')}
+                        </Badge>
+                      ) : inspectedPkg.is_official_skyleap ? (
+                        <Badge variant="green">
+                          <CheckCircle2 className="w-3 h-3 mr-1 inline" />
+                          {t('modals.androidPatch.officialSkyleap')}
+                        </Badge>
+                      ) : (
+                        <Badge variant="blue">
+                          <Globe className="w-3 h-3 mr-1 inline" />
+                          {t('modals.androidPatch.genericWebView')}
+                        </Badge>
+                      )}
+                      {inspectedPkg.is_already_patched && (
+                        <Badge variant="amber">
+                          <Zap className="w-3 h-3 mr-1 inline" />
+                          {t('modals.androidPatch.lspatchEmbedded')}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="text-xs text-label-secondary flex items-center gap-2 flex-wrap">
+                      <span>
+                        {t('modals.androidPatch.structureLabel', {
+                          structure: inspectedPkg.is_split
+                            ? t('modals.androidPatch.splitApkStructure', { count: inspectedPkg.total_apks })
+                            : t('modals.androidPatch.singleApkStructure'),
+                        })}
+                      </span>
+                      <span className="opacity-40">·</span>
+                      <span className="truncate max-w-xs sm:max-w-md" title={inspectedPkg.file_path}>
+                        {t('modals.androidPatch.fileLabel', { file: inspectedPkg.base_input_name })}
+                      </span>
+                    </div>
+                  </div>
+
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="xs"
+                    onClick={() => setInspectedPkg(null)}
+                    className="shrink-0"
+                  >
+                    {t('modals.androidPatch.clearBtn')}
+                  </Button>
                 </div>
-                <div>
-                  <span className="font-semibold text-slate-900">{t('modals.androidPatch.totalSizeLabel')}</span>
-                  <span>{resultTotalMb} MB</span>
-                </div>
-                <div className="sm:col-span-2 truncate">
-                  <span className="font-semibold text-slate-900">{t('modals.androidPatch.outputFilesLabel')}</span>
-                  <span className="font-mono text-slate-800" title={resultGeneratedFile}>
-                    {resultGeneratedFile}
-                  </span>
-                </div>
-                {patchResult?.backup_path && (
-                  <div className="sm:col-span-2 truncate text-slate-500">
-                    <span className="font-semibold text-slate-700">{t('modals.androidPatch.backupOriginLabel')}</span>
-                    <span className="font-mono" title={patchResult.backup_path}>
-                      {patchResult.backup_path}
+
+                {inspectedPkg.is_already_patched && (
+                  <InsetPanel tone="amber" className="p-3 text-xs flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="font-bold">{t('modals.androidPatch.lspatchDetectedTitle')}</div>
+                      <div className="text-[11px] leading-relaxed opacity-90">
+                        {t('modals.androidPatch.lspatchDetectedDesc', {
+                          version: inspectedPkg.original_version_name
+                            ? ` (v${inspectedPkg.original_version_name})`
+                            : '',
+                        })}
+                      </div>
+                    </div>
+                  </InsetPanel>
+                )}
+
+                {inspectedPkg.is_system_webview === false && (
+                  <InsetPanel tone="rose" className="p-3 text-xs flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <div className="font-bold">{t('modals.androidPatch.unsupportedEngineTitle')}</div>
+                      <div className="text-[11px] leading-relaxed opacity-90">
+                        {inspectedPkg.unsupported_reason || t('modals.androidPatch.unsupportedEngineDesc')}
+                      </div>
+                    </div>
+                  </InsetPanel>
+                )}
+
+                <div className="bg-white/65 dark:bg-white/[0.04] p-3 rounded-xl border border-hairline flex items-center justify-between gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={autoBackup}
+                      onChange={(e) => setAutoBackup(e.target.checked)}
+                      className="w-4 h-4 rounded border-slate-300"
+                    />
+                    <span className="text-xs font-medium text-label-primary">
+                      {t('modals.androidPatch.autoBackupCheckbox')}
                     </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleOpenBackup}
+                    className="text-xs text-sys-blue hover:underline font-medium cursor-pointer shrink-0"
+                  >
+                    {t('modals.androidPatch.openBackupDir')}
+                  </button>
+                </div>
+              </InsetPanel>
+            )}
+
+            {/* Patch Options & Run Button */}
+            <div className="mt-4 pt-4 hairline-t flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-2 flex-1 max-w-md">
+                <label className="text-xs font-medium text-label-secondary shrink-0">
+                  {t('modals.androidPatch.outputDirLabel')}
+                </label>
+                <input
+                  type="text"
+                  value={outputDir}
+                  onChange={(e) => setOutputDir(e.target.value)}
+                  disabled={isRunning}
+                  className="ui-input flex-1 rounded-lg px-2.5 py-1.5 text-xs font-mono"
+                />
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2">
+                {isModuleOutdated && (
+                  <span className="text-[11px] text-sys-blue font-medium">
+                    {t('modals.androidPatch.moduleNotLatestTip')}
+                  </span>
+                )}
+                {!isComponentsVerified && !isModuleOutdated && (
+                  <span className="text-[11px] text-sys-amber font-medium">
+                    {isCorrupted
+                      ? t('modals.androidPatch.componentCorruptedTip')
+                      : t('modals.androidPatch.componentNeedDownloadTip')}
+                  </span>
+                )}
+                {((inspectedPkg && inspectedPkg.is_system_webview === false) || isSelectedBrowserUnsupported) && (
+                  <span className="text-[11px] text-sys-red font-medium">
+                    {t('modals.androidPatch.onlyWebViewTip')}
+                  </span>
+                )}
+                {isExtractStage ? (
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="lg"
+                    icon={
+                      isExtracting ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Zap className="w-4 h-4 fill-current" />
+                      )
+                    }
+                    disabled={
+                      isExtracting ||
+                      !selectedDevice ||
+                      !deviceApp?.installed ||
+                      isSelectedBrowserUnsupported ||
+                      !isReady ||
+                      !isComponentsVerified
+                    }
+                    onClick={handleExtractFromDevice}
+                    className="rounded-xl"
+                  >
+                    {isExtracting
+                      ? t('modals.androidPatch.extractAndInspectState')
+                      : t('modals.androidPatch.extractFromPhoneBtn')}
+                  </Button>
+                ) : isPatchDoneStage ? (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button
+                      type="button"
+                      variant="desktop"
+                      size="md"
+                      onClick={() => setPatchStatus(null)}
+                      title={t('modals.androidPatch.repatchTooltip')}
+                      className="rounded-xl py-2"
+                    >
+                      {t('modals.androidPatch.repatchBtn')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="desktop"
+                      size="md"
+                      onClick={handleOpenOutput}
+                      title={t('modals.androidPatch.openOutputDirTooltip')}
+                      className="rounded-xl py-2"
+                    >
+                      {t('modals.androidPatch.openOutputDirBtn')}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="success"
+                      size="lg"
+                      icon={
+                        isInstalling ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Zap className="w-4 h-4 fill-current" />
+                        )
+                      }
+                      disabled={isInstalling || onlineAdbCount === 0}
+                      onClick={() => handleInstallToDevice(false)}
+                      title={
+                        onlineAdbCount === 0
+                          ? t('modals.androidPatch.installToPhoneTooltipNoDev')
+                          : t('modals.androidPatch.installToPhoneTooltip')
+                      }
+                      className="rounded-xl"
+                    >
+                      {isInstalling
+                        ? t('modals.androidPatch.installingToPhoneState')
+                        : t('modals.androidPatch.installToPhoneBtn')}
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    {isRunning && (
+                      <Button
+                        type="button"
+                        variant="danger"
+                        size="md"
+                        onClick={handleCancelPatch}
+                        className="rounded-xl py-2"
+                      >
+                        {t('modals.androidPatch.cancelPatchBtn')}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="lg"
+                      icon={
+                        isRunning ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : inspectedPkg?.is_already_patched ? (
+                          <RefreshCw className="w-4 h-4" />
+                        ) : (
+                          <Play className="w-4 h-4 fill-current" />
+                        )
+                      }
+                      disabled={
+                        !isReady ||
+                        !isComponentsVerified ||
+                        !inspectedPkg ||
+                        inspectedPkg.is_system_webview === false ||
+                        isRunning ||
+                        isPatchStarting
+                      }
+                      onClick={handleStartPatch}
+                      className="rounded-xl"
+                    >
+                      {isRunning
+                        ? t('modals.androidPatch.processingPercent', { percent: progressPercent })
+                        : !inspectedPkg
+                        ? t('modals.androidPatch.pleaseSelectPackage')
+                        : inspectedPkg.is_already_patched
+                        ? t('modals.androidPatch.repatchOrUpgrade')
+                        : t('modals.androidPatch.startPatchBtn')}
+                    </Button>
                   </div>
                 )}
               </div>
+            </div>
+          </Card>
 
-              {/* Installation guidance */}
-              <div className="pt-2 border-t border-emerald-200/60 text-slate-600 space-y-2">
-                <div className="font-bold text-slate-800">{t('modals.androidPatch.phoneInstallGuide')}</div>
-                <ul className="list-disc pl-4 space-y-0.5 pt-1">
-                  <li>
-                    <span className="font-semibold">{t('modals.androidPatch.oneClickGuideTitle')}</span>{t('modals.androidPatch.oneClickGuideDesc')}
-                  </li>
-                  <li>
-                    <span className="font-semibold">{t('modals.androidPatch.manualGuideTitle')}</span>{isResultSplit ? t('modals.androidPatch.manualGuideSplitDesc') : t('modals.androidPatch.manualGuideSingleDesc')}
-                  </li>
-                  <li>
-                    <span className="font-semibold">{t('modals.androidPatch.startUseTitle')}</span>{t('modals.androidPatch.startUseDesc')}
-                  </li>
-                </ul>
+          {/* 4. Patch Progress & Terminal Card */}
+          {(isRunning || patchStatus?.done) && (
+            <Card>
+              <div className="flex items-center justify-between pb-2.5 hairline-b">
+                <div className="flex items-center gap-2">
+                  <Terminal className="w-[18px] h-[18px] text-label-secondary" />
+                  <h2 className="text-sm sm:text-[15px] font-bold text-label-primary tracking-tight">
+                    {t('modals.androidPatch.progressAndLogs')}
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  {patchStatus?.done && !patchStatus.error && (
+                    <Button
+                      type="button"
+                      variant="desktop"
+                      size="xs"
+                      icon={<FolderOpen className="w-3.5 h-3.5 text-emerald-500" />}
+                      onClick={handleOpenOutput}
+                    >
+                      {t('modals.androidPatch.openOutputFolderBtn')}
+                    </Button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowLogs(!showLogs)}
+                    className="w-7 h-7 rounded-lg text-label-tertiary hover:text-label-primary hover:bg-slate-500/10 flex items-center justify-center transition-colors cursor-pointer"
+                  >
+                    {showLogs ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
 
-              {/* One-Click Install to Phone */}
-              {adbDevices.filter(d => d.state === 'device').length > 0 && (
-                <div className="pt-3 border-t border-emerald-200/60 space-y-2">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div className="space-y-0.5">
-                      <div className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-                        <Smartphone className="w-3.5 h-3.5 text-emerald-700" />
-                        <span>{t('modals.androidPatch.deviceDetectedNotice', { model: adbDevices.find(d => d.serial === selectedDevice)?.model || selectedDevice })}</span>
+              {/* Progress Bar & 5-Step Pipeline */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-label-primary">
+                    {patchStatus?.stage_text ||
+                      (isRunning ? t('modals.androidPatch.stageProcessing') : t('modals.androidPatch.stageReady'))}
+                  </span>
+                  <span className="font-mono tnum font-bold text-sys-blue">{progressPercent}%</span>
+                </div>
+                <div className="w-full bg-slate-500/15 rounded-full h-2 overflow-hidden">
+                  <div
+                    className={`h-2 rounded-full transition-all duration-300 ${
+                      patchStatus?.error
+                        ? 'bg-rose-500'
+                        : patchStatus?.done
+                        ? 'bg-emerald-500'
+                        : 'bg-sky-500'
+                    }`}
+                    style={{ width: `${progressPercent}%` }}
+                  />
+                </div>
+
+                {/* Stages Pipeline */}
+                <div className="grid grid-cols-5 gap-1.5 text-[11px] text-center pt-0.5 font-medium">
+                  {[
+                    t('modals.androidPatch.step1'),
+                    t('modals.androidPatch.step2'),
+                    t('modals.androidPatch.step3'),
+                    t('modals.androidPatch.step4'),
+                    t('modals.androidPatch.step5'),
+                  ].map((name, i) => {
+                    const stageNum = i + 1
+                    const curStage = patchStatus?.stage ?? 0
+                    const isPassed = curStage > stageNum || (curStage === 5 && patchStatus?.done)
+                    const isCurrent = curStage === stageNum && isRunning
+
+                    return (
+                      <div
+                        key={name}
+                        className={`py-1.5 px-1.5 rounded-lg border text-[11px] flex items-center justify-center gap-1 truncate transition-colors ${
+                          isPassed
+                            ? 'bg-sys-greenBg text-sys-green border-emerald-500/20'
+                            : isCurrent
+                            ? 'bg-sys-blueBg text-sys-blue border-sky-500/35 font-semibold'
+                            : 'inset-panel text-label-tertiary'
+                        }`}
+                      >
+                        {isPassed && <CheckCircle2 className="w-3 h-3 shrink-0" />}
+                        {isCurrent && <RefreshCw className="w-3 h-3 animate-spin shrink-0" />}
+                        <span className="truncate">{name}</span>
                       </div>
-                      <div className="text-[11px] text-slate-500">
-                        {t('modals.androidPatch.noNeedManualInstall')}
-                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Result Output Card if Done */}
+              {patchStatus?.done && !patchStatus.error && patchResult && (
+                <InsetPanel className="p-4 border-emerald-500/25 bg-sys-greenBg/40 text-xs space-y-2.5">
+                  <div className="flex items-center gap-2 font-bold text-sys-green text-sm">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>{t('modals.androidPatch.successAllBuiltIn')}</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-label-secondary pt-1">
+                    <div>
+                      <span className="font-semibold text-label-primary">
+                        {t('modals.androidPatch.outputTypeLabel')}
+                      </span>
+                      <span>
+                        {isResultSplit
+                          ? t('modals.androidPatch.splitApkSuite', {
+                              count:
+                                resultTotalApks > 0
+                                  ? t('modals.androidPatch.splitApkSubCount', { count: resultTotalApks })
+                                  : '',
+                            })
+                          : t('modals.androidPatch.singleApkSuite')}
+                      </span>
                     </div>
-                    {isInstalling ? (
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-800 bg-emerald-100/90 border border-emerald-300 px-3 py-1.5 rounded-lg shrink-0">
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>{t('modals.androidPatch.pushingToPhoneState')}</span>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-800 bg-emerald-100/80 border border-emerald-300 px-3 py-1.5 rounded-lg shrink-0">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>{t('modals.androidPatch.connectedReady')}</span>
+                    <div>
+                      <span className="font-semibold text-label-primary">
+                        {t('modals.androidPatch.totalSizeLabel')}
+                      </span>
+                      <span className="font-mono tnum">{resultTotalMb} MB</span>
+                    </div>
+                    <div className="sm:col-span-2 truncate">
+                      <span className="font-semibold text-label-primary">
+                        {t('modals.androidPatch.outputFilesLabel')}
+                      </span>
+                      <span className="font-mono text-label-primary" title={resultGeneratedFile}>
+                        {resultGeneratedFile}
+                      </span>
+                    </div>
+                    {patchResult?.backup_path && (
+                      <div className="sm:col-span-2 truncate text-label-tertiary">
+                        <span className="font-semibold text-label-secondary">
+                          {t('modals.androidPatch.backupOriginLabel')}
+                        </span>
+                        <span className="font-mono" title={patchResult.backup_path}>
+                          {patchResult.backup_path}
+                        </span>
                       </div>
                     )}
                   </div>
 
-                  {/* Signature Conflict Modal/Prompt */}
-                  {showUninstallModal && (
-                    <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 text-xs text-amber-950 space-y-2">
-                      <div className="flex items-start gap-2">
-                        <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                        <div className="space-y-1">
-                          <div className="font-bold text-amber-900">
-                            {t('modals.androidPatch.sigConflictTitle')}
+                  {/* Installation guidance */}
+                  <div className="pt-2.5 hairline-t text-label-secondary space-y-1.5">
+                    <div className="font-bold text-label-primary">{t('modals.androidPatch.phoneInstallGuide')}</div>
+                    <ul className="list-disc pl-4 space-y-0.5 pt-0.5">
+                      <li>
+                        <span className="font-semibold">{t('modals.androidPatch.oneClickGuideTitle')}</span>
+                        {t('modals.androidPatch.oneClickGuideDesc')}
+                      </li>
+                      <li>
+                        <span className="font-semibold">{t('modals.androidPatch.manualGuideTitle')}</span>
+                        {isResultSplit
+                          ? t('modals.androidPatch.manualGuideSplitDesc')
+                          : t('modals.androidPatch.manualGuideSingleDesc')}
+                      </li>
+                      <li>
+                        <span className="font-semibold">{t('modals.androidPatch.startUseTitle')}</span>
+                        {t('modals.androidPatch.startUseDesc')}
+                      </li>
+                    </ul>
+                  </div>
+
+                  {/* One-Click Install to Phone */}
+                  {onlineAdbCount > 0 && (
+                    <div className="pt-3 hairline-t space-y-2">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="space-y-0.5">
+                          <div className="font-bold text-label-primary text-xs flex items-center gap-1.5">
+                            <Smartphone className="w-3.5 h-3.5 text-emerald-500" />
+                            <span>
+                              {t('modals.androidPatch.deviceDetectedNotice', {
+                                model: adbDevices.find((d) => d.serial === selectedDevice)?.model || selectedDevice,
+                              })}
+                            </span>
                           </div>
-                          <div className="text-[11px] text-amber-800 leading-relaxed">
-                            {t('modals.androidPatch.sigConflictDesc')}
-                          </div>
-                          <div className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 p-2 rounded">
-                            {t('modals.androidPatch.sigConflictWarning')}
+                          <div className="text-[11px] text-label-tertiary">
+                            {t('modals.androidPatch.noNeedManualInstall')}
                           </div>
                         </div>
+                        {isInstalling ? (
+                          <Badge variant="green" className="px-3 py-1.5">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin mr-1 inline" />
+                            {t('modals.androidPatch.pushingToPhoneState')}
+                          </Badge>
+                        ) : (
+                          <Badge variant="green" className="px-3 py-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5 mr-1 inline" />
+                            {t('modals.androidPatch.connectedReady')}
+                          </Badge>
+                        )}
                       </div>
-                      <div className="flex items-center justify-end gap-2 pt-1">
-                        <button
-                          type="button"
-                          onClick={() => setShowUninstallModal(false)}
-                          className="px-3 py-1.5 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 text-xs font-medium cursor-pointer"
-                        >
-                          {t('modals.androidPatch.cancelBtn')}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleInstallToDevice(true)}
-                          disabled={isInstalling}
-                          className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>{t('modals.androidPatch.confirmReinstallBtn')}</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
 
-                  {installResult?.ok && (
-                    <div className="bg-emerald-100/70 border border-emerald-300 rounded-lg p-2.5 text-xs text-emerald-900 flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                      <span className="font-medium">{t('modals.androidPatch.deploySuccessNotice')}</span>
+                      {showUninstallModal && (
+                        <InsetPanel tone="amber" className="p-3 text-xs space-y-2">
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                            <div className="space-y-1">
+                              <div className="font-bold">{t('modals.androidPatch.sigConflictTitle')}</div>
+                              <div className="text-[11px] leading-relaxed opacity-90">
+                                {t('modals.androidPatch.sigConflictDesc')}
+                              </div>
+                              <div className="text-[11px] font-bold text-sys-red bg-sys-redBg border border-rose-500/20 p-2 rounded-lg">
+                                {t('modals.androidPatch.sigConflictWarning')}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-end gap-2 pt-1">
+                            <Button
+                              type="button"
+                              variant="desktop"
+                              size="sm"
+                              onClick={() => setShowUninstallModal(false)}
+                            >
+                              {t('modals.androidPatch.cancelBtn')}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="danger"
+                              size="sm"
+                              icon={<Trash2 className="w-3.5 h-3.5" />}
+                              onClick={() => handleInstallToDevice(true)}
+                              disabled={isInstalling}
+                            >
+                              {t('modals.androidPatch.confirmReinstallBtn')}
+                            </Button>
+                          </div>
+                        </InsetPanel>
+                      )}
+
+                      {installResult?.ok && (
+                        <InsetPanel className="p-2.5 bg-sys-greenBg/70 border-emerald-500/30 text-xs text-sys-green flex items-center gap-2">
+                          <CheckCircle2 className="w-4 h-4 shrink-0" />
+                          <span className="font-medium">{t('modals.androidPatch.deploySuccessNotice')}</span>
+                        </InsetPanel>
+                      )}
                     </div>
                   )}
+                </InsetPanel>
+              )}
+
+              {/* Error Banner */}
+              {patchStatus?.error && (
+                <InsetPanel tone="rose" className="p-3 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-bold">{t('modals.androidPatch.processFailed')}</span>
+                    <span>{patchStatus.error}</span>
+                  </div>
+                </InsetPanel>
+              )}
+
+              {/* Terminal Logs */}
+              {showLogs && (
+                <div
+                  ref={logTerminalRef}
+                  className="bg-slate-950/95 text-slate-200 p-3.5 rounded-xl font-mono text-xs max-h-60 overflow-y-auto space-y-1 border border-white/10 select-text"
+                >
+                  {(patchStatus?.logs || []).map((line, idx) => (
+                    <div key={idx} className="leading-relaxed whitespace-pre-wrap break-all">
+                      {line}
+                    </div>
+                  ))}
                 </div>
               )}
-            </div>
+            </Card>
           )}
-
-          {/* Error Banner */}
-          {patchStatus?.error && (
-            <div className="mb-4 p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-bold">{t('modals.androidPatch.processFailed')}</span>
-                <span>{patchStatus.error}</span>
-              </div>
-            </div>
-          )}
-
-          {/* Terminal Logs */}
-          {showLogs && (
-            <div
-              ref={logTerminalRef}
-              className="bg-slate-950 text-slate-200 p-3.5 rounded-xl font-mono text-xs max-h-60 overflow-y-auto space-y-1 border border-slate-800 select-text"
-            >
-              {(patchStatus?.logs || []).map((line, idx) => (
-                <div key={idx} className="leading-relaxed whitespace-pre-wrap break-all">
-                  {line}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
         </>
       )}
 
-      {/* 7. User Notices & Security Disclaimers */}
-      <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-4 sm:p-5 text-xs text-slate-600 space-y-2">
-        <div className="flex items-center gap-1.5 font-bold text-slate-800">
-          <ShieldCheck className="w-4 h-4 text-indigo-600" />
-          <span>{t('modals.androidPatch.complianceTitle')}</span>
-        </div>
-        <ul className="list-disc pl-4 space-y-1 leading-relaxed text-slate-600">
-          <li>
-            <strong className="text-slate-700">{t('modals.androidPatch.complianceItem1Title')}</strong> {t('modals.androidPatch.complianceItem1Desc')}
-          </li>
-          <li>
-            <strong className="text-slate-700">{t('modals.androidPatch.complianceItem2Title')}</strong> {t('modals.androidPatch.complianceItem2Desc')}
-          </li>
-          <li>
-            <strong className="text-slate-700">{t('modals.androidPatch.complianceItem3Title')}</strong> {t('modals.androidPatch.complianceItem3Desc')}
-          </li>
-        </ul>
-      </div>
+      {/* 5. Collapsible User Notices & Security Disclaimers */}
+      <InsetPanel className="rounded-[16px] p-0 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setShowCompliance((v) => !v)}
+          aria-expanded={showCompliance}
+          className="w-full px-4 py-3 flex items-center justify-between gap-2 text-xs font-semibold text-label-secondary hover:text-label-primary hover:bg-slate-500/5 transition-colors cursor-pointer select-none"
+        >
+          <span className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-sky-500 shrink-0" />
+            <span>{t('modals.androidPatch.complianceTitle')}</span>
+          </span>
+          {showCompliance ? (
+            <ChevronUp className="w-4 h-4 text-label-tertiary shrink-0" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-label-tertiary shrink-0" />
+          )}
+        </button>
+
+        {showCompliance && (
+          <div className="px-4 pb-3.5 pt-1 hairline-t text-xs text-label-secondary animate-fade-soft">
+            <ul className="list-disc pl-4 space-y-2 leading-relaxed pt-2">
+              <li>
+                <strong className="text-label-primary">{t('modals.androidPatch.complianceItem1Title')}</strong>{' '}
+                {t('modals.androidPatch.complianceItem1Desc')}
+              </li>
+              <li>
+                <strong className="text-label-primary">{t('modals.androidPatch.complianceItem2Title')}</strong>{' '}
+                {t('modals.androidPatch.complianceItem2Desc')}
+              </li>
+              <li className="space-y-1">
+                <strong className="text-label-primary block">
+                  {t('modals.androidPatch.complianceNetworkTitle')}
+                </strong>
+                <ul className="list-[circle] pl-4 space-y-1 text-label-secondary">
+                  <li>{t('modals.androidPatch.complianceNetworkTunnel')}</li>
+                  <li>{t('modals.androidPatch.complianceNetworkAcgp')}</li>
+                </ul>
+              </li>
+              <li>
+                <strong className="text-label-primary">
+                  {t('modals.androidPatch.complianceMultiBrowserTitle')}
+                </strong>{' '}
+                {t('modals.androidPatch.complianceMultiBrowserDesc')}
+              </li>
+            </ul>
+          </div>
+        )}
+      </InsetPanel>
     </div>
   )
 }

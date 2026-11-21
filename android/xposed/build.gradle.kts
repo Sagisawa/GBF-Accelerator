@@ -10,8 +10,8 @@ android {
         applicationId = "com.sagisawa.gbfaccelerator.xposed"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "2.5.1"
+        versionCode = 8
+        versionName = "2.6.0"
     }
 
     buildTypes {

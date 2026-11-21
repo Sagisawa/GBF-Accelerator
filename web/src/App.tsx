@@ -379,7 +379,7 @@ export const App: React.FC = () => {
             if (!data?.tag_name) return
             const latest = data.tag_name.replace(/^v/, '').trim()
             fetchStatus().then((cur) => {
-              const current = (cur?.version || '2.5.1').replace(/^v/, '').trim()
+              const current = (cur?.version || '2.6.0').replace(/^v/, '').trim()
               if (latest && isNewerVersion(latest, current)) {
                 setUpdateInfo({ available: true, version: latest })
               }
@@ -1262,7 +1262,11 @@ export const App: React.FC = () => {
             />
           )}
 
-          <main className="w-full max-w-5xl mx-auto px-4 sm:px-6 pt-3 sm:pt-4 pb-8 sm:pb-10 flex flex-col justify-start gap-4">
+          <main
+            className={`w-full max-w-5xl mx-auto px-4 sm:px-6 pb-8 sm:pb-10 flex flex-col justify-start gap-4 ${
+              activeTab === 'android' ? 'pt-2.5 sm:pt-3' : 'pt-3 sm:pt-4'
+            }`}
+          >
             {activeTab === 'core' ? (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1505,7 +1509,7 @@ export const App: React.FC = () => {
       <UpdateModal
         isOpen={isUpdateModalOpen}
         onClose={() => setIsUpdateModalOpen(false)}
-        currentVersion={status?.version || '2.5.1'}
+        currentVersion={status?.version || '2.6.0'}
       />
 
       <LiveLogsWindow
