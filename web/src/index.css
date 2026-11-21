@@ -342,6 +342,7 @@
   .animate-modal-in,
   .animate-toast-in,
   .animate-drawer-in,
+  .animate-slide-right,
   .animate-fade-soft {
     animation: none !important;
   }

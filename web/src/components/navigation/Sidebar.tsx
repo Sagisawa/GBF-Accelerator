@@ -75,7 +75,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <aside
       className={`${
         collapsed ? 'w-[68px] px-2' : 'w-52 px-3'
-      } liquid-glass rounded-[20px] my-2.5 ml-2.5 sm:my-3 sm:ml-3 h-[calc(100vh-1.25rem)] sm:h-[calc(100vh-1.5rem)] sticky top-2.5 sm:top-3 flex flex-col justify-between py-3.5 select-none shrink-0 z-30 transition-[width,padding] duration-200 ease-fluid`}
+      } hidden md:flex liquid-glass rounded-[20px] my-2.5 ml-2.5 sm:my-3 sm:ml-3 h-[calc(100vh-1.25rem)] sm:h-[calc(100vh-1.5rem)] sticky top-2.5 sm:top-3 flex-col justify-between py-3.5 select-none shrink-0 z-30 transition-[width,padding] duration-200 ease-fluid`}
       aria-label="Navigation Sidebar"
     >
       {/* Top Group: Collapse Toggle, View Tabs & Tool Actions */}

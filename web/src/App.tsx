@@ -65,6 +65,7 @@ import {
   AlertOctagon,
 } from 'lucide-react'
 import { Sidebar } from './components/navigation/Sidebar'
+import { MobileNavDrawer } from './components/navigation/MobileNavDrawer'
 
 export { RealtimeRequestHud } from './components/layout/RealtimeRequestHud'
 
@@ -138,6 +139,7 @@ export const App: React.FC = () => {
   const [quitting, setQuitting] = useState<boolean>(false)
   const [isTerminated, setIsTerminated] = useState<boolean>(false)
   const [activeTab, setActiveTab] = useState<'core' | 'android'>('core')
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem('gbf_sidebar_collapsed') === 'true'
@@ -1077,6 +1079,7 @@ export const App: React.FC = () => {
   }
   // Close all modals
   const handleCloseAll = () => {
+    setIsMobileMenuOpen(false)
     setIsLogDrawerOpen(false)
     setIsMobileModalOpen(false)
     setIsClearModalOpen(false)
@@ -1097,6 +1100,7 @@ export const App: React.FC = () => {
   }
 
   const isAnyModalOpen =
+    isMobileMenuOpen ||
     isLogDrawerOpen ||
     isMobileModalOpen ||
     isClearModalOpen ||
@@ -1198,7 +1202,7 @@ export const App: React.FC = () => {
 
   return (
     <div className="min-h-screen w-full flex app-canvas text-label-primary font-sans antialiased selection:bg-sky-200 selection:text-slate-900">
-      {/* Left Navigation Rail */}
+      {/* Left Navigation Rail (Desktop: md:flex, Mobile: hidden) */}
       <Sidebar
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -1220,6 +1224,30 @@ export const App: React.FC = () => {
         onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
         collapsed={sidebarCollapsed}
         onToggleCollapse={handleToggleSidebar}
+      />
+
+      {/* Mobile Navigation Drawer (Mobile: drawer overlay, Desktop: hidden) */}
+      <MobileNavDrawer
+        isOpen={isMobileMenuOpen}
+        onClose={() => setIsMobileMenuOpen(false)}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        showAndroidPatch={Boolean(showAndroidPatch)}
+        isRunning={isRunning}
+        hasUpdate={Boolean(updateInfo?.available)}
+        loadingOpenFolder={loadingOpenFolder}
+        language={language}
+        onLanguageSelect={setLanguage}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onOpenLogs={openLogsWindow}
+        onOpenHealth={() => setIsHealthModalOpen(true)}
+        onOpenLatency={() => setIsLatencyModalOpen(true)}
+        onOpenFolder={handleOpenCacheFolder}
+        onOpenClearCache={() => setIsClearModalOpen(true)}
+        onOpenRoutingGuide={() => setIsRoutingModalOpen(true)}
+        onCheckUpdate={() => setIsUpdateModalOpen(true)}
+        onOpenShortcuts={() => setIsShortcutsModalOpen(true)}
       />
 
       <div className="flex-1 min-w-0 flex flex-col h-screen overflow-hidden">
@@ -1259,6 +1287,7 @@ export const App: React.FC = () => {
               onToggleProxy={handleToggleProxy}
               onOpenUpdate={() => setIsUpdateModalOpen(true)}
               onOpenQuit={() => setIsQuitModalOpen(true)}
+              onOpenMobileMenu={() => setIsMobileMenuOpen(true)}
             />
           )}
 
@@ -1392,7 +1421,7 @@ export const App: React.FC = () => {
                 />
               </>
             ) : showAndroidPatch ? (
-              <AndroidPatchPanel showToast={showToast} />
+              <AndroidPatchPanel showToast={showToast} onOpenMobileMenu={() => setIsMobileMenuOpen(true)} />
             ) : null}
           </main>
         </div>

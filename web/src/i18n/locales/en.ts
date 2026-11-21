@@ -74,6 +74,7 @@ export const en: TranslationSchema = {
     "apiForwardingShort": "APIs"
   },
   "sidebar": {
+    "menu": "Navigation Menu",
     "overview": "Dashboard",
     "android": "Android",
     "liveLogs": "Live Logs",

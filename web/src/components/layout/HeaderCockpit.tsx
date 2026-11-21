@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Zap, ArrowUpCircle, Power } from 'lucide-react'
+import { Zap, ArrowUpCircle, Power, Menu } from 'lucide-react'
 import { RuntimeStatus } from '../../types'
 import { useI18n } from '../../i18n'
 import { RealtimeRequestHud } from './RealtimeRequestHud'
@@ -45,6 +45,7 @@ export interface HeaderCockpitProps {
   onToggleProxy: () => void
   onOpenUpdate: () => void
   onOpenQuit: () => void
+  onOpenMobileMenu?: () => void
 }
 
 /**
@@ -63,6 +64,7 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
   onToggleProxy,
   onOpenUpdate,
   onOpenQuit,
+  onOpenMobileMenu,
 }) => {
   const { t } = useI18n()
 
@@ -75,33 +77,45 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
       >
         <div className={`flex flex-col transition-[gap] duration-200 ease-fluid ${isScrolled ? 'gap-0' : 'gap-3'}`}>
           {/* Top Bar */}
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center justify-between gap-2.5 sm:gap-3">
             {/* Left Identity & Runtime Status */}
-            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              {onOpenMobileMenu && (
+                <button
+                  type="button"
+                  onClick={onOpenMobileMenu}
+                  className="md:hidden w-8 h-8 rounded-lg flex items-center justify-center text-label-secondary hover:text-label-primary hover:bg-slate-500/10 active:scale-95 transition-all cursor-pointer shrink-0 ui-control"
+                  aria-label={t('sidebar.menu') || '导航菜单'}
+                  title={t('sidebar.menu') || '导航菜单'}
+                >
+                  <Menu className="w-4 h-4" />
+                </button>
+              )}
+
               <div
                 className={`rounded-xl flex items-center justify-center shrink-0 transition-all duration-200 ${
-                  isScrolled ? 'w-8 h-8 rounded-[10px]' : 'w-10 h-10'
+                  isScrolled ? 'w-7 h-7 sm:w-8 sm:h-8 rounded-[10px]' : 'w-9 h-9 sm:w-10 sm:h-10'
                 } ${
                   isRunning
                     ? 'bg-emerald-600 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_4px_14px_-4px_rgba(16,185,129,0.55)]'
                     : 'bg-slate-700 text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]'
                 }`}
               >
-                <Zap className={`${isScrolled ? 'w-4 h-4' : 'w-5 h-5'} fill-current transition-all duration-200`} />
+                <Zap className={`${isScrolled ? 'w-3.5 h-3.5 sm:w-4 sm:h-4' : 'w-4 h-4 sm:w-5 sm:h-5'} fill-current transition-all duration-200`} />
               </div>
 
               <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
                   <span
-                    className={`font-bold text-label-primary tracking-tight leading-none transition-all duration-200 ${
-                      isScrolled ? 'text-sm sm:text-[15px]' : 'text-base sm:text-lg'
+                    className={`font-bold text-label-primary tracking-tight leading-none transition-all duration-200 whitespace-nowrap ${
+                      isScrolled ? 'text-xs sm:text-[15px]' : 'text-sm sm:text-lg'
                     }`}
                   >
                     {t('header.title')}
                   </span>
 
                   {!isScrolled && (
-                    <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-full inset-panel text-label-secondary leading-tight">
+                    <span className="text-[10px] sm:text-[11px] font-mono font-semibold px-1.5 sm:px-2 py-0.5 rounded-full inset-panel text-label-secondary leading-tight whitespace-nowrap">
                       v{status?.version || '2.6.0'}
                     </span>
                   )}
@@ -110,9 +124,9 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
                     <button
                       type="button"
                       onClick={onOpenUpdate}
-                      className="px-2.5 py-0.5 rounded-full bg-sys-amberBg hover:opacity-90 text-sys-amber border border-amber-500/30 text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer active:scale-[0.98] transition-all"
+                      className="px-2 py-0.5 rounded-full bg-sys-amberBg hover:opacity-90 text-sys-amber border border-amber-500/30 text-[10px] sm:text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer active:scale-[0.98] transition-all whitespace-nowrap"
                     >
-                      <ArrowUpCircle className="w-3.5 h-3.5 shrink-0" />
+                      <ArrowUpCircle className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
                       <span>{t('header.updateFound', { version: updateInfo.version })}</span>
                     </button>
                   )}
@@ -128,8 +142,8 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
                 </div>
 
                 {!isScrolled && (
-                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                    <span className="inline-flex items-center gap-1.5 text-xs">
+                  <div className="flex items-center gap-1.5 sm:gap-2 mt-1 sm:mt-1.5 flex-wrap">
+                    <span className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs whitespace-nowrap">
                       <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
                       <span className={isRunning ? 'font-semibold text-sys-green' : 'text-label-tertiary font-medium'}>
                         {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
@@ -137,9 +151,9 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
                     </span>
                     {isRunning && (
                       <>
-                        <span className="text-label-tertiary opacity-50">·</span>
-                        <span className="inline-flex items-center gap-1 text-xs text-label-tertiary font-mono tnum">
-                          <span>{t('header.uptime')}</span>
+                        <span className="text-label-tertiary opacity-50 hidden sm:inline">·</span>
+                        <span className="inline-flex items-center gap-1 text-[11px] sm:text-xs text-label-tertiary font-mono tnum whitespace-nowrap">
+                          <span className="hidden sm:inline">{t('header.uptime')}</span>
                           <span className="font-semibold text-label-secondary">
                             <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
                           </span>
@@ -159,15 +173,15 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
             )}
 
             {/* Right Master Start / Stop & Quit */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               <button
                 type="button"
                 disabled={loadingProxy || isTerminated}
                 onClick={onToggleProxy}
                 className={`font-semibold text-white transition-all cursor-pointer select-none active:scale-[0.98] whitespace-nowrap disabled:opacity-50 ${
                   isScrolled
-                    ? 'px-3 py-1.5 rounded-lg text-xs'
-                    : 'min-w-[88px] sm:min-w-[100px] px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-[13px]'
+                    ? 'px-2.5 sm:px-3 py-1.5 rounded-lg text-xs'
+                    : 'min-w-[76px] sm:min-w-[100px] px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-[13px]'
                 } ${
                   isRunning
                     ? 'bg-rose-600 hover:bg-rose-700 active:bg-rose-800 shadow-[inset_0_1px_0_rgba(255,255,255,0.2),0_4px_12px_-4px_rgba(225,29,72,0.45)]'
@@ -181,13 +195,13 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
                 disabled={isTerminated}
                 onClick={onOpenQuit}
                 className={`ui-control hover:!text-rose-600 dark:hover:!text-rose-400 hover:!border-rose-500/30 transition-all cursor-pointer select-none active:scale-[0.98] flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap disabled:opacity-50 ${
-                  isScrolled ? 'p-1.5 rounded-lg' : 'px-3 py-2 rounded-xl text-xs sm:text-[13px] font-medium'
+                  isScrolled ? 'p-1.5 rounded-lg' : 'p-2 sm:px-3 sm:py-2 rounded-xl text-xs sm:text-[13px] font-medium'
                 }`}
                 title={t('header.quitAppTip')}
                 aria-label={t('header.quitApp')}
               >
                 <Power className="w-4 h-4 text-rose-500" />
-                {!isScrolled && <span className="hidden min-[400px]:inline">{t('header.quitApp')}</span>}
+                {!isScrolled && <span className="hidden sm:inline">{t('header.quitApp')}</span>}
               </button>
             </div>
           </div>

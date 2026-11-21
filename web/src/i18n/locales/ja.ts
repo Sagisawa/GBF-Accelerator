@@ -74,6 +74,7 @@ export const ja: TranslationSchema = {
     "apiForwardingShort": "API"
   },
   "sidebar": {
+    "menu": "ナビゲーションメニュー",
     "overview": "操作ホーム",
     "android": "Androidパッチ",
     "liveLogs": "ライブログ",

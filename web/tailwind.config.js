@@ -90,12 +90,17 @@ export default {
           from: { transform: 'translate3d(0, 24px, 0)', opacity: '0' },
           to: { transform: 'translate3d(0, 0, 0)', opacity: '1' },
         },
+        'ui-slide-right': {
+          from: { transform: 'translate3d(-100%, 0, 0)' },
+          to: { transform: 'translate3d(0, 0, 0)' },
+        },
       },
       animation: {
         'fade-soft': 'ui-fade 180ms cubic-bezier(0.22, 1, 0.36, 1) both',
         'modal-in': 'ui-modal 220ms cubic-bezier(0.22, 1, 0.36, 1) both',
         'toast-in': 'ui-toast 240ms cubic-bezier(0.22, 1, 0.36, 1) both',
         'drawer-in': 'ui-drawer 260ms cubic-bezier(0.22, 1, 0.36, 1) both',
+        'slide-right': 'ui-slide-right 240ms cubic-bezier(0.22, 1, 0.36, 1) both',
       },
     },
   },

@@ -72,6 +72,7 @@ export const zh = {
     "apiForwardingShort": "转发"
   },
   "sidebar": {
+    "menu": "导航菜单",
     "overview": "控制首页",
     "android": "安卓修补",
     "liveLogs": "实时日志",

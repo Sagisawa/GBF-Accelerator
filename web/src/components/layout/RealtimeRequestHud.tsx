@@ -118,18 +118,21 @@ export const RealtimeRequestHud: React.FC<{
   return (
     <div className="grid grid-cols-3 gap-2.5 sm:gap-3 pt-0.5">
       {/* 1. Local Cache Hits */}
-      <div className="inset-panel rounded-xl px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between transition-colors min-w-0">
+      <div className="inset-panel rounded-xl px-2.5 sm:px-4 py-2 sm:py-3 flex items-center justify-between transition-colors min-w-0">
         <div className="flex flex-col min-w-0">
-          <span className="text-[11px] sm:text-xs font-medium text-label-secondary flex items-center gap-1.5">
+          <span className="text-[11px] sm:text-xs font-medium text-label-secondary flex items-center gap-1 sm:gap-1.5 min-w-0">
             <Zap className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-            <span className="truncate">{t('hud.totalHits')}</span>
+            <span className="truncate">
+              <span className="hidden sm:inline">{t('hud.totalHits')}</span>
+              <span className="sm:hidden">{t('hud.totalHitsShort') || '命中'}</span>
+            </span>
           </span>
-          <div className="flex items-baseline gap-1.5 mt-1 flex-wrap">
-            <span className="text-lg sm:text-xl lg:text-2xl font-bold text-sys-green font-mono tnum leading-none tracking-tight">
+          <div className="flex items-baseline gap-1 sm:gap-1.5 mt-1 flex-wrap">
+            <span className="text-base sm:text-xl lg:text-2xl font-bold text-sys-green font-mono tnum leading-none tracking-tight">
               {counts.totalHits.toLocaleString()}
             </span>
             {counts.ramHits > 0 && (
-              <span className="text-[10px] font-mono font-semibold text-sys-green bg-sys-greenBg px-1.5 py-0.5 rounded-full border border-emerald-500/20 leading-none whitespace-nowrap">
+              <span className="text-[9px] sm:text-[10px] font-mono font-semibold text-sys-green bg-sys-greenBg px-1 sm:px-1.5 py-0.5 rounded-full border border-emerald-500/20 leading-none whitespace-nowrap">
                 {t('hud.ramHits', { count: counts.ramHits.toLocaleString() })}
               </span>
             )}
@@ -138,14 +141,17 @@ export const RealtimeRequestHud: React.FC<{
       </div>
 
       {/* 2. Upstream Static Downloads */}
-      <div className="inset-panel rounded-xl px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between transition-colors min-w-0">
+      <div className="inset-panel rounded-xl px-2.5 sm:px-4 py-2 sm:py-3 flex items-center justify-between transition-colors min-w-0">
         <div className="flex flex-col min-w-0">
-          <span className="text-[11px] sm:text-xs font-medium text-label-secondary flex items-center gap-1.5">
+          <span className="text-[11px] sm:text-xs font-medium text-label-secondary flex items-center gap-1 sm:gap-1.5 min-w-0">
             <Download className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-            <span className="truncate">{t('hud.remoteDownloads')}</span>
+            <span className="truncate">
+              <span className="hidden sm:inline">{t('hud.remoteDownloads')}</span>
+              <span className="sm:hidden">{t('hud.remoteDownloadsShort') || '下载'}</span>
+            </span>
           </span>
           <div className="flex items-baseline gap-1.5 mt-1">
-            <span className="text-lg sm:text-xl lg:text-2xl font-bold text-sys-blue font-mono tnum leading-none tracking-tight">
+            <span className="text-base sm:text-xl lg:text-2xl font-bold text-sys-blue font-mono tnum leading-none tracking-tight">
               {counts.downloads.toLocaleString()}
             </span>
           </div>
@@ -153,14 +159,17 @@ export const RealtimeRequestHud: React.FC<{
       </div>
 
       {/* 3. Transparent API Forwarding + Live 30s QPS Sparkline */}
-      <div className="inset-panel rounded-xl px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-2 transition-colors min-w-0">
+      <div className="inset-panel rounded-xl px-2.5 sm:px-4 py-2 sm:py-3 flex items-center justify-between gap-1.5 sm:gap-2 transition-colors min-w-0">
         <div className="flex flex-col min-w-0">
-          <span className="text-[11px] sm:text-xs font-medium text-label-secondary flex items-center gap-1.5">
+          <span className="text-[11px] sm:text-xs font-medium text-label-secondary flex items-center gap-1 sm:gap-1.5 min-w-0">
             <ArrowLeftRight className="w-3.5 h-3.5 text-label-tertiary shrink-0" />
-            <span className="truncate">{t('hud.apiForwarding')}</span>
+            <span className="truncate">
+              <span className="hidden sm:inline">{t('hud.apiForwarding')}</span>
+              <span className="sm:hidden">{t('hud.apiForwardingShort') || '转发'}</span>
+            </span>
           </span>
           <div className="flex items-baseline gap-2 mt-1">
-            <span className="text-lg sm:text-xl lg:text-2xl font-bold text-label-primary font-mono tnum leading-none tracking-tight">
+            <span className="text-base sm:text-xl lg:text-2xl font-bold text-label-primary font-mono tnum leading-none tracking-tight">
               {counts.apis.toLocaleString()}
             </span>
           </div>

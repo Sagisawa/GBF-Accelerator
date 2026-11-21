@@ -21,6 +21,7 @@ import {
   HardDrive,
   Globe,
   Archive,
+  Menu,
 } from 'lucide-react'
 import {
   AndroidEnvStatus,
@@ -60,6 +61,7 @@ import { InfoTip } from './common/InfoTip'
 
 interface AndroidPatchPanelProps {
   showToast: (msg: string, type: 'success' | 'error' | 'info') => void
+  onOpenMobileMenu?: () => void
 }
 
 const isPermissionErrorText = (msg?: string): boolean => {
@@ -153,7 +155,7 @@ const formatDeviceBrowserOption = (b: DeviceBrowserItem, t: (k: string) => strin
   return `${name} (${tags.join(' · ')})`
 }
 
-export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast }) => {
+export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast, onOpenMobileMenu }) => {
   const { t } = useI18n()
 
   // Environment state
@@ -806,9 +808,21 @@ export const AndroidPatchPanel: React.FC<AndroidPatchPanelProps> = ({ showToast 
       <section className="liquid-glass rounded-[20px] p-4 sm:p-5">
         {/* Top Row: Identity, Status Badge, InfoTip & Quick Actions */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3.5 hairline-b">
-          <div className="flex items-start sm:items-center gap-3 min-w-0">
+          <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 min-w-0">
+            {onOpenMobileMenu && (
+              <button
+                type="button"
+                onClick={onOpenMobileMenu}
+                className="md:hidden w-8 h-8 rounded-lg flex items-center justify-center text-label-secondary hover:text-label-primary hover:bg-slate-500/10 active:scale-95 transition-all cursor-pointer shrink-0 ui-control"
+                aria-label={t('sidebar.menu') || '导航菜单'}
+                title={t('sidebar.menu') || '导航菜单'}
+              >
+                <Menu className="w-4 h-4" />
+              </button>
+            )}
+
             <div
-              className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 ${
                 isEnvironmentReady
                   ? 'bg-emerald-600 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_4px_14px_-4px_rgba(16,185,129,0.5)]'
                   : 'bg-sky-600 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.25),0_4px_14px_-4px_rgba(2,132,199,0.45)]'
