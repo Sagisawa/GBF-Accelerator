@@ -19,6 +19,12 @@ import (
 // tens of thousands of individual .ext JSON files.
 const MetaIndexFileName = ".gbf_meta_index.v1"
 
+const (
+	MetaIndexVersion1     = 1
+	MetaIndexVersion2     = 2
+	FlagMetaIndexComplete = 1 << 0
+)
+
 var metaIndexMagic = [8]byte{'G', 'B', 'F', 'I', 'D', 'X', '0', '1'}
 
 const metaIndexMaxFileBytes = 128 * 1024 * 1024
@@ -73,11 +79,28 @@ func (m *Manager) loadMetaIndexFromBase(base string, expectedGen uint64) int {
 	}
 
 	version := binary.LittleEndian.Uint32(raw[8:12])
-	if version != 1 {
+	var count uint32
+	var flags uint32
+	var payloadOffset int
+
+	switch version {
+	case MetaIndexVersion1:
+		count = binary.LittleEndian.Uint32(raw[12:16])
+		payloadOffset = 16
+		flags = 0
+	case MetaIndexVersion2:
+		if payloadEnd < 20 {
+			return 0
+		}
+		flags = binary.LittleEndian.Uint32(raw[12:16])
+		count = binary.LittleEndian.Uint32(raw[16:20])
+		payloadOffset = 20
+	default:
 		return 0
 	}
-	count := binary.LittleEndian.Uint32(raw[12:16])
-	r := bytes.NewReader(raw[16:payloadEnd])
+
+	m.metaIndexComplete.Store((flags & FlagMetaIndexComplete) != 0)
+	r := bytes.NewReader(raw[payloadOffset:payloadEnd])
 
 	loaded := 0
 	for i := uint32(0); i < count; i++ {
@@ -241,11 +264,16 @@ func (m *Manager) saveMetaIndex(blocking bool) error {
 	}
 
 	var buf bytes.Buffer
-	buf.Grow(16 + len(all)*96 + 4)
+	buf.Grow(20 + len(all)*96 + 4)
 	buf.Write(metaIndexMagic[:])
-	var hdr [8]byte
-	binary.LittleEndian.PutUint32(hdr[0:4], 1)
-	binary.LittleEndian.PutUint32(hdr[4:8], uint32(len(all)))
+	var hdr [12]byte
+	binary.LittleEndian.PutUint32(hdr[0:4], MetaIndexVersion2)
+	var flags uint32
+	if m.metaIndexComplete.Load() {
+		flags |= FlagMetaIndexComplete
+	}
+	binary.LittleEndian.PutUint32(hdr[4:8], flags)
+	binary.LittleEndian.PutUint32(hdr[8:12], uint32(len(all)))
 	buf.Write(hdr[:])
 
 	for _, item := range all {
@@ -384,7 +412,7 @@ func (m *Manager) StartBackgroundMetaIndexBackfill(fg ForegroundWaiter, initialD
 		}
 
 		m.waitMetaIndexLoad(5 * time.Second)
-		if m.metaIndexLoaded.Load() && m.diskMetaCount() > 0 {
+		if m.isMetaIndexComplete() {
 			return
 		}
 		m.BackfillMetaIndex(fg, m.stopPersist)
@@ -517,10 +545,11 @@ func (m *Manager) BackfillMetaIndex(fg ForegroundWaiter, cancelCh <-chan struct{
 
 	if added > 0 {
 		m.metaIndexDirty.Store(true)
-		if !aborted {
-			m.metaIndexLoaded.Store(true)
-			_ = m.saveMetaIndex(false)
-		}
+	}
+	if !aborted {
+		m.metaIndexLoaded.Store(true)
+		m.metaIndexComplete.Store(true)
+		_ = m.saveMetaIndex(false)
 	}
 	return added
 }
