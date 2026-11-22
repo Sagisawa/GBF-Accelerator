@@ -8,7 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"gbf-proxy/config"
 )
 
 // MetaIndexFileName is the compact binary metadata snapshot stored at the cache root
@@ -347,4 +350,177 @@ func (m *Manager) diskMetaCount() int {
 		shard.mu.RUnlock()
 	}
 	return total
+}
+
+// StartBackgroundMetaIndexBackfill schedules a low-priority, foreground-yielding
+// background scan to build .gbf_meta_index.v1 for pre-existing disk caches (e.g.
+// imported ACGPower cache directories) when no metadata snapshot is present yet.
+// Safe to call multiple times; at most one backfill runs per cache directory generation.
+func (m *Manager) StartBackgroundMetaIndexBackfill(fg ForegroundWaiter, initialDelay time.Duration) {
+	if m == nil {
+		return
+	}
+	select {
+	case <-m.stopPersist:
+		return
+	default:
+	}
+	if !m.metaBackfillStarted.CompareAndSwap(false, true) {
+		return
+	}
+
+	m.metaBackfillWg.Add(1)
+	go func() {
+		defer m.metaBackfillWg.Done()
+
+		if initialDelay > 0 {
+			timer := time.NewTimer(initialDelay)
+			select {
+			case <-m.stopPersist:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+
+		m.waitMetaIndexLoad(5 * time.Second)
+		if m.metaIndexLoaded.Load() && m.diskMetaCount() > 0 {
+			return
+		}
+		m.BackfillMetaIndex(fg, m.stopPersist)
+	}()
+}
+
+// BackfillMetaIndex walks the active cache directory reading only .ext metadata files
+// (never asset bodies) to populate in-memory diskMetaShards and persist .gbf_meta_index.v1.
+// It yields immediately when foreground traffic is active and aborts cleanly on cancelCh
+// or cache generation changes. Returns the number of newly indexed entries.
+func (m *Manager) BackfillMetaIndex(fg ForegroundWaiter, cancelCh <-chan struct{}) int {
+	if m == nil {
+		return 0
+	}
+	m.persistMu.RLock()
+	startGen := m.generation
+	m.persistMu.RUnlock()
+
+	m.mu.RLock()
+	base := m.cacheBase
+	m.mu.RUnlock()
+	if base == "" {
+		return 0
+	}
+	if fi, err := os.Stat(base); err != nil || !fi.IsDir() {
+		return 0
+	}
+
+	added := 0
+	aborted := false
+	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+		if cancelCh != nil {
+			select {
+			case <-cancelCh:
+				aborted = true
+				return filepath.SkipAll
+			default:
+			}
+		}
+		m.persistMu.RLock()
+		genChanged := m.generation != startGen
+		m.persistMu.RUnlock()
+		if genChanged {
+			aborted = true
+			return filepath.SkipAll
+		}
+		if fg != nil && !fg.IsForegroundIdle() {
+			if !fg.WaitForegroundIdle(cancelCh) {
+				aborted = true
+				return filepath.SkipAll
+			}
+		}
+
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if d.Type()&(os.ModeSymlink|os.ModeIrregular) != 0 {
+			return nil
+		}
+		baseName := d.Name()
+		if baseName == RootMarkerFileName || baseName == MetaIndexFileName || config.IsSystemJunk(baseName) {
+			return nil
+		}
+		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || IsAcceleratorQuarantineFile(p) {
+			return nil
+		}
+
+		info, infoErr := d.Info()
+		if infoErr != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+			return nil
+		}
+		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(base, p)
+		if !ok {
+			return nil
+		}
+
+		mtimeNano := info.ModTime().UnixNano()
+		size := info.Size()
+		if existing, exists := m.getDiskMeta(ramKey); exists && existing.hasMeta && existing.verified && existing.mtimeNano == mtimeNano && existing.size == size {
+			return nil
+		}
+
+		metaBytes, rErr := os.ReadFile(p + ".ext")
+		if rErr != nil {
+			return nil
+		}
+		meta, parseOK := parseExtFile(metaBytes)
+		if !parseOK || !meta.Verified || meta.Size != size || meta.MTimeNano != mtimeNano || !isDiskFileOwnedByNamespace(ns, cleanKey, meta, true) {
+			return nil
+		}
+
+		ct := resolveContentType(meta.ContentType, p)
+		etag := meta.ETag
+		if etag == "" {
+			etag = fmt.Sprintf("\"%x-%x\"", mtimeNano/1e9, size)
+		}
+		at := meta.AccessTime
+		if at == 0 {
+			at = info.ModTime().Unix()
+		}
+
+		m.persistMu.RLock()
+		if m.generation != startGen {
+			m.persistMu.RUnlock()
+			aborted = true
+			return filepath.SkipAll
+		}
+		shard := m.diskMetaShard(ramKey)
+		shard.mu.Lock()
+		if cur, exists := shard.items[ramKey]; (!exists || !cur.hasMeta) && len(shard.items) < diskMetaShardMaxItems {
+			shard.items[ramKey] = diskMetaEntry{
+				namespace:       ns,
+				mtimeNano:       mtimeNano,
+				size:            size,
+				accessTime:      at,
+				contentType:     ct,
+				contentEncoding: meta.ContentEncoding,
+				etag:            etag,
+				lastModified:    meta.LastModified,
+				exists:          true,
+				hasMeta:         true,
+				verified:        true,
+			}
+			added++
+		}
+		shard.mu.Unlock()
+		m.persistMu.RUnlock()
+		return nil
+	})
+
+	if added > 0 {
+		m.metaIndexDirty.Store(true)
+		if !aborted {
+			m.metaIndexLoaded.Store(true)
+			_ = m.saveMetaIndex(false)
+		}
+	}
+	return added
 }

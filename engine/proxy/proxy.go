@@ -131,7 +131,7 @@ func NewProxyServer(cfgMgr *config.Manager, certMgr *cert.Manager, cacheMgr *cac
 	s := &ProxyServer{
 		cfgMgr: cfgMgr, certMgr: certMgr, cacheMgr: cacheMgr, stats: stats,
 		closedChan: make(chan struct{}), activeConns: make(map[net.Conn]struct{}), failover: newFailoverManager(),
-		dnsCache: newDNSCache(defaultDNSCacheTTL, defaultDNSCacheMaxEntries),
+		dnsCache:            newDNSCacheWithSWR(defaultDNSCacheTTL, defaultDNSCacheHardTTL, defaultDNSCacheMaxEntries),
 		passthroughTLSCache: tls.NewLRUClientSessionCache(64),
 	}
 	s.prefetch = newPrefetchEngine(s)
@@ -224,8 +224,11 @@ func buildUpstreamClientsWithDialer(c *config.Config, proxyURL string, directDia
 			ClientSessionCache: apiSessionCache,
 		},
 		MaxConnsPerHost: apiMaxConn, MaxIdleConns: apiMaxConn, MaxIdleConnsPerHost: apiMaxIdle,
-		IdleConnTimeout:   time.Duration(c.APIKeepaliveExpiry * float64(time.Second)),
-		ForceAttemptHTTP2: false, DisableCompression: true,
+		IdleConnTimeout:    time.Duration(c.APIKeepaliveExpiry * float64(time.Second)),
+		ReadBufferSize:     32 * 1024,
+		WriteBufferSize:    32 * 1024,
+		ForceAttemptHTTP2:  false,
+		DisableCompression: true,
 	}
 	assetTr := &http.Transport{
 		Proxy: proxyFunc, DialContext: baseDial,
@@ -234,8 +237,15 @@ func buildUpstreamClientsWithDialer(c *config.Config, proxyURL string, directDia
 			ClientSessionCache: assetSessionCache,
 		},
 		MaxConnsPerHost: assetMaxConn, MaxIdleConns: assetMaxConn, MaxIdleConnsPerHost: assetMaxIdle,
-		IdleConnTimeout:   time.Duration(c.AssetKeepaliveExpiry * float64(time.Second)),
-		ForceAttemptHTTP2: true, DisableCompression: true,
+		IdleConnTimeout: time.Duration(c.AssetKeepaliveExpiry * float64(time.Second)),
+		ReadBufferSize:  32 * 1024,
+		WriteBufferSize: 32 * 1024,
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 15 * time.Second,
+			PingTimeout:     5 * time.Second,
+		},
+		ForceAttemptHTTP2:  true,
+		DisableCompression: true,
 	}
 	if dialFunc != nil {
 		apiTr.Proxy, apiTr.DialContext = nil, dialFunc
@@ -728,6 +738,17 @@ func (s *ProxyServer) prepareAPIRequestTrace(req *http.Request, onGotConn func(r
 	return tracedReq, cancelAttempt
 }
 
+var hotGBFCertDomains = []string{
+	"game.granbluefantasy.jp",
+	"gbf.game.mbga.jp",
+	"prd-game-a-granbluefantasy.akamaized.net",
+	"prd-game-a1-granbluefantasy.akamaized.net",
+	"prd-game-a2-granbluefantasy.akamaized.net",
+	"prd-game-a3-granbluefantasy.akamaized.net",
+	"prd-game-a4-granbluefantasy.akamaized.net",
+	"prd-game-a5-granbluefantasy.akamaized.net",
+}
+
 func (s *ProxyServer) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -759,6 +780,13 @@ func (s *ProxyServer) Start() error {
 	s.connMu.Unlock()
 	if s.prefetch == nil || s.prefetch.IsStopped() {
 		s.prefetch = newPrefetchEngine(s)
+	}
+
+	if s.certMgr != nil {
+		go s.certMgr.PrewarmHotDomains(hotGBFCertDomains)
+	}
+	if s.cacheMgr != nil {
+		s.cacheMgr.StartBackgroundMetaIndexBackfill(s.stats, 12*time.Second)
 	}
 
 	s.serveLoopWg.Add(1)
@@ -1028,16 +1056,40 @@ func (s *ProxyServer) isClientAllowed(addr net.Addr) bool {
 	return false
 }
 
+var bufioReaderPool = sync.Pool{
+	New: func() any {
+		return bufio.NewReaderSize(nil, 16*1024)
+	},
+}
+
+func acquireBufioReader(r io.Reader) *bufio.Reader {
+	br := bufioReaderPool.Get().(*bufio.Reader)
+	br.Reset(r)
+	return br
+}
+
+func releaseBufioReader(br *bufio.Reader) {
+	if br == nil {
+		return
+	}
+	br.Reset(nil)
+	bufioReaderPool.Put(br)
+}
+
 func (s *ProxyServer) handleConnection(conn net.Conn) {
 	handedOff := false
+	keepBR := false
+	br := acquireBufioReader(conn)
 	defer func() {
+		if !keepBR {
+			releaseBufioReader(br)
+		}
 		if !handedOff {
 			s.untrackConn(conn)
 			_ = conn.Close()
 		}
 	}()
 
-	br := bufio.NewReader(conn)
 	for {
 		req, err := http.ReadRequest(br)
 		if err != nil {
@@ -1046,7 +1098,7 @@ func (s *ProxyServer) handleConnection(conn net.Conn) {
 
 		// 1. CONNECT tunnel (HTTPS proxy request)
 		if req.Method == http.MethodConnect {
-			handedOff = s.handleConnectInternal(conn, br, req)
+			handedOff, keepBR = s.handleConnectInternal(conn, br, req)
 			return
 		}
 
@@ -1059,10 +1111,12 @@ func (s *ProxyServer) handleConnection(conn net.Conn) {
 }
 
 func (s *ProxyServer) handleConnect(conn net.Conn, br *bufio.Reader, req *http.Request) {
-	_ = s.handleConnectInternal(conn, br, req)
+	_, _ = s.handleConnectInternal(conn, br, req)
 }
 
-func (s *ProxyServer) handleConnectInternal(conn net.Conn, br *bufio.Reader, req *http.Request) bool {
+const mitmTLSHandshakeTimeout = 10 * time.Second
+
+func (s *ProxyServer) handleConnectInternal(conn net.Conn, br *bufio.Reader, req *http.Request) (handedOff bool, keepBR bool) {
 	target := req.RequestURI
 	if target == "" && req.URL != nil && req.URL.Host != "" {
 		target = req.URL.Host
@@ -1089,34 +1143,44 @@ func (s *ProxyServer) handleConnectInternal(conn net.Conn, br *bufio.Reader, req
 	if isPassthroughHost(host) || !isGBFDomain(host) {
 		s.stats.Log("INFO", fmt.Sprintf("[CONNECT] [%s] %s -> TUNNEL", clientIP, target))
 		s.handlePassthroughTunnel(conn, br, target)
-		return false
+		return false, false
 	}
 
 	s.stats.Log("INFO", fmt.Sprintf("[CONNECT] [%s] %s -> MITM", clientIP, target))
 
 	// Send 200 Connection Established for MITM
 	if _, err := conn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
-		return false
+		return false, false
 	}
 
-	// MITM TLS termination using bufferedConn to preserve any early data in br
-	bConn := &bufferedConn{Conn: conn, r: br}
-	tlsConfig := s.certMgr.GetTLSConfig()
-	tlsConn := tls.Server(bConn, tlsConfig)
-	if err := tlsConn.Handshake(); err != nil {
-		return false
+	// MITM TLS termination: only wrap with bufferedConn when early ClientHello bytes
+	// are already buffered in br; otherwise pass raw conn to avoid an extra wrapper
+	// and allow br to be safely returned to bufioReaderPool even on H2 handoff.
+	var baseConn net.Conn = conn
+	usedBR := false
+	if br != nil && br.Buffered() > 0 {
+		baseConn = &bufferedConn{Conn: conn, r: br}
+		usedBR = true
 	}
+	tlsConfig := s.certMgr.GetTLSConfig()
+	tlsConn := tls.Server(baseConn, tlsConfig)
+	_ = conn.SetDeadline(time.Now().Add(mitmTLSHandshakeTimeout))
+	if err := tlsConn.Handshake(); err != nil {
+		return false, false
+	}
+	_ = conn.SetDeadline(time.Time{})
 
 	if tlsConn.ConnectionState().NegotiatedProtocol == "h2" {
 		if s.handoffH2Conn(tlsConn, conn, host) {
-			return true
+			return true, usedBR
 		}
 		_ = tlsConn.Close()
-		return false
+		return false, false
 	}
 	defer tlsConn.Close()
 
-	tlsReader := bufio.NewReader(tlsConn)
+	tlsReader := acquireBufioReader(tlsConn)
+	defer releaseBufioReader(tlsReader)
 	for {
 		clientReq, err := http.ReadRequest(tlsReader)
 		if err != nil {
@@ -1128,7 +1192,7 @@ func (s *ProxyServer) handleConnectInternal(conn net.Conn, br *bufio.Reader, req
 			break
 		}
 	}
-	return false
+	return false, false
 }
 
 func dialSOCKS5(proxyAddr, targetAddr, username, password string, timeout time.Duration) (net.Conn, error) {
@@ -1481,7 +1545,11 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 			defer closeBoth()
 			bufPtr := tunnelBufferPool.Get().(*[]byte)
 			defer tunnelBufferPool.Put(bufPtr)
-			_, _ = io.CopyBuffer(upConn, clientReader, *bufPtr)
+			src := clientReader
+			if br, ok := clientReader.(*bufio.Reader); ok && br.Buffered() == 0 {
+				src = clientConn
+			}
+			_, _ = io.CopyBuffer(upConn, src, *bufPtr)
 		}()
 
 		wg.Wait()
@@ -1886,13 +1954,16 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		maxAttempts = 2
 	}
 
+	isHead := (req.Method == http.MethodHead)
 	var resp *http.Response
-	var respBytes []byte
+	var teeBytes []byte
 	var fetchErr error
 	var reqReused bool
 	var apiClient *http.Client
 	var route failoverRoute
 	var trial bool
+	var keepAlive bool
+	var streamed bool
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		upReq, err := newUpstreamAPIRequest(req.Context(), req, upURL, bodyBytes)
@@ -1962,41 +2033,40 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 			break
 		}
 
-		var readErr error
-		respBytes, readErr = io.ReadAll(resp.Body)
-		lastAttemptElapsed := time.Since(attemptStart)
-		tracker.stop()
+		headerElapsed := time.Since(attemptStart)
+		var captureLimit int64
+		if s.prefetch != nil && resp.StatusCode == http.StatusOK && !isHead && isGameDataAPI(req.Method, cleanPath) {
+			captureLimit = 2 * 1024 * 1024
+		}
+		var dUpstream time.Duration
+		var streamErr error
+		teeBytes, dUpstream, keepAlive, streamErr = s.streamDynamicResponse(conn, resp, isHead, req.Close, captureLimit, tracker, route, trial, headerElapsed)
+		streamed = true
 		_ = resp.Body.Close()
 		cancelAttempt(nil)
-		if readErr != nil {
-			if isGet {
-				s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, readErr)
-			}
-			fetchErr = readErr
-			resp = nil
-			break
-		}
 
 		var obsErr error
-		if trial && resp.StatusCode >= http.StatusInternalServerError {
+		if streamErr != nil {
+			obsErr = streamErr
+			fetchErr = streamErr
+		} else if trial && resp.StatusCode >= http.StatusInternalServerError {
 			obsErr = fmt.Errorf("upstream trial returned %d", resp.StatusCode)
 		}
 		if isGet {
-			s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, obsErr)
+			s.finishInFlightWatch(tracker, route, trial, headerElapsed+dUpstream, obsErr)
 		}
 		break
 	}
-	if fetchErr != nil || resp == nil {
-		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
+	if !streamed {
+		writeHTTPResponse(conn, http.StatusBadGateway, nil, nil, isHead, req.Close)
 		return !req.Close
 	}
-	s.forwardDynamicResponse(conn, resp, respBytes, req.Method == http.MethodHead, req.Close)
-	if s.prefetch != nil && resp != nil && resp.StatusCode == http.StatusOK && len(respBytes) > 0 {
+	if fetchErr == nil && s.prefetch != nil && resp != nil && resp.StatusCode == http.StatusOK && len(teeBytes) > 0 {
 		prefetchHost := hostTrimmed
 		if prefetchHost == "" {
 			prefetchHost = req.Host
 		}
-		s.prefetch.MaybeEnqueueGameData(req, prefetchHost, respBytes)
+		s.prefetch.MaybeEnqueueGameData(req, prefetchHost, teeBytes)
 	}
 	elapsed := time.Since(startTime).Milliseconds()
 	if s.telemetryEnabled() {
@@ -2016,7 +2086,7 @@ func (s *ProxyServer) forwardPlainProxy(conn net.Conn, req *http.Request) bool {
 		uri = "/" + uri
 	}
 	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-PLAIN-API] %d %s %s (%dms, %s, %s)", resp.StatusCode, req.Method, uri, elapsed, protoStr, reusedStr))
-	return !req.Close
+	return keepAlive
 }
 
 func (s *ProxyServer) handleDecryptedRequest(w io.Writer, req *http.Request, targetHost string) bool {
@@ -4226,13 +4296,16 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 	}
 
 	upURL := fmt.Sprintf("https://%s%s", targetHost, req.URL.RequestURI())
+	isHead := (req.Method == http.MethodHead)
 	var resp *http.Response
-	var respBytes []byte
+	var teeBytes []byte
 	var fetchErr error
 	var reqReused bool
 	var apiClient *http.Client
 	var route failoverRoute
 	var trial bool
+	var keepAlive bool
+	var streamed bool
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		upReq, err := newUpstreamAPIRequest(req.Context(), req, upURL, bodyBytes)
@@ -4289,38 +4362,37 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 			break
 		}
 
-		var readErr error
-		respBytes, readErr = io.ReadAll(resp.Body)
-		lastAttemptElapsed := time.Since(attemptStart)
-		tracker.stop()
+		headerElapsed := time.Since(attemptStart)
+		var captureLimit int64
+		if s.prefetch != nil && resp.StatusCode == http.StatusOK && !isHead && isGameDataAPI(req.Method, cleanPath) {
+			captureLimit = 2 * 1024 * 1024
+		}
+		var dUpstream time.Duration
+		var streamErr error
+		teeBytes, dUpstream, keepAlive, streamErr = s.streamDynamicResponse(w, resp, isHead, req.Close, captureLimit, tracker, route, trial, headerElapsed)
+		streamed = true
 		_ = resp.Body.Close()
 		cancelAttempt(nil)
-		if readErr != nil {
-			if isGet {
-				s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, readErr)
-			}
-			fetchErr = readErr
-			resp = nil
-			break
-		}
 
 		var obsErr error
-		if trial && resp.StatusCode >= http.StatusInternalServerError {
+		if streamErr != nil {
+			obsErr = streamErr
+			fetchErr = streamErr
+		} else if trial && resp.StatusCode >= http.StatusInternalServerError {
 			obsErr = fmt.Errorf("upstream trial returned %d", resp.StatusCode)
 		}
 		if isGet {
-			s.finishInFlightWatch(tracker, route, trial, lastAttemptElapsed, obsErr)
+			s.finishInFlightWatch(tracker, route, trial, headerElapsed+dUpstream, obsErr)
 		}
 		break
 	}
 
-	if fetchErr != nil || resp == nil {
-		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, req.Method == http.MethodHead, req.Close)
+	if !streamed {
+		writeHTTPResponse(w, http.StatusBadGateway, nil, nil, isHead, req.Close)
 		return !req.Close
 	}
-	s.forwardDynamicResponse(w, resp, respBytes, req.Method == http.MethodHead, req.Close)
-	if s.prefetch != nil && resp != nil && resp.StatusCode == http.StatusOK && len(respBytes) > 0 {
-		s.prefetch.MaybeEnqueueGameData(req, targetHost, respBytes)
+	if fetchErr == nil && s.prefetch != nil && resp != nil && resp.StatusCode == http.StatusOK && len(teeBytes) > 0 {
+		s.prefetch.MaybeEnqueueGameData(req, targetHost, teeBytes)
 	}
 	elapsed := time.Since(startTime).Milliseconds()
 	if s.telemetryEnabled() {
@@ -4340,7 +4412,7 @@ func (s *ProxyServer) handleDynamicAPI(w io.Writer, req *http.Request, targetHos
 		uri = "/" + uri
 	}
 	s.stats.Log("INFO", fmt.Sprintf("[BYPASS-API] %d %s %s%s (%dms, %s, %s)", resp.StatusCode, req.Method, targetHost, uri, elapsed, protoStr, reusedStr))
-	return !req.Close
+	return keepAlive
 }
 
 var responseBufferPool = sync.Pool{
@@ -4786,6 +4858,257 @@ func copyStreamBuffer(dst io.Writer, src io.Reader, buf []byte) (written int64, 
 
 func (s *ProxyServer) forwardDynamicResponse(w io.Writer, resp *http.Response, body []byte, isHead bool, reqClose bool) {
 	writeHTTPResponse(w, resp.StatusCode, resp.Header, body, isHead, reqClose)
+}
+
+func isBodylessStatus(statusCode int) bool {
+	return statusCode == http.StatusNoContent || statusCode == http.StatusNotModified || (statusCode >= 100 && statusCode < 200)
+}
+
+func effectiveDynamicContentLength(resp *http.Response) int64 {
+	if resp == nil {
+		return -1
+	}
+	if resp.ContentLength > 0 {
+		return resp.ContentLength
+	}
+	if resp.ContentLength == 0 && resp.Header != nil && resp.Header.Get("Content-Length") != "" {
+		return 0
+	}
+	return -1
+}
+
+// writeDynamicStreamHeader emits the upstream status and headers directly to w for
+// dynamic API stream-through forwarding, preserving every P0 header invariant:
+// exact status code, line-by-line Set-Cookie preservation, hop-by-hop stripping,
+// zero proxy-fingerprint headers, and RFC 9112 framing (Content-Length or chunked).
+func writeDynamicStreamHeader(w io.Writer, resp *http.Response, effectiveCL int64, isHead bool, reqClose bool, isChunked bool) error {
+	statusCode := resp.StatusCode
+	header := resp.Header
+	bodyless := isBodylessStatus(statusCode)
+
+	if hw, ok := w.(*h2ResponseWriter); ok {
+		dst := hw.rw.Header()
+		hasDate := header != nil && header.Get("Date") != ""
+		if !hasDate {
+			dst.Set("Date", fastHTTPDateString())
+		}
+		if header != nil {
+			for k, vv := range header {
+				if strings.EqualFold(k, "set-cookie") {
+					for _, cookie := range vv {
+						dst.Add("Set-Cookie", cookie)
+					}
+					continue
+				}
+				if isHopByHop(k) || strings.EqualFold(k, "content-length") || strings.EqualFold(k, "connection") {
+					continue
+				}
+				if !hasDate && strings.EqualFold(k, "date") {
+					continue
+				}
+				if hasCaseInsensitivePrefix(k, "x-proxy-") ||
+					hasCaseInsensitivePrefix(k, "x-cache-") ||
+					hasCaseInsensitivePrefix(k, "x-acceleration-") {
+					continue
+				}
+				fk := formatHeaderKey(k)
+				for _, v := range vv {
+					dst.Add(fk, v)
+				}
+			}
+		}
+		if !bodyless {
+			if effectiveCL >= 0 {
+				dst.Set("Content-Length", strconv.FormatInt(effectiveCL, 10))
+			} else if isHead && header != nil && header.Get("Content-Length") != "" {
+				dst.Set("Content-Length", header.Get("Content-Length"))
+			}
+		}
+		hw.rw.WriteHeader(statusCode)
+		hw.Flush()
+		return nil
+	}
+
+	buf := responseBufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer func() {
+		if buf.Cap() <= 128*1024 {
+			responseBufferPool.Put(buf)
+		}
+	}()
+
+	statusPhrase := http.StatusText(statusCode)
+	if statusPhrase == "" {
+		statusPhrase = "OK"
+	}
+
+	var numBuf [32]byte
+	buf.WriteString("HTTP/1.1 ")
+	buf.Write(strconv.AppendInt(numBuf[:0], int64(statusCode), 10))
+	buf.WriteByte(' ')
+	buf.WriteString(statusPhrase)
+	buf.WriteString("\r\n")
+
+	hasDate := header != nil && header.Get("Date") != ""
+	if !hasDate {
+		buf.WriteString("Date: ")
+		buf.WriteString(fastHTTPDateString())
+		buf.WriteString("\r\n")
+	}
+
+	if header != nil {
+		var cookieArr [8]string
+		cookies := cookieArr[:0]
+		for k, vv := range header {
+			if strings.EqualFold(k, "set-cookie") {
+				cookies = append(cookies, vv...)
+				continue
+			}
+			if isHopByHop(k) || strings.EqualFold(k, "content-length") || strings.EqualFold(k, "connection") {
+				continue
+			}
+			if !hasDate && strings.EqualFold(k, "date") {
+				continue
+			}
+			if hasCaseInsensitivePrefix(k, "x-proxy-") ||
+				hasCaseInsensitivePrefix(k, "x-cache-") ||
+				hasCaseInsensitivePrefix(k, "x-acceleration-") {
+				continue
+			}
+			fk := formatHeaderKey(k)
+			for _, v := range vv {
+				buf.WriteString(fk)
+				buf.WriteString(": ")
+				buf.WriteString(v)
+				buf.WriteString("\r\n")
+			}
+		}
+		for _, cookie := range cookies {
+			buf.WriteString("Set-Cookie: ")
+			buf.WriteString(cookie)
+			buf.WriteString("\r\n")
+		}
+	}
+
+	if !bodyless {
+		if effectiveCL >= 0 {
+			buf.WriteString("Content-Length: ")
+			buf.Write(strconv.AppendInt(numBuf[:0], effectiveCL, 10))
+			buf.WriteString("\r\n")
+		} else if isHead {
+			if header != nil && header.Get("Content-Length") != "" {
+				buf.WriteString("Content-Length: ")
+				buf.WriteString(header.Get("Content-Length"))
+				buf.WriteString("\r\n")
+			}
+		} else if isChunked {
+			buf.WriteString("Transfer-Encoding: chunked\r\n")
+		}
+	}
+
+	if reqClose {
+		buf.WriteString("Connection: close\r\n\r\n")
+	} else {
+		buf.WriteString("Connection: keep-alive\r\n\r\n")
+	}
+
+	_, err := w.Write(buf.Bytes())
+	return err
+}
+
+// streamDynamicResponse forwards an upstream dynamic API response body directly
+// to w as chunks arrive, eliminating full-body io.ReadAll buffering latency.
+// When captureLimit > 0 (used exclusively for Game-Data prefetch endpoints), a
+// bounded copy of the body is captured in-flight without delaying downstream delivery.
+func (s *ProxyServer) streamDynamicResponse(
+	w io.Writer,
+	resp *http.Response,
+	isHead bool,
+	reqClose bool,
+	captureLimit int64,
+	tracker *inFlightTracker,
+	route failoverRoute,
+	trial bool,
+	headerElapsed time.Duration,
+) (teeBytes []byte, dUpstream time.Duration, keepAlive bool, upstreamErr error) {
+	bodyless := isHead || isBodylessStatus(resp.StatusCode)
+	effectiveCL := effectiveDynamicContentLength(resp)
+	isChunked := !bodyless && effectiveCL < 0
+
+	tracker.pause()
+	if err := writeDynamicStreamHeader(w, resp, effectiveCL, isHead, reqClose, isChunked); err != nil {
+		return nil, 0, false, nil
+	}
+
+	if bodyless || effectiveCL == 0 || resp.Body == nil {
+		return nil, 0, !reqClose, nil
+	}
+
+	sc := &streamClientWriter{
+		w:         w,
+		isChunked: isChunked,
+	}
+
+	var teeBuf *bytes.Buffer
+	teeOverflow := false
+	if captureLimit > 0 {
+		capHint := 16 * 1024
+		if effectiveCL > 0 && effectiveCL <= captureLimit && effectiveCL <= int64(math.MaxInt) {
+			capHint = int(effectiveCL)
+		}
+		teeBuf = bytes.NewBuffer(make([]byte, 0, capHint))
+	}
+
+	bufPtr := tunnelBufferPool.Get().(*[]byte)
+	defer tunnelBufferPool.Put(bufPtr)
+	copyBuf := *bufPtr
+
+	var totalRead int64
+	clientFailed := false
+	for {
+		tracker.resume(s, route, trial, headerElapsed+dUpstream)
+		tRead := time.Now()
+		nr, rErr := resp.Body.Read(copyBuf)
+		dUpstream += time.Since(tRead)
+		tracker.pause()
+
+		if nr > 0 {
+			chunk := copyBuf[:nr]
+			totalRead += int64(nr)
+			if err := sc.WriteChunk(chunk); err != nil {
+				clientFailed = true
+				break
+			}
+			if teeBuf != nil && !teeOverflow {
+				if int64(teeBuf.Len()+nr) > captureLimit {
+					teeOverflow = true
+					teeBuf = nil
+				} else {
+					teeBuf.Write(chunk)
+				}
+			}
+		}
+		if rErr != nil {
+			if rErr == io.EOF {
+				break
+			}
+			return nil, dUpstream, false, rErr
+		}
+	}
+
+	if clientFailed {
+		return nil, dUpstream, false, nil
+	}
+	if err := sc.Finish(); err != nil {
+		return nil, dUpstream, false, nil
+	}
+	if effectiveCL >= 0 && totalRead != effectiveCL {
+		return nil, dUpstream, false, io.ErrUnexpectedEOF
+	}
+	if teeBuf != nil && !teeOverflow {
+		teeBytes = teeBuf.Bytes()
+	}
+	return teeBytes, dUpstream, !reqClose, nil
 }
 
 func isHopByHop(h string) bool {
