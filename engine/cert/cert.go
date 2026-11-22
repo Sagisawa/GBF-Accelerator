@@ -285,20 +285,35 @@ func (m *Manager) initBaseTLSConfigLocked() {
 	m.baseTLSConfig = cfg
 }
 
-// GetTLSConfig returns a clone of the shared MITM TLS configuration so all
+// GetTLSConfig returns the shared immutable MITM TLS configuration so all
 // accepted CONNECT tunnels share session ticket keys for TLS resumption and
-// advertise HTTP/2 ("h2") alongside HTTP/1.1 via ALPN.
+// advertise HTTP/2 ("h2") alongside HTTP/1.1 via ALPN without per-CONNECT clones.
+// Callers must treat the returned *tls.Config as read-only.
 func (m *Manager) GetTLSConfig() *tls.Config {
 	m.mu.RLock()
 	base := m.baseTLSConfig
 	m.mu.RUnlock()
 	if base != nil {
-		return base.Clone()
+		return base
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.baseTLSConfig == nil {
 		m.initBaseTLSConfigLocked()
 	}
-	return m.baseTLSConfig.Clone()
+	return m.baseTLSConfig
+}
+
+// PrewarmHotDomains pre-signs leaf certificates for frequently accessed GBF hosts
+// in the background to eliminate RSA-2048 CA signing latency on first page load.
+func (m *Manager) PrewarmHotDomains(hosts []string) {
+	if m == nil {
+		return
+	}
+	for _, host := range hosts {
+		if host == "" {
+			continue
+		}
+		_, _ = m.GetOrCreateCert(host)
+	}
 }

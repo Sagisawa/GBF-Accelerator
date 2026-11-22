@@ -91,6 +91,8 @@ type Manager struct {
 	metaIndexLoaded           atomic.Bool
 	metaWritesSinceFlush      atomic.Int64
 	metaPeriodicFlushInFlight atomic.Bool
+	metaBackfillStarted       atomic.Bool
+	metaBackfillWg            sync.WaitGroup
 }
 
 func (m *Manager) SetBeforeClearAllRemoveHookForTest(hook func(relPath string)) {
@@ -418,6 +420,15 @@ func (m *Manager) Close() {
 		case <-m.persistDone:
 		case <-time.After(3 * time.Second):
 		}
+		backfillDone := make(chan struct{})
+		go func() {
+			m.metaBackfillWg.Wait()
+			close(backfillDone)
+		}()
+		select {
+		case <-backfillDone:
+		case <-time.After(1 * time.Second):
+		}
 		m.waitMetaIndexLoad(500 * time.Millisecond)
 		m.flushMetaIndexOnClose()
 	})
@@ -469,6 +480,7 @@ func (m *Manager) resetVolatileState(reason string) {
 	m.invalidateSnapshots(reason)
 	m.metaIndexLoaded.Store(false)
 	m.metaIndexDirty.Store(false)
+	m.metaBackfillStarted.Store(false)
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {
@@ -749,6 +761,83 @@ func (m *Manager) PeekRAMWithNamespace(ns, urlPath string) *CacheItem {
 		}
 	}
 	return nil
+}
+
+// IsInRAMWithNamespace reports whether the asset is currently resident in either
+// ResidentPool (RAM Boost) or the SLRU RAM cache, with zero disk I/O.
+func (m *Manager) IsInRAMWithNamespace(ns, urlPath string) bool {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
+		return false
+	}
+	ramKey := makeRAMKey(normNS, cleanKey)
+	if m.residentPool != nil && m.residentPool.Enabled() {
+		if _, exists := m.residentPool.Get(ramKey); exists {
+			return true
+		}
+	}
+	return m.ramEnabled.Load() && m.ramCache.Contains(ramKey)
+}
+
+// WarmSingleDiskItemToProbation loads a single already-cached disk asset into the RAM SLRU
+// Probationary segment without touching upstream networks or promoting Protected items.
+// Assets larger than maxBytes or MaxDiskDirectReadSize are skipped.
+func (m *Manager) WarmSingleDiskItemToProbation(ns, urlPath string, maxBytes int64) bool {
+	if m == nil || !m.ramEnabled.Load() {
+		return false
+	}
+	if maxBytes <= 0 || maxBytes > MaxDiskDirectReadSize {
+		maxBytes = MaxDiskDirectReadSize
+	}
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
+		return false
+	}
+	ns = normNS
+	ramKey := makeRAMKey(ns, cleanKey)
+	if m.residentPool != nil && m.residentPool.Enabled() {
+		if _, exists := m.residentPool.Get(ramKey); exists {
+			return false
+		}
+	}
+	if m.ramCache.Contains(ramKey) || m.isMissing(ramKey) {
+		return false
+	}
+	if meta, hasMeta := m.getDiskMeta(ramKey); hasMeta && meta.size > maxBytes {
+		return false
+	}
+
+	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
+	if !ok {
+		return false
+	}
+	fi, err := os.Stat(filePath)
+	if err != nil || fi.IsDir() || fi.Size() == 0 || fi.Size() > maxBytes {
+		return false
+	}
+
+	tok := m.acquireOpToken(ns, cleanKey)
+	item, err := m.loadAndValidateDiskItemWithToken(ns, cleanKey, filePath, tok)
+	if err != nil || item == nil || len(item.Data) == 0 || item.Size > maxBytes {
+		return false
+	}
+
+	isSharedHostsPath := ns != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
+	m.persistMu.RLock()
+	shard := m.tokenShardByCanon(tok.canonKey)
+	shard.mu.Lock()
+	admitted := false
+	if isTokenValidLocked(shard, tok, m.generation) {
+		if !isSharedHostsPath || checkDiskFileOwnership(ns, cleanKey, filePath) {
+			if m.ramEnabled.Load() && !m.ramCache.Contains(ramKey) {
+				m.ramCache.SetProbation(ramKey, item)
+				admitted = true
+			}
+		}
+	}
+	shard.mu.Unlock()
+	m.persistMu.RUnlock()
+	return admitted
 }
 
 // TouchRAMWithNamespace touches the item in RAM cache, promoting it to Protected if it was in Probation.
@@ -1499,8 +1588,8 @@ func (m *Manager) loadAndValidateDiskItemWithToken(ns string, cleanKey string, f
 	contentType = resolveContentType(contentType, filePath)
 
 	validContent := false
-	if extVerified && len(data) >= 2 && data[0] == 0x1f && data[1] == 0x8b {
-		// This file previously passed full Gzip stream + inner magic/HTML validation
+	if extVerified {
+		// This file previously passed full cache validation (IsValidCacheContent)
 		// and its physical size + mtimeNano still match the verified metadata.
 		validContent = !strings.Contains(strings.ToLower(contentType), "text/html")
 	} else {

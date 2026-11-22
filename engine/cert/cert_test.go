@@ -217,3 +217,40 @@ func TestCertManager_ECDSALeafAndSessionResumptionAndALPN(t *testing.T) {
 	}
 }
 
+func TestCertManager_SharedTLSConfigAndPrewarmHotDomains(t *testing.T) {
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	cfg1 := mgr.GetTLSConfig()
+	cfg2 := mgr.GetTLSConfig()
+	if cfg1 != cfg2 {
+		t.Fatal("expected GetTLSConfig to return shared immutable *tls.Config pointer without per-CONNECT cloning")
+	}
+
+	hosts := []string{
+		"game.granbluefantasy.jp",
+		"prd-game-a1-granbluefantasy.akamaized.net",
+		"",
+	}
+	mgr.PrewarmHotDomains(hosts)
+
+	mgr.mu.RLock()
+	_, ok1 := mgr.certCache["game.granbluefantasy.jp"]
+	_, ok2 := mgr.certCache["prd-game-a1-granbluefantasy.akamaized.net"]
+	mgr.mu.RUnlock()
+	if !ok1 || !ok2 {
+		t.Fatalf("expected hot domains prewarmed in certCache, got ok1=%v ok2=%v", ok1, ok2)
+	}
+
+	// RegenerateCA must publish a new *tls.Config pointer and clear stale cached certs.
+	if err := mgr.RegenerateCA(); err != nil {
+		t.Fatalf("RegenerateCA: %v", err)
+	}
+	cfg3 := mgr.GetTLSConfig()
+	if cfg3 == cfg1 {
+		t.Fatal("expected RegenerateCA to replace base *tls.Config with a fresh instance")
+	}
+}
+
