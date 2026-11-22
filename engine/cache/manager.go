@@ -89,6 +89,7 @@ type Manager struct {
 	metaIndexSaveMu           sync.Mutex
 	metaIndexDirty            atomic.Bool
 	metaIndexLoaded           atomic.Bool
+	metaIndexComplete         atomic.Bool
 	metaWritesSinceFlush      atomic.Int64
 	metaPeriodicFlushInFlight atomic.Bool
 	metaBackfillStarted       atomic.Bool
@@ -479,8 +480,13 @@ func (m *Manager) resetVolatileState(reason string) {
 	m.clearTempTokens()
 	m.invalidateSnapshots(reason)
 	m.metaIndexLoaded.Store(false)
+	m.metaIndexComplete.Store(false)
 	m.metaIndexDirty.Store(false)
 	m.metaBackfillStarted.Store(false)
+}
+
+func (m *Manager) isMetaIndexComplete() bool {
+	return m.metaIndexComplete.Load()
 }
 
 func (m *Manager) SetRAMEnabled(enabled bool) {

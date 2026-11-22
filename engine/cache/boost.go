@@ -129,7 +129,7 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 
 	versionSet := make(map[int64]struct{}, 32)
 	usedMetaIndex := false
-	if m.metaIndexLoaded.Load() && m.diskMetaCount() > 0 {
+	if m.isMetaIndexComplete() && m.diskMetaCount() > 0 {
 		usedMetaIndex = true
 		for i := range m.diskMetaShards {
 			if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
@@ -713,6 +713,11 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 		}
 	} else if state == BoostStateCompleted {
 		msg = fmt.Sprintf("已全量载入 %d 项有效素材", loadedFiles)
+	}
+
+	if state == BoostStateCompleted && !usedMetaIndex && !disabledDuringScan && !cancelledDuringScan {
+		m.metaIndexComplete.Store(true)
+		_ = m.saveMetaIndex(false)
 	}
 
 	finalProgress := BoostProgress{

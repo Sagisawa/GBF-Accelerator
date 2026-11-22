@@ -1,6 +1,10 @@
 package cache
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -164,4 +168,232 @@ func TestMetaIndex_OrphanTempCleanedAndConcurrentFlushClose(t *testing.T) {
 	if metaItem == nil || src != "DISK" || metaItem.ETag != `"final1"` {
 		t.Fatalf("expected meta index flushed cleanly on Close(), got item=%v src=%q", metaItem, src)
 	}
+}
+
+func TestMetaIndex_V1LegacyIncompleteAndV2CompleteMigration(t *testing.T) {
+	base := t.TempDir()
+
+	// 1. Create 3 physical asset files on disk with valid .ext metadata
+	m0 := NewManager(base, 16)
+	pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89item")
+	if !m0.Save("/assets/1795000000/img/item1.png", map[string]string{"content-type": "image/png", "etag": `"it1"`}, pngData) {
+		t.Fatal("save item1 failed")
+	}
+	if !m0.Save("/assets/1795000000/img/item2.png", map[string]string{"content-type": "image/png", "etag": `"it2"`}, pngData) {
+		t.Fatal("save item2 failed")
+	}
+	if !m0.Save("/assets/1795000000/img/item3.png", map[string]string{"content-type": "image/png", "etag": `"it3"`}, pngData) {
+		t.Fatal("save item3 failed")
+	}
+	m0.Close()
+
+	// 2. Synthesize an incomplete V1 legacy snapshot containing ONLY item1
+	indexPath := filepath.Join(base, MetaIndexFileName)
+	_ = os.Remove(indexPath)
+
+	p1, _ := m0.ResolvePathWithNamespace("gbf", "/assets/1795000000/img/item1.png")
+	fi1, err := os.Stat(p1)
+	if err != nil {
+		t.Fatalf("stat item1: %v", err)
+	}
+
+	rawV1 := writeTestMetaIndexV1([]testIndexKV{
+		{
+			key:       "assets/1795000000/img/item1.png",
+			namespace: "gbf",
+			entry: diskMetaEntry{
+				mtimeNano:       fi1.ModTime().UnixNano(),
+				size:            fi1.Size(),
+				accessTime:      fi1.ModTime().Unix(),
+				contentType:     "image/png",
+				contentEncoding: "",
+				etag:            `"it1"`,
+				exists:          true,
+				hasMeta:         true,
+				verified:        true,
+			},
+		},
+	})
+	if err := os.WriteFile(indexPath, rawV1, 0644); err != nil {
+		t.Fatalf("write rawV1 index: %v", err)
+	}
+
+	// 3. Load with Manager: verify V1 loads item1, but metaIndexComplete is FALSE
+	m1 := NewManager(base, 16)
+	m1.waitMetaIndexLoad(0)
+	if !m1.metaIndexLoaded.Load() {
+		t.Fatal("expected metaIndexLoaded to be true from V1 index")
+	}
+	if m1.isMetaIndexComplete() {
+		t.Fatal("expected legacy V1 index to NOT be certified complete (metaIndexComplete=false)")
+	}
+	if m1.diskMetaCount() != 1 {
+		t.Fatalf("expected 1 item in diskMetaShards from V1 index, got %d", m1.diskMetaCount())
+	}
+
+	// 4. Run BackfillMetaIndex: verify it fills remaining items and marks complete
+	added := m1.BackfillMetaIndex(nil, nil)
+	if added != 2 {
+		t.Fatalf("expected 2 newly discovered items from backfill, got %d", added)
+	}
+	if !m1.isMetaIndexComplete() {
+		t.Fatal("expected metaIndexComplete=true after full backfill")
+	}
+	if m1.diskMetaCount() != 3 {
+		t.Fatalf("expected all 3 items indexed in memory, got %d", m1.diskMetaCount())
+	}
+	m1.Close()
+
+	// 5. Verify the persisted index on disk was upgraded to V2 with FlagMetaIndexComplete
+	rawV2, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read upgraded index: %v", err)
+	}
+	if len(rawV2) < 20 {
+		t.Fatalf("upgraded index too short: %d bytes", len(rawV2))
+	}
+	ver := binary.LittleEndian.Uint32(rawV2[8:12])
+	if ver != MetaIndexVersion2 {
+		t.Fatalf("expected index version 2, got %d", ver)
+	}
+	flags := binary.LittleEndian.Uint32(rawV2[12:16])
+	if flags&FlagMetaIndexComplete == 0 {
+		t.Fatalf("expected FlagMetaIndexComplete in flags, got %d", flags)
+	}
+	count := binary.LittleEndian.Uint32(rawV2[16:20])
+	if count != 3 {
+		t.Fatalf("expected 3 items in V2 index, got %d", count)
+	}
+
+	// 6. Cold-start a new manager: verify it reads V2 index and immediately has metaIndexComplete=true
+	m2 := NewManager(base, 16)
+	defer m2.Close()
+	m2.waitMetaIndexLoad(0)
+	if !m2.isMetaIndexComplete() {
+		t.Fatal("expected m2 to load V2 index as certified complete")
+	}
+	if m2.diskMetaCount() != 3 {
+		t.Fatalf("expected 3 items in m2, got %d", m2.diskMetaCount())
+	}
+}
+
+func TestBoost_WalkDirFallbackWhenIndexIncomplete(t *testing.T) {
+	base := t.TempDir()
+
+	// 1. Create 4 physical asset files on disk
+	m0 := NewManager(base, 16)
+	jsData := []byte("console.log('boost-test');")
+	for i := 1; i <= 4; i++ {
+		key := fmt.Sprintf("/assets/1795000000/js/file%d.js", i)
+		if !m0.Save(key, map[string]string{"content-type": "application/javascript", "etag": fmt.Sprintf(`"f%d"`, i)}, jsData) {
+			t.Fatalf("save file %d failed", i)
+		}
+	}
+	m0.Close()
+
+	// 2. Synthesize an incomplete V1 index containing only file1 (1 item)
+	indexPath := filepath.Join(base, MetaIndexFileName)
+	_ = os.Remove(indexPath)
+
+	p1, _ := m0.ResolvePathWithNamespace("gbf", "/assets/1795000000/js/file1.js")
+	fi1, _ := os.Stat(p1)
+	rawV1 := writeTestMetaIndexV1([]testIndexKV{
+		{
+			key:       "assets/1795000000/js/file1.js",
+			namespace: "gbf",
+			entry: diskMetaEntry{
+				mtimeNano:   fi1.ModTime().UnixNano(),
+				size:        fi1.Size(),
+				accessTime:  fi1.ModTime().Unix(),
+				contentType: "application/javascript",
+				etag:        `"f1"`,
+				exists:      true,
+				hasMeta:     true,
+				verified:    true,
+			},
+		},
+	})
+	if err := os.WriteFile(indexPath, rawV1, 0644); err != nil {
+		t.Fatalf("write rawV1 index: %v", err)
+	}
+
+	// 3. Start manager with ample budget (e.g. 50MB for ~100 bytes of files)
+	m := NewManager(base, 50)
+	defer m.Close()
+	m.waitMetaIndexLoad(0)
+	if m.isMetaIndexComplete() {
+		t.Fatal("expected index to be incomplete")
+	}
+	if m.diskMetaCount() != 1 {
+		t.Fatalf("expected only 1 item in memory index, got %d", m.diskMetaCount())
+	}
+
+	// 4. Run RAM Boost: verify it does NOT blindly stop at 1 file, but walks the disk
+	// and loads all 4 files into the Resident Pool.
+	prog := m.PrewarmBoostPoolWithProgress(nil, nil, nil)
+	if prog.State != BoostStateCompleted {
+		t.Fatalf("expected BoostStateCompleted, got %s (message=%s)", prog.State, prog.Message)
+	}
+	if prog.LoadedFiles != 4 {
+		t.Fatalf("expected 4 files loaded by Boost through WalkDir fallback, got %d (total=%d)", prog.LoadedFiles, prog.TotalFiles)
+	}
+
+	// 5. Verify all 4 files are resident in RAM
+	for i := 1; i <= 4; i++ {
+		key := fmt.Sprintf("/assets/1795000000/js/file%d.js", i)
+		if item, src := m.GetWithNamespace("gbf", key); item == nil || src != "RAM-BOOST" {
+			t.Fatalf("expected file %d to be resident in RAM, got item=%v src=%q", i, item, src)
+		}
+	}
+
+	// 6. Verify metaIndexComplete was set to true upon full Boost completion
+	if !m.isMetaIndexComplete() {
+		t.Fatal("expected metaIndexComplete=true after full Boost completion")
+	}
+}
+
+type testIndexKV struct {
+	key       string
+	namespace string
+	entry     diskMetaEntry
+}
+
+func writeTestMetaIndexV1(items []testIndexKV) []byte {
+	var buf bytes.Buffer
+	buf.Write(metaIndexMagic[:])
+	var hdr [8]byte
+	binary.LittleEndian.PutUint32(hdr[0:4], 1) // Version 1
+	binary.LittleEndian.PutUint32(hdr[4:8], uint32(len(items)))
+	buf.Write(hdr[:])
+
+	for _, it := range items {
+		writeStringLP(&buf, it.key)
+		writeStringLP(&buf, it.namespace)
+		var nums [24]byte
+		binary.LittleEndian.PutUint64(nums[0:8], uint64(it.entry.mtimeNano))
+		binary.LittleEndian.PutUint64(nums[8:16], uint64(it.entry.size))
+		binary.LittleEndian.PutUint64(nums[16:24], uint64(it.entry.accessTime))
+		buf.Write(nums[:])
+		writeStringLP(&buf, it.entry.contentType)
+		writeStringLP(&buf, it.entry.contentEncoding)
+		writeStringLP(&buf, it.entry.etag)
+		writeStringLP(&buf, it.entry.lastModified)
+		var flags byte
+		if it.entry.exists {
+			flags |= 1
+		}
+		if it.entry.hasMeta {
+			flags |= 2
+		}
+		if it.entry.verified {
+			flags |= 4
+		}
+		_ = buf.WriteByte(flags)
+	}
+
+	crc := crc32.ChecksumIEEE(buf.Bytes())
+	var crcBuf [4]byte
+	binary.LittleEndian.PutUint32(crcBuf[:], crc)
+	buf.Write(crcBuf[:])
+	return buf.Bytes()
 }
