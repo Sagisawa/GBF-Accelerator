@@ -2223,78 +2223,139 @@ func (s *ProxyServer) handleStaticAsset(w io.Writer, req *http.Request, targetHo
 	return s.handleStaticAssetLower(w, req, targetHost, strings.ToLower(req.URL.Path))
 }
 
+// isCleanFastStaticRequest performs a single-pass zero-allocation ASCII check for
+// standard lowercase GBF static asset URLs. When it returns true, the request is
+// guaranteed free of percent-encoding, uppercase characters, path traversal (".."),
+// backslashes, colons in path/host, and blocked path keywords ("windows", "passwd"),
+// allowing handleStaticAssetLower to skip redundant unescape/ToLower/substring scans.
+// Any unusual input falls back to the full strict validator.
+func isCleanFastStaticRequest(reqURI, urlPath, targetHost string) bool {
+	if len(urlPath) == 0 || urlPath[0] != '/' {
+		return false
+	}
+	if len(reqURI) > 0 {
+		if reqURI[0] != '/' || (len(reqURI) >= 2 && reqURI[1] == '/') {
+			return false
+		}
+	}
+	for i := 0; i < len(targetHost); i++ {
+		c := targetHost[i]
+		if c == ':' || c == '[' || c == ']' {
+			return false
+		}
+	}
+	var prev byte
+	for i := 0; i < len(urlPath); i++ {
+		c := urlPath[i]
+		if c == '?' {
+			break
+		}
+		if c == '%' || c == '\\' || c == ':' || (c >= 'A' && c <= 'Z') || (c == '.' && prev == '.') {
+			return false
+		}
+		prev = c
+	}
+	if strings.Contains(urlPath, "windows") || strings.Contains(urlPath, "passwd") {
+		return false
+	}
+	if reqURI != "" && reqURI != urlPath {
+		prev = 0
+		inQuery := false
+		for i := 0; i < len(reqURI); i++ {
+			c := reqURI[i]
+			if c == '?' {
+				inQuery = true
+				prev = c
+				continue
+			}
+			if c == '%' || c == '\\' || (c >= 'A' && c <= 'Z') || (c == '.' && prev == '.') || (!inQuery && c == ':') {
+				return false
+			}
+			prev = c
+		}
+		if strings.Contains(reqURI, "windows") || strings.Contains(reqURI, "passwd") {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *ProxyServer) handleStaticAssetLower(w io.Writer, req *http.Request, targetHost, pathLower string) bool {
 	cleanPath, _, _ := strings.Cut(req.URL.Path, "?")
 
-	// Security: Reject path traversal sequences immediately
-	// Extract the path portion from raw req.RequestURI before unescaping
-	// (so that query parameters like ?t=12:34:56 do not falsely trigger colon checks,
-	// and encoded %3F in path is not confused with query delimiter).
-	rawURIPath, _, _ := strings.Cut(req.RequestURI, "?")
-	rawURIPath, _, _ = strings.Cut(rawURIPath, "#")
+	// Security: Reject path traversal sequences immediately.
+	// Standard lowercase ASCII GBF asset paths take the zero-allocation fast check;
+	// any percent-encoded, mixed-case, colon, or non-standard path runs full validation.
+	if !isCleanFastStaticRequest(req.RequestURI, req.URL.Path, targetHost) {
+		// Extract the path portion from raw req.RequestURI before unescaping
+		// (so that query parameters like ?t=12:34:56 do not falsely trigger colon checks,
+		// and encoded %3F in path is not confused with query delimiter).
+		rawURIPath, _, _ := strings.Cut(req.RequestURI, "?")
+		rawURIPath, _, _ = strings.Cut(rawURIPath, "#")
 
-	if idx := strings.Index(rawURIPath, "://"); idx != -1 {
-		afterScheme := rawURIPath[idx+3:]
-		if slashIdx := strings.Index(afterScheme, "/"); slashIdx != -1 {
-			rawURIPath = afterScheme[slashIdx:]
-		} else {
-			rawURIPath = "/"
-		}
-	} else if strings.HasPrefix(rawURIPath, "//") {
-		afterSlashes := strings.TrimPrefix(rawURIPath, "//")
-		if slashIdx := strings.Index(afterSlashes, "/"); slashIdx != -1 {
-			rawURIPath = afterSlashes[slashIdx:]
-		} else {
-			rawURIPath = "/"
-		}
-	}
-
-	unescapedPath, _ := url.PathUnescape(rawURIPath)
-	unescapedURI, _ := url.PathUnescape(req.RequestURI)
-
-	thHost := targetHost
-	thHostHasColon := false
-	if strings.IndexByte(targetHost, ':') != -1 {
-		if hp, port, err := net.SplitHostPort(targetHost); err == nil {
-			thHost = hp
-			if _, pErr := strconv.Atoi(port); pErr != nil {
-				thHostHasColon = true
+		if idx := strings.Index(rawURIPath, "://"); idx != -1 {
+			afterScheme := rawURIPath[idx+3:]
+			if slashIdx := strings.Index(afterScheme, "/"); slashIdx != -1 {
+				rawURIPath = afterScheme[slashIdx:]
+			} else {
+				rawURIPath = "/"
 			}
-			if port == "80" || port == "443" {
-				targetHost = hp
+		} else if strings.HasPrefix(rawURIPath, "//") {
+			afterSlashes := strings.TrimPrefix(rawURIPath, "//")
+			if slashIdx := strings.Index(afterSlashes, "/"); slashIdx != -1 {
+				rawURIPath = afterSlashes[slashIdx:]
+			} else {
+				rawURIPath = "/"
 			}
 		}
-	}
-	thHost = strings.Trim(thHost, "[]")
-	if strings.Contains(thHost, ":") && net.ParseIP(thHost) == nil {
-		thHostHasColon = true
-	}
 
-	unescapedLower := strings.ToLower(unescapedURI)
-	unescapedPathLower := strings.ToLower(unescapedPath)
-	reqURILower := strings.ToLower(req.RequestURI)
-	cleanLower := pathLower
-	if cleanPath != req.URL.Path {
-		cleanLower = strings.ToLower(cleanPath)
-	}
-	if strings.Contains(req.RequestURI, "..") ||
-		strings.Contains(req.URL.Path, "..") ||
-		strings.Contains(unescapedURI, "..") ||
-		isBlockedWindowsPathLower(reqURILower) ||
-		isBlockedWindowsPathLower(pathLower) ||
-		isBlockedWindowsPathLower(unescapedLower) ||
-		isBlockedWindowsPathLower(unescapedPathLower) ||
-		strings.Contains(reqURILower, "passwd") ||
-		strings.Contains(pathLower, "passwd") ||
-		strings.Contains(unescapedLower, "passwd") ||
-		strings.Contains(cleanPath, ":") ||
-		strings.Contains(unescapedPath, ":") ||
-		thHostHasColon ||
-		strings.HasPrefix(cleanLower, "\\") ||
-		strings.HasPrefix(unescapedLower, "\\") ||
-		strings.HasPrefix(unescapedPathLower, "\\") {
-		writeHTTPResponse(w, http.StatusBadRequest, nil, nil, req.Method == http.MethodHead, req.Close)
-		return !req.Close
+		unescapedPath, _ := url.PathUnescape(rawURIPath)
+		unescapedURI, _ := url.PathUnescape(req.RequestURI)
+
+		thHost := targetHost
+		thHostHasColon := false
+		if strings.IndexByte(targetHost, ':') != -1 {
+			if hp, port, err := net.SplitHostPort(targetHost); err == nil {
+				thHost = hp
+				if _, pErr := strconv.Atoi(port); pErr != nil {
+					thHostHasColon = true
+				}
+				if port == "80" || port == "443" {
+					targetHost = hp
+				}
+			}
+		}
+		thHost = strings.Trim(thHost, "[]")
+		if strings.Contains(thHost, ":") && net.ParseIP(thHost) == nil {
+			thHostHasColon = true
+		}
+
+		unescapedLower := strings.ToLower(unescapedURI)
+		unescapedPathLower := strings.ToLower(unescapedPath)
+		reqURILower := strings.ToLower(req.RequestURI)
+		cleanLower := pathLower
+		if cleanPath != req.URL.Path {
+			cleanLower = strings.ToLower(cleanPath)
+		}
+		if strings.Contains(req.RequestURI, "..") ||
+			strings.Contains(req.URL.Path, "..") ||
+			strings.Contains(unescapedURI, "..") ||
+			isBlockedWindowsPathLower(reqURILower) ||
+			isBlockedWindowsPathLower(pathLower) ||
+			isBlockedWindowsPathLower(unescapedLower) ||
+			isBlockedWindowsPathLower(unescapedPathLower) ||
+			strings.Contains(reqURILower, "passwd") ||
+			strings.Contains(pathLower, "passwd") ||
+			strings.Contains(unescapedLower, "passwd") ||
+			strings.Contains(cleanPath, ":") ||
+			strings.Contains(unescapedPath, ":") ||
+			thHostHasColon ||
+			strings.HasPrefix(cleanLower, "\\") ||
+			strings.HasPrefix(unescapedLower, "\\") ||
+			strings.HasPrefix(unescapedPathLower, "\\") {
+			writeHTTPResponse(w, http.StatusBadRequest, nil, nil, req.Method == http.MethodHead, req.Close)
+			return !req.Close
+		}
 	}
 
 	s.stats.IncAsset()
@@ -2396,6 +2457,9 @@ func (s *ProxyServer) serveStaticAssetCore(w io.Writer, req *http.Request, targe
 		if item.Data != nil {
 			// GET request: body is loaded (RAM hit or loaded disk item), send fast
 			s.sendCachedAssetResponseFast(w, item, false, req.URL.Path, req.Close)
+			if s.prefetch != nil && len(item.Data) >= 2 && (strings.HasSuffix(cleanPath, ".js") || strings.HasSuffix(cleanPath, ".json")) {
+				s.prefetch.MaybeEnqueueDiscovery(targetHost, req.URL.Path, item.Data)
+			}
 			return !req.Close
 		}
 

@@ -179,6 +179,22 @@ func (s *lruShard) setMaxBytes(maxBytes int64) {
 }
 
 func (s *lruShard) get(key string) (*CacheItem, bool) {
+	// Fast read-lock path: misses, already-at-head Protected hits, and Protected
+	// hits when the Protected segment has ample headroom (no eviction pressure)
+	// avoid exclusive write-lock contention under high HTTP/2 concurrency.
+	s.mu.RLock()
+	node, ok := s.items[key]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, false
+	}
+	if node.isProtected && (s.protHead.next == node || (s.protMaxBytes > 0 && s.protBytes <= s.protMaxBytes/2)) {
+		item := node.item
+		s.mu.RUnlock()
+		return item, true
+	}
+	s.mu.RUnlock()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
