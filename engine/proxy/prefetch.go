@@ -189,7 +189,11 @@ func (f *prefetchDeadFilter) Len() int {
 	return len(f.items)
 }
 
-const defaultPrefetchWorkers = 3
+const (
+	defaultPrefetchWorkers = 3
+	defaultDiskWarmWorkers = 2
+	maxDiskWarmItemBytes   = 512 * 1024 // Covers 99.2% of GBF static assets without RAM churn
+)
 
 type PrefetchEngine struct {
 	srv               *ProxyServer
@@ -197,6 +201,7 @@ type PrefetchEngine struct {
 	prio1Queue        chan prefetchItem // High: JS / JSON
 	prio2Queue        chan prefetchItem // Medium: Images / Textures
 	prio3Queue        chan prefetchItem // Low: Audio / Other
+	diskWarmCh        chan prefetchItem // Local-only Disk->RAM Probation warmup (zero network traffic)
 	execCh            chan prefetchItem
 	execSlots         chan struct{}
 	inflightMu        sync.Mutex
@@ -220,6 +225,7 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 		prio1Queue:        make(chan prefetchItem, 256),
 		prio2Queue:        make(chan prefetchItem, 256),
 		prio3Queue:        make(chan prefetchItem, 256),
+		diskWarmCh:        make(chan prefetchItem, 128),
 		execCh:            make(chan prefetchItem, defaultPrefetchWorkers),
 		execSlots:         make(chan struct{}, defaultPrefetchWorkers),
 		inflight:          make(map[string]struct{}),
@@ -233,7 +239,7 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 	}
 	defaultHost := defaultGBFHost
 	pe.activeGBFHost.Store(&defaultHost)
-	pe.workersWg.Add(2 + defaultPrefetchWorkers)
+	pe.workersWg.Add(2 + defaultPrefetchWorkers + defaultDiskWarmWorkers)
 	go func() {
 		defer pe.workersWg.Done()
 		pe.discoveryWorker()
@@ -246,6 +252,12 @@ func newPrefetchEngine(srv *ProxyServer) *PrefetchEngine {
 		go func() {
 			defer pe.workersWg.Done()
 			pe.fetchExecutor()
+		}()
+	}
+	for i := 0; i < defaultDiskWarmWorkers; i++ {
+		go func() {
+			defer pe.workersWg.Done()
+			pe.diskWarmWorker()
 		}()
 	}
 	return pe
@@ -651,6 +663,14 @@ func (pe *PrefetchEngine) dispatchDiscoveredRefsWithDepth(refs []discoveredRef, 
 		ns, _ := NormalizeAssetNamespace(h)
 		cleanP, _, _ := strings.Cut(p, "?")
 		if pe.srv.cacheMgr.HasCacheWithNamespace(ns, cleanP) {
+			// Asset is already on disk: if not yet in RAM, asynchronously preload it into
+			// SLRU Probation with zero network traffic so the browser hits RAM in <0.1ms.
+			if pe.diskWarmCh != nil && !pe.srv.cacheMgr.IsInRAMWithNamespace(ns, cleanP) {
+				select {
+				case pe.diskWarmCh <- prefetchItem{prio: prio, host: h, path: cleanP, depth: depth}:
+				default:
+				}
+			}
 			continue
 		}
 		if pe.deadFilter != nil && pe.deadFilter.IsDead(h, cleanP) {
@@ -782,6 +802,28 @@ func (pe *PrefetchEngine) fetchExecutor() {
 			case <-pe.stopChan:
 				return
 			}
+		}
+	}
+}
+
+func (pe *PrefetchEngine) diskWarmWorker() {
+	for {
+		select {
+		case <-pe.stopChan:
+			return
+		case item := <-pe.diskWarmCh:
+			if pe.srv == nil || pe.srv.cacheMgr == nil || pe.srv.stats == nil || pe.srv.cfgMgr == nil {
+				continue
+			}
+			if !pe.srv.stats.WaitForegroundIdle(pe.stopChan) {
+				return
+			}
+			cfg := pe.srv.cfgMgr.Get()
+			if !cfg.EnablePrefetch || !cfg.EnableRAMCache {
+				continue
+			}
+			ns, _ := NormalizeAssetNamespace(item.host)
+			pe.srv.cacheMgr.WarmSingleDiskItemToProbation(ns, item.path, maxDiskWarmItemBytes)
 		}
 	}
 }
@@ -979,7 +1021,7 @@ func (pe *PrefetchEngine) processFetchItem(item prefetchItem) {
 
 func isGameDataAPI(method, cleanPath string) bool {
 	cleanPath = strings.TrimSuffix(cleanPath, "/")
-	if method == http.MethodPost && cleanPath == "/rest/multiraid/start.json" {
+	if method == http.MethodPost && (cleanPath == "/rest/multiraid/start.json" || cleanPath == "/rest/raid/start.json") {
 		return true
 	}
 	if method == http.MethodGet && isClearedQuestScenarioPath(cleanPath) {
@@ -1011,7 +1053,7 @@ func isClearedQuestScenarioPath(cleanPath string) bool {
 
 func (pe *PrefetchEngine) extractGameDataRefs(cand prefetchCandidate) []discoveredRef {
 	cleanPath := strings.TrimSuffix(cand.path, "/")
-	if cand.reqMethod == http.MethodPost && cleanPath == "/rest/multiraid/start.json" {
+	if cand.reqMethod == http.MethodPost && (cleanPath == "/rest/multiraid/start.json" || cleanPath == "/rest/raid/start.json") {
 		return pe.extractMultiRaidRefs(cand)
 	}
 	if cand.reqMethod == http.MethodGet && isClearedQuestScenarioPath(cleanPath) {

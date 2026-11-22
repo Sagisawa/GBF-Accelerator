@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gbf-proxy/config"
@@ -80,7 +82,12 @@ type boostCandidate struct {
 	cleanKey string
 	ramKey   string
 	fileSize int64
+	recency  int64
+	version  int64
+	tier     int
 }
+
+const boostReadWorkers = 4
 
 // DisableBoost deactivates RAM Boost, clears all items from the Resident Pool, releases occupied
 // resident memory back to the SLRU cache, and restores the SLRU max capacity.
@@ -116,49 +123,148 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 	disabledDuringScan := false
 
 	// Pass 1: Disk Cache Discovery & Filtration
-	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
-		if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
-			disabledDuringScan = true
-			return filepath.SkipAll
-		}
-		select {
-		case <-cancelCh:
-			cancelledDuringScan = true
-			return filepath.SkipAll
-		default:
-		}
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		baseName := d.Name()
-		if baseName == RootMarkerFileName || baseName == MetaIndexFileName || config.IsSystemJunk(baseName) {
-			return nil
-		}
-		// Rule VII: Strictly exclude .ext, .tmp.*, .quarantine
-		if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || IsAcceleratorQuarantineFile(p) {
-			return nil
-		}
+	// Prefer in-memory metadata snapshot (.gbf_meta_index.v1) to skip costly full-disk
+	// WalkDir when available; fall back to WalkDir for unindexed cache directories.
+	m.waitMetaIndexLoad(1500 * time.Millisecond)
 
-		ns, cleanKey, ramKey, ok := resolveDiskFileOwner(base, p)
-		if !ok {
-			return nil
+	versionSet := make(map[int64]struct{}, 32)
+	usedMetaIndex := false
+	if m.metaIndexLoaded.Load() && m.diskMetaCount() > 0 {
+		usedMetaIndex = true
+		for i := range m.diskMetaShards {
+			if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
+				disabledDuringScan = true
+				break
+			}
+			select {
+			case <-cancelCh:
+				cancelledDuringScan = true
+			default:
+			}
+			if cancelledDuringScan {
+				break
+			}
+			shard := &m.diskMetaShards[i]
+			shard.mu.RLock()
+			for ramKey, meta := range shard.items {
+				if !meta.exists || !meta.hasMeta || meta.size <= 0 {
+					continue
+				}
+				ns := sanitizeNamespace(meta.namespace)
+				cleanKey := ramKey
+				if ns != "gbf" {
+					prefix := ns + "\x00"
+					if strings.HasPrefix(ramKey, prefix) {
+						cleanKey = ramKey[len(prefix):]
+					}
+				}
+				filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
+				if !ok {
+					continue
+				}
+				ver := extractWarmupVersion(strings.ToLower(cleanKey))
+				if ver > 0 {
+					versionSet[ver] = struct{}{}
+				}
+				recency := meta.mtimeNano
+				if atNano := meta.accessTime * int64(time.Second); atNano > recency {
+					recency = atNano
+				}
+				candidates = append(candidates, boostCandidate{
+					filePath: filePath,
+					ns:       ns,
+					cleanKey: cleanKey,
+					ramKey:   ramKey,
+					fileSize: meta.size,
+					recency:  recency,
+					version:  ver,
+				})
+				totalPayloadBytes += meta.size
+			}
+			shard.mu.RUnlock()
 		}
+	}
 
-		info, err := d.Info()
-		if err != nil || info.Size() == 0 {
+	if !usedMetaIndex {
+		_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
+			if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
+				disabledDuringScan = true
+				return filepath.SkipAll
+			}
+			select {
+			case <-cancelCh:
+				cancelledDuringScan = true
+				return filepath.SkipAll
+			default:
+			}
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			baseName := d.Name()
+			if baseName == RootMarkerFileName || baseName == MetaIndexFileName || config.IsSystemJunk(baseName) {
+				return nil
+			}
+			// Rule VII: Strictly exclude .ext, .tmp.*, .quarantine
+			if strings.HasSuffix(p, ".ext") || strings.Contains(p, ".tmp.") || IsAcceleratorQuarantineFile(p) {
+				return nil
+			}
+
+			ns, cleanKey, ramKey, ok := resolveDiskFileOwner(base, p)
+			if !ok {
+				return nil
+			}
+
+			info, err := d.Info()
+			if err != nil || info.Size() == 0 {
+				return nil
+			}
+
+			ver := extractWarmupVersion(strings.ToLower(cleanKey))
+			if ver > 0 {
+				versionSet[ver] = struct{}{}
+			}
+			candidates = append(candidates, boostCandidate{
+				filePath: p,
+				ns:       ns,
+				cleanKey: cleanKey,
+				ramKey:   ramKey,
+				fileSize: info.Size(),
+				recency:  info.ModTime().UnixNano(),
+				version:  ver,
+			})
+			totalPayloadBytes += info.Size()
 			return nil
-		}
-
-		candidates = append(candidates, boostCandidate{
-			filePath: p,
-			ns:       ns,
-			cleanKey: cleanKey,
-			ramKey:   ramKey,
-			fileSize: info.Size(),
 		})
-		totalPayloadBytes += info.Size()
-		return nil
-	})
+	}
+
+	if len(candidates) > 1 && !disabledDuringScan && !cancelledDuringScan {
+		topVersions := make(map[int64]bool, 3)
+		if len(versionSet) > 0 {
+			vers := make([]int64, 0, len(versionSet))
+			for v := range versionSet {
+				vers = append(vers, v)
+			}
+			sort.Slice(vers, func(i, j int) bool { return vers[i] > vers[j] })
+			for i := 0; i < len(vers) && i < 3; i++ {
+				topVersions[vers[i]] = true
+			}
+		}
+		for i := range candidates {
+			candidates[i].tier = classifyWarmupTier(strings.ToLower(candidates[i].cleanKey), candidates[i].version, topVersions)
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].tier != candidates[j].tier {
+				return candidates[i].tier > candidates[j].tier
+			}
+			if candidates[i].version != candidates[j].version {
+				return candidates[i].version > candidates[j].version
+			}
+			if candidates[i].fileSize != candidates[j].fileSize {
+				return candidates[i].fileSize < candidates[j].fileSize
+			}
+			return candidates[i].cleanKey < candidates[j].cleanKey
+		})
+	}
 
 	if disabledDuringScan || m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
 		res := BoostProgress{
@@ -281,43 +387,50 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 			break
 		}
 
-		// f. Process single sequential batch
+		// f. Process batch with bounded concurrent disk readers while keeping
+		// budget accounting and ResidentPool commits strictly serialized.
 		batchEnd := candidateIdx + batchSize
 		if batchEnd > totalCandidates {
 			batchEnd = totalCandidates
 		}
 
+		type boostJob struct {
+			idx          int
+			c            boostCandidate
+			acquireBytes int64
+			tok          opToken
+		}
+		type boostReadResult struct {
+			item      *CacheItem
+			err       error
+			yieldedFG bool
+			aborted   bool
+		}
+
+		jobs := make([]boostJob, 0, batchEnd-candidateIdx)
 		stoppedByBudget = false
 		for i := candidateIdx; i < batchEnd; i++ {
-			// Check if generation invalidated or boost disabled externally before reading
 			if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
 				state = BoostStateDisabled
 				break
 			}
-
-			// Check cancel at single-file boundary
 			select {
 			case <-cancelCh:
 				state = BoostStateCancelled
-				break
 			default:
 			}
 			if state == BoostStateCancelled {
 				break
 			}
-
-			// Check fg at single-file boundary
 			if fg != nil && !fg.IsForegroundIdle() {
-				break // yield to outer loop to trigger WaitForegroundIdle
+				break
 			}
 
 			c := candidates[i]
-			candidateIdx = i + 1
-
 			shard := m.residentPool.getShard(c.ramKey)
 			existing, exists := shard.get(c.ramKey)
 			if exists && existing != nil && existing.Size == c.fileSize {
-				// Already resident in snapshot with identical size: count as loaded without re-reading or double-acquiring budget
+				candidateIdx = i + 1
 				loadedFiles++
 				loadedBytes += existing.Size
 				continue
@@ -327,8 +440,6 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 			if exists && existing != nil {
 				acquireBytes = c.fileSize - existing.Size
 			}
-
-			// Check and reserve budget before reading file
 			if acquireBytes > 0 && m.ramBudget != nil {
 				if !m.residentPool.TryAcquireBudget(acquireBytes, workerGen) {
 					state = BoostStatePartial
@@ -337,82 +448,182 @@ func (m *Manager) PrewarmBoostPoolWithProgress(fg ForegroundWaiter, progressCb f
 				}
 			}
 
-			// Unified validation and loading path (Section IV)
-			tok := m.acquireOpToken(c.ns, c.cleanKey)
-			item, err := m.loadAndValidateDiskItemWithToken(c.ns, c.cleanKey, c.filePath, tok)
+			candidateIdx = i + 1
+			jobs = append(jobs, boostJob{
+				idx:          i,
+				c:            c,
+				acquireBytes: acquireBytes,
+				tok:          m.acquireOpToken(c.ns, c.cleanKey),
+			})
+		}
 
-			// Re-verify generation/enabled immediately after file read
-			if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
-				if acquireBytes > 0 {
-					m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+		if len(jobs) > 0 {
+			results := make([]boostReadResult, len(jobs))
+			runJob := func(jIdx int) {
+				job := jobs[jIdx]
+				if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
+					results[jIdx] = boostReadResult{aborted: true}
+					return
 				}
-				state = BoostStateDisabled
-				break
+				select {
+				case <-cancelCh:
+					results[jIdx] = boostReadResult{aborted: true}
+					return
+				default:
+				}
+				if fg != nil && !fg.IsForegroundIdle() {
+					results[jIdx] = boostReadResult{yieldedFG: true}
+					return
+				}
+
+				item, err := m.loadAndValidateDiskItemWithToken(job.c.ns, job.c.cleanKey, job.c.filePath, job.tok)
+				if err != nil || item == nil {
+					results[jIdx] = boostReadResult{err: err}
+					return
+				}
+				if len(item.Data) == 0 {
+					data, rErr := os.ReadFile(job.c.filePath)
+					if rErr != nil || int64(len(data)) != item.Size {
+						if rErr == nil {
+							rErr = fmt.Errorf("size mismatch")
+						}
+						results[jIdx] = boostReadResult{err: rErr}
+						return
+					}
+					item.Data = data
+				}
+				results[jIdx] = boostReadResult{item: item}
 			}
 
-			if err != nil || item == nil {
-				if acquireBytes > 0 {
-					m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+			workers := boostReadWorkers
+			if len(jobs) < workers {
+				workers = len(jobs)
+			}
+			if workers <= 1 {
+				for jIdx := range jobs {
+					runJob(jIdx)
 				}
-				invalidFiles++
-				continue
+			} else {
+				var nextJob atomic.Int64
+				var wg sync.WaitGroup
+				wg.Add(workers)
+				for w := 0; w < workers; w++ {
+					go func() {
+						defer wg.Done()
+						for {
+							jIdx := int(nextJob.Add(1) - 1)
+							if jIdx >= len(jobs) {
+								return
+							}
+							runJob(jIdx)
+						}
+					}()
+				}
+				wg.Wait()
 			}
 
-			// If the item was returned from the verified metadata fastpath (Data == nil),
-			// load the body into memory now so it can reside in RAM.
-			if len(item.Data) == 0 {
-				data, err := os.ReadFile(c.filePath)
-				if err != nil || int64(len(data)) != item.Size {
+			// Commit results sequentially in deterministic priority order.
+			// Note: stoppedByBudget may already be true from the prepare loop when a
+			// subsequent candidate exceeded budget; all jobs already appended to jobs
+			// successfully reserved budget and must still be committed unless a file
+			// grew past budget during actualDelta reconciliation.
+			commitStoppedByBudget := false
+			rewindIdx := -1
+			for jIdx, job := range jobs {
+				res := results[jIdx]
+				c := job.c
+				acquireBytes := job.acquireBytes
+				tok := job.tok
+
+				if m.residentPool.Generation() != workerGen || !m.residentPool.Enabled() {
+					if acquireBytes > 0 {
+						m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+					}
+					state = BoostStateDisabled
+					continue
+				}
+				if state == BoostStateDisabled || state == BoostStateCancelled || commitStoppedByBudget {
+					if acquireBytes > 0 {
+						m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+					}
+					continue
+				}
+				select {
+				case <-cancelCh:
+					if acquireBytes > 0 {
+						m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+					}
+					state = BoostStateCancelled
+					continue
+				default:
+				}
+				if res.aborted {
+					if acquireBytes > 0 {
+						m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+					}
+					continue
+				}
+				if res.yieldedFG {
+					if acquireBytes > 0 {
+						m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+					}
+					if rewindIdx == -1 {
+						rewindIdx = job.idx
+					}
+					continue
+				}
+				if res.err != nil || res.item == nil {
 					if acquireBytes > 0 {
 						m.residentPool.ReleaseBudget(acquireBytes, workerGen)
 					}
 					invalidFiles++
 					continue
 				}
-				item.Data = data
-			}
 
-			// Adjust difference if file size on disk differs from actual bytes loaded
-			if item.Size != c.fileSize && m.ramBudget != nil {
-				actualDelta := item.Size - c.fileSize
-				if actualDelta > 0 {
-					if !m.residentPool.TryAcquireBudget(actualDelta, workerGen) {
-						if acquireBytes > 0 {
-							m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+				item := res.item
+				if item.Size != c.fileSize && m.ramBudget != nil {
+					actualDelta := item.Size - c.fileSize
+					if actualDelta > 0 {
+						if !m.residentPool.TryAcquireBudget(actualDelta, workerGen) {
+							if acquireBytes > 0 {
+								m.residentPool.ReleaseBudget(acquireBytes, workerGen)
+							}
+							state = BoostStatePartial
+							stoppedByBudget = true
+							commitStoppedByBudget = true
+							continue
 						}
-						state = BoostStatePartial
-						stoppedByBudget = true
-						break
+					} else if actualDelta < 0 {
+						m.residentPool.ReleaseBudget(-actualDelta, workerGen)
 					}
-				} else if actualDelta < 0 {
-					m.residentPool.ReleaseBudget(-actualDelta, workerGen)
 				}
-			}
 
-			// Commit to resident pool under tokenShard synchronization so an item invalidated
-			// while being read cannot be inserted into ResidentPool.
-			m.persistMu.RLock()
-			tokShard := m.tokenShardByCanon(tok.canonKey)
-			tokShard.mu.Lock()
-			if !isTokenValidLocked(tokShard, tok, m.generation) {
+				m.persistMu.RLock()
+				tokShard := m.tokenShardByCanon(tok.canonKey)
+				tokShard.mu.Lock()
+				if !isTokenValidLocked(tokShard, tok, m.generation) {
+					tokShard.mu.Unlock()
+					m.persistMu.RUnlock()
+					m.residentPool.ReleaseBudget(item.Size, workerGen)
+					invalidFiles++
+					continue
+				}
+				committed := m.residentPool.SetWithGen(c.ramKey, item, workerGen)
 				tokShard.mu.Unlock()
 				m.persistMu.RUnlock()
-				m.residentPool.ReleaseBudget(item.Size, workerGen)
-				invalidFiles++
-				continue
-			}
-			committed := m.residentPool.SetWithGen(c.ramKey, item, workerGen)
-			tokShard.mu.Unlock()
-			m.persistMu.RUnlock()
 
-			if !committed {
-				m.residentPool.ReleaseBudget(item.Size, workerGen)
-				state = BoostStateDisabled
-				break
-			}
+				if !committed {
+					m.residentPool.ReleaseBudget(item.Size, workerGen)
+					state = BoostStateDisabled
+					continue
+				}
 
-			loadedFiles++
-			loadedBytes += item.Size
+				loadedFiles++
+				loadedBytes += item.Size
+			}
+			if rewindIdx >= 0 && state == BoostStateLoading && !stoppedByBudget {
+				candidateIdx = rewindIdx
+			}
 		}
 
 		if stoppedByBudget || state == BoostStateCancelled || state == BoostStateDisabled {
