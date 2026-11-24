@@ -293,3 +293,73 @@ func TestWaitForegroundIdle_ConcurrentInterleaved(t *testing.T) {
 	}
 }
 
+func TestNotifyForegroundIdle_ZeroAllocsWithoutWaitersAndMultiWaiterWakeup(t *testing.T) {
+	st := NewStats()
+	defer st.Close()
+
+	// 1. Steady-state hot path with no WaitForegroundIdle blockers must allocate 0 bytes.
+	allocs := testing.AllocsPerRun(100, func() {
+		st.AddActiveFG(1)
+		st.AddActiveFG(-1)
+		st.AddActiveAPI(1)
+		st.AddActiveAPI(-1)
+	})
+	if allocs != 0 {
+		t.Fatalf("expected 0 allocs/op on AddActiveFG/API without waiters, got %v", allocs)
+	}
+
+	// 2. Multiple concurrent waiters all wake up when both FG and API return to 0.
+	st.AddActiveFG(1)
+	st.AddActiveAPI(1)
+	const numWaiters = 8
+	woke := make(chan bool, numWaiters)
+	for i := 0; i < numWaiters; i++ {
+		go func() {
+			woke <- st.WaitForegroundIdle(nil)
+		}()
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	st.AddActiveFG(-1)
+	select {
+	case <-woke:
+		t.Fatal("waiter woke up while ActiveAPICount > 0")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	st.AddActiveAPI(-1)
+	for i := 0; i < numWaiters; i++ {
+		select {
+		case ok := <-woke:
+			if !ok {
+				t.Errorf("expected true from WaitForegroundIdle, got false")
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("timed out waiting for waiter %d to wake up", i)
+		}
+	}
+
+	// 3. Multi-waiter Close() exits cleanly with false.
+	st2 := NewStats()
+	st2.AddActiveFG(1)
+	woke2 := make(chan bool, numWaiters)
+	for i := 0; i < numWaiters; i++ {
+		go func() {
+			woke2 <- st2.WaitForegroundIdle(nil)
+		}()
+	}
+	time.Sleep(20 * time.Millisecond)
+	st2.Close()
+	for i := 0; i < numWaiters; i++ {
+		select {
+		case ok := <-woke2:
+			if ok {
+				t.Errorf("expected false from WaitForegroundIdle after Close, got true")
+			}
+		case <-time.After(500 * time.Millisecond):
+			t.Fatalf("timed out waiting for waiter %d to exit on Close", i)
+		}
+	}
+}
+
+

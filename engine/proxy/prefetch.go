@@ -539,6 +539,53 @@ func getPrefetchPriorityLower(p string) int {
 	return 4
 }
 
+// nextQuotedSlashWindow returns the earliest index cand >= from where a quote or '('
+// appears within [1..10] bytes before a '/' byte, along with the '/' index slashIdx.
+// Both assetRefRe and cjsImgRefRe require this exact prefix structure, allowing
+// extractAssetRefs to skip non-matching spans at bytes.IndexByte speed.
+func nextQuotedSlashWindow(body []byte, from int) (cand int, slashIdx int) {
+	search := from
+	for search < len(body) {
+		rel := bytes.IndexByte(body[search:], '/')
+		if rel < 0 {
+			return -1, -1
+		}
+		sIdx := search + rel
+		winStart := sIdx - 10
+		if winStart < from {
+			winStart = from
+		}
+		for k := winStart; k < sIdx; k++ {
+			c := body[k]
+			if c == '\'' || c == '"' || c == '(' {
+				return k, sIdx
+			}
+		}
+		search = sIdx + 1
+	}
+	return -1, -1
+}
+
+func assetScanWindowEnd(body []byte, slashIdx int) int {
+	bodyLen := len(body)
+	windowEnd := slashIdx + 512
+	if windowEnd >= bodyLen {
+		return bodyLen
+	}
+	limit := slashIdx + 1024
+	if limit > bodyLen {
+		limit = bodyLen
+	}
+	for windowEnd < limit {
+		b := body[windowEnd]
+		windowEnd++
+		if b == '"' || b == '\'' || b == ')' || b <= ' ' || b == ',' || b == ';' {
+			break
+		}
+	}
+	return windowEnd
+}
+
 func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultHost string) [][2]string {
 	seen := make(map[string]struct{})
 	var refs [][2]string
@@ -553,25 +600,31 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 		refs = append(refs, [2]string{defaultHost, twinCJS})
 	}
 
-	// 2. Standard asset references (streamed with early exit)
+	// 2. Standard asset references (streamed with early exit and SIMD '/' window seek)
 	offset := 0
 	bodyLen := len(body)
 	scannedMatches := 0
 	for len(refs) < 120 && offset < bodyLen && scannedMatches < 300 {
-		loc := assetRefRe.FindSubmatchIndex(body[offset:])
-		if loc == nil {
+		cand, slashIdx := nextQuotedSlashWindow(body, offset)
+		if cand < 0 {
 			break
+		}
+		windowEnd := assetScanWindowEnd(body, slashIdx)
+		loc := assetRefRe.FindSubmatchIndex(body[cand:windowEnd])
+		if loc == nil {
+			offset = slashIdx + 1
+			continue
 		}
 		scannedMatches++
 		var refHost string
 		if loc[2] >= 0 && loc[3] >= 0 {
-			hBytes := body[offset+loc[2] : offset+loc[3]]
+			hBytes := body[cand+loc[2] : cand+loc[3]]
 			refHost = strings.ToLower(string(hBytes))
 			if refHost != "" && !isGBFAkamaiHost(refHost) && !isDomainOrSubdomain(refHost, "granbluefantasy.jp") && !isDomainOrSubdomain(refHost, "granbluefantasy.com") {
 				if loc[1] == 0 {
-					offset++
+					offset = cand + 1
 				} else {
-					offset += loc[1]
+					offset = cand + loc[1]
 				}
 				continue
 			}
@@ -581,7 +634,7 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 		}
 
 		if loc[4] >= 0 && loc[5] >= 0 {
-			pBytes := body[offset+loc[4] : offset+loc[5]]
+			pBytes := body[cand+loc[4] : cand+loc[5]]
 			if len(pBytes) <= 200 {
 				for len(pBytes) > 0 && pBytes[0] == '/' {
 					pBytes = pBytes[1:]
@@ -596,13 +649,13 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 		}
 
 		if loc[1] == 0 {
-			offset++
+			offset = cand + 1
 		} else {
-			offset += loc[1]
+			offset = cand + loc[1]
 		}
 	}
 
-	// 3. CreateJS & Game.imgUri spritesheets and textures (streamed with early exit)
+	// 3. CreateJS & Game.imgUri spritesheets and textures (streamed with early exit and SIMD '/' window seek)
 	if len(refs) < 120 && scannedMatches < 300 {
 		imgPrefix := "/assets/img"
 		if strings.HasPrefix(cleanURL, "/assets_en/") {
@@ -610,13 +663,19 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 		}
 		offset = 0
 		for len(refs) < 120 && offset < bodyLen && scannedMatches < 300 {
-			loc := cjsImgRefRe.FindSubmatchIndex(body[offset:])
-			if loc == nil {
+			cand, slashIdx := nextQuotedSlashWindow(body, offset)
+			if cand < 0 {
 				break
+			}
+			windowEnd := assetScanWindowEnd(body, slashIdx)
+			loc := cjsImgRefRe.FindSubmatchIndex(body[cand:windowEnd])
+			if loc == nil {
+				offset = slashIdx + 1
+				continue
 			}
 			scannedMatches++
 			if loc[2] >= 0 && loc[3] >= 0 {
-				rawBytes := body[offset+loc[2] : offset+loc[3]]
+				rawBytes := body[cand+loc[2] : cand+loc[3]]
 				if len(rawBytes) <= 200 {
 					var imgPath string
 					if bytes.HasPrefix(rawBytes, []byte("sp/")) {
@@ -635,9 +694,9 @@ func (pe *PrefetchEngine) extractAssetRefs(urlPath string, body []byte, defaultH
 				}
 			}
 			if loc[1] == 0 {
-				offset++
+				offset = cand + 1
 			} else {
-				offset += loc[1]
+				offset = cand + loc[1]
 			}
 		}
 	}
@@ -663,9 +722,15 @@ func (pe *PrefetchEngine) dispatchDiscoveredRefsWithDepth(refs []discoveredRef, 
 		ns, _ := NormalizeAssetNamespace(h)
 		cleanP, _, _ := strings.Cut(p, "?")
 		if pe.srv.cacheMgr.HasCacheWithNamespace(ns, cleanP) {
-			// Asset is already on disk: if not yet in RAM, asynchronously preload it into
-			// SLRU Probation with zero network traffic so the browser hits RAM in <0.1ms.
-			if pe.diskWarmCh != nil && !pe.srv.cacheMgr.IsInRAMWithNamespace(ns, cleanP) {
+			if ci := pe.srv.cacheMgr.PeekAnyRAMWithNamespace(ns, cleanP); ci != nil {
+				// Already resident in RAM: still cascade P1 scripts (depth 0 -> 1) so
+				// referenced battle sprites on disk can be warmed into RAM Probation.
+				if depth < 1 && prio == 1 && len(ci.Data) > 0 {
+					pe.maybeEnqueueDiscoveryWithDepth(h, cleanP, ci.Data, depth+1)
+				}
+			} else if pe.diskWarmCh != nil {
+				// Asset is on disk only: asynchronously preload into SLRU Probation
+				// with zero network traffic so the browser hits RAM in <0.1ms.
 				select {
 				case pe.diskWarmCh <- prefetchItem{prio: prio, host: h, path: cleanP, depth: depth}:
 				default:
@@ -823,7 +888,11 @@ func (pe *PrefetchEngine) diskWarmWorker() {
 				continue
 			}
 			ns, _ := NormalizeAssetNamespace(item.host)
-			pe.srv.cacheMgr.WarmSingleDiskItemToProbation(ns, item.path, maxDiskWarmItemBytes)
+			if ci, warmed := pe.srv.cacheMgr.WarmSingleDiskItem(ns, item.path, maxDiskWarmItemBytes); warmed && ci != nil {
+				if item.depth < 1 && item.prio == 1 && len(ci.Data) > 0 {
+					pe.maybeEnqueueDiscoveryWithDepth(item.host, item.path, ci.Data, item.depth+1)
+				}
+			}
 		}
 	}
 }

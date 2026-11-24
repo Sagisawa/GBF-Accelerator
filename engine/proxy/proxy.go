@@ -181,7 +181,7 @@ func buildUpstreamClientsWithDialer(c *config.Config, proxyURL string, directDia
 					if err := ctx.Err(); err != nil {
 						return nil, err
 					}
-					conn, err := dialSOCKS5(pa, target, user, pass, t)
+					conn, err := dialSOCKS5Context(ctx, pa, target, user, pass, t)
 					if err != nil {
 						return nil, err
 					}
@@ -241,8 +241,9 @@ func buildUpstreamClientsWithDialer(c *config.Config, proxyURL string, directDia
 		ReadBufferSize:  32 * 1024,
 		WriteBufferSize: 32 * 1024,
 		HTTP2: &http.HTTP2Config{
-			SendPingTimeout: 15 * time.Second,
-			PingTimeout:     5 * time.Second,
+			MaxReadFrameSize: 256 * 1024,
+			SendPingTimeout:  15 * time.Second,
+			PingTimeout:      5 * time.Second,
 		},
 		ForceAttemptHTTP2:  true,
 		DisableCompression: true,
@@ -741,12 +742,20 @@ func (s *ProxyServer) prepareAPIRequestTrace(req *http.Request, onGotConn func(r
 var hotGBFCertDomains = []string{
 	"game.granbluefantasy.jp",
 	"gbf.game.mbga.jp",
+	"connect.mobage.jp",
+	"sp.mbga.jp",
 	"prd-game-a-granbluefantasy.akamaized.net",
 	"prd-game-a1-granbluefantasy.akamaized.net",
 	"prd-game-a2-granbluefantasy.akamaized.net",
 	"prd-game-a3-granbluefantasy.akamaized.net",
 	"prd-game-a4-granbluefantasy.akamaized.net",
 	"prd-game-a5-granbluefantasy.akamaized.net",
+	"prd-game-a-granbluefantasy-steam.akamaized.net",
+	"prd-game-a1-granbluefantasy-steam.akamaized.net",
+	"prd-game-a2-granbluefantasy-steam.akamaized.net",
+	"prd-game-a3-granbluefantasy-steam.akamaized.net",
+	"prd-game-a4-granbluefantasy-steam.akamaized.net",
+	"prd-game-a5-granbluefantasy-steam.akamaized.net",
 }
 
 func (s *ProxyServer) Start() error {
@@ -1196,50 +1205,80 @@ func (s *ProxyServer) handleConnectInternal(conn net.Conn, br *bufio.Reader, req
 }
 
 func dialSOCKS5(proxyAddr, targetAddr, username, password string, timeout time.Duration) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", proxyAddr, timeout)
+	return dialSOCKS5Context(context.Background(), proxyAddr, targetAddr, username, password, timeout)
+}
+
+func dialSOCKS5Context(ctx context.Context, proxyAddr, targetAddr, username, password string, timeout time.Duration) (net.Conn, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	d := net.Dialer{Timeout: timeout, KeepAlive: 15 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", proxyAddr)
 	if err != nil {
 		return nil, err
 	}
-	_ = conn.SetDeadline(time.Now().Add(timeout))
+	deadline := time.Now().Add(timeout)
+	if dCtx, ok := ctx.Deadline(); ok && dCtx.Before(deadline) {
+		deadline = dCtx
+	}
+	_ = conn.SetDeadline(deadline)
 	defer conn.SetDeadline(time.Time{})
 
+	var buf [270]byte
+
 	// 1. Handshake greeting
-	methods := []byte{0x00}
+	greetingLen := 3
+	buf[0] = 0x05
 	if username != "" {
-		methods = []byte{0x00, 0x02}
+		buf[1] = 0x02
+		buf[2] = 0x00
+		buf[3] = 0x02
+		greetingLen = 4
+	} else {
+		buf[1] = 0x01
+		buf[2] = 0x00
 	}
-	greeting := append([]byte{0x05, byte(len(methods))}, methods...)
-	if _, err := conn.Write(greeting); err != nil {
+	if _, err := conn.Write(buf[:greetingLen]); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 
-	resp := make([]byte, 2)
-	if _, err := io.ReadFull(conn, resp); err != nil {
+	if _, err := io.ReadFull(conn, buf[:2]); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	if resp[0] != 0x05 || resp[1] == 0xff {
+	if buf[0] != 0x05 || buf[1] == 0xff {
 		_ = conn.Close()
 		return nil, fmt.Errorf("socks5 auth negotiation failed")
 	}
 
 	// 2. Auth if requested
-	if resp[1] == 0x02 {
-		authBuf := []byte{0x01, byte(len(username))}
-		authBuf = append(authBuf, []byte(username)...)
-		authBuf = append(authBuf, byte(len(password)))
-		authBuf = append(authBuf, []byte(password)...)
-		if _, err := conn.Write(authBuf); err != nil {
+	if buf[1] == 0x02 {
+		if len(username) > 255 || len(password) > 255 {
+			_ = conn.Close()
+			return nil, fmt.Errorf("socks5 credentials too long")
+		}
+		authLen := 3 + len(username) + len(password)
+		var authSlice []byte
+		if authLen <= len(buf) {
+			authSlice = buf[:authLen]
+		} else {
+			authSlice = make([]byte, authLen)
+		}
+		authSlice[0] = 0x01
+		authSlice[1] = byte(len(username))
+		copy(authSlice[2:], username)
+		authSlice[2+len(username)] = byte(len(password))
+		copy(authSlice[3+len(username):], password)
+		if _, err := conn.Write(authSlice); err != nil {
 			_ = conn.Close()
 			return nil, err
 		}
-		authResp := make([]byte, 2)
-		if _, err := io.ReadFull(conn, authResp); err != nil {
+		if _, err := io.ReadFull(conn, buf[:2]); err != nil {
 			_ = conn.Close()
 			return nil, err
 		}
-		if authResp[1] != 0x00 {
+		if buf[1] != 0x00 {
 			_ = conn.Close()
 			return nil, fmt.Errorf("socks5 auth failed")
 		}
@@ -1257,56 +1296,64 @@ func dialSOCKS5(proxyAddr, targetAddr, username, password string, timeout time.D
 		return nil, fmt.Errorf("invalid target port: %s", portStr)
 	}
 
-	reqBuf := []byte{0x05, 0x01, 0x00}
+	reqLen := 0
+	buf[0], buf[1], buf[2] = 0x05, 0x01, 0x00
 	ip := net.ParseIP(host)
 	if ip4 := ip.To4(); ip4 != nil {
-		reqBuf = append(reqBuf, 0x01)
-		reqBuf = append(reqBuf, ip4...)
+		buf[3] = 0x01
+		copy(buf[4:8], ip4)
+		reqLen = 8
 	} else if ip6 := ip.To16(); ip6 != nil {
-		reqBuf = append(reqBuf, 0x04)
-		reqBuf = append(reqBuf, ip6...)
+		buf[3] = 0x04
+		copy(buf[4:20], ip6)
+		reqLen = 20
 	} else {
-		reqBuf = append(reqBuf, 0x03, byte(len(host)))
-		reqBuf = append(reqBuf, []byte(host)...)
+		if len(host) > 255 {
+			_ = conn.Close()
+			return nil, fmt.Errorf("socks5 target host too long: %d", len(host))
+		}
+		buf[3] = 0x03
+		buf[4] = byte(len(host))
+		copy(buf[5:], host)
+		reqLen = 5 + len(host)
 	}
-	reqBuf = append(reqBuf, byte(port>>8), byte(port&0xff))
+	buf[reqLen] = byte(port >> 8)
+	buf[reqLen+1] = byte(port & 0xff)
+	reqLen += 2
 
-	if _, err := conn.Write(reqBuf); err != nil {
+	if _, err := conn.Write(buf[:reqLen]); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 
-	replyHeader := make([]byte, 4)
-	if _, err := io.ReadFull(conn, replyHeader); err != nil {
+	if _, err := io.ReadFull(conn, buf[:4]); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
-	if replyHeader[1] != 0x00 {
+	if buf[1] != 0x00 {
 		_ = conn.Close()
-		return nil, fmt.Errorf("socks5 connect failed with status 0x%02x", replyHeader[1])
+		return nil, fmt.Errorf("socks5 connect failed with status 0x%02x", buf[1])
 	}
 
 	// Drain bound address
 	var toRead int
-	switch replyHeader[3] {
+	switch buf[3] {
 	case 0x01:
 		toRead = 4 + 2
 	case 0x04:
 		toRead = 16 + 2
 	case 0x03:
-		lenBuf := make([]byte, 1)
-		if _, err := io.ReadFull(conn, lenBuf); err != nil {
+		if _, err := io.ReadFull(conn, buf[:1]); err != nil {
 			_ = conn.Close()
 			return nil, err
 		}
-		toRead = int(lenBuf[0]) + 2
+		toRead = int(buf[0]) + 2
 	default:
 		_ = conn.Close()
-		return nil, fmt.Errorf("socks5 unknown address type 0x%02x", replyHeader[3])
+		return nil, fmt.Errorf("socks5 unknown address type 0x%02x", buf[3])
 	}
 
-	drainBuf := make([]byte, toRead)
-	if _, err := io.ReadFull(conn, drainBuf); err != nil {
+	if _, err := io.ReadFull(conn, buf[:toRead]); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -1406,7 +1453,9 @@ func (s *ProxyServer) handlePassthroughTunnel(clientConn net.Conn, clientReader 
 						user = u.User.Username()
 						pass, _ = u.User.Password()
 					}
-					upConn, err = dialSOCKS5(proxyAddr, targetHost, user, pass, 10*time.Second)
+					s5Ctx, s5Cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					upConn, err = dialSOCKS5Context(s5Ctx, proxyAddr, targetHost, user, pass, 10*time.Second)
+					s5Cancel()
 				} else if scheme == "http" || scheme == "https" {
 					proxyHost := u.Hostname()
 					proxyPort := u.Port()
@@ -2176,7 +2225,7 @@ func (s *ProxyServer) getCacheControlHeader(urlPath string) string {
 	} else if isVersionedAssetPath(urlPath) {
 		return "public, max-age=31536000, immutable"
 	}
-	return "public, max-age=3600"
+	return "public, max-age=3600, stale-while-revalidate=86400"
 }
 
 func isClientNotModified(req *http.Request, item *cache.CacheItem) bool {
@@ -4585,10 +4634,11 @@ func writeHTTPResponse(w io.Writer, statusCode int, header http.Header, body []b
 // writeResponseBody emits the already-serialized response head held by buf together
 // with body. It preserves the exact write strategy shared by every response path:
 // HEAD / 204 / 304 / 1xx suppress the payload, empty payloads and payloads that fit
-// into 64 KiB are written together with the head in one write, larger payloads use
-// writev-style scattering. Keeping this in a single helper prevents the cached-asset
-// fast path from drifting away from writeHTTPResponse.
+// into 64 KiB are written together with the head in one write, and larger payloads
+// pack up to a 16 KiB TLS plaintext record into the pooled head buffer before writing
+// the remaining slice directly (0 allocs/op and single-record TLS header coalescing).
 func writeResponseBody(w io.Writer, buf *bytes.Buffer, statusCode int, body []byte, isHead bool) {
+	const tlsMaxPlaintext = 16 * 1024
 	if isHead || statusCode == http.StatusNoContent || statusCode == http.StatusNotModified || (statusCode >= 100 && statusCode < 200) {
 		_, _ = w.Write(buf.Bytes())
 	} else if len(body) == 0 {
@@ -4596,16 +4646,27 @@ func writeResponseBody(w io.Writer, buf *bytes.Buffer, statusCode int, body []by
 	} else if buf.Len()+len(body) <= 64*1024 {
 		buf.Write(body)
 		_, _ = w.Write(buf.Bytes())
+	} else if buf.Len() < tlsMaxPlaintext {
+		prefixN := tlsMaxPlaintext - buf.Len()
+		if prefixN > len(body) {
+			prefixN = len(body)
+		}
+		buf.Write(body[:prefixN])
+		if _, err := w.Write(buf.Bytes()); err == nil && prefixN < len(body) {
+			_, _ = w.Write(body[prefixN:])
+		}
 	} else {
-		bufs := net.Buffers{buf.Bytes(), body}
-		_, _ = bufs.WriteTo(w)
+		if _, err := w.Write(buf.Bytes()); err == nil {
+			_, _ = w.Write(body)
+		}
 	}
 }
 
 type streamClientWriter struct {
-	w         io.Writer
-	isChunked bool
-	failed    bool
+	w            io.Writer
+	isChunked    bool
+	failed       bool
+	flushedFirst bool
 }
 
 func (sc *streamClientWriter) WriteChunk(chunk []byte) error {
@@ -4617,7 +4678,10 @@ func (sc *streamClientWriter) WriteChunk(chunk []byte) error {
 			sc.failed = true
 			return err
 		}
-		hw.Flush()
+		if !sc.flushedFirst {
+			sc.flushedFirst = true
+			hw.Flush()
+		}
 		return nil
 	}
 	var err error
@@ -4774,6 +4838,13 @@ func (s *ProxyServer) sendAssetResponse(w io.Writer, status int, item *cache.Cac
 	writeHTTPResponse(w, status, hdr, item.Data, isHead, reqClose)
 }
 
+var (
+	hdrAllowAllOrigin  = []string{"*"}
+	hdrCacheNoCache    = []string{"no-cache"}
+	hdrCacheImmutable  = []string{"public, max-age=31536000, immutable"}
+	hdrCacheDefaultSWR = []string{"public, max-age=3600, stale-while-revalidate=86400"}
+)
+
 // sendCachedAssetResponseFast serializes a cached-asset 200 response straight from the
 // immutable cache.CacheItem fields, avoiding the per-request http.Header map that
 // sendAssetResponse builds (map allocation + map iteration + per-key hop-by-hop and
@@ -4799,20 +4870,27 @@ func (s *ProxyServer) sendCachedAssetResponseFast(w io.Writer, item *cache.Cache
 	if hw, ok := w.(*h2ResponseWriter); ok {
 		dst := hw.rw.Header()
 		if item.ContentType != "" {
-			dst.Set("Content-Type", item.ContentType)
+			dst["Content-Type"] = []string{item.ContentType}
 		}
 		if item.ETag != "" {
-			dst.Set("ETag", item.ETag)
+			dst["Etag"] = []string{item.ETag}
 		}
 		if item.LastModified != "" {
-			dst.Set("Last-Modified", item.LastModified)
+			dst["Last-Modified"] = []string{item.LastModified}
 		}
 		if item.ContentEncoding != "" {
-			dst.Set("Content-Encoding", item.ContentEncoding)
+			dst["Content-Encoding"] = []string{item.ContentEncoding}
 		}
-		dst.Set("Access-Control-Allow-Origin", "*")
-		dst.Set("Cache-Control", s.getCacheControlHeader(urlPath))
-		dst.Set("Content-Length", strconv.FormatInt(contentLen, 10))
+		dst["Access-Control-Allow-Origin"] = hdrAllowAllOrigin
+		switch s.getCacheControlHeader(urlPath) {
+		case "no-cache":
+			dst["Cache-Control"] = hdrCacheNoCache
+		case "public, max-age=31536000, immutable":
+			dst["Cache-Control"] = hdrCacheImmutable
+		default:
+			dst["Cache-Control"] = hdrCacheDefaultSWR
+		}
+		dst["Content-Length"] = []string{strconv.FormatInt(contentLen, 10)}
 		hw.rw.WriteHeader(http.StatusOK)
 		if !isHead && len(item.Data) > 0 {
 			_, _ = hw.rw.Write(item.Data)
