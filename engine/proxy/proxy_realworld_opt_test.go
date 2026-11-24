@@ -46,7 +46,9 @@ func TestWriteResponseBody_TLSRecordPacking_LargePayloads(t *testing.T) {
 	}
 	srv := &ProxyServer{cfgMgr: cfgMgr}
 
-	// Verify 0 allocs/op on >64KiB cached asset serialization via sendCachedAssetResponseFast.
+	// Verify 0 allocs/op on >64KiB payload packing directly in writeResponseBody
+	// (independent of sync.Pool so it remains deterministic under -race) and
+	// end-to-end via sendCachedAssetResponseFast when -race is not dropping sync.Pool puts.
 	item256K := &cache.CacheItem{
 		Key:         "assets/img/sp/large_256k.png",
 		Data:        bytes.Repeat([]byte("Z"), 256*1024),
@@ -54,11 +56,22 @@ func TestWriteResponseBody_TLSRecordPacking_LargePayloads(t *testing.T) {
 		ETag:        `"tls-pack-256k"`,
 		Size:        256 * 1024,
 	}
-	allocs := testing.AllocsPerRun(50, func() {
-		srv.sendCachedAssetResponseFast(io.Discard, item256K, false, "/assets/img/sp/large_256k.png", false)
+	headBuf := bytes.NewBuffer(make([]byte, 0, 16*1024))
+	allocsWrite := testing.AllocsPerRun(50, func() {
+		headBuf.Reset()
+		headBuf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 262144\r\n\r\n")
+		writeResponseBody(io.Discard, headBuf, http.StatusOK, item256K.Data, false)
 	})
-	if allocs != 0 {
-		t.Fatalf("expected 0 allocs/op on 256KiB sendCachedAssetResponseFast, got %v", allocs)
+	if allocsWrite != 0 {
+		t.Fatalf("expected 0 allocs/op on 256KiB writeResponseBody, got %v", allocsWrite)
+	}
+	if !raceDetectorEnabled {
+		allocs := testing.AllocsPerRun(50, func() {
+			srv.sendCachedAssetResponseFast(io.Discard, item256K, false, "/assets/img/sp/large_256k.png", false)
+		})
+		if allocs != 0 {
+			t.Fatalf("expected 0 allocs/op on 256KiB sendCachedAssetResponseFast, got %v", allocs)
+		}
 	}
 
 	// Verify byte-for-byte delivery over an actual *tls.Conn for 128KiB and 1MiB payloads.
