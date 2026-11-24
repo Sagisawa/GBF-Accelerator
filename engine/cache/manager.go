@@ -67,6 +67,7 @@ type Manager struct {
 	sf                 *SingleFlight
 	missingShards      [missingCacheShardCount]missingCacheShard
 	diskMetaShards     [diskMetaShardCount]diskMetaShard
+	knownDirs          [knownDirShardCount]knownDirShard
 	tokenShards        [tokenShardCount]tokenShard
 	tempTokensMu       sync.Mutex
 	tempTokens         map[string]opToken
@@ -144,7 +145,60 @@ const (
 	missingCacheShardCount = 16
 	diskMetaShardCount     = 16
 	diskMetaShardMaxItems  = 16384
+	knownDirShardCount     = 16
+	knownDirShardMaxItems  = 1024
 )
+
+type knownDirShard struct {
+	mu   sync.RWMutex
+	dirs map[string]struct{}
+}
+
+func (m *Manager) initKnownDirShards() {
+	for i := range m.knownDirs {
+		m.knownDirs[i].dirs = make(map[string]struct{})
+	}
+}
+
+func (m *Manager) knownDirShard(dir string) *knownDirShard {
+	return &m.knownDirs[int(fnv32(dir)&(knownDirShardCount-1))]
+}
+
+func (m *Manager) clearKnownDirs() {
+	for i := range m.knownDirs {
+		shard := &m.knownDirs[i]
+		shard.mu.Lock()
+		shard.dirs = make(map[string]struct{})
+		shard.mu.Unlock()
+	}
+}
+
+func (m *Manager) invalidateKnownDir(dir string) {
+	shard := m.knownDirShard(dir)
+	shard.mu.Lock()
+	delete(shard.dirs, dir)
+	shard.mu.Unlock()
+}
+
+func (m *Manager) ensureDirCached(dir string) error {
+	shard := m.knownDirShard(dir)
+	shard.mu.RLock()
+	_, ok := shard.dirs[dir]
+	shard.mu.RUnlock()
+	if ok {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	shard.mu.Lock()
+	if shard.dirs == nil || len(shard.dirs) >= knownDirShardMaxItems {
+		shard.dirs = make(map[string]struct{})
+	}
+	shard.dirs[dir] = struct{}{}
+	shard.mu.Unlock()
+	return nil
+}
 
 type diskMetaEntry struct {
 	namespace       string
@@ -205,6 +259,13 @@ func (m *Manager) getDiskMeta(key string) (diskMetaEntry, bool) {
 
 func (m *Manager) recordDiskPresence(key string, mtimeNano int64, size int64) {
 	shard := m.diskMetaShard(key)
+	shard.mu.RLock()
+	if entry, ok := shard.items[key]; ok && entry.exists && entry.mtimeNano == mtimeNano && entry.size == size {
+		shard.mu.RUnlock()
+		return
+	}
+	shard.mu.RUnlock()
+
 	shard.mu.Lock()
 	if entry, ok := shard.items[key]; ok {
 		if entry.mtimeNano != mtimeNano || entry.size != size {
@@ -394,6 +455,7 @@ func NewManager(cacheBase string, ramMaxMB int) *Manager {
 	}
 	m.initMissingCacheShards()
 	m.initDiskMetaShards()
+	m.initKnownDirShards()
 	m.initTokenShards()
 	m.ramEnabled.Store(true)
 	m.autoRepair.Store(true)
@@ -476,6 +538,7 @@ func (m *Manager) SetCacheBase(base string) {
 func (m *Manager) resetVolatileState(reason string) {
 	m.clearMissing()
 	m.clearDiskMeta()
+	m.clearKnownDirs()
 	m.clearTokenShards()
 	m.clearTempTokens()
 	m.invalidateSnapshots(reason)
@@ -769,6 +832,27 @@ func (m *Manager) PeekRAMWithNamespace(ns, urlPath string) *CacheItem {
 	return nil
 }
 
+// PeekAnyRAMWithNamespace returns an item from ResidentPool (RAM Boost) or SLRU RAM cache
+// without promoting it or updating LRU order.
+func (m *Manager) PeekAnyRAMWithNamespace(ns, urlPath string) *CacheItem {
+	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
+	if !ok {
+		return nil
+	}
+	ramKey := makeRAMKey(normNS, cleanKey)
+	if m.residentPool != nil && m.residentPool.Enabled() {
+		if item, ok := m.residentPool.Get(ramKey); ok {
+			return item
+		}
+	}
+	if m.ramEnabled.Load() {
+		if item, ok := m.ramCache.Peek(ramKey); ok {
+			return item
+		}
+	}
+	return nil
+}
+
 // IsInRAMWithNamespace reports whether the asset is currently resident in either
 // ResidentPool (RAM Boost) or the SLRU RAM cache, with zero disk I/O.
 func (m *Manager) IsInRAMWithNamespace(ns, urlPath string) bool {
@@ -785,47 +869,48 @@ func (m *Manager) IsInRAMWithNamespace(ns, urlPath string) bool {
 	return m.ramEnabled.Load() && m.ramCache.Contains(ramKey)
 }
 
-// WarmSingleDiskItemToProbation loads a single already-cached disk asset into the RAM SLRU
-// Probationary segment without touching upstream networks or promoting Protected items.
-// Assets larger than maxBytes or MaxDiskDirectReadSize are skipped.
-func (m *Manager) WarmSingleDiskItemToProbation(ns, urlPath string, maxBytes int64) bool {
+// WarmSingleDiskItem loads a single already-cached disk asset into the RAM SLRU
+// Probationary segment without touching upstream networks or promoting Protected items,
+// returning the admitted CacheItem on success. Assets larger than maxBytes or
+// MaxDiskDirectReadSize are skipped.
+func (m *Manager) WarmSingleDiskItem(ns, urlPath string, maxBytes int64) (*CacheItem, bool) {
 	if m == nil || !m.ramEnabled.Load() {
-		return false
+		return nil, false
 	}
 	if maxBytes <= 0 || maxBytes > MaxDiskDirectReadSize {
 		maxBytes = MaxDiskDirectReadSize
 	}
 	normNS, cleanKey, ok := canonicalizeNSAndKey(ns, urlPath)
 	if !ok {
-		return false
+		return nil, false
 	}
 	ns = normNS
 	ramKey := makeRAMKey(ns, cleanKey)
 	if m.residentPool != nil && m.residentPool.Enabled() {
 		if _, exists := m.residentPool.Get(ramKey); exists {
-			return false
+			return nil, false
 		}
 	}
 	if m.ramCache.Contains(ramKey) || m.isMissing(ramKey) {
-		return false
+		return nil, false
 	}
 	if meta, hasMeta := m.getDiskMeta(ramKey); hasMeta && meta.size > maxBytes {
-		return false
+		return nil, false
 	}
 
 	filePath, ok := m.resolvePathWithNamespace(ns, cleanKey)
 	if !ok {
-		return false
+		return nil, false
 	}
 	fi, err := os.Stat(filePath)
 	if err != nil || fi.IsDir() || fi.Size() == 0 || fi.Size() > maxBytes {
-		return false
+		return nil, false
 	}
 
 	tok := m.acquireOpToken(ns, cleanKey)
 	item, err := m.loadAndValidateDiskItemWithToken(ns, cleanKey, filePath, tok)
 	if err != nil || item == nil || len(item.Data) == 0 || item.Size > maxBytes {
-		return false
+		return nil, false
 	}
 
 	isSharedHostsPath := ns != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
@@ -843,7 +928,18 @@ func (m *Manager) WarmSingleDiskItemToProbation(ns, urlPath string, maxBytes int
 	}
 	shard.mu.Unlock()
 	m.persistMu.RUnlock()
-	return admitted
+	if !admitted {
+		return nil, false
+	}
+	return item, true
+}
+
+// WarmSingleDiskItemToProbation loads a single already-cached disk asset into the RAM SLRU
+// Probationary segment without touching upstream networks or promoting Protected items.
+// Assets larger than maxBytes or MaxDiskDirectReadSize are skipped.
+func (m *Manager) WarmSingleDiskItemToProbation(ns, urlPath string, maxBytes int64) bool {
+	_, ok := m.WarmSingleDiskItem(ns, urlPath, maxBytes)
+	return ok
 }
 
 // TouchRAMWithNamespace touches the item in RAM cache, promoting it to Protected if it was in Probation.
@@ -2041,7 +2137,8 @@ func (m *Manager) saveToDiskWithNSAndToken(ns, cleanKey, filePath string, header
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+	dir := filepath.Dir(filePath)
+	if err := m.ensureDirCached(dir); err != nil {
 		return false
 	}
 
@@ -2061,11 +2158,19 @@ func (m *Manager) saveToDiskWithNSAndToken(ns, cleanKey, filePath string, header
 	seq := tmpFileSeq.Add(1)
 	tmpDataPath := fmt.Sprintf("%s.tmp.%d.%d.%d", filePath, pid, ts, seq)
 	if err := os.WriteFile(tmpDataPath, data, 0644); err != nil {
-		_ = os.Remove(tmpDataPath)
-		if ramKey != "" {
-			m.deleteDiskMeta(ramKey)
+		if os.IsNotExist(err) {
+			m.invalidateKnownDir(dir)
+			if mkErr := m.ensureDirCached(dir); mkErr == nil {
+				err = os.WriteFile(tmpDataPath, data, 0644)
+			}
 		}
-		return false
+		if err != nil {
+			_ = os.Remove(tmpDataPath)
+			if ramKey != "" {
+				m.deleteDiskMeta(ramKey)
+			}
+			return false
+		}
 	}
 
 	shard.mu.Lock()
@@ -2390,7 +2495,7 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 	}
 
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := m.ensureDirCached(dir); err != nil {
 		return nil, "", 0, err
 	}
 
@@ -2400,6 +2505,12 @@ func (m *Manager) CreateDiskTempFile(ns, urlPath string) (*os.File, string, uint
 	tmpDataPath := fmt.Sprintf("%s.tmp.%d.%d.%d", filePath, pid, ts, seq)
 
 	f, err := os.OpenFile(tmpDataPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0644)
+	if err != nil && os.IsNotExist(err) {
+		m.invalidateKnownDir(dir)
+		if mkErr := m.ensureDirCached(dir); mkErr == nil {
+			f, err = os.OpenFile(tmpDataPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0644)
+		}
+	}
 	if err != nil {
 		return nil, "", 0, err
 	}

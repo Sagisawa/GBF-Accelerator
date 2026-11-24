@@ -397,3 +397,119 @@ func writeTestMetaIndexV1(items []testIndexKV) []byte {
 	buf.Write(crcBuf[:])
 	return buf.Bytes()
 }
+
+func TestMetaIndex_RejectsInternalControlFilesAndCleansStrayExt(t *testing.T) {
+	base := t.TempDir()
+	m := NewManager(base, 16)
+	defer m.Close()
+
+	// 1. canonicalizeNSAndKey, Save, and GetWithNamespace must reject internal control files.
+	reservedPaths := []string{
+		"/" + RootMarkerFileName,
+		"/" + MetaIndexFileName,
+		"/" + RootMarkerFileName + ".ext",
+		"/" + MetaIndexFileName + ".ext",
+		"/hosts/example.com/" + MetaIndexFileName,
+		"/hosts/example.com/" + RootMarkerFileName,
+	}
+	for _, p := range reservedPaths {
+		if _, _, ok := canonicalizeNSAndKey("gbf", p); ok {
+			t.Errorf("canonicalizeNSAndKey(gbf, %q) unexpectedly succeeded", p)
+		}
+		if _, _, ok := canonicalizeNSAndKey("example.com", p); ok {
+			t.Errorf("canonicalizeNSAndKey(example.com, %q) unexpectedly succeeded", p)
+		}
+		if m.Save(p, map[string]string{"content-type": "application/octet-stream"}, []byte("x")) {
+			t.Errorf("Save(%q) unexpectedly succeeded", p)
+		}
+		if item, _ := m.GetWithNamespace("gbf", p); item != nil {
+			t.Errorf("GetWithNamespace(gbf, %q) unexpectedly returned item", p)
+		}
+	}
+
+	// 2. Stray .gbf_meta_index.v1.ext must be cleaned on SaveMetaIndex and loadMetaIndexFromBase.
+	pngData := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89clean")
+	if !m.Save("/assets/1795000000/img/keep.png", map[string]string{"content-type": "image/png", "etag": `"k1"`}, pngData) {
+		t.Fatal("failed to save keep.png")
+	}
+	strayExt := filepath.Join(base, MetaIndexFileName+".ext")
+	if err := os.WriteFile(strayExt, []byte(`{"v":1}`), 0644); err != nil {
+		t.Fatalf("write stray ext: %v", err)
+	}
+	if err := m.SaveMetaIndex(); err != nil {
+		t.Fatalf("SaveMetaIndex failed: %v", err)
+	}
+	if _, err := os.Stat(strayExt); !os.IsNotExist(err) {
+		t.Fatalf("expected SaveMetaIndex to remove stray %s", strayExt)
+	}
+
+	if err := os.WriteFile(strayExt, []byte(`{"v":1}`), 0644); err != nil {
+		t.Fatalf("write stray ext before load: %v", err)
+	}
+	m2 := NewManager(base, 16)
+	defer m2.Close()
+	m2.waitMetaIndexLoad(0)
+	if _, err := os.Stat(strayExt); !os.IsNotExist(err) {
+		t.Fatalf("expected loadMetaIndexFromBase to remove stray %s", strayExt)
+	}
+	if got, src := m2.GetMetadataWithNamespace("gbf", "/assets/1795000000/img/keep.png"); got == nil || src != "DISK" {
+		t.Fatalf("expected valid asset metadata after cleaning stray ext, got item=%v src=%q", got, src)
+	}
+
+	// 3. Known-dir cache self-heals if parent dir is externally removed between saves.
+	assetPath, _ := m2.ResolvePathWithNamespace("gbf", "/assets/1795000000/img/keep.png")
+	if err := os.RemoveAll(filepath.Dir(assetPath)); err != nil {
+		t.Fatalf("remove parent dir: %v", err)
+	}
+	if !m2.Save("/assets/1795000000/img/healed.png", map[string]string{"content-type": "image/png"}, pngData) {
+		t.Fatal("expected Save to self-heal after external parent directory removal")
+	}
+	tf, tp, _, tfErr := m2.CreateDiskTempFile("gbf", "/assets/1795000000/img/healed2.png")
+	if tfErr != nil {
+		t.Fatalf("expected CreateDiskTempFile to succeed with cached/healed dir: %v", tfErr)
+	}
+	_ = tf.Close()
+	m2.DiscardDiskTempFile(tp)
+}
+
+func BenchmarkLoadMetaIndex(b *testing.B) {
+	base := b.TempDir()
+	const nEntries = 2000
+	items := make([]testIndexKV, nEntries)
+	for i := 0; i < nEntries; i++ {
+		items[i] = testIndexKV{
+			key:       fmt.Sprintf("assets/1795000000/img/sp/unit_%04d.png", i),
+			namespace: "gbf",
+			entry: diskMetaEntry{
+				mtimeNano:       1795000000000000000 + int64(i),
+				size:            16384 + int64(i),
+				accessTime:      1795000000,
+				contentType:     "image/png",
+				contentEncoding: "",
+				etag:            fmt.Sprintf(`"etag-%04d"`, i),
+				lastModified:    "Wed, 21 Oct 2026 07:28:00 GMT",
+				exists:          true,
+				hasMeta:         true,
+				verified:        true,
+			},
+		}
+	}
+	raw := writeTestMetaIndexV1(items)
+	indexPath := filepath.Join(base, MetaIndexFileName)
+	if err := os.WriteFile(indexPath, raw, 0644); err != nil {
+		b.Fatalf("write bench index: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(raw)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m := &Manager{generation: 1}
+		m.initDiskMetaShards()
+		loaded := m.loadMetaIndexFromBase(base, 1)
+		if loaded != nEntries {
+			b.Fatalf("expected %d entries loaded, got %d", nEntries, loaded)
+		}
+	}
+}
+

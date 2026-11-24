@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,20 +38,40 @@ func writeStringLP(buf *bytes.Buffer, s string) {
 	buf.WriteString(s)
 }
 
-func readStringLP(r *bytes.Reader) (string, error) {
-	var lenBuf [2]byte
-	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
-		return "", err
+func readStringLPCursor(s string, pos *int) (string, bool) {
+	p := *pos
+	if p+2 > len(s) {
+		return "", false
 	}
-	n := int(binary.LittleEndian.Uint16(lenBuf[:]))
+	n := int(uint16(s[p]) | uint16(s[p+1])<<8)
+	p += 2
 	if n == 0 {
-		return "", nil
+		*pos = p
+		return "", true
 	}
-	b := make([]byte, n)
-	if _, err := io.ReadFull(r, b); err != nil {
-		return "", err
+	if p+n > len(s) {
+		return "", false
 	}
-	return string(b), nil
+	*pos = p + n
+	return s[p : p+n], true
+}
+
+func internMetaStr(m map[string]string, s string) string {
+	if s == "" {
+		return ""
+	}
+	if v, ok := m[s]; ok {
+		return v
+	}
+	m[s] = s
+	return s
+}
+
+func removeStrayMetaIndexExt(indexPath string) {
+	extPath := indexPath + ".ext"
+	if fi, err := os.Lstat(extPath); err == nil && fi.Mode().IsRegular() {
+		_ = os.Remove(extPath)
+	}
 }
 
 func (m *Manager) loadMetaIndexFromBase(base string, expectedGen uint64) int {
@@ -60,6 +79,7 @@ func (m *Manager) loadMetaIndexFromBase(base string, expectedGen uint64) int {
 		return 0
 	}
 	indexPath := filepath.Join(base, MetaIndexFileName)
+	removeStrayMetaIndexExt(indexPath)
 	fi, err := os.Stat(indexPath)
 	if err != nil || fi.IsDir() || fi.Size() < 20 || fi.Size() > metaIndexMaxFileBytes {
 		return 0
@@ -100,46 +120,60 @@ func (m *Manager) loadMetaIndexFromBase(base string, expectedGen uint64) int {
 	}
 
 	m.metaIndexComplete.Store((flags & FlagMetaIndexComplete) != 0)
-	r := bytes.NewReader(raw[payloadOffset:payloadEnd])
+	payloadBytes := raw[payloadOffset:payloadEnd]
+	payloadStr := string(payloadBytes)
+	pos := 0
+	internMap := make(map[string]string, 32)
+	internMap["gbf"] = "gbf"
+	internMap["gzip"] = "gzip"
 
 	loaded := 0
 	for i := uint32(0); i < count; i++ {
-		ramKey, err := readStringLP(r)
-		if err != nil {
+		ramKey, ok := readStringLPCursor(payloadStr, &pos)
+		if !ok {
 			break
 		}
-		ns, err := readStringLP(r)
-		if err != nil {
+		ns, ok := readStringLPCursor(payloadStr, &pos)
+		if !ok {
 			break
 		}
-		var nums [24]byte
-		if _, err := io.ReadFull(r, nums[:]); err != nil {
+		if pos+24 > len(payloadBytes) {
 			break
 		}
-		mtimeNano := int64(binary.LittleEndian.Uint64(nums[0:8]))
-		size := int64(binary.LittleEndian.Uint64(nums[8:16]))
-		accessTime := int64(binary.LittleEndian.Uint64(nums[16:24]))
+		mtimeNano := int64(binary.LittleEndian.Uint64(payloadBytes[pos : pos+8]))
+		size := int64(binary.LittleEndian.Uint64(payloadBytes[pos+8 : pos+16]))
+		accessTime := int64(binary.LittleEndian.Uint64(payloadBytes[pos+16 : pos+24]))
+		pos += 24
 
-		ct, err := readStringLP(r)
-		if err != nil {
+		ct, ok := readStringLPCursor(payloadStr, &pos)
+		if !ok {
 			break
 		}
-		ce, err := readStringLP(r)
-		if err != nil {
+		ce, ok := readStringLPCursor(payloadStr, &pos)
+		if !ok {
 			break
 		}
-		etag, err := readStringLP(r)
-		if err != nil {
+		etag, ok := readStringLPCursor(payloadStr, &pos)
+		if !ok {
 			break
 		}
-		lm, err := readStringLP(r)
-		if err != nil {
+		lm, ok := readStringLPCursor(payloadStr, &pos)
+		if !ok {
 			break
 		}
-		flags, err := r.ReadByte()
-		if err != nil {
+		if pos >= len(payloadBytes) {
 			break
 		}
+		entryFlags := payloadBytes[pos]
+		pos++
+
+		if isReservedCacheControlKey(ramKey) {
+			continue
+		}
+
+		ns = internMetaStr(internMap, ns)
+		ct = internMetaStr(internMap, ct)
+		ce = internMetaStr(internMap, ce)
 
 		m.persistMu.RLock()
 		genMismatch := m.generation != expectedGen
@@ -160,9 +194,9 @@ func (m *Manager) loadMetaIndexFromBase(base string, expectedGen uint64) int {
 				contentEncoding: ce,
 				etag:            etag,
 				lastModified:    lm,
-				exists:          flags&1 != 0,
-				hasMeta:         flags&2 != 0,
-				verified:        flags&4 != 0,
+				exists:          entryFlags&1 != 0,
+				hasMeta:         entryFlags&2 != 0,
+				verified:        entryFlags&4 != 0,
 			}
 			loaded++
 		}
@@ -251,7 +285,7 @@ func (m *Manager) saveMetaIndex(blocking bool) error {
 		shard.mu.RLock()
 		if len(shard.items) > 0 {
 			for k, v := range shard.items {
-				if v.exists && v.hasMeta && v.size > 0 {
+				if v.exists && v.hasMeta && v.size > 0 && !isReservedCacheControlKey(k) {
 					all = append(all, kvEntry{key: k, val: v})
 				}
 			}
@@ -340,6 +374,7 @@ func (m *Manager) saveMetaIndex(blocking bool) error {
 	if registered {
 		m.popTempFileToken(tmpPath)
 	}
+	removeStrayMetaIndexExt(indexPath)
 	return nil
 }
 

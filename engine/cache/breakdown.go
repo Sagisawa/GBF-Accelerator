@@ -444,12 +444,28 @@ func normalizeCleanKey(urlPath string) string {
 	return strings.Join(segs, "/")
 }
 
+// isReservedCacheControlKey reports whether cleanKey (or a RAM key) refers to internal
+// cache control artifacts (.gbf_cache, .gbf_meta_index.v1, or their .ext sidecars).
+func isReservedCacheControlKey(cleanKey string) bool {
+	base := cleanKey
+	if idx := strings.LastIndexByte(base, '/'); idx >= 0 {
+		base = base[idx+1:]
+	}
+	if idx := strings.LastIndexByte(base, 0); idx >= 0 {
+		base = base[idx+1:]
+	}
+	return strings.EqualFold(base, RootMarkerFileName) ||
+		strings.EqualFold(base, MetaIndexFileName) ||
+		strings.EqualFold(base, RootMarkerFileName+".ext") ||
+		strings.EqualFold(base, MetaIndexFileName+".ext")
+}
+
 // canonicalizeNSAndKey normalizes a (namespace, urlPath) pair while keeping
 // ("gbf", "hosts/<subNS>/<subKey>") distinct from external host ("<subNS>", "<subKey>")
 // so that different upstream hosts never share RAM or disk cache entries.
 func canonicalizeNSAndKey(ns, urlPath string) (string, string, bool) {
 	cleanKey := normalizeCleanKey(urlPath)
-	if cleanKey == "" {
+	if cleanKey == "" || isReservedCacheControlKey(cleanKey) {
 		return "", "", false
 	}
 	normNS := "gbf"
@@ -2835,6 +2851,9 @@ func (m *Manager) removeEmptyParentDirsControlledWithDirInfos(
 				return removed, true
 			}
 			removedDir, _, _ := removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d, m.beforeUnlinkHook)
+			if removedDir {
+				m.invalidateKnownDir(d)
+			}
 			m.persistMu.Unlock()
 			if removedDir {
 				removed++
@@ -2944,6 +2963,9 @@ func (m *Manager) pruneEmptyDirTreeControlledWithDirInfos(
 				return false, true, firstErr
 			}
 			removedDir, _, rmErr = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d, m.beforeUnlinkHook)
+			if removedDir {
+				m.invalidateKnownDir(d)
+			}
 			m.persistMu.Unlock()
 		} else {
 			removedDir, _, rmErr = removeVerifiedEmptyDir(absBase, realBase, expectedRootFi, dirInfos, d, m.beforeUnlinkHook)

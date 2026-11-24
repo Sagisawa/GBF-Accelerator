@@ -83,10 +83,11 @@ type Stats struct {
 	prefetchShards       [prefetchSavedShardCount]prefetchSavedShard
 	logChan              chan LogEntry
 
-	idleMu     sync.Mutex
-	idleChan   chan struct{}
-	closedChan chan struct{}
-	closed     bool
+	idleMu      sync.Mutex
+	idleWaiters atomic.Int32
+	idleChan    chan struct{}
+	closedChan  chan struct{}
+	closed      bool
 
 	// Fixed-capacity ring buffer of upstream request latencies (milliseconds).
 	latMu    sync.Mutex
@@ -105,7 +106,6 @@ func NewStats() *Stats {
 		logBuf:      make([]LogEntry, maxLogEntries),
 		subscribers: make([]chan LogEntry, 0),
 		logChan:     make(chan LogEntry, 1024),
-		idleChan:    make(chan struct{}),
 		closedChan:  make(chan struct{}),
 	}
 	for i := range s.prefetchShards {
@@ -160,33 +160,33 @@ func (s *Stats) IsForegroundIdle() bool {
 }
 
 func (s *Stats) NotifyForegroundIdle() {
-	if !s.IsForegroundIdle() {
+	if s.idleWaiters.Load() <= 0 || !s.IsForegroundIdle() {
 		return
 	}
 	s.idleMu.Lock()
-	defer s.idleMu.Unlock()
-	if s.closed {
-		return
+	if !s.closed && s.IsForegroundIdle() && s.idleChan != nil {
+		close(s.idleChan)
+		s.idleChan = nil
 	}
-	if !s.IsForegroundIdle() {
-		return
-	}
-	if s.idleChan != nil {
-		select {
-		case <-s.idleChan:
-		default:
-			close(s.idleChan)
-		}
-		s.idleChan = make(chan struct{})
-	}
+	s.idleMu.Unlock()
 }
 
 func (s *Stats) WaitForegroundIdle(stopChan <-chan struct{}) bool {
+	if s.IsForegroundIdle() {
+		return true
+	}
+	s.idleWaiters.Add(1)
+	defer s.idleWaiters.Add(-1)
+
 	for !s.IsForegroundIdle() {
 		s.idleMu.Lock()
 		if s.closed {
 			s.idleMu.Unlock()
 			return false
+		}
+		if s.IsForegroundIdle() {
+			s.idleMu.Unlock()
+			return true
 		}
 		if s.closedChan == nil {
 			s.closedChan = make(chan struct{})
@@ -197,10 +197,6 @@ func (s *Stats) WaitForegroundIdle(stopChan <-chan struct{}) bool {
 		}
 		idleCh := s.idleChan
 		s.idleMu.Unlock()
-
-		if s.IsForegroundIdle() {
-			return true
-		}
 
 		select {
 		case <-stopChan:
@@ -336,6 +332,7 @@ func (s *Stats) Close() {
 			default:
 				close(s.idleChan)
 			}
+			s.idleChan = nil
 		}
 		s.idleMu.Unlock()
 	})
