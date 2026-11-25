@@ -227,9 +227,9 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
               </div>
             </div>
 
-            {/* Compact Middle Metrics when scrolled */}
+            {/* Compact Middle Metrics when scrolled (two-column md+ only) */}
             {isScrolled && (
-              <div className="hidden sm:flex items-center justify-center flex-1 shrink-0">
+              <div className="hidden md:flex items-center justify-center flex-1 shrink-0">
                 <RealtimeRequestHud status={status} running={isRunning} compact={true} />
               </div>
             )}
@@ -267,13 +267,6 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
               </button>
             </div>
           </div>
-
-          {/* Mobile / Ultra-narrow Compact Metrics Strip when scrolled (< 640px) */}
-          {isScrolled && (
-            <div className="flex sm:hidden items-center justify-center pt-1.5 mt-1.5 border-t border-slate-500/15 overflow-x-auto">
-              <RealtimeRequestHud status={status} running={isRunning} compact={true} />
-            </div>
-          )}
 
           {/* Expanded Realtime Request Telemetry Strip */}
           <div

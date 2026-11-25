@@ -48,13 +48,13 @@ describe('HeaderCockpit Component', () => {
     expect(html).toContain('grid-rows-[1fr]')
     expect(html).toContain('aria-hidden="false"')
     expect(html).not.toContain('grid-rows-[0fr]')
-    expect(html).not.toContain('hidden sm:flex items-center justify-center flex-1 shrink-0')
-    expect(html).not.toContain('flex sm:hidden items-center justify-center')
+    expect(html).not.toContain('hidden md:flex items-center justify-center flex-1 shrink-0')
+    expect(html).not.toContain('flex sm:hidden')
     expect(html).toContain('v2.6.0')
     expect(html).toContain('2.7.0')
   })
 
-  it('renders compact state with 0fr grid collapse, responsive compact HUD, and sticky overflow-anchor protection', () => {
+  it('renders compact state with 0fr grid collapse, md-only compact HUD, and sticky overflow-anchor protection', () => {
     const html = renderToStaticMarkup(
       React.createElement(HeaderCockpit, {
         ...defaultProps,
@@ -65,8 +65,8 @@ describe('HeaderCockpit Component', () => {
     expect(html).toContain('grid-rows-[0fr]')
     expect(html).toContain('aria-hidden="true"')
     expect(html).not.toContain('grid-rows-[1fr]')
-    expect(html).toContain('hidden sm:flex items-center justify-center flex-1 shrink-0')
-    expect(html).toContain('flex sm:hidden items-center justify-center')
+    expect(html).toContain('hidden md:flex items-center justify-center flex-1 shrink-0')
+    expect(html).not.toContain('flex sm:hidden')
     expect(html).toContain('truncate min-w-0')
     expect(html).toContain('1,234')
     expect(html).toContain('89')
