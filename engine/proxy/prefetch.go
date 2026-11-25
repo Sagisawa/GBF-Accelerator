@@ -888,10 +888,15 @@ func (pe *PrefetchEngine) diskWarmWorker() {
 				continue
 			}
 			ns, _ := NormalizeAssetNamespace(item.host)
-			if ci, warmed := pe.srv.cacheMgr.WarmSingleDiskItem(ns, item.path, maxDiskWarmItemBytes); warmed && ci != nil {
-				if item.depth < 1 && item.prio == 1 && len(ci.Data) > 0 {
-					pe.maybeEnqueueDiscoveryWithDepth(item.host, item.path, ci.Data, item.depth+1)
-				}
+			ci, warmed := pe.srv.cacheMgr.WarmSingleDiskItem(ns, item.path, maxDiskWarmItemBytes)
+			if !warmed && item.depth < 1 && item.prio == 1 {
+				// A concurrent depth=1 warm (e.g. manifest -> twin CJS) or foreground read
+				// may have admitted this script into RAM ahead of the depth=0 warm task.
+				// Peek RAM so depth 0 -> 1 sprite cascade is still triggered once.
+				ci = pe.srv.cacheMgr.PeekAnyRAMWithNamespace(ns, item.path)
+			}
+			if ci != nil && item.depth < 1 && item.prio == 1 && len(ci.Data) > 0 {
+				pe.maybeEnqueueDiscoveryWithDepth(item.host, item.path, ci.Data, item.depth+1)
 			}
 		}
 	}
