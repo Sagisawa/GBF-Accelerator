@@ -287,3 +287,81 @@ func TestExtractAssetRefs_SIMDWindowBoundaryEquivalence(t *testing.T) {
 	}
 }
 
+func TestPrefetch_WarmDiskCascade_Depth1PreemptDoesNotDropDepth0Cascade(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	_ = cfgMgr.Update(func(c *config.Config) {
+		c.EnablePrefetch = true
+		c.EnableRAMCache = true
+	})
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := &ProxyServer{
+		cfgMgr:   cfgMgr,
+		cacheMgr: cacheMgr,
+		stats:    stats,
+	}
+	srv.assetClient.Store(&http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			t.Errorf("unexpected upstream request during preemption cascade test: %s", r.URL.String())
+			return nil, http.ErrHandlerTimeout
+		}),
+	})
+	pe := newPrefetchEngine(srv)
+	defer func() {
+		pe.Stop()
+		if !pe.WaitTimeout(2 * time.Second) {
+			t.Fatalf("prefetch workers did not exit cleanly")
+		}
+	}()
+
+	const cdnHost = "prd-game-a-granbluefantasy.akamaized.net"
+	cjsPath := "/assets/1795000000/js/cjs/preempt_boss.js"
+	spritePath := "/assets/img/sp/cjs/preempt_boss_a.png"
+
+	cjsBody := []byte(`(function(lib){lib.properties={manifest:[{src:"sp/cjs/preempt_boss_a.png",id:"a"}]};})(cjs);`)
+	spriteBody := append([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"), bytes.Repeat([]byte{0x44}, 512)...)
+
+	if !cacheMgr.Save(cjsPath, map[string]string{"content-type": "application/javascript"}, cjsBody) {
+		t.Fatalf("failed to seed disk cache for %s", cjsPath)
+	}
+	if !cacheMgr.Save(spritePath, map[string]string{"content-type": "image/png"}, spriteBody) {
+		t.Fatalf("failed to seed disk cache for %s", spritePath)
+	}
+	cacheMgr.ClearRAM()
+
+	// Simulate depth=1 warm (e.g. manifest -> twin CJS) admitting cjsPath into RAM first.
+	pe.diskWarmCh <- prefetchItem{prio: 1, host: cdnHost, path: cjsPath, depth: 1}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cacheMgr.IsInRAMWithNamespace("gbf", cjsPath) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !cacheMgr.IsInRAMWithNamespace("gbf", cjsPath) {
+		t.Fatalf("expected %s to be warmed into RAM by depth=1 task", cjsPath)
+	}
+
+	// Now process the depth=0 warm task for the same already-RAM-resident script.
+	pe.diskWarmCh <- prefetchItem{prio: 1, host: cdnHost, path: cjsPath, depth: 0}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cacheMgr.IsInRAMWithNamespace("gbf", spritePath) {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if !cacheMgr.IsInRAMWithNamespace("gbf", spritePath) {
+		t.Fatalf("expected %s to be warmed from disk into RAM even when depth=1 preempted depth=0", spritePath)
+	}
+	if cacheMgr.IsRAMProtected("gbf", spritePath) {
+		t.Fatalf("expected warmed sprite %s to stay in SLRU Probation, not Protected", spritePath)
+	}
+}
+
