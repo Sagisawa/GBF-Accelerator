@@ -50,10 +50,11 @@ type discoveredRef struct {
 }
 
 type prefetchItem struct {
-	prio  int
-	host  string
-	path  string
-	depth uint8
+	prio           int
+	host           string
+	path           string
+	depth          uint8
+	fromForeground bool
 }
 
 const (
@@ -871,6 +872,29 @@ func (pe *PrefetchEngine) fetchExecutor() {
 	}
 }
 
+// EnqueueForegroundDiskWarm asynchronously queues a small disk-only asset hit by a
+// foreground conditional request so diskWarmWorker loads it into RAM SLRU Probation
+// once foreground traffic is idle, without adding latency to the 304 response.
+func (pe *PrefetchEngine) EnqueueForegroundDiskWarm(host, urlPath string) {
+	if pe == nil || pe.diskWarmCh == nil || pe.IsStopped() {
+		return
+	}
+	cleanP, _, _ := strings.Cut(urlPath, "?")
+	if cleanP == "" {
+		return
+	}
+	select {
+	case pe.diskWarmCh <- prefetchItem{
+		prio:           2,
+		host:           host,
+		path:           cleanP,
+		depth:          1,
+		fromForeground: true,
+	}:
+	default:
+	}
+}
+
 func (pe *PrefetchEngine) diskWarmWorker() {
 	for {
 		select {
@@ -884,7 +908,7 @@ func (pe *PrefetchEngine) diskWarmWorker() {
 				return
 			}
 			cfg := pe.srv.cfgMgr.Get()
-			if !cfg.EnablePrefetch || !cfg.EnableRAMCache {
+			if !cfg.EnableRAMCache || (!cfg.EnablePrefetch && !item.fromForeground) {
 				continue
 			}
 			ns, _ := NormalizeAssetNamespace(item.host)

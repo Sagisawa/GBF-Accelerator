@@ -7,17 +7,21 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"gbf-proxy/cache"
 	"gbf-proxy/cert"
 	"gbf-proxy/config"
+	"gbf-proxy/telemetry"
 )
 
 func TestCacheControl_StaleWhileRevalidatePolicy(t *testing.T) {
@@ -306,5 +310,136 @@ func TestStreamClientWriter_H2FirstChunkFlushAndComplete(t *testing.T) {
 	}
 	if rec.Body.String() != "chunk-chunk-chunk-chunk-chunk-" {
 		t.Fatalf("unexpected body: %q", rec.Body.String())
+	}
+}
+
+func TestProxy_Disk304_SingleLogAndAsyncRAMWarmup(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgMgr := config.NewManager(filepath.Join(tempDir, "config.json"))
+	_ = cfgMgr.Update(func(c *config.Config) {
+		c.EnableRAMCache = true
+		c.EnablePrefetch = false
+	})
+	cacheMgr := cache.NewManager(tempDir, 16)
+	defer cacheMgr.Close()
+	stats := telemetry.NewStats()
+	defer stats.Close()
+
+	srv := &ProxyServer{
+		cfgMgr:   cfgMgr,
+		cacheMgr: cacheMgr,
+		stats:    stats,
+	}
+	pe := newPrefetchEngine(srv)
+	srv.prefetch = pe
+	defer func() {
+		pe.Stop()
+		if !pe.WaitTimeout(2 * time.Second) {
+			t.Fatalf("prefetch workers did not exit cleanly")
+		}
+	}()
+
+	const (
+		targetHost = "prd-game-a-granbluefantasy.akamaized.net"
+		reqPath    = "/assets/img/sp/spacer.png"
+		diskKey    = "img/sp/spacer.png"
+		etag       = `"spacer-etag-1"`
+	)
+	pngPayload := append([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"), bytes.Repeat([]byte{0x11}, 96)...)
+	diskPath, ok := cacheMgr.ResolvePathWithNamespace("gbf", diskKey)
+	if !ok {
+		t.Fatal("failed to resolve legacy fallback disk path")
+	}
+	if err := os.MkdirAll(filepath.Dir(diskPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(diskPath, pngPayload, 0644); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(diskPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extMeta := fmt.Sprintf(`{"ct":"image/png","ETag":%q,"LastModified":"Wed, 21 Oct 2026 07:28:00 GMT","v":1,"verified":true,"size":%d,"mtime":%d}`, etag, fi.Size(), fi.ModTime().UnixNano())
+	if err := os.WriteFile(diskPath+".ext", []byte(extMeta), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cacheMgr.ClearRAM()
+
+	// 1. First conditional GET hits disk metadata -> 304 with 0-byte body, single 304 log, async RAM warm.
+	req1, err := http.NewRequest(http.MethodGet, "https://"+targetHost+reqPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req1.RequestURI = reqPath
+	req1.Header.Set("If-None-Match", etag)
+
+	var buf1 bytes.Buffer
+	srv.handleDecryptedRequest(&buf1, req1, targetHost)
+	if !strings.HasPrefix(buf1.String(), "HTTP/1.1 304 Not Modified\r\n") {
+		t.Fatalf("expected 304 Not Modified on disk hit, got:\n%s", buf1.String())
+	}
+	if _, _, body1 := splitRawResponse(t, buf1.Bytes()); len(body1) != 0 {
+		t.Fatalf("expected 0-byte body for 304, got %d bytes", len(body1))
+	}
+
+	// Wait briefly for logWorker to drain s.logChan.
+	time.Sleep(60 * time.Millisecond)
+	logsAfterDisk304 := stats.GetLogs()
+	var disk304Count, diskHitCount int
+	for _, entry := range logsAfterDisk304 {
+		if !strings.Contains(entry.Msg, reqPath) {
+			continue
+		}
+		if strings.Contains(entry.Msg, "[CACHE-DISK] 304") {
+			disk304Count++
+		}
+		if strings.Contains(entry.Msg, "[CACHE-DISK] HIT") {
+			diskHitCount++
+		}
+	}
+	if disk304Count != 1 || diskHitCount != 0 {
+		t.Fatalf("expected exactly 1 [CACHE-DISK] 304 log and 0 HIT logs, got 304=%d hit=%d logs=%+v", disk304Count, diskHitCount, logsAfterDisk304)
+	}
+
+	// 2. Async foreground disk warm populates SLRU Probation even with EnablePrefetch=false.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cacheMgr.IsInRAMWithNamespace("gbf", reqPath) {
+			break
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+	if !cacheMgr.IsInRAMWithNamespace("gbf", reqPath) {
+		t.Fatalf("expected %s to be asynchronously warmed into RAM from fallback disk path", reqPath)
+	}
+	if cacheMgr.IsRAMProtected("gbf", reqPath) {
+		t.Fatalf("expected warmed 304 asset %s to stay in Probation, not Protected", reqPath)
+	}
+
+	// 3. Second conditional GET hits RAM -> 304, RAMHits+1, zero new cache logs.
+	ramHitsBefore := stats.RAMHits.Load()
+	logCountBefore := len(stats.GetLogs())
+	req2, err := http.NewRequest(http.MethodGet, "https://"+targetHost+reqPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2.RequestURI = reqPath
+	req2.Header.Set("If-None-Match", etag)
+
+	var buf2 bytes.Buffer
+	srv.handleDecryptedRequest(&buf2, req2, targetHost)
+	if !strings.HasPrefix(buf2.String(), "HTTP/1.1 304 Not Modified\r\n") {
+		t.Fatalf("expected 304 Not Modified on RAM hit, got:\n%s", buf2.String())
+	}
+	if got := stats.RAMHits.Load(); got != ramHitsBefore+1 {
+		t.Fatalf("expected RAMHits=%d, got %d", ramHitsBefore+1, got)
+	}
+	time.Sleep(50 * time.Millisecond)
+	logsAfterRAM304 := stats.GetLogs()
+	for _, entry := range logsAfterRAM304[logCountBefore:] {
+		if strings.Contains(entry.Msg, "[CACHE-RAM]") || strings.Contains(entry.Msg, "[CACHE-DISK]") {
+			t.Fatalf("expected zero cache logs on RAM 304 hot path, got %q", entry.Msg)
+		}
 	}
 }
