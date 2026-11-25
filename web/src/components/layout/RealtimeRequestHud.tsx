@@ -70,13 +70,13 @@ export const RealtimeRequestHud: React.FC<{
 
   if (compact) {
     return (
-      <div className="flex items-center gap-1.5 sm:gap-2 flex-nowrap">
+      <div className="flex items-center gap-1 lg:gap-2 flex-nowrap">
         <span
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-sys-greenBg text-sys-green border border-emerald-500/20 text-xs font-mono font-bold tnum whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-1 px-2 lg:px-2.5 py-0.5 lg:py-1 rounded-full bg-sys-greenBg text-sys-green border border-emerald-500/20 text-[11px] lg:text-xs font-mono font-bold tnum whitespace-nowrap shrink-0"
           title={`${t('hud.totalHits')}: ${counts.totalHits.toLocaleString()}${counts.ramHits > 0 ? ` (${t('hud.ramHits', { count: counts.ramHits.toLocaleString() })})` : ''}`}
         >
-          <Zap className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-          <span className="hidden md:inline font-sans font-medium text-label-secondary text-[11px] whitespace-nowrap">
+          <Zap className="w-3 h-3 lg:w-3.5 lg:h-3.5 text-emerald-500 shrink-0" />
+          <span className="inline font-sans font-medium text-label-secondary text-[11px] whitespace-nowrap">
             {t('hud.totalHitsShort') || '命中'}:
           </span>
           <span>{counts.totalHits.toLocaleString()}</span>
@@ -88,22 +88,22 @@ export const RealtimeRequestHud: React.FC<{
         </span>
 
         <span
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-sys-blueBg text-sys-blue border border-sky-500/20 text-xs font-mono font-bold tnum whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-1 px-2 lg:px-2.5 py-0.5 lg:py-1 rounded-full bg-sys-blueBg text-sys-blue border border-sky-500/20 text-[11px] lg:text-xs font-mono font-bold tnum whitespace-nowrap shrink-0"
           title={`${t('hud.remoteDownloads')}: ${counts.downloads.toLocaleString()}`}
         >
-          <Download className="w-3.5 h-3.5 text-sky-500 shrink-0" />
-          <span className="hidden md:inline font-sans font-medium text-label-secondary text-[11px] whitespace-nowrap">
+          <Download className="w-3 h-3 lg:w-3.5 lg:h-3.5 text-sky-500 shrink-0" />
+          <span className="inline font-sans font-medium text-label-secondary text-[11px] whitespace-nowrap">
             {t('hud.remoteDownloadsShort') || '下载'}:
           </span>
           <span>{counts.downloads.toLocaleString()}</span>
         </span>
 
         <span
-          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-surface-active text-label-primary border border-hairline text-xs font-mono font-bold tnum whitespace-nowrap shrink-0"
+          className="inline-flex items-center gap-1 px-2 lg:px-2.5 py-0.5 lg:py-1 rounded-full bg-surface-active text-label-primary border border-hairline text-[11px] lg:text-xs font-mono font-bold tnum whitespace-nowrap shrink-0"
           title={`${t('hud.apiForwarding')}: ${counts.apis.toLocaleString()}`}
         >
-          <ArrowLeftRight className="w-3.5 h-3.5 text-label-tertiary shrink-0" />
-          <span className="hidden md:inline font-sans font-medium text-label-secondary text-[11px] whitespace-nowrap">
+          <ArrowLeftRight className="w-3 h-3 lg:w-3.5 lg:h-3.5 text-label-tertiary shrink-0" />
+          <span className="inline font-sans font-medium text-label-secondary text-[11px] whitespace-nowrap">
             {t('hud.apiForwardingShort') || '转发'}:
           </span>
           <span>{counts.apis.toLocaleString()}</span>
