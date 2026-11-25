@@ -66,7 +66,7 @@ export const RealtimeRequestHud: React.FC<{
   }, [running])
 
   const totalRequests = counts.totalHits + counts.downloads + counts.apis
-  const { currentQps, getPolylinePoints } = useTrafficHistory(running ? totalRequests : 0, 28)
+  const { currentQps, getPolylinePoints } = useTrafficHistory(running ? totalRequests : 0, 28, !compact && running)
 
   if (compact) {
     return (
