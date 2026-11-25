@@ -5,7 +5,7 @@ export interface TrafficPoint {
   qps: number
 }
 
-export function useTrafficHistory(totalRequests: number, windowSize: number = 30) {
+export function useTrafficHistory(totalRequests: number, windowSize: number = 30, enabled: boolean = true) {
   const [history, setHistory] = useState<number[]>(() => new Array(windowSize).fill(0))
   const totalRequestsRef = useRef<number>(totalRequests)
   totalRequestsRef.current = totalRequests
@@ -14,6 +14,8 @@ export function useTrafficHistory(totalRequests: number, windowSize: number = 30
   const lastTimeRef = useRef<number>(Date.now())
 
   useEffect(() => {
+    if (!enabled) return
+
     lastTotalRef.current = totalRequestsRef.current
     lastTimeRef.current = Date.now()
 
@@ -31,7 +33,7 @@ export function useTrafficHistory(totalRequests: number, windowSize: number = 30
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [windowSize])
+  }, [windowSize, enabled])
 
   // Generate SVG polyline coordinates normalized to width and height
   const getPolylinePoints = (width: number = 120, height: number = 28) => {

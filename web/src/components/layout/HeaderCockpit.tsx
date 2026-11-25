@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Zap, ArrowUpCircle, Power, Menu } from 'lucide-react'
 import { RuntimeStatus } from '../../types'
 import { useI18n } from '../../i18n'
@@ -67,9 +67,62 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
   onOpenMobileMenu,
 }) => {
   const { t } = useI18n()
+  const slotRef = useRef<HTMLDivElement | null>(null)
+  const [expandedSlotHeight, setExpandedSlotHeight] = useState<number | undefined>(undefined)
+  const [keepSlotLocked, setKeepSlotLocked] = useState(isScrolled)
+  const prevScrolledRef = useRef(isScrolled)
+
+  useEffect(() => {
+    const wasScrolled = prevScrolledRef.current
+    prevScrolledRef.current = isScrolled
+
+    if (isScrolled) {
+      setKeepSlotLocked(true)
+      return
+    }
+
+    if (wasScrolled && !isScrolled) {
+      setKeepSlotLocked(true)
+      const timer = window.setTimeout(() => {
+        setKeepSlotLocked(false)
+      }, 220)
+      return () => window.clearTimeout(timer)
+    }
+  }, [isScrolled])
+
+  const isSlotLocked = isScrolled || keepSlotLocked
+
+  useEffect(() => {
+    if (isSlotLocked) return
+    const el = slotRef.current
+    if (!el) return
+
+    const updateHeight = () => {
+      const h = el.offsetHeight
+      if (h > 0) {
+        setExpandedSlotHeight((prev) => (prev === h ? prev : h))
+      }
+    }
+
+    updateHeight()
+
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      updateHeight()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [isSlotLocked])
 
   return (
-    <div className="sticky top-2.5 sm:top-3 z-20 px-4 sm:px-6 mt-2.5 sm:mt-3 pointer-events-none">
+    <div
+      ref={slotRef}
+      className="sticky top-2.5 sm:top-3 z-20 px-4 sm:px-6 mt-2.5 sm:mt-3 pointer-events-none"
+      style={{
+        minHeight: isSlotLocked && expandedSlotHeight ? `${expandedSlotHeight}px` : undefined,
+        overflowAnchor: 'none',
+      }}
+    >
       <header
         className={`max-w-5xl mx-auto liquid-glass rounded-[20px] pointer-events-auto transition-[padding] duration-200 ease-fluid ${
           isScrolled ? 'px-3.5 sm:px-4 py-2' : 'px-4 sm:px-5 py-3.5 sm:py-4'
@@ -105,10 +158,10 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
               </div>
 
               <div className="flex flex-col min-w-0">
-                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                <div className={`flex items-center gap-1.5 sm:gap-2 min-w-0 ${isScrolled ? 'flex-nowrap' : 'flex-wrap'}`}>
                   <span
-                    className={`font-bold text-label-primary tracking-tight leading-none transition-all duration-200 whitespace-nowrap ${
-                      isScrolled ? 'text-xs sm:text-[15px]' : 'text-sm sm:text-lg'
+                    className={`font-bold text-label-primary tracking-tight leading-none transition-all duration-200 ${
+                      isScrolled ? 'text-xs sm:text-sm truncate min-w-0' : 'text-sm sm:text-lg whitespace-nowrap'
                     }`}
                   >
                     {t('header.title')}
@@ -132,7 +185,7 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
                   )}
 
                   {isScrolled && (
-                    <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1.5 text-xs whitespace-nowrap shrink-0">
                       <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-500' : 'bg-slate-400'}`} />
                       <span className={isRunning ? 'font-mono font-semibold text-sys-green' : 'text-label-tertiary font-medium'}>
                         {isRunning ? `${currentListenPort}` : t('header.stopped')}
@@ -141,33 +194,42 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
                   )}
                 </div>
 
-                {!isScrolled && (
-                  <div className="flex items-center gap-1.5 sm:gap-2 mt-1 sm:mt-1.5 flex-wrap">
-                    <span className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs whitespace-nowrap">
-                      <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
-                      <span className={isRunning ? 'font-semibold text-sys-green' : 'text-label-tertiary font-medium'}>
-                        {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
-                      </span>
-                    </span>
-                    {isRunning && (
-                      <>
-                        <span className="text-label-tertiary opacity-50 hidden sm:inline">·</span>
-                        <span className="inline-flex items-center gap-1 text-[11px] sm:text-xs text-label-tertiary font-mono tnum whitespace-nowrap">
-                          <span className="hidden sm:inline">{t('header.uptime')}</span>
-                          <span className="font-semibold text-label-secondary">
-                            <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
-                          </span>
+                <div
+                  className={`grid transition-[grid-template-rows,opacity,margin] duration-200 ease-fluid ${
+                    isScrolled
+                      ? 'grid-rows-[0fr] opacity-0 mt-0 pointer-events-none'
+                      : 'grid-rows-[1fr] opacity-100 mt-1 sm:mt-1.5'
+                  }`}
+                  aria-hidden={isScrolled}
+                >
+                  <div className="overflow-hidden min-h-0">
+                    <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                      <span className="inline-flex items-center gap-1.5 text-[11px] sm:text-xs whitespace-nowrap">
+                        <span className={`w-2 h-2 rounded-full ${isRunning ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                        <span className={isRunning ? 'font-semibold text-sys-green' : 'text-label-tertiary font-medium'}>
+                          {isRunning ? t('header.runningWithPort', { port: currentListenPort }) : t('header.stopped')}
                         </span>
-                      </>
-                    )}
+                      </span>
+                      {isRunning && (
+                        <>
+                          <span className="text-label-tertiary opacity-50 hidden sm:inline">·</span>
+                          <span className="inline-flex items-center gap-1 text-[11px] sm:text-xs text-label-tertiary font-mono tnum whitespace-nowrap">
+                            <span className="hidden sm:inline">{t('header.uptime')}</span>
+                            <span className="font-semibold text-label-secondary">
+                              <RuntimeUptime baseSeconds={uptimeSec} running={isRunning} />
+                            </span>
+                          </span>
+                        </>
+                      )}
+                    </div>
                   </div>
-                )}
+                </div>
               </div>
             </div>
 
-            {/* Compact Middle Metrics when scrolled */}
+            {/* Compact Middle Metrics when scrolled (two-column md+ only) */}
             {isScrolled && (
-              <div className="hidden lg:flex items-center justify-center flex-1 min-w-0 overflow-hidden">
+              <div className="hidden md:flex items-center justify-center flex-1 shrink-0">
                 <RealtimeRequestHud status={status} running={isRunning} compact={true} />
               </div>
             )}
@@ -207,9 +269,18 @@ export const HeaderCockpit: React.FC<HeaderCockpitProps> = ({
           </div>
 
           {/* Expanded Realtime Request Telemetry Strip */}
-          {!isScrolled && (
-            <RealtimeRequestHud status={status} running={isRunning} />
-          )}
+          <div
+            className={`grid transition-[grid-template-rows,opacity] duration-200 ease-fluid ${
+              isScrolled
+                ? 'grid-rows-[0fr] opacity-0 pointer-events-none'
+                : 'grid-rows-[1fr] opacity-100'
+            }`}
+            aria-hidden={isScrolled}
+          >
+            <div className="overflow-hidden min-h-0">
+              <RealtimeRequestHud status={status} running={isRunning} />
+            </div>
+          </div>
         </div>
       </header>
     </div>

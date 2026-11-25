@@ -55,6 +55,7 @@ import { useTheme } from './hooks/useTheme'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { isNewerVersion } from './utils/version'
 import { shouldAutoOpenCaGuide } from './utils/caGuide'
+import { computeHeaderScrolledState } from './utils/headerScroll'
 import {
   CheckCircle2,
   Info,
@@ -160,15 +161,29 @@ export const App: React.FC = () => {
 
   // Header auto-shrink state when user scrolls down
   const [isHeaderScrolled, setIsHeaderScrolled] = useState(false)
+  const isHeaderScrolledRef = useRef(false)
+  const mainScrollRef = useRef<HTMLDivElement | null>(null)
 
   const handleMainScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    const top = e.currentTarget.scrollTop
-    if (top > 28) {
-      setIsHeaderScrolled(true)
-    } else if (top <= 14) {
-      setIsHeaderScrolled(false)
+    const next = computeHeaderScrolledState(
+      e.currentTarget.scrollTop,
+      isHeaderScrolledRef.current
+    )
+    if (next !== isHeaderScrolledRef.current) {
+      isHeaderScrolledRef.current = next
+      setIsHeaderScrolled(next)
     }
   }, [])
+
+  useEffect(() => {
+    const el = mainScrollRef.current
+    if (!el) return
+    const next = computeHeaderScrolledState(el.scrollTop, isHeaderScrolledRef.current)
+    if (next !== isHeaderScrolledRef.current) {
+      isHeaderScrolledRef.current = next
+      setIsHeaderScrolled(next)
+    }
+  }, [activeTab])
 
   const isAndroid =
     status?.platform === 'android' ||
@@ -1273,7 +1288,7 @@ export const App: React.FC = () => {
         )}
 
         {/* Scrollable Main Work Area (contains sticky floating HeaderCockpit for live glass refraction) */}
-        <div className="flex-1 overflow-y-auto min-h-0" onScroll={handleMainScroll}>
+        <div ref={mainScrollRef} className="flex-1 overflow-y-auto min-h-0" onScroll={handleMainScroll}>
           {activeTab === 'core' && (
             <HeaderCockpit
               status={status}
