@@ -902,16 +902,30 @@ func (m *Manager) WarmSingleDiskItem(ns, urlPath string, maxBytes int64) (*Cache
 	if !ok {
 		return nil, false
 	}
+	loadKey := cleanKey
 	fi, err := os.Stat(filePath)
+	if (err != nil || fi.IsDir() || fi.Size() == 0) && ns == "gbf" {
+		if altKey, hasAlt := gbfFallbackCleanKey(cleanKey); hasAlt {
+			if altPath, okAlt := m.resolvePathWithNamespace("gbf", altKey); okAlt && altPath != "" {
+				if altFi, altErr := os.Stat(altPath); altErr == nil && !altFi.IsDir() && altFi.Size() > 0 {
+					filePath = altPath
+					fi = altFi
+					err = nil
+					loadKey = altKey
+				}
+			}
+		}
+	}
 	if err != nil || fi.IsDir() || fi.Size() == 0 || fi.Size() > maxBytes {
 		return nil, false
 	}
 
 	tok := m.acquireOpToken(ns, cleanKey)
-	item, err := m.loadAndValidateDiskItemWithToken(ns, cleanKey, filePath, tok)
+	item, err := m.loadAndValidateDiskItemWithToken(ns, loadKey, filePath, tok)
 	if err != nil || item == nil || len(item.Data) == 0 || item.Size > maxBytes {
 		return nil, false
 	}
+	item.Key = ramKey
 
 	isSharedHostsPath := ns != "gbf" || strings.HasPrefix(cleanKey, "hosts/")
 	m.persistMu.RLock()

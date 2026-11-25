@@ -2453,17 +2453,26 @@ func (s *ProxyServer) serveStaticAssetCore(w io.Writer, req *http.Request, targe
 
 	if item != nil {
 		s.stats.CheckAndRecordPrefetchReused(cleanPath)
-		if hitSrc == "RAM" || hitSrc == "RAM-BOOST" {
+		isRAMHit := hitSrc == "RAM" || hitSrc == "RAM-BOOST"
+		notModified := isClientNotModified(req, item)
+
+		if isRAMHit {
 			s.stats.IncRAMHit()
-			// P2: Hot path optimization: lightweight atomic counters only for RAM hits
+			// P2: Hot path optimization: lightweight atomic counters only for RAM hits (200 and 304)
 		} else {
 			s.stats.IncDiskHit()
-			s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] HIT %dms -> %s (%d B)", time.Since(cacheStart).Milliseconds(), cleanPath, item.Size))
+			if notModified {
+				s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] 304 %dms Not Modified -> %s", time.Since(cacheStart).Milliseconds(), cleanPath))
+			} else {
+				s.stats.Log("INFO", fmt.Sprintf("[CACHE-DISK] HIT %dms -> %s (%d B)", time.Since(cacheStart).Milliseconds(), cleanPath, item.Size))
+			}
 		}
 
 		// Conditional GET: 304 Not Modified check (0 字节缓存正文读取；仅访问必要的文件元数据/.ext)
-		if isClientNotModified(req, item) {
-			s.stats.Log("INFO", fmt.Sprintf("[%s] 304 %dms Not Modified -> %s", "CACHE-"+hitSrc, time.Since(cacheStart).Milliseconds(), cleanPath))
+		if notModified {
+			if !isRAMHit && s.prefetch != nil && item.Size > 0 && item.Size <= maxDiskWarmItemBytes {
+				s.prefetch.EnqueueForegroundDiskWarm(targetHost, req.URL.Path)
+			}
 			s.sendNotModifiedResponse(w, item, req.URL.Path, req.Close)
 			return !req.Close
 		}
