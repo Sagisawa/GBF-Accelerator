@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -142,6 +143,7 @@ func main() {
 	verifyUpstreamTLS := flag.Bool("verify-upstream-tls", false, "Verify upstream TLS certificates")
 	noGUI := flag.Bool("nogui", false, "Run in headless CLI mode without system tray")
 	headless := flag.Bool("headless", false, "Alias for -nogui")
+	watchStdin := flag.Bool("watch-stdin", false, "Exit gracefully when stdin pipe is closed by parent process")
 	openBrowser := flag.Bool("open-browser", false, "Automatically open Web console in browser on startup")
 	minimized := flag.Bool("minimized", false, "Start minimized in system tray without opening window")
 	enableRAMCache := flag.Bool("enable-ram-cache", false, "Enable in-memory RAM LRU cache")
@@ -365,6 +367,14 @@ func main() {
 		quitChan: quitChan,
 	}
 	ctrlSrv.SetQuitFunc(appCtrl.Quit)
+
+	if *watchStdin {
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			stats.Log("INFO", "[LIFECYCLE] Parent stdin pipe closed; initiating graceful shutdown...")
+			appCtrl.Quit()
+		}()
+	}
 
 	var tray desktop.Tray
 	if !*noGUI && !*headless {
